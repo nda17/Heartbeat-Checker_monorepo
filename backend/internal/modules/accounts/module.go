@@ -27,6 +27,16 @@ func (m *Module) Create(ctx context.Context, tx pgx.Tx, name string) (contracts.
 	return m.repo.Create(ctx, tx, name)
 }
 
+// CreateLocalAdmin is used only by the explicit local bootstrap command.
+// Ordinary registration continues to use Create and always creates a user.
+func (m *Module) CreateLocalAdmin(ctx context.Context, tx pgx.Tx, name string) (contracts.Account, error) {
+	name, err := contracts.CleanName(name)
+	if err != nil {
+		return contracts.Account{}, err
+	}
+	return m.repo.CreateLocalAdmin(ctx, tx, name)
+}
+
 func (m *Module) Get(ctx context.Context, id string) (contracts.Account, error) {
 	return m.repo.Get(ctx, id)
 }

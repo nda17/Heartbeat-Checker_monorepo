@@ -18,13 +18,21 @@ func New(pool *pgxpool.Pool) *Repository {
 }
 
 func (r *Repository) Create(ctx context.Context, tx pgx.Tx, name string) (contracts.Account, error) {
+	return r.create(ctx, tx, name, "user")
+}
+
+func (r *Repository) CreateLocalAdmin(ctx context.Context, tx pgx.Tx, name string) (contracts.Account, error) {
+	return r.create(ctx, tx, name, "admin")
+}
+
+func (r *Repository) create(ctx context.Context, tx pgx.Tx, name, role string) (contracts.Account, error) {
 	id, err := newID()
 	if err != nil {
 		return contracts.Account{}, err
 	}
 	var a contracts.Account
 	err = tx.QueryRow(ctx, `INSERT INTO accounts.accounts (id, name, role, status)
-		VALUES ($1, $2, 'user', 'active') RETURNING id, name, role, status, created_at`, id, name).
+		VALUES ($1, $2, $3, 'active') RETURNING id, name, role, status, created_at`, id, name, role).
 		Scan(&a.ID, &a.Name, &a.Role, &a.Status, &a.CreatedAt)
 	return a, err
 }
