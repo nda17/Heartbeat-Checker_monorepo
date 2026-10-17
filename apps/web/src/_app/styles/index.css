@@ -624,7 +624,7 @@ input:read-only {
 /* Auth */
 .auth-page {
   display: grid;
-  grid-template-columns: minmax(390px, 45%) 1fr;
+  grid-template-columns: minmax(0, 1fr) clamp(440px, 40vw, 560px);
   min-height: 100vh;
   background: #fff;
 }
@@ -683,7 +683,8 @@ input:read-only {
   color: #6a7c70;
 }
 .auth-main {
-  padding: 45px 65px 27px;
+  min-width: 0;
+  padding: 45px 40px 27px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1683,7 +1684,7 @@ input:read-only {
     display: none;
   }
   .auth-page {
-    grid-template-columns: 38% 1fr;
+    grid-template-columns: minmax(230px, 1fr) minmax(0, 440px);
   }
   .auth-aside {
     padding: 32px 25px;
