@@ -59,7 +59,7 @@ jobs:
           curl -fsS --retry 20 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:58025/api/v1/info
           go test -count=1 ./internal/modules/auth -run '^TestLocalSMTPAuthSmoke$'
       - name: Build backend commands
-        run: go build ./cmd/api ./cmd/worker ./cmd/probe ./cmd/migrate ./cmd/local-grant
+        run: go build ./cmd/api ./cmd/worker ./cmd/probe ./cmd/migrate ./cmd/local-grant ./cmd/local-admin
 
   web:
     runs-on: ubuntu-24.04

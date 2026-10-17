@@ -18,3 +18,6 @@ func (m *Module) Lock(ctx context.Context, tx pgx.Tx, accountID string) (contrac
 func (m *Module) GrantLocal(ctx context.Context, accountID string, quota int, until time.Time, reason string) error {
 	return m.service.GrantLocal(ctx, accountID, quota, until, reason)
 }
+func (m *Module) GrantLocalTx(ctx context.Context, tx pgx.Tx, accountID string, quota int, until time.Time, reason string) error {
+	return m.service.GrantLocalTx(ctx, tx, accountID, quota, until, reason)
+}

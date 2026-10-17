@@ -13,6 +13,7 @@ import (
 
 var ErrInvalid = errors.New("invalid or expired credential")
 var ErrConflict = errors.New("credential changed concurrently")
+var ErrAlreadyExists = errors.New("account email already exists")
 
 type Repository struct {
 	pool *pgxpool.Pool
@@ -129,6 +130,38 @@ func (r *Repository) CompleteRegistration(ctx context.Context, c Challenge, pass
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// BootstrapLocal is create-only: an existing email rolls back the newly created
+// account, without changing existing credentials, sessions or entitlements.
+func (r *Repository) BootstrapLocal(ctx context.Context, email, name, hash string,
+	createAccount func(context.Context, pgx.Tx, string) (string, error),
+	grant func(context.Context, pgx.Tx, string) error,
+) (string, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+	accountID, err := createAccount(ctx, tx, name)
+	if err != nil {
+		return "", err
+	}
+	result, err := tx.Exec(ctx, `INSERT INTO auth.credentials (account_id,email,password_hash)
+		VALUES ($1,$2,$3) ON CONFLICT (email) DO NOTHING`, accountID, email, hash)
+	if err != nil {
+		return "", err
+	}
+	if result.RowsAffected() != 1 {
+		return "", ErrAlreadyExists
+	}
+	if err = grant(ctx, tx, accountID); err != nil {
+		return "", err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return accountID, nil
 }
 
 func (r *Repository) CredentialByEmail(ctx context.Context, email string) (Credential, error) {

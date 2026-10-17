@@ -27,6 +27,22 @@ type Config struct {
 
 type Module struct{ server *authhttp.Server }
 
+type BootstrapInput = service.BootstrapInput
+
+var ErrAlreadyExists = postgres.ErrAlreadyExists
+var ErrInvalidBootstrap = service.ErrInvalid
+
+// BootstrapLocal is used by the guarded local CLI, never an HTTP handler.
+func BootstrapLocal(ctx context.Context, pool *pgxpool.Pool, input BootstrapInput,
+	createAccount func(context.Context, pgx.Tx, string) (string, error),
+	grant func(context.Context, pgx.Tx, string) error,
+) (string, error) {
+	if pool == nil {
+		return "", ErrInvalidBootstrap
+	}
+	return service.BootstrapLocal(ctx, postgres.New(pool), input, createAccount, grant)
+}
+
 func New(pool *pgxpool.Pool, accounts contracts.Service, captcha CaptchaVerifier, mailer MailSender, cfg Config) (*Module, error) {
 	u, err := url.Parse(cfg.Origin)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil || strings.TrimRight(cfg.Origin, "/") != cfg.Origin {

@@ -1,4 +1,4 @@
-.PHONY: db-up mail-up local-up db-down migrate run check test-integration test-live-auth test-smtp-auth init-local build-backend web-dev worker probe grant
+.PHONY: db-up mail-up local-up db-down migrate run check test-integration test-live-auth test-smtp-auth init-local build-backend web-dev worker probe grant local-admin
 
 DATABASE_URL ?= postgres://heartbeat_local:heartbeat_local_only@127.0.0.1:55432/heartbeat_local?sslmode=disable
 export DATABASE_URL
@@ -22,6 +22,7 @@ build-backend:
 	cd backend && go build -o bin/worker ./cmd/worker
 	cd backend && go build -o bin/probe ./cmd/probe
 	cd backend && go build -o bin/local-grant ./cmd/local-grant
+	cd backend && go build -o bin/local-admin ./cmd/local-admin
 
 db-down:
 	docker compose -f deploy/local/compose.yaml down
@@ -56,6 +57,13 @@ grant:
 	@test -n "$(ACCOUNT_ID)" -a -n "$(LIMIT)" -a -n "$(UNTIL)" || (echo 'Set ACCOUNT_ID, LIMIT and UNTIL (RFC3339)'; exit 1)
 	cd backend && APP_ENV=local go run ./cmd/local-grant --account-id "$(ACCOUNT_ID)" --limit "$(LIMIT)" --until "$(UNTIL)" --reason 'Explicit local development grant'
 
+# Secret input is a file path only; never pass a password through Make or argv.
+local-admin:
+	cd backend && go build -o bin/local-admin ./cmd/local-admin
+	cd backend && APP_ENV=local ./bin/local-admin \
+		--email "$${ADMIN_EMAIL}" --name "$${ADMIN_NAME}" --quota "$${ADMIN_QUOTA}" \
+		--until "$${ADMIN_UNTIL}" --password-file "$${ADMIN_PASSWORD_FILE}" --reason "$${ADMIN_REASON}"
+
 check:
 	cd backend && test -z "$$(gofmt -l .)"
 	cd backend && go vet ./...
@@ -65,6 +73,7 @@ check:
 	cd backend && go build -o /dev/null ./cmd/worker
 	cd backend && go build -o /dev/null ./cmd/probe
 	cd backend && go build -o /dev/null ./cmd/local-grant
+	cd backend && go build -o /dev/null ./cmd/local-admin
 
 test-integration: db-up
 	cd backend && HEARTBEAT_TEST_DATABASE_URL="$${DATABASE_URL}" go test -count=1 ./...
