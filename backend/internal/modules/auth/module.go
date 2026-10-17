@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"context"
 	"errors"
+	"github.com/jackc/pgx/v5"
 	"net/http"
 	"net/url"
 	"strings"
@@ -69,3 +71,7 @@ func (m *Module) Handler() http.Handler       { return m.server.Handler() }
 func (m *Module) RequireRole(role string, next http.Handler) http.Handler {
 	return m.server.RequireRole(role, next)
 }
+
+func (m *Module) Protect(next http.Handler) http.Handler { return m.server.Protect(next) }
+
+func Cleanup(ctx context.Context, tx pgx.Tx) error { return postgres.Cleanup(ctx, tx) }

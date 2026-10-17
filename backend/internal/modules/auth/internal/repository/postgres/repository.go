@@ -307,3 +307,19 @@ func (r *Repository) ChangePassword(ctx context.Context, c Credential, newHash s
 	}
 	return tx.Commit(ctx)
 }
+
+// Cleanup removes only unusable auth data, in bounded batches. Live sessions and
+// credentials remain untouched, including when cleanup races login or reset.
+func Cleanup(ctx context.Context, tx pgx.Tx) error {
+	for _, query := range []string{
+		`DELETE FROM auth.sessions WHERE id IN (SELECT id FROM auth.sessions WHERE expires_at<=now() OR revoked_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
+		`DELETE FROM auth.registration_challenges WHERE id IN (SELECT id FROM auth.registration_challenges WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
+		`DELETE FROM auth.password_reset_tokens WHERE token_hash IN (SELECT token_hash FROM auth.password_reset_tokens WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
+		`DELETE FROM auth.rate_limits WHERE (scope,key_hash) IN (SELECT scope,key_hash FROM auth.rate_limits WHERE window_end<=now() ORDER BY window_end LIMIT 500 FOR UPDATE SKIP LOCKED)`,
+	} {
+		if _, err := tx.Exec(ctx, query); err != nil {
+			return err
+		}
+	}
+	return nil
+}

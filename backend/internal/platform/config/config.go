@@ -12,6 +12,7 @@ import (
 )
 
 type Config struct {
+	AppEnv           string
 	HTTPAddr         string
 	DatabaseURL      string
 	DatabaseTimeout  time.Duration
@@ -32,11 +33,18 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
+		AppEnv:           "production",
 		HTTPAddr:         "127.0.0.1:8080",
 		DatabaseURL:      os.Getenv("DATABASE_URL"),
 		DatabaseTimeout:  5 * time.Second,
 		ReadinessTimeout: 2 * time.Second,
 		ShutdownTimeout:  10 * time.Second,
+	}
+	if value, ok := os.LookupEnv("APP_ENV"); ok {
+		cfg.AppEnv = value
+	}
+	if cfg.AppEnv != "local" && cfg.AppEnv != "production" {
+		return Config{}, fmt.Errorf("APP_ENV must be local or production")
 	}
 	if value, ok := os.LookupEnv("HTTP_ADDR"); ok {
 		cfg.HTTPAddr = value
@@ -51,6 +59,11 @@ func Load() (Config, error) {
 	}
 	if strings.TrimSpace(cfg.DatabaseURL) == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")
+	}
+	if cfg.AppEnv == "local" {
+		if err := localDatabase(cfg.DatabaseURL); err != nil {
+			return Config{}, err
+		}
 	}
 	for _, setting := range []struct {
 		name   string
@@ -85,20 +98,24 @@ func Load() (Config, error) {
 		}
 		*setting.target = parsed
 	}
-	if cfg.TurnstileLocal {
+	if cfg.AppEnv == "local" || cfg.TurnstileLocal {
+		mode := "TURNSTILE_LOCAL_TEST_MODE"
+		if cfg.AppEnv == "local" {
+			mode = "APP_ENV=local"
+		}
 		listenIP, err := netip.ParseAddr(listenHost)
 		if err != nil || !listenIP.IsLoopback() {
-			return Config{}, fmt.Errorf("TURNSTILE_LOCAL_TEST_MODE requires a literal loopback HTTP_ADDR")
+			return Config{}, fmt.Errorf("%s requires a literal loopback HTTP_ADDR", mode)
 		}
 		origin, err := url.Parse(cfg.AuthOrigin)
 		if err != nil || (origin.Scheme != "http" && origin.Scheme != "https") || origin.Host == "" || origin.User != nil || origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" {
-			return Config{}, fmt.Errorf("TURNSTILE_LOCAL_TEST_MODE requires a loopback AUTH_ORIGIN")
+			return Config{}, fmt.Errorf("%s requires a loopback AUTH_ORIGIN", mode)
 		}
 		host := origin.Hostname()
 		if host != "localhost" {
 			originIP, err := netip.ParseAddr(host)
 			if err != nil || !originIP.IsLoopback() {
-				return Config{}, fmt.Errorf("TURNSTILE_LOCAL_TEST_MODE requires a loopback AUTH_ORIGIN")
+				return Config{}, fmt.Errorf("%s requires a loopback AUTH_ORIGIN", mode)
 			}
 		}
 	}

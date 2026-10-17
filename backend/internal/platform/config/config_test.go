@@ -10,7 +10,7 @@ import (
 func clearConfigEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
-		"HTTP_ADDR", "DATABASE_URL", "DATABASE_TIMEOUT", "READINESS_TIMEOUT", "SHUTDOWN_TIMEOUT",
+		"APP_ENV", "HTTP_ADDR", "DATABASE_URL", "DATABASE_TIMEOUT", "READINESS_TIMEOUT", "SHUTDOWN_TIMEOUT",
 		"AUTH_ORIGIN", "AUTH_COOKIE_SECURE", "AUTH_SESSION_TTL", "AUTH_CHALLENGE_TTL", "AUTH_RESET_TTL", "AUTH_RATE_LIMIT_WINDOW",
 		"TURNSTILE_SECRET_KEY", "TURNSTILE_HOSTNAME", "TURNSTILE_LOCAL_TEST_MODE", "SMTP_ADDR", "SMTP_FROM",
 	} {
@@ -23,6 +23,39 @@ func clearConfigEnv(t *testing.T) {
 			}
 		})
 		_ = os.Unsetenv(key)
+	}
+}
+
+func TestAppEnvLocalAlwaysRequiresProjectDatabaseAndLoopbackEndpoints(t *testing.T) {
+	validDatabase := "postgres://user:secret@127.0.0.1:55432/heartbeat_local?sslmode=disable"
+	tests := []struct {
+		name, database, httpAddr, origin string
+		wantErr                          bool
+	}{
+		{"exact local configuration with live Turnstile", validDatabase, "127.0.0.1:8080", "http://localhost:3000", false},
+		{"DNS database hostname", "postgres://user:secret@localhost:55432/heartbeat_local?sslmode=disable", "127.0.0.1:8080", "http://localhost:3000", true},
+		{"remote database", "postgres://user:secret@192.0.2.10:55432/heartbeat_local?sslmode=disable", "127.0.0.1:8080", "http://localhost:3000", true},
+		{"wrong database port", "postgres://user:secret@127.0.0.1:5432/heartbeat_local?sslmode=disable", "127.0.0.1:8080", "http://localhost:3000", true},
+		{"wrong database name", "postgres://user:secret@127.0.0.1:55432/heartbeat_local_test?sslmode=disable", "127.0.0.1:8080", "http://localhost:3000", true},
+		{"database host override query", validDatabase + "&host=192.0.2.10", "127.0.0.1:8080", "http://localhost:3000", true},
+		{"wildcard API bind", validDatabase, "0.0.0.0:8080", "http://localhost:3000", true},
+		{"DNS API bind", validDatabase, "localhost:8080", "http://localhost:3000", true},
+		{"external origin", validDatabase, "127.0.0.1:8080", "https://app.example.com", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			setRequiredConfigEnv(t)
+			_ = os.Setenv("APP_ENV", "local")
+			_ = os.Setenv("TURNSTILE_LOCAL_TEST_MODE", "false")
+			_ = os.Setenv("DATABASE_URL", tt.database)
+			_ = os.Setenv("HTTP_ADDR", tt.httpAddr)
+			_ = os.Setenv("AUTH_ORIGIN", tt.origin)
+			_, err := Load()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Load() error = %v, wantErr %t", err, tt.wantErr)
+			}
+		})
 	}
 }
 

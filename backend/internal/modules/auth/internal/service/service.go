@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts/contracts"
+	authcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/adapters/turnstile"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/repository/postgres"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/security"
@@ -41,12 +42,7 @@ type Client struct {
 	IP        string
 	UserAgent string
 }
-type Principal struct {
-	AccountID string
-	SessionID string
-	Email     string
-	Role      string
-}
+type Principal = authcontracts.Principal
 type LoginResult struct {
 	Account contracts.Account
 	Token   string

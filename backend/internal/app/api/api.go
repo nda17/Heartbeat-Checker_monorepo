@@ -11,6 +11,9 @@ import (
 
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/incidents"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/monitors"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/config"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/postgres"
 )
@@ -42,6 +45,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	handler := newHandler(pool.Ping, cfg.ReadinessTimeout)
 	authModule.Register(handler)
+	monitors.New(pool, billing.New(pool, cfg.AppEnv == "local"), incidents.New(pool), accounts.New(pool)).Register(handler, authModule.Protect)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,

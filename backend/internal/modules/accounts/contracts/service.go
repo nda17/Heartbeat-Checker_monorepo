@@ -33,3 +33,9 @@ type Service interface {
 	Get(context.Context, string) (Account, error)
 	UpdateName(context.Context, string, string) (Account, error)
 }
+
+// ActiveGuard checks account status using the caller's transaction, avoiding a
+// second pool connection while the worker holds a lease or entitlement lock.
+type ActiveGuard interface {
+	Active(context.Context, pgx.Tx, string) (bool, error)
+}

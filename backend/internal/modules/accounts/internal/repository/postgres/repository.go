@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -51,4 +52,13 @@ func newID() (string, error) {
 	b[6] = b[6]&0x0f | 0x40
 	b[8] = b[8]&0x3f | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[:4], b[4:6], b[6:8], b[8:10], b[10:]), nil
+}
+
+func (r *Repository) Active(ctx context.Context, tx pgx.Tx, id string) (bool, error) {
+	var status string
+	err := tx.QueryRow(ctx, `SELECT status FROM accounts.accounts WHERE id=$1 FOR SHARE`, id).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return status == "active", err
 }

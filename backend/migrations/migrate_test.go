@@ -3,6 +3,7 @@ package migrations
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"strings"
@@ -64,19 +65,28 @@ func TestApplyIsIdempotent(t *testing.T) {
 	if err := Apply(ctx, pool); err != nil {
 		t.Fatalf("second Apply(): %v", err)
 	}
+	embeddedMigrations, err := fs.Glob(files, "*.sql")
+	if err != nil {
+		t.Fatalf("list embedded migrations: %v", err)
+	}
 	var count int
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM public.schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("migration count = %d, want 1", count)
+	if count != len(embeddedMigrations) {
+		t.Fatalf("migration count = %d, want %d embedded migrations", count, len(embeddedMigrations))
 	}
-	var exists bool
-	if err := pool.QueryRow(ctx, "SELECT to_regclass('auth.credentials') IS NOT NULL AND to_regclass('accounts.accounts') IS NOT NULL").Scan(&exists); err != nil {
-		t.Fatal(err)
-	}
-	if !exists {
-		t.Fatal("expected auth and accounts tables after applying migration")
+	for _, table := range []string{
+		"accounts.accounts", "auth.credentials", "billing.entitlements", "monitors.monitors",
+		"monitors.results", "incidents.incidents", "outbox.events",
+	} {
+		var exists bool
+		if err := pool.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", table).Scan(&exists); err != nil {
+			t.Fatalf("check business table %s: %v", table, err)
+		}
+		if !exists {
+			t.Errorf("expected business table %s after applying migrations", table)
+		}
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	authcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/security"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/service"
 )
@@ -366,4 +367,15 @@ func (s *Server) passwordChange(w http.ResponseWriter, r *http.Request) {
 	}
 	s.clearCookie(w)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// Protect uses the same cookie, account-state, Origin and CSRF checks as auth routes.
+func (s *Server) Protect(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, _, ok := s.require(w, r, r.Method != http.MethodGet && r.Method != http.MethodHead)
+		if !ok {
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(authcontracts.WithPrincipal(r.Context(), p)))
+	})
 }
