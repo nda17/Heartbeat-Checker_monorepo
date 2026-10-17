@@ -1,0 +1,14 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+backend/bin/
+backend/api
+coverage.out
+.local/
+
+# Next.js frontend
+apps/web/node_modules/
+apps/web/.next/
+apps/web/out/
+apps/web/*.tsbuildinfo
