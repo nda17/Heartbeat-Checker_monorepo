@@ -199,7 +199,7 @@ export function MonitoringDemo() {
         </button>
       </div>
       <p className="landing-demo-caption">
-        Ускоренный пример. Реальные проверки — раз в минуту.
+        Пример: интервал 5 минут, порог — 2 сбоя подряд. Время ускорено.
       </p>
     </div>
   );

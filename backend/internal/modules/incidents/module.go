@@ -12,8 +12,8 @@ import (
 type Module struct{ service *service.Service }
 
 func New(pool *pgxpool.Pool) *Module { return &Module{service.New(pool)} }
-func (m *Module) Apply(ctx context.Context, tx pgx.Tx, monitorID, accountID string, seq int64, outcome string, checked time.Time) error {
-	return m.service.Apply(ctx, tx, monitorID, accountID, seq, outcome, checked)
+func (m *Module) Apply(ctx context.Context, tx pgx.Tx, monitorID, accountID string, seq int64, outcome string, threshold int, checked time.Time) error {
+	return m.service.Apply(ctx, tx, monitorID, accountID, seq, outcome, threshold, checked)
 }
 func (m *Module) Reset(ctx context.Context, tx pgx.Tx, id, reason string) error {
 	return m.service.Reset(ctx, tx, id, reason)

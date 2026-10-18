@@ -25,6 +25,8 @@ export function MonitorForm({
       url: String(data.get("url")).trim(),
       method,
       expectedStatus: Number(data.get("expectedStatus")),
+      intervalMinutes: Number(data.get("intervalMinutes")),
+      failureThreshold: Number(data.get("failureThreshold")),
       bodyContains:
         method === "HEAD" ? "" : String(data.get("bodyContains") ?? ""),
       enabled: data.get("enabled") === "on",
@@ -138,6 +140,53 @@ export function MonitorForm({
               Успех, если в теле ответа присутствует этот текст.
             </span>
           </label>
+        )}
+        <div className="form-row">
+          <label>
+            Интервал проверки
+            <select
+              name="intervalMinutes"
+              defaultValue={monitor ? monitor.intervalMinutes : 5}
+              aria-describedby="monitor-check-policy"
+              required
+            >
+              {Array.from({ length: 10 }, (_, index) => index + 1).map(
+                (value) => (
+                  <option key={value} value={value}>
+                    {value} мин
+                  </option>
+                ),
+              )}
+            </select>
+          </label>
+          <label>
+            Сбоев подряд до инцидента
+            <select
+              name="failureThreshold"
+              defaultValue={monitor ? monitor.failureThreshold : 2}
+              aria-describedby="monitor-check-policy"
+              required
+            >
+              {Array.from({ length: 10 }, (_, index) => index + 1).map(
+                (value) => (
+                  <option key={value} value={value}>
+                    {value}
+                  </option>
+                ),
+              )}
+            </select>
+          </label>
+        </div>
+        <p id="monitor-check-policy" className="field-hint">
+          Первый успешный ответ закрывает инцидент. Неизвестный результат
+          (UNKNOWN) сбрасывает серию сбоев.
+        </p>
+        {monitor && (
+          <p className="field-hint">
+            При изменении интервала или порога открытый инцидент завершится с
+            причиной «Настройки изменены», серия сбоев сбросится, а следующая
+            проверка будет запланирована сразу.
+          </p>
         )}
         <label className="checkbox-label">
           <input

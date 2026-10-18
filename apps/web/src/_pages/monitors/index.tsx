@@ -328,6 +328,10 @@ export function MonitorsPage() {
                       <span className="monitor-url" title={m.url}>
                         {m.method} <span>{m.url}</span>
                       </span>
+                      <span className="cell-sub">
+                        Интервал: {m.intervalMinutes} мин · Порог:{" "}
+                        {m.failureThreshold}
+                      </span>
                     </td>
                     <td>
                       <Status state={m.state} />
@@ -391,7 +395,7 @@ export function MonitorsPage() {
           </div>
         )}
         <div className="table-footnote">
-          <span>GET / HEAD · Проверка раз в минуту</span>
+          <span>GET / HEAD · Интервал 1–10 мин для каждого монитора</span>
           <span>
             Неизвестное состояние означает отсутствие свежего результата.
           </span>
@@ -400,9 +404,11 @@ export function MonitorsPage() {
       <div className="explanation">
         <span aria-hidden="true">ⓘ</span>
         <p>
-          Инцидент открывается после двух неудачных проверок подряд и
-          закрывается при первом успешном ответе. Пауза и отсутствие квоты
-          отображаются отдельно.
+          Инцидент открывается после заданного для монитора числа неудачных
+          проверок подряд и закрывается при первом успешном ответе. Принятый
+          неизвестный результат проверки (UNKNOWN) сбрасывает серию сбоев;
+          отсутствие свежих данных само по себе её не сбрасывает. Пауза и
+          отсутствие квоты отображаются отдельно.
         </p>
       </div>
       {editor && (
@@ -453,6 +459,10 @@ export function MonitorsPage() {
             <span className="mono">{detail.monitor.method}</span>
             <span className="detail-url">{detail.monitor.url}</span>
           </div>
+          <p className="small muted">
+            Интервал: {detail.monitor.intervalMinutes} мин · Сбоев подряд до
+            инцидента: {detail.monitor.failureThreshold}
+          </p>
           <h3 className="detail-section-title">
             Инциденты <span className="count">{detail.incidents.length}</span>
           </h3>

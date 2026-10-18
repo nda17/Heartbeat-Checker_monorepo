@@ -18,7 +18,10 @@ func New(pool *pgxpool.Pool) *Service { return &Service{pool: pool} }
 
 // Apply is invoked in the accepted-result transaction while that monitor is locked.
 // Sequence prevents duplicate delivery from counting as a second failed check.
-func (s *Service) Apply(ctx context.Context, tx pgx.Tx, monitorID, accountID string, seq int64, outcome string, checked time.Time) error {
+func (s *Service) Apply(ctx context.Context, tx pgx.Tx, monitorID, accountID string, seq int64, outcome string, threshold int, checked time.Time) error {
+	if threshold < 1 || threshold > 10 {
+		return errors.New("invalid failure threshold")
+	}
 	_, err := tx.Exec(ctx, `INSERT INTO incidents.monitor_state(monitor_id) VALUES($1) ON CONFLICT DO NOTHING`, monitorID)
 	if err != nil {
 		return err
@@ -37,10 +40,10 @@ func (s *Service) Apply(ctx context.Context, tx pgx.Tx, monitorID, accountID str
 		if failures == 0 {
 			first = &checked
 		}
-		if failures < 2 {
+		if failures < threshold {
 			failures++
 		}
-		if failures == 2 {
+		if failures == threshold {
 			id, err := outbox.ID()
 			if err != nil {
 				return err
