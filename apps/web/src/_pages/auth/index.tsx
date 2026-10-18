@@ -8,17 +8,13 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
       <aside className="auth-aside">
         <Brand />
         <div className="auth-aside-copy">
-          <p className="eyebrow">СПОКОЙСТВИЕ НАЧИНАЕТСЯ С ВИДИМОСТИ</p>
           <h2>
-            Знайте, как
+            Круглосуточный мониторинг
             <br />
-            чувствуют себя
-            <br />
-            <span>ваши сервисы.</span>
+            <span>ваших сайтов и сервисов.</span>
           </h2>
           <p>
-            Доступность, время ответа и история инцидентов — в одном рабочем
-            пространстве.
+            Доступность, время ответа и история инцидентов — в одном кабинете.
           </p>
           <div className="auth-decoration" aria-hidden="true">
             {Array.from({ length: 13 }, (_, i) => (

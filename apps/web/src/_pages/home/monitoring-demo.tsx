@@ -106,7 +106,6 @@ export function MonitoringDemo() {
     >
       <div className="landing-demo-top">
         <span className="landing-demo-label">ДЕМОНСТРАЦИЯ</span>
-        <span>Пример данных · не ваш сайт</span>
       </div>
       <div className="landing-demo-monitor">
         <div>

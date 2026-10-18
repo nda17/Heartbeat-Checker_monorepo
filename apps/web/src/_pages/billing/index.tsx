@@ -107,7 +107,7 @@ export function BillingPage() {
         <div>
           <p className="eyebrow">ПОДПИСКА И ЗАКАЗЫ</p>
           <h1>Оплата</h1>
-          <p>24 рубля за один монитор в месяц.</p>
+          <p>29 рублей за один монитор в месяц.</p>
         </div>
       </div>
       {error && <Notice>{error}</Notice>}
