@@ -1,5 +1,12 @@
 import type { NextConfig } from "next";
-const apiOrigin = new URL(process.env.GO_API_ORIGIN ?? "http://127.0.0.1:8080");
+const webMode = process.env.WEB_MODE ?? "app";
+if (webMode !== "app" && webMode !== "landing") {
+  throw new Error("WEB_MODE must be app or landing");
+}
+const apiOrigin =
+  webMode === "app"
+    ? new URL(process.env.GO_API_ORIGIN ?? "http://127.0.0.1:8080")
+    : null;
 const publicOrigin = new URL(
   process.env.WEB_PUBLIC_ORIGIN ?? "http://127.0.0.1:3000",
 );
@@ -20,18 +27,19 @@ if (
   );
 }
 const siteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
-if (!local && (!siteKey || /^[123]x0/.test(siteKey))) {
+if (webMode === "app" && !local && (!siteKey || /^[123]x0/.test(siteKey))) {
   throw new Error(
     "Public deployment requires a real NEXT_PUBLIC_TURNSTILE_SITE_KEY",
   );
 }
 if (
-  !["http:", "https:"].includes(apiOrigin.protocol) ||
-  apiOrigin.username ||
-  apiOrigin.password ||
-  apiOrigin.pathname !== "/" ||
-  apiOrigin.search ||
-  apiOrigin.hash
+  apiOrigin &&
+  (!["http:", "https:"].includes(apiOrigin.protocol) ||
+    apiOrigin.username ||
+    apiOrigin.password ||
+    apiOrigin.pathname !== "/" ||
+    apiOrigin.search ||
+    apiOrigin.hash)
 ) {
   throw new Error(
     "GO_API_ORIGIN must be an HTTP origin without credentials or a path",
@@ -40,7 +48,9 @@ if (
 const config: NextConfig = {
   output: "standalone",
   poweredByHeader: false,
+  env: { WEB_MODE: webMode },
   async rewrites() {
+    if (!apiOrigin) return [];
     return [
       {
         source: "/api/v1/:path*",

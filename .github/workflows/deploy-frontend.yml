@@ -7,6 +7,14 @@ on:
         description: Full 40-character SHA already merged into master and green in CI
         required: true
         type: string
+      web_mode:
+        description: Public landing without backend, or the full application
+        required: true
+        default: app
+        type: choice
+        options:
+          - app
+          - landing
 
 permissions:
   contents: read
@@ -23,6 +31,7 @@ jobs:
     timeout-minutes: 30
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
+      WEB_MODE: ${{ inputs.web_mode }}
       WEB_PUBLIC_ORIGIN: ${{ vars.WEB_PUBLIC_ORIGIN }}
       GO_API_ORIGIN: ${{ vars.GO_API_ORIGIN }}
       TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
@@ -35,13 +44,16 @@ jobs:
           set -euo pipefail
           [[ "$GITHUB_REF" == 'refs/heads/master' ]] || { echo 'Dispatch this workflow from master'; exit 1; }
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Provide a full lowercase commit SHA'; exit 1; }
+          [[ "$WEB_MODE" == app || "$WEB_MODE" == landing ]] || { echo 'Invalid web mode'; exit 1; }
           [[ "$WEB_PUBLIC_ORIGIN" == 'https://heartbeat-checker.ru' ]] || { echo 'WEB_PUBLIC_ORIGIN must be the production HTTPS origin'; exit 1; }
-          [[ "$GO_API_ORIGIN" =~ ^https://[a-zA-Z0-9.-]+(:443)?$ ]] || { echo 'GO_API_ORIGIN must be a public HTTPS origin'; exit 1; }
-          normalized_api_origin=${GO_API_ORIGIN,,}
-          normalized_api_origin=${normalized_api_origin%:443}
-          normalized_api_origin=${normalized_api_origin%.}
-          [[ "$normalized_api_origin" != "$WEB_PUBLIC_ORIGIN" && "$normalized_api_origin" != *localhost* && "$normalized_api_origin" != *127.0.0.1* ]] || { echo 'GO_API_ORIGIN must reach the separate public Go API'; exit 1; }
-          [[ "$TURNSTILE_SITE_KEY" =~ ^0x4[A-Za-z0-9_-]{20,}$ ]] || { echo 'A production Turnstile site key is required'; exit 1; }
+          if [[ "$WEB_MODE" == app ]]; then
+            [[ "$GO_API_ORIGIN" =~ ^https://[a-zA-Z0-9.-]+(:443)?$ ]] || { echo 'GO_API_ORIGIN must be a public HTTPS origin'; exit 1; }
+            normalized_api_origin=${GO_API_ORIGIN,,}
+            normalized_api_origin=${normalized_api_origin%:443}
+            normalized_api_origin=${normalized_api_origin%.}
+            [[ "$normalized_api_origin" != "$WEB_PUBLIC_ORIGIN" && "$normalized_api_origin" != *localhost* && "$normalized_api_origin" != *127.0.0.1* ]] || { echo 'GO_API_ORIGIN must reach the separate public Go API'; exit 1; }
+            [[ "$TURNSTILE_SITE_KEY" =~ ^0x4[A-Za-z0-9_-]{20,}$ ]] || { echo 'A production Turnstile site key is required'; exit 1; }
+          fi
           [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ && "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo 'Invalid deploy host or user'; exit 1; }
 
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -77,16 +89,25 @@ jobs:
           DOCKER_CONFIG=$(mktemp -d)
           trap 'rm -rf "$DOCKER_CONFIG"' EXIT
           image="ghcr.io/${GITHUB_REPOSITORY,,}/web"
+          api_origin=$GO_API_ORIGIN
+          site_key=$TURNSTILE_SITE_KEY
+          if [[ "$WEB_MODE" == landing ]]; then
+            api_origin=
+            site_key=
+          fi
+          tag="$SOURCE_SHA-$WEB_MODE"
           printf '%s\n' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           docker build -f apps/web/Dockerfile \
             --build-arg "VCS_REF=$SOURCE_SHA" \
-            --build-arg "GO_API_ORIGIN=$GO_API_ORIGIN" \
+            --build-arg "WEB_MODE=$WEB_MODE" \
+            --build-arg "GO_API_ORIGIN=$api_origin" \
             --build-arg "WEB_PUBLIC_ORIGIN=$WEB_PUBLIC_ORIGIN" \
-            --build-arg "NEXT_PUBLIC_TURNSTILE_SITE_KEY=$TURNSTILE_SITE_KEY" \
-            -t "$image:$SOURCE_SHA" apps/web
-          [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image:$SOURCE_SHA")" == "$SOURCE_SHA" ]]
-          docker push "$image:$SOURCE_SHA"
-          digest=$(docker buildx imagetools inspect "$image:$SOURCE_SHA" | awk '$1 == "Digest:" { print $2; exit }')
+            --build-arg "NEXT_PUBLIC_TURNSTILE_SITE_KEY=$site_key" \
+            -t "$image:$tag" apps/web
+          [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image:$tag")" == "$SOURCE_SHA" ]]
+          [[ "$(docker image inspect --format '{{ index .Config.Labels "org.heartbeat-checker.web-mode" }}' "$image:$tag")" == "$WEB_MODE" ]]
+          docker push "$image:$tag"
+          digest=$(docker buildx imagetools inspect "$image:$tag" | awk '$1 == "Digest:" { print $2; exit }')
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Unable to resolve pushed OCI digest'; exit 1; }
           echo "ref=$image@$digest" >> "$GITHUB_OUTPUT"
 
@@ -107,8 +128,10 @@ jobs:
           chmod 600 "$ssh_dir/key" "$ssh_dir/known_hosts"
           ssh_opts=(-i "$ssh_dir/key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$ssh_dir/known_hosts" -o BatchMode=yes)
           target="$DEPLOY_USER@$DEPLOY_HOST"
+          api_origin=$GO_API_ORIGIN
+          if [[ "$WEB_MODE" == landing ]]; then api_origin=; fi
           scp "${ssh_opts[@]}" deploy/frontend/compose.yaml "$target:/opt/heartbeat-checker/frontend/compose.yaml.incoming"
           scp "${ssh_opts[@]}" deploy/frontend/Caddyfile "$target:/opt/heartbeat-checker/frontend/Caddyfile.incoming"
           scp "${ssh_opts[@]}" deploy/frontend/deploy.sh "$target:/opt/heartbeat-checker/frontend/deploy.sh.incoming"
           printf '%s\n' "$GH_TOKEN" | ssh "${ssh_opts[@]}" "$target" \
-            "bash /opt/heartbeat-checker/frontend/deploy.sh.incoming '$SOURCE_SHA' '$WEB_IMAGE' '$GO_API_ORIGIN' '$GITHUB_ACTOR'"
+            "bash /opt/heartbeat-checker/frontend/deploy.sh.incoming '$SOURCE_SHA' '$WEB_IMAGE' '$api_origin' '$GITHUB_ACTOR' '$WEB_MODE'"

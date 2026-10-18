@@ -82,6 +82,13 @@ jobs:
           WEB_PUBLIC_ORIGIN: http://127.0.0.1:3000
           GO_API_ORIGIN: http://127.0.0.1:8080
         run: npm run build
+      - name: Build public landing without backend
+        env:
+          WEB_MODE: landing
+          WEB_PUBLIC_ORIGIN: https://heartbeat-checker.ru
+          GO_API_ORIGIN: ''
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ''
+        run: npm run build
 
   frontend-deploy-config:
     runs-on: ubuntu-24.04
@@ -116,7 +123,20 @@ jobs:
         run: |
           docker build -f apps/web/Dockerfile \
             --build-arg VCS_REF="$GITHUB_SHA" \
+            --build-arg WEB_MODE=app \
             --build-arg GO_API_ORIGIN=http://api:8080 \
             --build-arg WEB_PUBLIC_ORIGIN=http://127.0.0.1:3000 \
             --build-arg NEXT_PUBLIC_TURNSTILE_SITE_KEY=1x00000000000000000000AA \
-            -t heartbeat-checker/web:ci apps/web
+            -t heartbeat-checker/web:ci-app apps/web
+          docker build -f apps/web/Dockerfile \
+            --build-arg VCS_REF="$GITHUB_SHA" \
+            --build-arg WEB_MODE=landing \
+            --build-arg GO_API_ORIGIN= \
+            --build-arg WEB_PUBLIC_ORIGIN=https://heartbeat-checker.ru \
+            --build-arg NEXT_PUBLIC_TURNSTILE_SITE_KEY= \
+            -t heartbeat-checker/web:ci-landing apps/web
+          for mode in app landing; do
+            image="heartbeat-checker/web:ci-$mode"
+            [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")" == "$GITHUB_SHA" ]]
+            [[ "$(docker image inspect --format '{{ index .Config.Labels "org.heartbeat-checker.web-mode" }}' "$image")" == "$mode" ]]
+          done

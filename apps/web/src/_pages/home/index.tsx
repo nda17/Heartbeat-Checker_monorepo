@@ -4,18 +4,25 @@ import { Arrow, Brand } from "@/shared/ui";
 import { MonitoringDemo } from "./monitoring-demo";
 
 export function HomePage() {
+  const landingMode = process.env.WEB_MODE === "landing";
   return (
-    <div className="landing">
+    <div className="landing" data-web-mode={landingMode ? "landing" : "app"}>
       <header className="landing-header">
         <Brand />
         <nav aria-label="Главная навигация">
           <ThemeToggle />
           <Link href="#how">Как это работает</Link>
           <Link href="#pricing">Тариф</Link>
-          <Link href="/login">Войти</Link>
-          <Link className="button small-button" href="/register">
-            Создать аккаунт <Arrow />
-          </Link>
+          {landingMode ? (
+            <Link href="#demo">Демонстрация</Link>
+          ) : (
+            <>
+              <Link href="/login">Войти</Link>
+              <Link className="button small-button" href="/register">
+                Создать аккаунт <Arrow />
+              </Link>
+            </>
+          )}
         </nav>
       </header>
       <main id="main">
@@ -34,9 +41,21 @@ export function HomePage() {
               сервисов. Выбирайте интервал от 1 до 10 минут и разбирайте сбои по
               реальным результатам.
             </p>
+            {landingMode && (
+              <p className="landing-planned-label">
+                Сервис готовится к запуску. Сейчас доступна демонстрация;
+                регистрация и проверки откроются позже.
+              </p>
+            )}
             <div className="hero-actions">
-              <Link href="/register" className="button">
-                Открыть своё пространство <Arrow />
+              <Link
+                href={landingMode ? "#demo" : "/register"}
+                className="button"
+              >
+                {landingMode
+                  ? "Посмотреть демонстрацию"
+                  : "Открыть своё пространство"}{" "}
+                <Arrow />
               </Link>
               <a href="#use-cases" className="text-link">
                 Что можно проверять ↓
@@ -296,11 +315,12 @@ export function HomePage() {
               </div>
             </div>
             <p className="landing-price-note">
-              Пробного периода нет. После регистрации квота равна 0. Подключение
-              оплаты и оплаченных проверок — следующий этап.
+              {landingMode
+                ? "Пробный период не планируется. Регистрация, оплата и оплаченные проверки пока недоступны."
+                : "Пробного периода нет. После регистрации квота равна 0. Подключение оплаты и оплаченных проверок — следующий этап."}
             </p>
-            <Link href="/register" className="button">
-              Создать аккаунт <Arrow />
+            <Link href={landingMode ? "#how" : "/register"} className="button">
+              {landingMode ? "Как это работает" : "Создать аккаунт"} <Arrow />
             </Link>
           </div>
         </section>
@@ -329,8 +349,12 @@ export function HomePage() {
               <p>
                 Подробные результаты проверок — 7 дней. Закрытые инциденты
                 хранятся 90 дней после завершения; открытые инциденты
-                сохраняются. История доступна в кабинете в пределах этих сроков,
-                в том числе при приостановке проверок.
+                сохраняются.{" "}
+                {landingMode
+                  ? "После запуска история будет доступна"
+                  : "История доступна"}{" "}
+                в кабинете в пределах этих сроков, в том числе при приостановке
+                проверок.
               </p>
             </details>
             <details>
@@ -358,7 +382,10 @@ export function HomePage() {
               <p>
                 Запланированы Telegram — личные сообщения, группы и темы — а
                 также email и MAX. Привязка получателей и доставка ещё не
-                подключены. Сейчас результаты и инциденты доступны в кабинете.
+                подключены.{" "}
+                {landingMode
+                  ? "После запуска результаты и инциденты можно будет посмотреть в кабинете."
+                  : "Сейчас результаты и инциденты доступны в кабинете."}
               </p>
             </details>
             <details>
@@ -378,25 +405,45 @@ export function HomePage() {
         <section className="landing-cta">
           <div>
             <p className="eyebrow">МЕНЬШЕ НЕИЗВЕСТНОСТИ</p>
-            <h2>
-              Ваш следующий шаг —<br />
-              своё рабочее пространство.
-            </h2>
-            <p>
-              Создайте аккаунт, подтвердите email и откройте кабинет.
-              <br />
-              Доступная квота отображается внутри.
-            </p>
+            {landingMode ? (
+              <>
+                <h2>
+                  Посмотрите, как будет
+                  <br /> работать мониторинг.
+                </h2>
+                <p>
+                  Сервис готовится к запуску. Пока можно изучить сценарий
+                  проверки и возможности будущего кабинета.
+                </p>
+              </>
+            ) : (
+              <>
+                <h2>
+                  Ваш следующий шаг —<br />
+                  своё рабочее пространство.
+                </h2>
+                <p>
+                  Создайте аккаунт, подтвердите email и откройте кабинет.
+                  <br />
+                  Доступная квота отображается внутри.
+                </p>
+              </>
+            )}
           </div>
-          <Link href="/register" className="button">
-            Создать аккаунт <Arrow />
+          <Link href={landingMode ? "#demo" : "/register"} className="button">
+            {landingMode ? "Посмотреть демонстрацию" : "Создать аккаунт"}{" "}
+            <Arrow />
           </Link>
         </section>
       </main>
       <footer className="landing-footer">
         <Brand />
         <span>Мониторинг начинается с внимания.</span>
-        <Link href="/login">Личный кабинет ↗</Link>
+        {landingMode ? (
+          <Link href="#how">Как это работает ↗</Link>
+        ) : (
+          <Link href="/login">Личный кабинет ↗</Link>
+        )}
       </footer>
     </div>
   );

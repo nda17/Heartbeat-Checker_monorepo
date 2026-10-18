@@ -98,6 +98,7 @@ export function MonitoringDemo() {
   const current = stages[stage];
   return (
     <div
+      id="demo"
       ref={container}
       className="landing-demo"
       data-tone={current.tone}
