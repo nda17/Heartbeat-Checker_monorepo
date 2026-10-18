@@ -349,6 +349,180 @@ func TestMonitorHTTPQuotaIsolationCSRFAndLeaseInvalidation(t *testing.T) {
 	}
 }
 
+func TestMonitorSchedulingHTTPDefaultsValidationAndPatchOmission(t *testing.T) {
+	f := newMonitorFixture(t)
+	actor := f.newActor(t, "Scheduling HTTP")
+	f.grant(t, actor, 3)
+	monitor, status := f.create(t, actor, "defaults", "defaults.example", true)
+	if status != http.StatusCreated || monitor.IntervalMinutes != 5 || monitor.FailureThreshold != 2 {
+		t.Fatalf("create defaults = status %d monitor %+v, want interval=5 threshold=2", status, monitor)
+	}
+
+	patchPath := "/api/v1/monitors/" + monitor.ID
+	name := "renamed"
+	patch := f.request(t, actor, http.MethodPatch, patchPath, monitorcontracts.Patch{Version: monitor.Version, Name: &name}, actor.csrf, monitorTestOrigin)
+	var updated struct {
+		Monitor monitorcontracts.Monitor `json:"monitor"`
+	}
+	if patch.Code != http.StatusOK || json.Unmarshal(patch.Body.Bytes(), &updated) != nil || updated.Monitor.IntervalMinutes != 5 || updated.Monitor.FailureThreshold != 2 {
+		t.Fatalf("omission patch = %d %s, want fields preserved as 5/2", patch.Code, patch.Body.String())
+	}
+
+	for _, raw := range []string{
+		`{"intervalMinutes":0}`, `{"intervalMinutes":-1}`, `{"intervalMinutes":11}`, `{"intervalMinutes":1.5}`, `{"intervalMinutes":"5"}`,
+		`{"failureThreshold":0}`, `{"failureThreshold":-1}`, `{"failureThreshold":11}`, `{"failureThreshold":1.5}`, `{"failureThreshold":"2"}`,
+	} {
+		req := httptest.NewRequest(http.MethodPatch, patchPath, strings.NewReader(`{"version":`+fmt.Sprint(updated.Monitor.Version)+`,"name":"bad",`+strings.Trim(raw, "{}")+`}`))
+		req.AddCookie(actor.cookie)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", monitorTestOrigin)
+		req.Header.Set("X-CSRF-Token", actor.csrf)
+		recorder := httptest.NewRecorder()
+		f.handler.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusBadRequest {
+			t.Errorf("invalid PATCH %s status=%d body=%s, want 400", raw, recorder.Code, recorder.Body.String())
+		}
+		createBody := `{"name":"invalid schedule","url":"https://invalid.example/health","method":"GET","expectedStatus":200,"enabled":true,` + strings.Trim(raw, "{}") + `}`
+		createRequest := httptest.NewRequest(http.MethodPost, "/api/v1/monitors", strings.NewReader(createBody))
+		createRequest.AddCookie(actor.cookie)
+		createRequest.Header.Set("Content-Type", "application/json")
+		createRequest.Header.Set("Origin", monitorTestOrigin)
+		createRequest.Header.Set("X-CSRF-Token", actor.csrf)
+		createRecorder := httptest.NewRecorder()
+		f.handler.ServeHTTP(createRecorder, createRequest)
+		if createRecorder.Code != http.StatusBadRequest {
+			t.Errorf("invalid POST %s status=%d body=%s, want 400", raw, createRecorder.Code, createRecorder.Body.String())
+		}
+	}
+
+	for _, value := range []int{1, 10} {
+		v := value
+		patchInput := monitorcontracts.Patch{Version: updated.Monitor.Version, IntervalMinutes: &v}
+		response := f.request(t, actor, http.MethodPatch, patchPath, patchInput, actor.csrf, monitorTestOrigin)
+		if response.Code != http.StatusOK {
+			t.Fatalf("PATCH intervalMinutes=%d status=%d body=%s", value, response.Code, response.Body.String())
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &updated); err != nil || updated.Monitor.IntervalMinutes != value {
+			t.Fatalf("PATCH intervalMinutes=%d response=%+v err=%v", value, updated.Monitor, err)
+		}
+	}
+
+	get := f.request(t, actor, http.MethodGet, patchPath, nil, "", "")
+	if get.Code != http.StatusOK {
+		t.Fatalf("GET monitor = %d %s", get.Code, get.Body.String())
+	}
+	var got struct {
+		Monitor monitorcontracts.Monitor `json:"monitor"`
+	}
+	if err := json.Unmarshal(get.Body.Bytes(), &got); err != nil || got.Monitor.IntervalMinutes != 10 || got.Monitor.FailureThreshold != 2 {
+		t.Fatalf("GET scheduling fields = %+v err=%v, want integer fields 10/2", got.Monitor, err)
+	}
+}
+
+func TestMonitorSchedulingThresholdsAndUnknownResetStreak(t *testing.T) {
+	f := newMonitorFixture(t)
+	actor := f.newActor(t, "Threshold Owner")
+	f.grant(t, actor, 3)
+	for _, threshold := range []int{1, 3, 10} {
+		monitor, status := f.create(t, actor, fmt.Sprintf("threshold-%d", threshold), fmt.Sprintf("threshold-%d.example", threshold), true)
+		if status != http.StatusCreated {
+			t.Fatalf("create threshold %d monitor status=%d", threshold, status)
+		}
+		if threshold != monitor.FailureThreshold {
+			patched, err := json.Marshal(monitorcontracts.Patch{Version: monitor.Version, FailureThreshold: &threshold})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := f.request(t, actor, http.MethodPatch, "/api/v1/monitors/"+monitor.ID, json.RawMessage(patched), actor.csrf, monitorTestOrigin)
+			if response.Code != http.StatusOK {
+				t.Fatalf("set failure threshold %d status=%d body=%s", threshold, response.Code, response.Body.String())
+			}
+		}
+		for n := 1; n <= threshold; n++ {
+			if err := f.setMonitorDue(monitor.ID); err != nil {
+				t.Fatal(err)
+			}
+			attempt := f.claimMonitor(t, monitor.ID)
+			if !f.complete(t, *attempt, "DOWN", "request_failed", time.Now().UTC()) {
+				t.Fatalf("threshold %d DOWN %d was rejected", threshold, n)
+			}
+			if f.complete(t, *attempt, "DOWN", "request_failed", time.Now().UTC()) {
+				t.Fatalf("threshold %d duplicate completion was accepted", threshold)
+			}
+			want := 0
+			if n == threshold {
+				want = 1
+			}
+			f.assertIncidentCount(t, actor, monitor.ID, want)
+		}
+		if threshold == 10 {
+			continue
+		}
+		if err := f.setMonitorDue(monitor.ID); err != nil {
+			t.Fatal(err)
+		}
+		unknown := f.claimMonitor(t, monitor.ID)
+		if !f.complete(t, *unknown, "UNKNOWN", "probe_unavailable", time.Now().UTC()) {
+			t.Fatal("UNKNOWN completion was rejected")
+		}
+		if err := f.setMonitorDue(monitor.ID); err != nil {
+			t.Fatal(err)
+		}
+		postUnknown := f.claimMonitor(t, monitor.ID)
+		if !f.complete(t, *postUnknown, "DOWN", "request_failed", time.Now().UTC()) {
+			t.Fatal("DOWN after UNKNOWN was rejected")
+		}
+		if threshold == 3 {
+			f.assertIncidentCount(t, actor, monitor.ID, 1)
+		}
+	}
+}
+
+func TestMonitorUnknownResetsFailureStreakWithoutRecovery(t *testing.T) {
+	f := newMonitorFixture(t)
+	actor := f.newActor(t, "Unknown Reset Owner")
+	f.grant(t, actor, 1)
+	monitor, status := f.create(t, actor, "unknown reset", "unknown-reset.example", true)
+	if status != http.StatusCreated {
+		t.Fatalf("create monitor status=%d", status)
+	}
+	threshold := 3
+	response := f.request(t, actor, http.MethodPatch, "/api/v1/monitors/"+monitor.ID, monitorcontracts.Patch{Version: monitor.Version, FailureThreshold: &threshold}, actor.csrf, monitorTestOrigin)
+	if response.Code != http.StatusOK {
+		t.Fatalf("set threshold status=%d body=%s", response.Code, response.Body.String())
+	}
+	complete := func(outcome, code string) *monitorcontracts.Attempt {
+		t.Helper()
+		if err := f.setMonitorDue(monitor.ID); err != nil {
+			t.Fatal(err)
+		}
+		attempt := f.claimMonitor(t, monitor.ID)
+		if !f.complete(t, *attempt, outcome, code, time.Now().UTC()) {
+			t.Fatalf("complete %s result was rejected", outcome)
+		}
+		return attempt
+	}
+	complete("DOWN", "request_failed")
+	complete("UNKNOWN", "probe_unavailable")
+	complete("DOWN", "request_failed")
+	f.assertIncidentCount(t, actor, monitor.ID, 0)
+	complete("DOWN", "request_failed")
+	f.assertIncidentCount(t, actor, monitor.ID, 0)
+	complete("DOWN", "request_failed")
+	f.assertIncidentCount(t, actor, monitor.ID, 1)
+	complete("UNKNOWN", "probe_unavailable")
+	f.assertIncidentCount(t, actor, monitor.ID, 1)
+	up := complete("UP", "")
+	if f.complete(t, *up, "UP", "", time.Now().UTC()) {
+		t.Fatal("duplicate UP completion was accepted")
+	}
+	f.assertIncidentCount(t, actor, monitor.ID, 1)
+	var closed int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM incidents.incidents WHERE monitor_id=$1 AND closed_at IS NOT NULL AND close_reason='recovered'`, monitor.ID).Scan(&closed); err != nil || closed != 1 {
+		t.Fatalf("recovered incidents=%d err=%v, want exactly one", closed, err)
+	}
+}
+
 func TestMonitorConcurrentCreateSerializesQuota(t *testing.T) {
 	f := newMonitorFixture(t)
 	actor := f.newActor(t, "Concurrent Owner")
@@ -491,8 +665,226 @@ func TestExpiredEntitlementStopsCreationAndWorkerChecks(t *testing.T) {
 	if err := f.pool.QueryRow(context.Background(), `SELECT next_check_at FROM monitors.monitors WHERE id=$1`, monitor.ID).Scan(&nextCheck); err != nil {
 		t.Fatal(err)
 	}
-	if nextCheck.After(time.Now().Add(2 * time.Minute)) {
-		t.Fatalf("expired monitor was not deferred safely: next_check_at=%s", nextCheck)
+	if nextCheck.Before(time.Now().Add(4*time.Minute)) || nextCheck.After(time.Now().Add(6*time.Minute)) {
+		t.Fatalf("expired monitor was not deferred by its five-minute interval: next_check_at=%s", nextCheck)
+	}
+}
+
+func TestMonitorSchedulingUsesIntervalForStoreDeferAndFreshness(t *testing.T) {
+	f := newMonitorFixture(t)
+	actor := f.newActor(t, "Interval Owner")
+	f.grant(t, actor, 2)
+	monitor, status := f.create(t, actor, "interval one", "interval-one.example", true)
+	if status != http.StatusCreated {
+		t.Fatalf("create monitor status=%d", status)
+	}
+	var seconds float64
+	for _, minutes := range []int{1, 5, 10} {
+		if _, err := f.pool.Exec(context.Background(), `UPDATE monitors.monitors SET interval_minutes=$2 WHERE id=$1`, monitor.ID, minutes); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.setMonitorDue(monitor.ID); err != nil {
+			t.Fatal(err)
+		}
+		attempt := f.claimMonitor(t, monitor.ID)
+		if !f.complete(t, *attempt, "UP", "", time.Now().UTC()) {
+			t.Fatal("complete UP result was rejected")
+		}
+		if err := f.pool.QueryRow(context.Background(), `SELECT EXTRACT(EPOCH FROM next_check_at-now()) FROM monitors.monitors WHERE id=$1`, monitor.ID).Scan(&seconds); err != nil || seconds < float64(minutes*60-2) || seconds > float64(minutes*60+2) {
+			t.Fatalf("StoreResult next schedule for interval %d=%0.2fs err=%v", minutes, seconds, err)
+		}
+
+		if _, err := f.pool.Exec(context.Background(), `UPDATE accounts.accounts SET status='blocked' WHERE id=$1`, actor.account.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.setMonitorDue(monitor.ID); err != nil {
+			t.Fatal(err)
+		}
+		deferred, err := f.module.Claim(context.Background())
+		if err != nil || deferred != nil {
+			t.Fatalf("claim for inactive account=(%+v,%v), want no attempt", deferred, err)
+		}
+		if err := f.pool.QueryRow(context.Background(), `SELECT EXTRACT(EPOCH FROM next_check_at-now()) FROM monitors.monitors WHERE id=$1`, monitor.ID).Scan(&seconds); err != nil || seconds < float64(minutes*60-2) || seconds > float64(minutes*60+2) {
+			t.Fatalf("Defer next schedule for interval %d=%0.2fs err=%v", minutes, seconds, err)
+		}
+		if _, err := f.pool.Exec(context.Background(), `UPDATE accounts.accounts SET status='active' WHERE id=$1`, actor.account.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, tc := range []struct{ minutes, staleAfter int }{{1, 150}, {5, 630}, {10, 1230}} {
+		if _, err := f.pool.Exec(context.Background(), `UPDATE monitors.monitors SET interval_minutes=$2,outcome='UP',last_checked_at=now()-($3::int-10)*interval '1 second' WHERE id=$1`, monitor.ID, tc.minutes, tc.staleAfter); err != nil {
+			t.Fatal(err)
+		}
+		list := f.request(t, actor, http.MethodGet, "/api/v1/monitors", nil, "", "")
+		var before struct {
+			Monitors []monitorcontracts.Monitor `json:"monitors"`
+		}
+		if list.Code != http.StatusOK || json.Unmarshal(list.Body.Bytes(), &before) != nil || len(before.Monitors) != 1 || before.Monitors[0].State != "UP" {
+			t.Fatalf("fresh state at interval %d = %d %s, want UP", tc.minutes, list.Code, list.Body.String())
+		}
+		if _, err := f.pool.Exec(context.Background(), `UPDATE monitors.monitors SET last_checked_at=now()-($2::int+10)*interval '1 second' WHERE id=$1`, monitor.ID, tc.staleAfter); err != nil {
+			t.Fatal(err)
+		}
+		list = f.request(t, actor, http.MethodGet, "/api/v1/monitors", nil, "", "")
+		var stale struct {
+			Monitors []monitorcontracts.Monitor `json:"monitors"`
+		}
+		if list.Code != http.StatusOK || json.Unmarshal(list.Body.Bytes(), &stale) != nil || len(stale.Monitors) != 1 || stale.Monitors[0].State != "UNKNOWN" {
+			t.Fatalf("stale state at interval %d = %d %s, want UNKNOWN", tc.minutes, list.Code, list.Body.String())
+		}
+	}
+
+}
+
+func TestMonitorSchedulingConfigChangesResetWhileNoOpPatchesPreserve(t *testing.T) {
+	f := newMonitorFixture(t)
+	actor := f.newActor(t, "Config Reset Owner")
+	f.grant(t, actor, 1)
+	monitor, status := f.create(t, actor, "config reset", "config-reset.example", true)
+	if status != http.StatusCreated {
+		t.Fatalf("create monitor status=%d", status)
+	}
+	threshold := 1
+	created := f.request(t, actor, http.MethodPatch, "/api/v1/monitors/"+monitor.ID, monitorcontracts.Patch{Version: monitor.Version, FailureThreshold: &threshold}, actor.csrf, monitorTestOrigin)
+	if created.Code != http.StatusOK {
+		t.Fatalf("set initial threshold status=%d body=%s", created.Code, created.Body.String())
+	}
+	var configured struct {
+		Monitor monitorcontracts.Monitor `json:"monitor"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &configured); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.setMonitorDue(monitor.ID); err != nil {
+		t.Fatal(err)
+	}
+	first := f.claimMonitor(t, monitor.ID)
+	if !f.complete(t, *first, "DOWN", "request_failed", time.Now().UTC()) {
+		t.Fatal("initial DOWN rejected")
+	}
+	var incidentCount int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM incidents.incidents WHERE monitor_id=$1 AND closed_at IS NULL`, monitor.ID).Scan(&incidentCount); err != nil || incidentCount != 1 {
+		t.Fatalf("open incident count=%d err=%v, want 1", incidentCount, err)
+	}
+
+	if err := f.setMonitorDue(monitor.ID); err != nil {
+		t.Fatal(err)
+	}
+	stale := f.claimMonitor(t, monitor.ID)
+	var expectedNext time.Time
+	if err := f.pool.QueryRow(context.Background(), `SELECT next_check_at FROM monitors.monitors WHERE id=$1`, monitor.ID).Scan(&expectedNext); err != nil {
+		t.Fatal(err)
+	}
+	name := "renamed only"
+	namePatch := f.request(t, actor, http.MethodPatch, "/api/v1/monitors/"+monitor.ID, monitorcontracts.Patch{Version: configured.Monitor.Version, Name: &name}, actor.csrf, monitorTestOrigin)
+	if namePatch.Code != http.StatusOK {
+		t.Fatalf("name-only patch status=%d body=%s", namePatch.Code, namePatch.Body.String())
+	}
+	var renamed struct {
+		Monitor monitorcontracts.Monitor `json:"monitor"`
+	}
+	if err := json.Unmarshal(namePatch.Body.Bytes(), &renamed); err != nil {
+		t.Fatal(err)
+	}
+	if renamed.Monitor.Version != configured.Monitor.Version+1 || renamed.Monitor.State != "DOWN" || renamed.Monitor.LastCheckedAt == nil {
+		t.Fatalf("name-only patch changed check state: %+v", renamed.Monitor)
+	}
+	var outcome string
+	var nextBefore time.Time
+	var runID *string
+	if err := f.pool.QueryRow(context.Background(), `SELECT outcome,next_check_at,run_id::text FROM monitors.monitors WHERE id=$1`, monitor.ID).Scan(&outcome, &nextBefore, &runID); err != nil || outcome != "DOWN" || runID != nil || !nextBefore.Equal(expectedNext) {
+		t.Fatalf("name-only patch persisted outcome=%s runID=%v err=%v", outcome, runID, err)
+	}
+	if f.complete(t, *stale, "UP", "", time.Now().UTC()) {
+		t.Fatal("attempt leased before name-only version change was accepted")
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM incidents.incidents WHERE monitor_id=$1 AND closed_at IS NULL`, monitor.ID).Scan(&incidentCount); err != nil || incidentCount != 1 {
+		t.Fatalf("name-only patch changed open incident count=%d err=%v", incidentCount, err)
+	}
+
+	var sameThreshold int
+	version := renamed.Monitor.Version
+	same := f.request(t, actor, http.MethodPatch, "/api/v1/monitors/"+monitor.ID, monitorcontracts.Patch{Version: version, FailureThreshold: &threshold}, actor.csrf, monitorTestOrigin)
+	if same.Code != http.StatusOK {
+		t.Fatalf("same-value patch status=%d body=%s", same.Code, same.Body.String())
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT failure_threshold FROM monitors.monitors WHERE id=$1`, monitor.ID).Scan(&sameThreshold); err != nil || sameThreshold != 1 {
+		t.Fatalf("same-value threshold=%d err=%v", sameThreshold, err)
+	}
+	var nextAfter time.Time
+	if err := f.pool.QueryRow(context.Background(), `SELECT next_check_at FROM monitors.monitors WHERE id=$1`, monitor.ID).Scan(&nextAfter); err != nil || !nextAfter.Equal(nextBefore) {
+		t.Fatalf("same-value patch changed next_check_at: before=%s after=%s err=%v", nextBefore, nextAfter, err)
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM incidents.incidents WHERE monitor_id=$1 AND closed_at IS NULL`, monitor.ID).Scan(&incidentCount); err != nil || incidentCount != 1 {
+		t.Fatalf("same-value patch changed open incident count=%d err=%v", incidentCount, err)
+	}
+
+	if err := f.setMonitorDue(monitor.ID); err != nil {
+		t.Fatal(err)
+	}
+	stale = f.claimMonitor(t, monitor.ID)
+	changedInterval := 1
+	var current struct {
+		Monitor monitorcontracts.Monitor `json:"monitor"`
+	}
+	if err := json.Unmarshal(same.Body.Bytes(), &current); err != nil {
+		t.Fatal(err)
+	}
+	changed := f.request(t, actor, http.MethodPatch, "/api/v1/monitors/"+monitor.ID, monitorcontracts.Patch{Version: current.Monitor.Version, IntervalMinutes: &changedInterval}, actor.csrf, monitorTestOrigin)
+	if changed.Code != http.StatusOK {
+		t.Fatalf("interval change status=%d body=%s", changed.Code, changed.Body.String())
+	}
+	var lastChecked *time.Time
+	var lastStatus, latency *int64
+	if err := f.pool.QueryRow(context.Background(), `SELECT outcome,last_checked_at,last_http_status,last_latency_ms,next_check_at,run_id::text FROM monitors.monitors WHERE id=$1`, monitor.ID).Scan(&outcome, &lastChecked, &lastStatus, &latency, &nextAfter, &runID); err != nil {
+		t.Fatal(err)
+	}
+	if outcome != "UNKNOWN" || lastChecked != nil || lastStatus != nil || latency != nil || runID != nil || nextAfter.Before(time.Now().Add(-time.Second)) || nextAfter.After(time.Now().Add(5*time.Second)) {
+		t.Fatalf("config reset outcome=%s last=%v status=%v latency=%v next=%v run=%v", outcome, lastChecked, lastStatus, latency, nextAfter, runID)
+	}
+	if f.complete(t, *stale, "DOWN", "request_failed", time.Now().UTC()) {
+		t.Fatal("attempt leased before scheduling config change was accepted")
+	}
+	var reason string
+	if err := f.pool.QueryRow(context.Background(), `SELECT close_reason FROM incidents.incidents WHERE monitor_id=$1 AND closed_at IS NOT NULL ORDER BY opened_at DESC LIMIT 1`, monitor.ID).Scan(&reason); err != nil || reason != "config_changed" {
+		t.Fatalf("closed incident reason=%q err=%v, want config_changed", reason, err)
+	}
+
+	if err := f.setMonitorDue(monitor.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !f.complete(t, *f.claimMonitor(t, monitor.ID), "DOWN", "request_failed", time.Now().UTC()) {
+		t.Fatal("DOWN after interval reset was rejected")
+	}
+	var failures int
+	if err := f.pool.QueryRow(context.Background(), `SELECT failure_count FROM incidents.monitor_state WHERE monitor_id=$1`, monitor.ID).Scan(&failures); err != nil || failures != 1 {
+		t.Fatalf("failure streak before threshold update=%d err=%v, want 1", failures, err)
+	}
+	if err := f.setMonitorDue(monitor.ID); err != nil {
+		t.Fatal(err)
+	}
+	stale = f.claimMonitor(t, monitor.ID)
+	var afterInterval struct {
+		Monitor monitorcontracts.Monitor `json:"monitor"`
+	}
+	if err := json.Unmarshal(changed.Body.Bytes(), &afterInterval); err != nil {
+		t.Fatal(err)
+	}
+	newThreshold := 2
+	thresholdChange := f.request(t, actor, http.MethodPatch, "/api/v1/monitors/"+monitor.ID, monitorcontracts.Patch{Version: afterInterval.Monitor.Version, FailureThreshold: &newThreshold}, actor.csrf, monitorTestOrigin)
+	if thresholdChange.Code != http.StatusOK {
+		t.Fatalf("threshold change status=%d body=%s", thresholdChange.Code, thresholdChange.Body.String())
+	}
+	var firstFailure *time.Time
+	if err := f.pool.QueryRow(context.Background(), `SELECT failure_count,first_failure_at FROM incidents.monitor_state WHERE monitor_id=$1`, monitor.ID).Scan(&failures, &firstFailure); err != nil || failures != 0 || firstFailure != nil {
+		t.Fatalf("threshold change left streak count=%d first=%v err=%v, want reset", failures, firstFailure, err)
+	}
+	if f.complete(t, *stale, "UP", "", time.Now().UTC()) {
+		t.Fatal("attempt leased before threshold change was accepted")
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT close_reason FROM incidents.incidents WHERE monitor_id=$1 AND closed_at IS NOT NULL ORDER BY opened_at DESC LIMIT 1`, monitor.ID).Scan(&reason); err != nil || reason != "config_changed" {
+		t.Fatalf("threshold change close reason=%q err=%v, want config_changed", reason, err)
 	}
 }
 

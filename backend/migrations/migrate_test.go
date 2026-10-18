@@ -2,6 +2,8 @@ package migrations
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"net/url"
@@ -86,6 +88,81 @@ func TestApplyIsIdempotent(t *testing.T) {
 		}
 		if !exists {
 			t.Errorf("expected business table %s after applying migrations", table)
+		}
+	}
+}
+
+func TestSchedulingMigrationPreservesExistingMonitorsAndDefaults(t *testing.T) {
+	pool := testDatabase(t)
+	ctx := context.Background()
+	legacyChecksums := map[string]string{
+		"0001_accounts_auth":         "794604f3dd9531bf8c0947c6c5a082d94d76eeb625795a37a31620bfe3dc5ba8",
+		"0002_monitoring":            "3f382b3a54ce15d7d4adec740aaa02547f6e9397f3f40c613090031621622f97",
+		"0003_incident_close_reason": "56139e1ad19b05b16c0c75b696d7c273e055a69d2c84843c6293742919bf56b4",
+	}
+	if _, err := pool.Exec(ctx, `CREATE TABLE public.schema_migrations(version text PRIMARY KEY,checksum text NOT NULL,applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"0001_accounts_auth.sql", "0002_monitoring.sql", "0003_incident_close_reason.sql"} {
+		data, err := files.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if _, err := pool.Exec(ctx, string(data)); err != nil {
+			t.Fatalf("apply legacy migration %s: %v", name, err)
+		}
+		sum := sha256.Sum256(data)
+		if want := legacyChecksums[strings.TrimSuffix(name, ".sql")]; hex.EncodeToString(sum[:]) != want {
+			t.Fatalf("legacy migration %s changed: checksum=%s want=%s", name, hex.EncodeToString(sum[:]), want)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO public.schema_migrations(version,checksum) VALUES($1,$2)`, strings.TrimSuffix(name, ".sql"), hex.EncodeToString(sum[:])); err != nil {
+			t.Fatalf("record legacy migration %s: %v", name, err)
+		}
+	}
+
+	accountID := "a0000000-0000-4000-8000-000000000001"
+	if _, err := pool.Exec(ctx, `INSERT INTO accounts.accounts(id,name) VALUES($1,'Legacy monitor owner')`, accountID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO monitors.monitors(id,account_id,name,url,target_key,method,expected_status) VALUES
+ ('b0000000-0000-4000-8000-000000000001',$1,'legacy','https://legacy.example/health','legacy.example:443','GET',200)`, accountID); err != nil {
+		t.Fatalf("seed monitor before scheduling migration: %v", err)
+	}
+	var previous map[string]string = make(map[string]string)
+	rows, err := pool.Query(ctx, `SELECT version,checksum FROM public.schema_migrations`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var version, checksum string
+		if err := rows.Scan(&version, &checksum); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		previous[version] = checksum
+	}
+	rows.Close()
+	if rows.Err() != nil {
+		t.Fatal(rows.Err())
+	}
+	if err := Apply(ctx, pool); err != nil {
+		t.Fatalf("apply scheduling migration: %v", err)
+	}
+	var interval, threshold int
+	if err := pool.QueryRow(ctx, `SELECT interval_minutes,failure_threshold FROM monitors.monitors WHERE id='b0000000-0000-4000-8000-000000000001'`).Scan(&interval, &threshold); err != nil || interval != 1 || threshold != 2 {
+		t.Fatalf("legacy monitor scheduling=%d/%d err=%v, want 1/2", interval, threshold, err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO monitors.monitors(id,account_id,name,url,target_key,method,expected_status) VALUES
+ ('b0000000-0000-4000-8000-000000000002',$1,'new','https://new.example/health','new.example:443','GET',200)`, accountID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT interval_minutes,failure_threshold FROM monitors.monitors WHERE id='b0000000-0000-4000-8000-000000000002'`).Scan(&interval, &threshold); err != nil || interval != 5 || threshold != 2 {
+		t.Fatalf("new monitor scheduling=%d/%d err=%v, want DB defaults 5/2", interval, threshold, err)
+	}
+	for version, checksum := range previous {
+		var after string
+		if err := pool.QueryRow(ctx, `SELECT checksum FROM public.schema_migrations WHERE version=$1`, version).Scan(&after); err != nil || after != checksum {
+			t.Errorf("legacy migration %s checksum changed: before=%s after=%s err=%v", version, checksum, after, err)
 		}
 	}
 }

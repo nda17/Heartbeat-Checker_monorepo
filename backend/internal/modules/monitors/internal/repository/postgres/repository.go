@@ -22,11 +22,11 @@ type Row struct {
 	LeaseUntil          *time.Time
 }
 
-const columns = `id::text,account_id::text,name,url,method,expected_status,body_contains,enabled,version,outcome,last_checked_at,last_http_status,last_latency_ms,next_check_at,target_key,sequence,run_id::text,attempt_token::text,lease_until`
+const columns = `id::text,account_id::text,name,url,method,expected_status,body_contains,interval_minutes,failure_threshold,enabled,version,outcome,last_checked_at,last_http_status,last_latency_ms,next_check_at,target_key,sequence,run_id::text,attempt_token::text,lease_until`
 
 func scan(row pgx.Row) (Row, error) {
 	var m Row
-	err := row.Scan(&m.ID, &m.AccountID, &m.Name, &m.URL, &m.Method, &m.ExpectedStatus, &m.BodyContains, &m.Enabled, &m.Version, &m.State, &m.LastCheckedAt, &m.LastHTTPStatus, &m.LastLatencyMS, &m.NextCheckAt, &m.TargetKey, &m.Sequence, &m.RunID, &m.AttemptToken, &m.LeaseUntil)
+	err := row.Scan(&m.ID, &m.AccountID, &m.Name, &m.URL, &m.Method, &m.ExpectedStatus, &m.BodyContains, &m.IntervalMinutes, &m.FailureThreshold, &m.Enabled, &m.Version, &m.State, &m.LastCheckedAt, &m.LastHTTPStatus, &m.LastLatencyMS, &m.NextCheckAt, &m.TargetKey, &m.Sequence, &m.RunID, &m.AttemptToken, &m.LeaseUntil)
 	return m, err
 }
 func (r *Repository) List(ctx context.Context, tx pgx.Tx, owner string) ([]Row, error) {
@@ -63,16 +63,16 @@ func (r *Repository) Rank(ctx context.Context, tx pgx.Tx, owner, id string) (int
 	return n, err
 }
 func (r *Repository) Insert(ctx context.Context, tx pgx.Tx, owner, id, target string, in contracts.MonitorInput) error {
-	_, err := tx.Exec(ctx, `INSERT INTO monitors.monitors(id,account_id,name,url,target_key,method,expected_status,body_contains,enabled) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, id, owner, in.Name, in.URL, target, in.Method, in.ExpectedStatus, in.BodyContains, in.Enabled)
+	_, err := tx.Exec(ctx, `INSERT INTO monitors.monitors(id,account_id,name,url,target_key,method,expected_status,body_contains,interval_minutes,failure_threshold,enabled) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, id, owner, in.Name, in.URL, target, in.Method, in.ExpectedStatus, in.BodyContains, *in.IntervalMinutes, *in.FailureThreshold, in.Enabled)
 	return err
 }
 func (r *Repository) Update(ctx context.Context, tx pgx.Tx, owner, id, target string, in contracts.MonitorInput, resetCheck bool) error {
-	_, err := tx.Exec(ctx, `UPDATE monitors.monitors SET name=$3,url=$4,target_key=$5,method=$6,expected_status=$7,body_contains=$8,enabled=$9,version=version+1,outcome=CASE WHEN $10 THEN 'UNKNOWN' ELSE outcome END,
- last_checked_at=CASE WHEN $10 THEN NULL ELSE last_checked_at END,
- last_http_status=CASE WHEN $10 THEN NULL ELSE last_http_status END,
- last_latency_ms=CASE WHEN $10 THEN NULL ELSE last_latency_ms END,
- next_check_at=CASE WHEN $10 THEN now() ELSE next_check_at END,
- run_id=NULL,attempt_token=NULL,lease_until=NULL,updated_at=now() WHERE account_id=$1 AND id=$2`, owner, id, in.Name, in.URL, target, in.Method, in.ExpectedStatus, in.BodyContains, in.Enabled, resetCheck)
+	_, err := tx.Exec(ctx, `UPDATE monitors.monitors SET name=$3,url=$4,target_key=$5,method=$6,expected_status=$7,body_contains=$8,interval_minutes=$9,failure_threshold=$10,enabled=$11,version=version+1,outcome=CASE WHEN $12 THEN 'UNKNOWN' ELSE outcome END,
+ last_checked_at=CASE WHEN $12 THEN NULL ELSE last_checked_at END,
+ last_http_status=CASE WHEN $12 THEN NULL ELSE last_http_status END,
+ last_latency_ms=CASE WHEN $12 THEN NULL ELSE last_latency_ms END,
+ next_check_at=CASE WHEN $12 THEN now() ELSE next_check_at END,
+ run_id=NULL,attempt_token=NULL,lease_until=NULL,updated_at=now() WHERE account_id=$1 AND id=$2`, owner, id, in.Name, in.URL, target, in.Method, in.ExpectedStatus, in.BodyContains, *in.IntervalMinutes, *in.FailureThreshold, in.Enabled, resetCheck)
 	return err
 }
 func (r *Repository) Delete(ctx context.Context, tx pgx.Tx, owner, id string) error {
@@ -131,7 +131,7 @@ func (r *Repository) StoreResult(ctx context.Context, tx pgx.Tx, m Row, eventID,
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `UPDATE monitors.monitors SET outcome=$3,last_checked_at=$4,last_http_status=$5,last_latency_ms=$6,next_check_at=now()+interval '1 minute',run_id=NULL,attempt_token=NULL,lease_until=NULL,sequence=sequence+1 WHERE account_id=$1 AND id=$2`, m.AccountID, m.ID, outcome, checked, status, latency)
+	_, err = tx.Exec(ctx, `UPDATE monitors.monitors SET outcome=$3,last_checked_at=$4,last_http_status=$5,last_latency_ms=$6,next_check_at=now()+interval_minutes*interval '1 minute',run_id=NULL,attempt_token=NULL,lease_until=NULL,sequence=sequence+1 WHERE account_id=$1 AND id=$2`, m.AccountID, m.ID, outcome, checked, status, latency)
 	if err != nil {
 		return err
 	}
@@ -162,6 +162,6 @@ func (r *Repository) Cleanup(ctx context.Context, tx pgx.Tx) error {
 }
 
 func (r *Repository) Defer(ctx context.Context, tx pgx.Tx, owner, id string) error {
-	_, err := tx.Exec(ctx, `UPDATE monitors.monitors SET next_check_at=now()+interval '1 minute',run_id=NULL,attempt_token=NULL,lease_until=NULL WHERE account_id=$1 AND id=$2`, owner, id)
+	_, err := tx.Exec(ctx, `UPDATE monitors.monitors SET next_check_at=now()+interval_minutes*interval '1 minute',run_id=NULL,attempt_token=NULL,lease_until=NULL WHERE account_id=$1 AND id=$2`, owner, id)
 	return err
 }

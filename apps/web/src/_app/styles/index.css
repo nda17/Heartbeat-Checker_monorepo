@@ -1000,6 +1000,8 @@ input:read-only {
   color: var(--accent);
 }
 .table-scroll {
+  /* Keep positioned screen-reader labels inside the table's scroll area. */
+  position: relative;
   overflow: auto;
 }
 .monitor-table,

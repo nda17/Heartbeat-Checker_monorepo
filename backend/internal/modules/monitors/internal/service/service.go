@@ -47,7 +47,24 @@ func ValidID(id string) bool {
 	_, err := hex.DecodeString(strings.ReplaceAll(id, "-", ""))
 	return err == nil
 }
+func scheduling(in *contracts.MonitorInput) error {
+	if in.IntervalMinutes == nil {
+		value := 5
+		in.IntervalMinutes = &value
+	}
+	if in.FailureThreshold == nil {
+		value := 2
+		in.FailureThreshold = &value
+	}
+	if *in.IntervalMinutes < 1 || *in.IntervalMinutes > 10 || *in.FailureThreshold < 1 || *in.FailureThreshold > 10 {
+		return ErrInvalid
+	}
+	return nil
+}
 func validate(in *contracts.MonitorInput) (string, error) {
+	if err := scheduling(in); err != nil {
+		return "", err
+	}
 	in.Name = strings.TrimSpace(in.Name)
 	in.URL = strings.TrimSpace(in.URL)
 	if utf8.RuneCountInString(in.Name) < 1 || utf8.RuneCountInString(in.Name) > 100 || !utf8.ValidString(in.Name) || len(in.URL) > 2048 || len(in.BodyContains) > 1000 || !utf8.ValidString(in.BodyContains) || (in.Method != "GET" && in.Method != "HEAD") || in.ExpectedStatus < 100 || in.ExpectedStatus > 599 || (in.Method == "HEAD" && in.BodyContains != "") {
@@ -115,7 +132,7 @@ func view(m postgres.Row, e billing.Entitlement, rank int) contracts.Monitor {
 	case e.Quota == 0 || rank > e.Quota:
 		v.State = "SUBSCRIPTION_REQUIRED"
 		v.NextCheckAt = nil
-	case m.LastCheckedAt == nil || time.Since(*m.LastCheckedAt) > 150*time.Second:
+	case m.LastCheckedAt == nil || time.Since(*m.LastCheckedAt) > time.Duration(2*m.IntervalMinutes)*time.Minute+30*time.Second:
 		v.State = "UNKNOWN"
 	}
 	return v
@@ -219,7 +236,8 @@ func (s *Service) Patch(ctx context.Context, owner, id string, p contracts.Patch
 	if m.Version != p.Version {
 		return contracts.Monitor{}, ErrConflict
 	}
-	in := contracts.MonitorInput{Name: m.Name, URL: m.URL, Method: m.Method, ExpectedStatus: m.ExpectedStatus, BodyContains: m.BodyContains, Enabled: m.Enabled}
+	interval, threshold := m.IntervalMinutes, m.FailureThreshold
+	in := contracts.MonitorInput{Name: m.Name, URL: m.URL, Method: m.Method, ExpectedStatus: m.ExpectedStatus, BodyContains: m.BodyContains, IntervalMinutes: &interval, FailureThreshold: &threshold, Enabled: m.Enabled}
 	if p.Name != nil {
 		in.Name = *p.Name
 	}
@@ -234,6 +252,12 @@ func (s *Service) Patch(ctx context.Context, owner, id string, p contracts.Patch
 	}
 	if p.BodyContains != nil {
 		in.BodyContains = *p.BodyContains
+	}
+	if p.IntervalMinutes != nil {
+		in.IntervalMinutes = p.IntervalMinutes
+	}
+	if p.FailureThreshold != nil {
+		in.FailureThreshold = p.FailureThreshold
 	}
 	if p.Enabled != nil {
 		in.Enabled = *p.Enabled
@@ -254,7 +278,7 @@ func (s *Service) Patch(ctx context.Context, owner, id string, p contracts.Patch
 			return contracts.Monitor{}, ErrQuota
 		}
 	}
-	checkChanged := in.URL != m.URL || in.Method != m.Method || in.ExpectedStatus != m.ExpectedStatus || in.BodyContains != m.BodyContains
+	checkChanged := in.URL != m.URL || in.Method != m.Method || in.ExpectedStatus != m.ExpectedStatus || in.BodyContains != m.BodyContains || *in.IntervalMinutes != m.IntervalMinutes || *in.FailureThreshold != m.FailureThreshold
 	resetCheck := checkChanged || in.Enabled != m.Enabled
 	if err = s.repo.Update(ctx, tx, owner, id, target, in, resetCheck); err != nil {
 		return contracts.Monitor{}, err
@@ -430,7 +454,7 @@ func (s *Service) Complete(ctx context.Context, a contracts.Attempt, r probe.Res
 	if err = outbox.Append(ctx, tx, eventID, m.ID, m.AccountID, "CheckCompleted", map[string]any{"resultId": eventID, "sequence": m.Sequence + 1, "outcome": r.Outcome, "checkedAt": r.CheckedAt}, true); err != nil {
 		return false, err
 	}
-	if err = s.incidents.Apply(ctx, tx, m.ID, m.AccountID, m.Sequence+1, r.Outcome, r.CheckedAt); err != nil {
+	if err = s.incidents.Apply(ctx, tx, m.ID, m.AccountID, m.Sequence+1, r.Outcome, m.FailureThreshold, r.CheckedAt); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)

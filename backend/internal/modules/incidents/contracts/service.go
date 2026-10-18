@@ -8,7 +8,7 @@ import (
 )
 
 type Service interface {
-	Apply(context.Context, pgx.Tx, string, string, int64, string, time.Time) error
+	Apply(context.Context, pgx.Tx, string, string, int64, string, int, time.Time) error
 	Reset(context.Context, pgx.Tx, string, string) error
 	List(context.Context, string, string) ([]monitorcontracts.Incident, error)
 }

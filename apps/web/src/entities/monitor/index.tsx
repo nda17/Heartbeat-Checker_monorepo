@@ -5,6 +5,8 @@ export type Monitor = {
   method: "GET" | "HEAD";
   expectedStatus: number;
   bodyContains: string;
+  intervalMinutes: number;
+  failureThreshold: number;
   enabled: boolean;
   version: number;
   state: "UNKNOWN" | "UP" | "DOWN" | "PAUSED" | "SUBSCRIPTION_REQUIRED";
