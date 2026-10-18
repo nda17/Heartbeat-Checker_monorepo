@@ -23,7 +23,7 @@ func New(pool *pgxpool.Pool, recorder contracts.Recorder) *Service {
 
 // Apply is invoked in the accepted-result transaction while that monitor is locked.
 // Sequence prevents duplicate delivery from counting as a second failed check.
-func (s *Service) Apply(ctx context.Context, tx pgx.Tx, monitorID, accountID string, seq int64, outcome string, threshold int, checked time.Time) error {
+func (s *Service) Apply(ctx context.Context, tx pgx.Tx, monitorID, accountID string, seq int64, outcome string, threshold int, checked time.Time, observation contracts.Observation) error {
 	if threshold < 1 || threshold > 10 {
 		return errors.New("invalid failure threshold")
 	}
@@ -58,9 +58,19 @@ func (s *Service) Apply(ctx context.Context, tx pgx.Tx, monitorID, accountID str
 				return err
 			}
 			if tag.RowsAffected() > 0 {
-				if err = s.notify(ctx, tx, monitorID, accountID, id, "incident_opened", seq, checked); err != nil {
+				if err = s.notify(ctx, tx, monitorID, accountID, id, "incident_opened", seq, checked, observation); err != nil {
 					return err
 				}
+			}
+		}
+		if s.recorder != nil && failures == threshold {
+			var incident contracts.IncidentState
+			err = tx.QueryRow(ctx, `SELECT id::text,number,opened_at,confirmed_at,closed_at FROM incidents.incidents WHERE monitor_id=$1 AND closed_at IS NULL`, monitorID).Scan(&incident.ID, &incident.Number, &incident.OpenedAt, &incident.ConfirmedAt, &incident.ClosedAt)
+			if err != nil {
+				return err
+			}
+			if err = s.recorder.ObserveDown(ctx, tx, monitorID, accountID, incident, observation); err != nil {
+				return err
 			}
 		}
 	case "UP":
@@ -72,7 +82,7 @@ func (s *Service) Apply(ctx context.Context, tx pgx.Tx, monitorID, accountID str
 			return err
 		}
 		if err == nil {
-			if err = s.notify(ctx, tx, monitorID, accountID, id, "incident_closed", seq, checked); err != nil {
+			if err = s.notify(ctx, tx, monitorID, accountID, id, "incident_closed", seq, checked, observation); err != nil {
 				return err
 			}
 		}
@@ -83,7 +93,7 @@ func (s *Service) Apply(ctx context.Context, tx pgx.Tx, monitorID, accountID str
 	_, err = tx.Exec(ctx, `UPDATE incidents.monitor_state SET last_sequence=$2,failure_count=$3,first_failure_at=$4 WHERE monitor_id=$1`, monitorID, seq, failures, first)
 	return err
 }
-func (s *Service) notify(ctx context.Context, tx pgx.Tx, monitorID, accountID, incidentID, kind string, sequence int64, at time.Time) error {
+func (s *Service) notify(ctx context.Context, tx pgx.Tx, monitorID, accountID, incidentID, kind string, sequence int64, at time.Time, observation contracts.Observation) error {
 	id, err := outbox.ID()
 	if err != nil {
 		return err
@@ -92,7 +102,11 @@ func (s *Service) notify(ctx context.Context, tx pgx.Tx, monitorID, accountID, i
 		return err
 	}
 	if s.recorder != nil {
-		if err := s.recorder.Enqueue(ctx, tx, contracts.Notification{EventID: id, AccountID: accountID, MonitorID: monitorID, IncidentID: incidentID, Kind: kind, Sequence: sequence, At: at}); err != nil {
+		var incident contracts.IncidentState
+		if err := tx.QueryRow(ctx, `SELECT id::text,number,opened_at,confirmed_at,closed_at FROM incidents.incidents WHERE id=$1`, incidentID).Scan(&incident.ID, &incident.Number, &incident.OpenedAt, &incident.ConfirmedAt, &incident.ClosedAt); err != nil {
+			return err
+		}
+		if err := s.recorder.Enqueue(ctx, tx, contracts.Notification{EventID: id, AccountID: accountID, MonitorID: monitorID, IncidentID: incidentID, Kind: kind, Sequence: sequence, At: at, Observation: observation, Incident: incident}); err != nil {
 			return err
 		}
 	}
@@ -112,13 +126,18 @@ func (s *Service) Reset(ctx context.Context, tx pgx.Tx, id, reason string) error
 	if reason == "" {
 		return nil
 	}
+	if s.recorder != nil {
+		if err := s.recorder.CancelForReset(ctx, tx, id); err != nil {
+			return err
+		}
+	}
 	// The caller holds the monitor lock. Closing silently prevents a later UP for
 	// changed settings from generating recovery for an earlier check configuration.
 	_, err := tx.Exec(ctx, `UPDATE incidents.incidents SET closed_at=GREATEST(now(),confirmed_at),close_reason=$2 WHERE monitor_id=$1 AND closed_at IS NULL`, id, reason)
 	return err
 }
 func (s *Service) List(ctx context.Context, accountID, monitorID string) ([]monitorcontracts.Incident, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id::text,opened_at,confirmed_at,closed_at,close_reason FROM incidents.incidents WHERE account_id=$1 AND monitor_id=$2 ORDER BY opened_at DESC,id DESC LIMIT 100`, accountID, monitorID)
+	rows, err := s.pool.Query(ctx, `SELECT id::text,number,opened_at,confirmed_at,closed_at,close_reason FROM incidents.incidents WHERE account_id=$1 AND monitor_id=$2 ORDER BY opened_at DESC,id DESC LIMIT 100`, accountID, monitorID)
 	if err != nil {
 		return nil, err
 	}
@@ -126,12 +145,17 @@ func (s *Service) List(ctx context.Context, accountID, monitorID string) ([]moni
 	items := []monitorcontracts.Incident{}
 	for rows.Next() {
 		var i monitorcontracts.Incident
-		if err = rows.Scan(&i.ID, &i.OpenedAt, &i.ConfirmedAt, &i.ClosedAt, &i.CloseReason); err != nil {
+		if err = rows.Scan(&i.ID, &i.Number, &i.OpenedAt, &i.ConfirmedAt, &i.ClosedAt, &i.CloseReason); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
 	}
 	return items, rows.Err()
+}
+func (s *Service) Get(ctx context.Context, accountID, monitorID, incidentID string) (monitorcontracts.Incident, error) {
+	var i monitorcontracts.Incident
+	err := s.pool.QueryRow(ctx, `SELECT id::text,number,opened_at,confirmed_at,closed_at,close_reason FROM incidents.incidents WHERE account_id=$1 AND monitor_id=$2 AND id=$3`, accountID, monitorID, incidentID).Scan(&i.ID, &i.Number, &i.OpenedAt, &i.ConfirmedAt, &i.ClosedAt, &i.CloseReason)
+	return i, err
 }
 func (s *Service) Cleanup(ctx context.Context, tx pgx.Tx) error {
 	_, err := tx.Exec(ctx, `DELETE FROM incidents.incidents WHERE id IN (SELECT id FROM incidents.incidents WHERE closed_at < now()-interval '90 days' ORDER BY closed_at LIMIT 500)`)

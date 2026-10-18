@@ -59,6 +59,7 @@ type Result struct {
 // Incident represents a confirmed period of monitor failure.
 type Incident struct {
 	ID          string     `json:"id"`
+	Number      int64      `json:"number"`
 	OpenedAt    time.Time  `json:"openedAt"`
 	ConfirmedAt time.Time  `json:"confirmedAt"`
 	ClosedAt    *time.Time `json:"closedAt,omitempty"`

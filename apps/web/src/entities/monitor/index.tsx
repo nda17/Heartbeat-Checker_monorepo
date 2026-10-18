@@ -31,6 +31,7 @@ export type CheckResult = {
 };
 export type Incident = {
   id: string;
+  number: number;
   openedAt: string;
   confirmedAt: string;
   closedAt?: string | null;

@@ -4,7 +4,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { Profile, SessionContext } from "@/entities/session";
 import { ThemeToggle } from "@/features/theme-toggle";
-import { api, ApiError, errorMessage } from "@/shared/api";
+import { api, ApiError, errorMessage, safeAppReturnTo } from "@/shared/api";
 import { Brand, Loading, Notice } from "@/shared/ui";
 export function ConsoleShell({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -19,7 +19,14 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         setProfile(null);
-        router.replace("/login");
+        const returnTo = safeAppReturnTo(
+          window.location.pathname + window.location.search,
+        );
+        router.replace(
+          returnTo
+            ? `/login?returnTo=${encodeURIComponent(returnTo)}`
+            : "/login",
+        );
       } else setError(errorMessage(e));
     }
   }, [router]);

@@ -14,23 +14,30 @@ import (
 // IntegrationConfig is loaded independently by API and worker so both apply the
 // same explicit mock entitlement policy. Bot credentials are worker-only.
 type IntegrationConfig struct {
-	BillingProvider              string
-	BillingMockAccountIDs        []string
-	BillingReportsEnabled        bool
-	TelegramInformerToken        string
-	TelegramInternalChatID       int64
-	TelegramPaymentsTopicID      int64
-	SupportEnabled               bool
-	SupportEncryptionKey         string
-	TelegramSupportToken         string
-	TelegramSupportWebhookSecret string
-	MAXSupportToken              string
-	MAXSupportWebhookSecret      string
-	TelegramSupportTopicID       int64
-	TelegramAPIIP                string
-	TelegramAPIBaseURL           string
-	MAXSupportChatID             int64
-	SupportMAXRootCAFile         string
+	BillingProvider               string
+	BillingMockAccountIDs         []string
+	BillingReportsEnabled         bool
+	MessengerNotificationsEnabled bool
+	TelegramInformerToken         string
+	MAXInformerToken              string
+	TelegramInformerBotUsername   string
+	MAXInformerBotURL             string
+	TelegramInformerWebhookSecret string
+	MAXInformerWebhookSecret      string
+	InformerMAXRootCAFile         string
+	TelegramInternalChatID        int64
+	TelegramPaymentsTopicID       int64
+	SupportEnabled                bool
+	SupportEncryptionKey          string
+	TelegramSupportToken          string
+	TelegramSupportWebhookSecret  string
+	MAXSupportToken               string
+	MAXSupportWebhookSecret       string
+	TelegramSupportTopicID        int64
+	TelegramAPIIP                 string
+	TelegramAPIBaseURL            string
+	MAXSupportChatID              int64
+	SupportMAXRootCAFile          string
 }
 
 func loadIntegrations(worker bool) (IntegrationConfig, error) {
@@ -59,7 +66,10 @@ func loadIntegrations(worker bool) (IntegrationConfig, error) {
 	if cfg.BillingReportsEnabled, err = integrationBool("BILLING_REPORTS_ENABLED"); err != nil {
 		return cfg, err
 	}
-	if !cfg.SupportEnabled && !cfg.BillingReportsEnabled {
+	if cfg.MessengerNotificationsEnabled, err = integrationBool("MESSENGER_NOTIFICATIONS_ENABLED"); err != nil {
+		return cfg, err
+	}
+	if !cfg.SupportEnabled && !cfg.BillingReportsEnabled && !cfg.MessengerNotificationsEnabled {
 		return cfg, nil
 	}
 	cfg.TelegramAPIBaseURL = strings.TrimSpace(os.Getenv("TELEGRAM_API_BASE_URL"))
@@ -69,9 +79,11 @@ func loadIntegrations(worker bool) (IntegrationConfig, error) {
 	if cfg.TelegramAPIBaseURL != "https://api.telegram.org" && cfg.TelegramAPIBaseURL != "https://messengers-proxy.heartbeat-checker.ru/telegram-api" {
 		return cfg, errors.New("TELEGRAM_API_BASE_URL must be an approved HTTPS Telegram endpoint")
 	}
-	cfg.TelegramInternalChatID, err = strconv.ParseInt(os.Getenv("TELEGRAM_INTERNAL_CHAT_ID"), 10, 64)
-	if err != nil || cfg.TelegramInternalChatID >= 0 {
-		return cfg, errors.New("TELEGRAM_INTERNAL_CHAT_ID must identify an internal group")
+	if cfg.SupportEnabled || cfg.BillingReportsEnabled {
+		cfg.TelegramInternalChatID, err = strconv.ParseInt(os.Getenv("TELEGRAM_INTERNAL_CHAT_ID"), 10, 64)
+		if err != nil || cfg.TelegramInternalChatID >= 0 {
+			return cfg, errors.New("TELEGRAM_INTERNAL_CHAT_ID must identify an internal group")
+		}
 	}
 	cfg.TelegramAPIIP = strings.TrimSpace(os.Getenv("TELEGRAM_API_PROXY_IP"))
 	if cfg.TelegramAPIIP != "" {
@@ -89,6 +101,29 @@ func loadIntegrations(worker bool) (IntegrationConfig, error) {
 			cfg.TelegramInformerToken = os.Getenv("TELEGRAM_BOT_INFORMER_TOKEN")
 			if !telegramToken(cfg.TelegramInformerToken) {
 				return cfg, errors.New("TELEGRAM_BOT_INFORMER_TOKEN is required for payment reports")
+			}
+		}
+	}
+	if cfg.MessengerNotificationsEnabled {
+		cfg.TelegramInformerBotUsername = strings.TrimPrefix(strings.TrimSpace(os.Getenv("TELEGRAM_INFORMER_BOT_USERNAME")), "@")
+		cfg.MAXInformerBotURL = strings.TrimRight(strings.TrimSpace(os.Getenv("MAX_INFORMER_BOT_URL")), "/")
+		cfg.InformerMAXRootCAFile = strings.TrimSpace(os.Getenv("SUPPORT_MAX_ROOT_CA_FILE"))
+		if cfg.TelegramInformerBotUsername == "" || strings.ContainsAny(cfg.TelegramInformerBotUsername, " /?&#\r\n") || !strings.HasPrefix(cfg.MAXInformerBotURL, "https://max.ru/") {
+			return cfg, errors.New("messenger bot public links are required")
+		}
+		if worker {
+			if cfg.TelegramInformerToken == "" {
+				cfg.TelegramInformerToken = os.Getenv("TELEGRAM_BOT_INFORMER_TOKEN")
+			}
+			cfg.MAXInformerToken = os.Getenv("MAX_BOT_INFORMER_TOKEN")
+			if !telegramToken(cfg.TelegramInformerToken) || cfg.MAXInformerToken == "" || strings.ContainsAny(cfg.MAXInformerToken, "\r\n") {
+				return cfg, errors.New("messenger bot tokens are required")
+			}
+		} else {
+			cfg.TelegramInformerWebhookSecret = os.Getenv("TELEGRAM_INFORMER_WEBHOOK_SECRET")
+			cfg.MAXInformerWebhookSecret = os.Getenv("MAX_INFORMER_WEBHOOK_SECRET")
+			if !webhookSecret(cfg.TelegramInformerWebhookSecret) || !webhookSecret(cfg.MAXInformerWebhookSecret) {
+				return cfg, errors.New("messenger webhook secrets must be 32-256 URL-safe characters")
 			}
 		}
 	}

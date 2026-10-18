@@ -15,6 +15,8 @@ var errMissingRoute = errors.New("support reply route pending")
 var errMAXUnconfigured = errors.New("MAX support group not configured")
 
 const unsupportedNotice = "Сообщение не отправлено: этот тип вложения или длина текста пока не поддерживается. Отправьте текст до 4000 символов либо изображение, аудио, видео или документ отдельным сообщением."
+const welcomeNotice = "Вас приветствует служба технической поддержки. Вы можете задать интересующий вас вопрос в данный чат, и мы ответим вам в ближайшее время."
+const acknowledgedNotice = "Ваш вопрос отправлен специалисту поддержки. Ожидайте ответа в текущем чате."
 
 type route struct {
 	Provider       string
@@ -175,7 +177,29 @@ func (m *Module) process(ctx context.Context, j job, e event) error {
 		}
 		return err
 	}
-	return m.saveRoute(ctx, j, operatorMessageID, route{Provider: e.Provider, ChatID: e.ChatID, UserID: e.SenderID, MessageID: e.MessageID})
+	return m.saveRoute(ctx, j, operatorMessageID, route{Provider: e.Provider, ChatID: e.ChatID, UserID: e.SenderID, MessageID: e.MessageID}, true)
+}
+
+func (m *Module) processNotice(ctx context.Context, j job, e event) error {
+	if (j.Kind != "welcome" && j.Kind != "ack") || e.Provider != j.Provider || !e.Private || e.SenderID <= 0 || e.ChatID <= 0 || (e.Provider == "telegram" && e.ChatID != e.SenderID) {
+		return errRejected
+	}
+	if err := m.ownsLease(ctx, j); err != nil {
+		return err
+	}
+	text := acknowledgedNotice
+	if j.Kind == "welcome" {
+		text = welcomeNotice
+	}
+	if e.Provider == "telegram" {
+		_, err := m.tgText(ctx, e.ChatID, 0, text)
+		return err
+	}
+	if e.Provider == "max" {
+		_, err := m.maxSend(ctx, e.SenderID, true, text, nil)
+		return err
+	}
+	return errRejected
 }
 
 func unsupportedProvider(err error) bool {
@@ -191,7 +215,7 @@ func (m *Module) clientNotice(ctx context.Context, e event) error {
 	return err
 }
 
-func (m *Module) saveRoute(ctx context.Context, j job, operatorMessageID string, r route) error {
+func (m *Module) saveRoute(ctx context.Context, j job, operatorMessageID string, r route, acknowledge bool) error {
 	tx, err := m.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -204,8 +228,17 @@ func (m *Module) saveRoute(ctx context.Context, j job, operatorMessageID string,
 	if tag.RowsAffected() != 1 {
 		return errRejected
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO support.message_routes(provider,operator_chat_id,operator_message_id,client_chat_id,client_user_id,client_message_id) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(provider,operator_chat_id,operator_message_id) DO NOTHING`, r.Provider, m.operatorChat(r.Provider), operatorMessageID, r.ChatID, r.UserID, r.MessageID); err != nil {
+	tag, err = tx.Exec(ctx, `INSERT INTO support.message_routes(provider,operator_chat_id,operator_message_id,client_chat_id,client_user_id,client_message_id) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(provider,operator_chat_id,operator_message_id) DO NOTHING`, r.Provider, m.operatorChat(r.Provider), operatorMessageID, r.ChatID, r.UserID, r.MessageID)
+	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return errRejected
+	}
+	if acknowledge {
+		if err = m.enqueueAck(ctx, tx, j, r); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }
@@ -242,7 +275,7 @@ func (m *Module) reply(ctx context.Context, j job, e event) error {
 		}
 		return err
 	}
-	return m.saveRoute(ctx, j, e.MessageID, r)
+	return m.saveRoute(ctx, j, e.MessageID, r, false)
 }
 
 func (m *Module) operatorNotice(ctx context.Context, e event) error {

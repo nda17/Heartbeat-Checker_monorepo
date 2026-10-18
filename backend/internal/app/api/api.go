@@ -60,8 +60,15 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("configure billing: %w", err)
 	}
+	messengerModule, err := notifications.NewMessenger(pool, cfg.WebhookEncryptionKey, notifications.MessengerConfig{
+		Enabled: cfg.MessengerNotificationsEnabled, TelegramWebhookSecret: cfg.TelegramInformerWebhookSecret, MAXWebhookSecret: cfg.MAXInformerWebhookSecret,
+		TelegramBotUsername: cfg.TelegramInformerBotUsername, MAXBotURL: cfg.MAXInformerBotURL,
+	}, false, billingModule)
+	if err != nil {
+		return fmt.Errorf("configure messenger notifications: %w", err)
+	}
 	billingModule.Register(handler, authModule.Protect)
-	monitors.New(pool, billingModule, incidents.New(pool, notifications.NewRecorder()), accountModule).Register(handler, authModule.Protect)
+	monitors.New(pool, billingModule, incidents.New(pool, notifications.NewRecorder(messengerModule)), accountModule).Register(handler, authModule.Protect)
 	if cfg.SupportEnabled {
 		supportModule, err := support.NewWebhook(pool, support.Config{EncryptionKey: cfg.SupportEncryptionKey, TelegramWebhookSecret: cfg.TelegramSupportWebhookSecret, MAXWebhookSecret: cfg.MAXSupportWebhookSecret, InternalChatID: cfg.TelegramInternalChatID, SupportTopicID: cfg.TelegramSupportTopicID, MAXSupportChatID: cfg.MAXSupportChatID})
 		if err != nil {
@@ -70,6 +77,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		supportModule.Register(handler)
 	}
 	notificationModule.Register(handler, authModule.Protect)
+	messengerModule.RegisterAPI(handler, authModule.Protect)
+	messengerModule.RegisterIngest(handler)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
