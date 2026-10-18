@@ -359,6 +359,113 @@ func TestBillingActiveAccountExpiredOrderAndLocalTestIsolation(t *testing.T) {
 	}
 }
 
+func TestBillingPriceChangeKeepsHistoricalOrderAmountOnIdempotentReplay(t *testing.T) {
+	f := newBillingFixture(t)
+	quoteOwner := f.newActor(t, "Billing Quote Owner")
+	singleMonitorOwner := f.newActor(t, "Single Monitor Buyer")
+	multipleMonitorOwner := f.newActor(t, "Multiple Monitor Buyer")
+	module, err := NewConfigured(f.pool, false, Config{
+		Provider:       "mock",
+		MockAccountIDs: []string{quoteOwner.id, singleMonitorOwner.id, multipleMonitorOwner.id},
+	}, f.accounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	module.Register(mux, authProtect(t, f.pool, f.accounts))
+	f.module = module
+	f.handler = mux
+
+	quoteResponse := f.request(t, quoteOwner, http.MethodGet, "/api/v1/billing", nil)
+	if quoteResponse.Code != http.StatusOK {
+		t.Fatalf("billing quote status=%d: %s", quoteResponse.Code, quoteResponse.Body.String())
+	}
+	var quote contracts.Billing
+	if err := json.Unmarshal(quoteResponse.Body.Bytes(), &quote); err != nil {
+		t.Fatalf("decode billing quote: %v", err)
+	}
+	if quote.PricePerMonitorMinor != 2900 {
+		t.Fatalf("price per monitor=%d, want 2900 minor units", quote.PricePerMonitorMinor)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		actor  billingActor
+		count  int
+		amount int
+		key    string
+	}{
+		{name: "one monitor", actor: singleMonitorOwner, count: 1, amount: 2900, key: "5ab34714-1e0d-4984-b8dd-4d89c9fd725e"},
+		{name: "three monitors", actor: multipleMonitorOwner, count: 3, amount: 8700, key: "53c944c3-0297-4090-84d2-9bbab3e635c2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := f.request(t, tc.actor, http.MethodPost, "/api/v1/billing/orders", map[string]any{
+				"monitorCount": tc.count, "idempotencyKey": tc.key,
+			})
+			if response.Code != http.StatusCreated {
+				t.Fatalf("create order status=%d: %s", response.Code, response.Body.String())
+			}
+			var body struct {
+				Order contracts.Order `json:"order"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode order: %v", err)
+			}
+			if body.Order.MonitorCount != tc.count || body.Order.AmountMinor != tc.amount {
+				t.Fatalf("created order count=%d amount=%d, want count=%d amount=%d", body.Order.MonitorCount, body.Order.AmountMinor, tc.count, tc.amount)
+			}
+		})
+	}
+
+	const historicalOrderID = "7b3435e4-6a73-4f47-9d14-9f9b19a33a0c"
+	const historicalIdempotencyKey = "4dbcc840-f3f5-4a9e-94b0-5e71e9f3049b"
+	if _, err := f.pool.Exec(context.Background(), `
+		INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor)
+		VALUES($1,$2,$3,'mock',1,2400)
+	`, historicalOrderID, quoteOwner.id, historicalIdempotencyKey); err != nil {
+		t.Fatalf("insert historical 2400-minor order: %v", err)
+	}
+	confirmed, err := module.service.Simulate(context.Background(), quoteOwner.id, historicalOrderID, "succeeded")
+	if err != nil {
+		t.Fatalf("confirm historical order: %v", err)
+	}
+	if confirmed.Status != "succeeded" || confirmed.AmountMinor != 2400 {
+		t.Fatalf("confirmed historical order status=%s amount=%d, want succeeded/2400", confirmed.Status, confirmed.AmountMinor)
+	}
+	confirmedReplay, err := module.service.Simulate(context.Background(), quoteOwner.id, historicalOrderID, "succeeded")
+	if err != nil || confirmedReplay.Status != "succeeded" || confirmedReplay.AmountMinor != 2400 {
+		t.Fatalf("idempotent confirmation replay=%+v error=%v, want succeeded/2400", confirmedReplay, err)
+	}
+	replayed, err := module.service.CreateOrder(context.Background(), quoteOwner.id, 1, historicalIdempotencyKey)
+	if err != nil {
+		t.Fatalf("replay historical order: %v", err)
+	}
+	if replayed.ID != historicalOrderID || replayed.AmountMinor != 2400 {
+		t.Fatalf("historical idempotent replay id=%s amount=%d, want id=%s amount=2400", replayed.ID, replayed.AmountMinor, historicalOrderID)
+	}
+	sender := &reportRecorder{}
+	worker, err := NewReportWorker(f.pool, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if processed, err := worker.ProcessOne(context.Background()); err != nil || !processed {
+		t.Fatalf("historical payment report processed=%t error=%v", processed, err)
+	}
+	sender.mu.Lock()
+	reports := append([]contracts.PaymentReport(nil), sender.reports...)
+	sender.mu.Unlock()
+	if len(reports) != 1 || reports[0].OrderID != historicalOrderID || reports[0].AmountMinor != 2400 {
+		t.Fatalf("historical payment reports=%+v, want one report with original amount 2400", reports)
+	}
+	var storedAmount int
+	if err := f.pool.QueryRow(context.Background(), `SELECT amount_minor FROM billing.orders WHERE id=$1`, historicalOrderID).Scan(&storedAmount); err != nil {
+		t.Fatal(err)
+	}
+	if storedAmount != 2400 {
+		t.Fatalf("historical amount after replay=%d, want unchanged 2400", storedAmount)
+	}
+}
+
 type reportRecorder struct {
 	mu       sync.Mutex
 	failures int

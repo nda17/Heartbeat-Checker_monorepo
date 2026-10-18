@@ -20,7 +20,7 @@ var (
 	ErrConflict  = errors.New("billing order conflicts with current state")
 )
 
-const PricePerMonitorMinor = 2400
+const PricePerMonitorMinor = 2900
 
 var moscow = time.FixedZone("Europe/Moscow", 3*60*60)
 

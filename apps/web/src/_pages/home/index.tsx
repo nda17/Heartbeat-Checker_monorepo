@@ -305,13 +305,13 @@ export function HomePage() {
             <p>
               Один монитор регулярно проверяет один выбранный адрес — например,
               главную страницу, страницу входа или API. Проверки по расписанию
-              входят в стоимость: 24 рубля в месяц за монитор.
+              входят в стоимость: 29 рублей в месяц за монитор.
             </p>
           </div>
           <div className="landing-price-card">
             <div className="landing-price">
               <strong>
-                24<span> рубля</span>
+                29<span> рублей</span>
               </strong>
               <p>
                 за монитор
@@ -322,13 +322,13 @@ export function HomePage() {
               <div>
                 <span>Главная + вход + API · 3 монитора</span>
                 <strong>
-                  72 ₽ <small>/ мес.</small>
+                  87 ₽ <small>/ мес.</small>
                 </strong>
               </div>
               <div>
                 <span>10 мониторов</span>
                 <strong>
-                  240 ₽ <small>/ мес.</small>
+                  290 ₽ <small>/ мес.</small>
                 </strong>
               </div>
             </div>

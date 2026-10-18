@@ -92,6 +92,82 @@ func TestApplyIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestMockBillingPriceMigrationPreservesLegacyAmountsAndChecksNewAmounts(t *testing.T) {
+	pool := testDatabase(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `CREATE TABLE public.schema_migrations(version text PRIMARY KEY,checksum text NOT NULL,applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
+		t.Fatal(err)
+	}
+	previousChecksums := make(map[string]string)
+	names, err := fs.Glob(files, "*.sql")
+	if err != nil {
+		t.Fatalf("list embedded migrations: %v", err)
+	}
+	for _, name := range names {
+		if name > "0008_mock_billing.sql" {
+			break
+		}
+		data, err := files.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read legacy migration %s: %v", name, err)
+		}
+		if _, err := pool.Exec(ctx, string(data)); err != nil {
+			t.Fatalf("apply legacy migration %s: %v", name, err)
+		}
+		sum := sha256.Sum256(data)
+		checksum := hex.EncodeToString(sum[:])
+		version := strings.TrimSuffix(name, ".sql")
+		if _, err := pool.Exec(ctx, `INSERT INTO public.schema_migrations(version,checksum) VALUES($1,$2)`, version, checksum); err != nil {
+			t.Fatalf("record legacy migration %s: %v", name, err)
+		}
+		previousChecksums[version] = checksum
+	}
+
+	const legacyAccountID = "a0000000-0000-4000-8000-000000000001"
+	const legacyOrderID = "b0000000-0000-4000-8000-000000000001"
+	const legacyIdempotencyKey = "c0000000-0000-4000-8000-000000000001"
+	if _, err := pool.Exec(ctx, `INSERT INTO accounts.accounts(id,name) VALUES($1,'Legacy billing owner')`, legacyAccountID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor) VALUES($1,$2,$3,'mock',1,2400)`, legacyOrderID, legacyAccountID, legacyIdempotencyKey); err != nil {
+		t.Fatalf("seed legacy 2400-minor order before price migration: %v", err)
+	}
+
+	if err := Apply(ctx, pool); err != nil {
+		t.Fatalf("apply price migration after legacy order exists: %v", err)
+	}
+	var preservedAmount int
+	if err := pool.QueryRow(ctx, `SELECT amount_minor FROM billing.orders WHERE id=$1`, legacyOrderID).Scan(&preservedAmount); err != nil || preservedAmount != 2400 {
+		t.Fatalf("legacy order amount after migration=%d err=%v, want unchanged 2400", preservedAmount, err)
+	}
+	for version, checksum := range previousChecksums {
+		var after string
+		if err := pool.QueryRow(ctx, `SELECT checksum FROM public.schema_migrations WHERE version=$1`, version).Scan(&after); err != nil || after != checksum {
+			t.Errorf("legacy migration %s checksum changed: before=%s after=%s err=%v", version, checksum, after, err)
+		}
+	}
+
+	const validAccountID = "a0000000-0000-4000-8000-000000000002"
+	if _, err := pool.Exec(ctx, `INSERT INTO accounts.accounts(id,name) VALUES($1,'New billing owner')`, validAccountID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor) VALUES('b0000000-0000-4000-8000-000000000002',$1,'c0000000-0000-4000-8000-000000000002','mock',3,8700)`, validAccountID); err != nil {
+		t.Fatalf("insert new 2900-minor-per-monitor order: %v", err)
+	}
+
+	for index, amount := range []int{0, -8700, 8701} {
+		accountID := fmt.Sprintf("a0000000-0000-4000-8000-%012d", index+3)
+		if _, err := pool.Exec(ctx, `INSERT INTO accounts.accounts(id,name) VALUES($1,'Invalid amount owner')`, accountID); err != nil {
+			t.Fatal(err)
+		}
+		orderID := fmt.Sprintf("b0000000-0000-4000-8000-%012d", index+3)
+		key := fmt.Sprintf("c0000000-0000-4000-8000-%012d", index+3)
+		if _, err := pool.Exec(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor) VALUES($1,$2,$3,'mock',3,$4)`, orderID, accountID, key, amount); err == nil {
+			t.Errorf("insert monitor_count=3 amount_minor=%d succeeded; want constraint rejection", amount)
+		}
+	}
+}
+
 func TestSchedulingMigrationPreservesExistingMonitorsAndDefaults(t *testing.T) {
 	pool := testDatabase(t)
 	ctx := context.Background()
