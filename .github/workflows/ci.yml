@@ -83,6 +83,23 @@ jobs:
           GO_API_ORIGIN: http://127.0.0.1:8080
         run: npm run build
 
+  frontend-deploy-config:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Validate frontend deployment files
+        run: |
+          set -euo pipefail
+          shellcheck deploy/frontend/bootstrap.sh deploy/frontend/deploy.sh
+          bash -n deploy/frontend/bootstrap.sh deploy/frontend/deploy.sh
+          export WEB_IMAGE=ghcr.io/example/example/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          docker compose --env-file /dev/null -f deploy/frontend/compose.yaml config -q
+          caddy_image=$(docker compose --env-file /dev/null -f deploy/frontend/compose.yaml config --format json | jq -er '.services.caddy.image')
+          [[ "$caddy_image" =~ @sha256:[0-9a-f]{64}$ ]]
+          docker run --rm -i --network none \
+            "$caddy_image" caddy validate --config /dev/stdin --adapter caddyfile < deploy/frontend/Caddyfile
+          python3 deploy/frontend/test_deploy.py
+
   images:
     runs-on: ubuntu-24.04
     needs: [backend, web]

@@ -1,0 +1,9 @@
+heartbeat-checker.ru {
+    encode zstd gzip
+    reverse_proxy web:3000
+
+    log {
+        output stdout
+        format json
+    }
+}
