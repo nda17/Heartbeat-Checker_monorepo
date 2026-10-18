@@ -21,7 +21,13 @@ args = sys.argv[1:]
 with open(os.environ["DOCKER_LOG"], "a") as f:
     f.write(json.dumps(args) + "\n")
 if args[:2] == ["image", "inspect"]:
-    print(os.environ["IMAGE_REVISION"])
+    format_value = args[args.index("--format") + 1]
+    if "org.opencontainers.image.revision" in format_value:
+        print(os.environ["IMAGE_REVISION"])
+    elif "org.heartbeat-checker.web-mode" in format_value:
+        print(os.environ.get("IMAGE_MODE", "app"))
+    else:
+        raise SystemExit(2)
     raise SystemExit(0)
 if args and args[0] == "compose" and "up" in args:
     state = os.environ["DOCKER_STATE"]
@@ -39,7 +45,7 @@ if args and args[0] == "compose" and "down" in args:
 
 
 CURL_MOCK = r'''#!/usr/bin/env python3
-import os, sys
+import json, os, sys
 
 args = sys.argv[1:]
 def option_value(flag):
@@ -49,12 +55,46 @@ def option_value(flag):
         return None
 
 out = option_value("-o")
+headers_out = option_value("-D")
 url = args[-1]
 is_postflight = "--resolve" in args
+with open(os.environ["CURL_LOG"], "a") as f:
+    f.write(json.dumps(args) + "\n")
+path = url.split("heartbeat-checker.ru", 1)[-1] if is_postflight else ""
 if is_postflight:
     if os.environ.get("FAIL_POSTFLIGHT") == "1":
         raise SystemExit(22)
-    status, body = "401", '{"error":"unauthorized"}'
+    if path == "/":
+        status = "200"
+        body = (
+            '<html data-web-mode="landing">Сервис готовится к запуску '
+            '<footer><a href="/terms">Условия</a><a href="/privacy">'
+            'Конфиденциальность</a><a href="/cookies">Cookies</a>'
+            '<a href="/contacts">Контакты</a></footer></html>'
+        )
+    elif path == "/theme-init.js":
+        status, body = "200", ""
+    elif path in ("/terms", "/privacy", "/cookies", "/contacts"):
+        status = "500" if path == "/" + os.environ.get("FAIL_LEGAL_PAGE", "") else "200"
+        body = "" if status == "500" else "Legal page: " + path
+    elif path == "/api/v1/me":
+        status = "404" if os.environ.get("DEPLOY_MODE") == "landing" else "401"
+        body = '{"error":"unauthorized"}' if status == "401" else '{"error":"not_found"}'
+    elif path in (
+        "/register",
+        "/login",
+        "/forgot-password",
+        "/reset-password",
+        "/verify-email",
+        "/app",
+        "/app/settings",
+    ):
+        status, body = "307", ""
+        if headers_out:
+            with open(headers_out, "w") as f:
+                f.write("HTTP/2 307\r\nlocation: /\r\n")
+    else:
+        status, body = "404", ""
 else:
     status = os.environ.get("PREFLIGHT_STATUS", "401")
     body = os.environ.get("PREFLIGHT_BODY", '{"error":"unauthorized"}')
@@ -92,6 +132,7 @@ class DeployTests(unittest.TestCase):
         (self.deploy_dir / "compose.yaml.incoming").write_text("new compose\n")
         (self.deploy_dir / "Caddyfile.incoming").write_text("new caddy\n")
         self.log = self.root / "docker.log"
+        self.curl_log = self.root / "curl.log"
         self.state = self.root / "docker.state"
 
     def tearDown(self):
@@ -110,11 +151,28 @@ class DeployTests(unittest.TestCase):
             "DEPLOY_DIR": str(self.deploy_dir),
             "DOCKER_LOG": str(self.log),
             "DOCKER_STATE": str(self.state),
+            "CURL_LOG": str(self.curl_log),
             "IMAGE_REVISION": SOURCE_SHA,
+            "IMAGE_MODE": "app",
         })
         env.update({key: str(value) for key, value in extra_env.items()})
+        mode = extra_env.get("mode")
+        api_origin = extra_env.get("api_origin", API_ORIGIN)
+        env["DEPLOY_MODE"] = str(mode or "app")
+        env.pop("mode", None)
+        env.pop("api_origin", None)
+        deploy_args = [
+            "bash",
+            str(self.script),
+            SOURCE_SHA,
+            IMAGE,
+            str(api_origin),
+            "ci-bot",
+        ]
+        if mode is not None:
+            deploy_args.append(str(mode))
         return subprocess.run(
-            ["bash", str(self.script), SOURCE_SHA, IMAGE, API_ORIGIN, "ci-bot"],
+            deploy_args,
             cwd=self.root,
             env=env,
             text=True,
@@ -127,6 +185,12 @@ class DeployTests(unittest.TestCase):
         import json
         return [json.loads(line) for line in self.log.read_text().splitlines()]
 
+    def curl_calls(self):
+        if not self.curl_log.exists():
+            return []
+        import json
+        return [json.loads(line) for line in self.curl_log.read_text().splitlines()]
+
     def test_successful_first_deployment(self):
         result = self.run_deploy()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -135,6 +199,44 @@ class DeployTests(unittest.TestCase):
         self.assertEqual((self.deploy_dir / "compose.yaml").read_text(), "new compose\n")
         self.assertEqual((self.deploy_dir / "Caddyfile").read_text(), "new caddy\n")
         self.assertFalse((self.deploy_dir / "previous").exists())
+
+    def test_landing_deploys_without_api_preflight(self):
+        result = self.run_deploy(mode="landing", api_origin="", IMAGE_MODE="landing")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Frontend deployed:", result.stdout)
+        urls = [call[-1] for call in self.curl_calls()]
+        self.assertNotIn(API_ORIGIN + "/api/v1/me", urls)
+        self.assertIn("https://heartbeat-checker.ru/", urls)
+        self.assertIn("https://heartbeat-checker.ru/theme-init.js", urls)
+        self.assertIn("https://heartbeat-checker.ru/api/v1/me", urls)
+        self.assertEqual(
+            sum(url in urls for url in (
+                "https://heartbeat-checker.ru/terms",
+                "https://heartbeat-checker.ru/privacy",
+                "https://heartbeat-checker.ru/cookies",
+                "https://heartbeat-checker.ru/contacts",
+            )),
+            4,
+        )
+        self.assertEqual(
+            sum(url in urls for url in (
+                "https://heartbeat-checker.ru/register",
+                "https://heartbeat-checker.ru/login",
+                "https://heartbeat-checker.ru/forgot-password",
+                "https://heartbeat-checker.ru/reset-password",
+                "https://heartbeat-checker.ru/verify-email",
+                "https://heartbeat-checker.ru/app",
+                "https://heartbeat-checker.ru/app/settings",
+            )),
+            7,
+        )
+        calls = self.docker_calls()
+        mode_inspect = [
+            call for call in calls
+            if call[:2] == ["image", "inspect"]
+            and "org.heartbeat-checker.web-mode" in call[3]
+        ]
+        self.assertEqual(len(mode_inspect), 1)
 
     def test_bad_api_auth_contract_prevents_switch(self):
         self.old_deployment()
@@ -157,6 +259,23 @@ class DeployTests(unittest.TestCase):
         ])
         self.assertEqual((self.deploy_dir / ".env").read_text(), "WEB_IMAGE=old-image\n")
 
+    def test_bad_mode_is_rejected_before_registry_or_compose_actions(self):
+        self.old_deployment()
+        result = self.run_deploy(mode="preview", api_origin="")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Invalid web mode", result.stderr)
+        self.assertEqual(self.docker_calls(), [])
+        self.assertEqual((self.deploy_dir / ".env").read_text(), "WEB_IMAGE=old-image\n")
+
+    def test_image_mode_mismatch_prevents_switch(self):
+        self.old_deployment()
+        result = self.run_deploy(mode="landing", api_origin="", IMAGE_MODE="app")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Image web mode does not match requested deployment mode", result.stderr)
+        self.assertFalse(any(call[:1] == ["compose"] for call in self.docker_calls()))
+        self.assertFalse(self.curl_calls())
+        self.assertEqual((self.deploy_dir / ".env").read_text(), "WEB_IMAGE=old-image\n")
+
     def test_failed_postflight_restores_previous_files_and_recreates(self):
         self.old_deployment()
         result = self.run_deploy(FAIL_POSTFLIGHT="1")
@@ -170,6 +289,45 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(len(ups), 2)
         self.assertIn("--force-recreate", ups[0])
         self.assertIn("--force-recreate", ups[1])
+
+    def test_failed_landing_postflight_restores_previous_files_and_recreates(self):
+        self.old_deployment()
+        result = self.run_deploy(
+            mode="landing",
+            api_origin="",
+            IMAGE_MODE="landing",
+            FAIL_POSTFLIGHT="1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("restoring previous deployment", result.stderr)
+        for name, expected in ((".env", "WEB_IMAGE=old-image\n"),
+                               ("compose.yaml", "old compose\n"),
+                               ("Caddyfile", "old caddy\n")):
+            self.assertEqual((self.deploy_dir / name).read_text(), expected)
+        ups = [call for call in self.docker_calls() if "up" in call]
+        self.assertEqual(len(ups), 2)
+        self.assertIn("--force-recreate", ups[0])
+        self.assertIn("--force-recreate", ups[1])
+
+    def test_landing_legal_page_failure_restores_previous_files(self):
+        self.old_deployment()
+        result = self.run_deploy(
+            mode="landing",
+            api_origin="",
+            IMAGE_MODE="landing",
+            FAIL_LEGAL_PAGE="privacy",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("restoring previous deployment", result.stderr)
+        for name, expected in ((".env", "WEB_IMAGE=old-image\n"),
+                               ("compose.yaml", "old compose\n"),
+                               ("Caddyfile", "old caddy\n")):
+            self.assertEqual((self.deploy_dir / name).read_text(), expected)
+        privacy_calls = [
+            call for call in self.curl_calls()
+            if call[-1] == "https://heartbeat-checker.ru/privacy"
+        ]
+        self.assertTrue(privacy_calls)
 
     def test_failed_first_deployment_stops_containers_without_volume_deletion(self):
         result = self.run_deploy(FAIL_POSTFLIGHT="1")

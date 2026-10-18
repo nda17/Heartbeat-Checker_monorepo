@@ -19,6 +19,32 @@ export function Brand({ compact = false }: { compact?: boolean }) {
     </Link>
   );
 }
+export function PublicFooter({ onHome = false }: { onHome?: boolean }) {
+  const landingMode = process.env.WEB_MODE === "landing";
+  return (
+    <footer className="landing-footer">
+      <div className="landing-footer-main">
+        <Brand />
+        <span>Мониторинг начинается с внимания.</span>
+      </div>
+      <nav aria-label="Документы и контакты">
+        <Link href="/terms">Условия и оферта</Link>
+        <Link href="/terms#payments">Оплата и возвраты</Link>
+        <Link href="/privacy">Персональные данные</Link>
+        <Link href="/cookies">Cookie</Link>
+        <Link href="/contacts">Контакты</Link>
+      </nav>
+      <div className="landing-footer-contact">
+        <a href="mailto:info@heartbeat-checker.ru">info@heartbeat-checker.ru</a>
+        {onHome && (
+          <Link href={landingMode ? "#how" : "/login"}>
+            {landingMode ? "Как это работает ↗" : "Личный кабинет ↗"}
+          </Link>
+        )}
+      </div>
+    </footer>
+  );
+}
 export function Arrow() {
   return <span aria-hidden="true">↗</span>;
 }
