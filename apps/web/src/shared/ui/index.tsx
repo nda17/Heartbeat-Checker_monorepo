@@ -36,6 +36,13 @@ export function PublicFooter({ onHome = false }: { onHome?: boolean }) {
         <Link href="/privacy">Персональные данные</Link>
         <Link href="/cookies">Cookie</Link>
         <Link href="/contacts">Контакты</Link>
+        <a
+          href="https://max.ru/id272385800008_biz"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Канал сервиса в MAX
+        </a>
       </nav>
       <div className="landing-footer-contact">
         <a href="mailto:info@heartbeat-checker.ru">info@heartbeat-checker.ru</a>
