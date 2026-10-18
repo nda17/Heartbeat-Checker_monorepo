@@ -140,3 +140,28 @@ jobs:
             [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")" == "$GITHUB_SHA" ]]
             [[ "$(docker image inspect --format '{{ index .Config.Labels "org.heartbeat-checker.web-mode" }}' "$image")" == "$mode" ]]
           done
+      - name: Smoke public landing routes from built image
+        run: |
+          set -euo pipefail
+          container=$(docker run --rm -d -p 127.0.0.1::3000 heartbeat-checker/web:ci-landing)
+          smoke_dir=$(mktemp -d)
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true; rm -rf "$smoke_dir"' EXIT
+          host_port=$(docker port "$container" 3000/tcp | awk -F: '{print $NF}')
+          [[ "$host_port" =~ ^[0-9]+$ ]]
+          base="http://127.0.0.1:$host_port"
+          curl -fsS --retry 20 --retry-connrefused --retry-delay 1 --max-time 5 -o "$smoke_dir/home" "$base/"
+          grep -Fq 'data-web-mode="landing"' "$smoke_dir/home"
+          grep -Fq 'Сервис готовится к запуску' "$smoke_dir/home"
+          if grep -Eiq 'href="/(register|login|app)(["/?#])' "$smoke_dir/home"; then exit 1; fi
+          for route in terms privacy cookies contacts; do
+            grep -Fq "href=\"/$route\"" "$smoke_dir/home"
+            status=$(curl -sS --max-time 5 -o "$smoke_dir/$route" -w '%{http_code}' "$base/$route")
+            [[ "$status" == 200 && -s "$smoke_dir/$route" ]]
+          done
+          status=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' "$base/api/v1/me")
+          [[ "$status" == 404 ]]
+          for route in register login forgot-password reset-password verify-email app app/settings; do
+            status=$(curl -sS --max-time 5 -D "$smoke_dir/headers" -o /dev/null -w '%{http_code}' "$base/$route")
+            [[ "$status" == 307 ]]
+            grep -Eiq '^location:[[:space:]]*/[[:space:]]*$' "$smoke_dir/headers"
+          done

@@ -94,11 +94,16 @@ landing_postflight() {
   grep -Fq 'data-web-mode="landing"' "$workdir/home-response" || return 1
   grep -Fq 'Сервис готовится к запуску' "$workdir/home-response" || return 1
   if grep -Eiq 'href="/(register|login|app)(["/?#])' "$workdir/home-response"; then return 1; fi
-  curl -fsS --max-time 5 "${resolved[@]}" -o /dev/null "$public_origin/theme-init.js" || return 1
   local status route
+  for route in terms privacy cookies contacts; do
+    grep -Fq "href=\"/$route\"" "$workdir/home-response" || return 1
+    status=$(curl -sS --max-time 5 "${resolved[@]}" -o "$workdir/$route-response" -w '%{http_code}' "$public_origin/$route") || return 1
+    [[ $status == 200 && -s "$workdir/$route-response" ]] || return 1
+  done
+  curl -fsS --max-time 5 "${resolved[@]}" -o /dev/null "$public_origin/theme-init.js" || return 1
   status=$(curl -sS --max-time 5 "${resolved[@]}" -o /dev/null -w '%{http_code}' "$public_origin/api/v1/me") || return 1
   [[ $status == 404 ]] || return 1
-  for route in register login app; do
+  for route in register login forgot-password reset-password verify-email app app/settings; do
     status=$(curl -sS --max-time 5 "${resolved[@]}" -D "$workdir/route-headers" -o /dev/null -w '%{http_code}' "$public_origin/$route") || return 1
     [[ $status == 307 ]] || return 1
     grep -Eiq '^location:[[:space:]]*(/|https://heartbeat-checker\.ru/)[[:space:]]*$' "$workdir/route-headers" || return 1

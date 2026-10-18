@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { ThemeToggle } from "@/features/theme-toggle";
-import { Arrow, Brand } from "@/shared/ui";
+import { Arrow, Brand, PublicFooter } from "@/shared/ui";
 import { MonitoringDemo } from "./monitoring-demo";
 
 export function HomePage() {
@@ -436,15 +436,7 @@ export function HomePage() {
           </Link>
         </section>
       </main>
-      <footer className="landing-footer">
-        <Brand />
-        <span>Мониторинг начинается с внимания.</span>
-        {landingMode ? (
-          <Link href="#how">Как это работает ↗</Link>
-        ) : (
-          <Link href="/login">Личный кабинет ↗</Link>
-        )}
-      </footer>
+      <PublicFooter onHome />
     </div>
   );
 }

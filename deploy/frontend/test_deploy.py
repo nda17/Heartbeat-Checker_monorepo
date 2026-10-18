@@ -66,13 +66,29 @@ if is_postflight:
         raise SystemExit(22)
     if path == "/":
         status = "200"
-        body = '<html data-web-mode="landing">Сервис готовится к запуску</html>'
+        body = (
+            '<html data-web-mode="landing">Сервис готовится к запуску '
+            '<footer><a href="/terms">Условия</a><a href="/privacy">'
+            'Конфиденциальность</a><a href="/cookies">Cookies</a>'
+            '<a href="/contacts">Контакты</a></footer></html>'
+        )
     elif path == "/theme-init.js":
         status, body = "200", ""
+    elif path in ("/terms", "/privacy", "/cookies", "/contacts"):
+        status = "500" if path == "/" + os.environ.get("FAIL_LEGAL_PAGE", "") else "200"
+        body = "" if status == "500" else "Legal page: " + path
     elif path == "/api/v1/me":
         status = "404" if os.environ.get("DEPLOY_MODE") == "landing" else "401"
         body = '{"error":"unauthorized"}' if status == "401" else '{"error":"not_found"}'
-    elif path in ("/register", "/login", "/app"):
+    elif path in (
+        "/register",
+        "/login",
+        "/forgot-password",
+        "/reset-password",
+        "/verify-email",
+        "/app",
+        "/app/settings",
+    ):
         status, body = "307", ""
         if headers_out:
             with open(headers_out, "w") as f:
@@ -195,11 +211,24 @@ class DeployTests(unittest.TestCase):
         self.assertIn("https://heartbeat-checker.ru/api/v1/me", urls)
         self.assertEqual(
             sum(url in urls for url in (
+                "https://heartbeat-checker.ru/terms",
+                "https://heartbeat-checker.ru/privacy",
+                "https://heartbeat-checker.ru/cookies",
+                "https://heartbeat-checker.ru/contacts",
+            )),
+            4,
+        )
+        self.assertEqual(
+            sum(url in urls for url in (
                 "https://heartbeat-checker.ru/register",
                 "https://heartbeat-checker.ru/login",
+                "https://heartbeat-checker.ru/forgot-password",
+                "https://heartbeat-checker.ru/reset-password",
+                "https://heartbeat-checker.ru/verify-email",
                 "https://heartbeat-checker.ru/app",
+                "https://heartbeat-checker.ru/app/settings",
             )),
-            3,
+            7,
         )
         calls = self.docker_calls()
         mode_inspect = [
@@ -279,6 +308,26 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(len(ups), 2)
         self.assertIn("--force-recreate", ups[0])
         self.assertIn("--force-recreate", ups[1])
+
+    def test_landing_legal_page_failure_restores_previous_files(self):
+        self.old_deployment()
+        result = self.run_deploy(
+            mode="landing",
+            api_origin="",
+            IMAGE_MODE="landing",
+            FAIL_LEGAL_PAGE="privacy",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("restoring previous deployment", result.stderr)
+        for name, expected in ((".env", "WEB_IMAGE=old-image\n"),
+                               ("compose.yaml", "old compose\n"),
+                               ("Caddyfile", "old caddy\n")):
+            self.assertEqual((self.deploy_dir / name).read_text(), expected)
+        privacy_calls = [
+            call for call in self.curl_calls()
+            if call[-1] == "https://heartbeat-checker.ru/privacy"
+        ]
+        self.assertTrue(privacy_calls)
 
     def test_failed_first_deployment_stops_containers_without_volume_deletion(self):
         result = self.run_deploy(FAIL_POSTFLIGHT="1")
