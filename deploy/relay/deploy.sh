@@ -60,7 +60,7 @@ nginx -t
 [[ $(getent ahostsv4 "$domain" | awk '{print $1}' | sort -u) == 185.184.122.62 ]] || {
   echo 'Relay DNS does not resolve only to the approved VPS' >&2; exit 1;
 }
-aero_status=$(curl -sS --max-time 10 --resolve telegram.aerocrm.space:443:127.0.0.1 \
+aero_status=$(curl -sS --noproxy '*' --max-time 10 --resolve telegram.aerocrm.space:443:127.0.0.1 \
   -o /dev/null -w '%{http_code}' https://telegram.aerocrm.space/)
 [[ $aero_status =~ ^[1-5][0-9]{2}$ ]] || { echo 'aeroCRM TLS preflight failed' >&2; exit 1; }
 aero_cert_fingerprint=$(timeout 10s openssl s_client -connect 127.0.0.1:443 \
@@ -148,9 +148,35 @@ ln -sfn "$https_site" "$https_link"
 nginx -t
 systemctl reload nginx
 
+relay_cert_fingerprint=$(openssl x509 -in "/etc/letsencrypt/live/$domain/fullchain.pem" -noout -fingerprint -sha256)
+[[ $relay_cert_fingerprint == sha256\ Fingerprint=* ]] || { echo 'Relay certificate fingerprint is unavailable' >&2; exit 1; }
+wait_for_relay_tls() {
+  local deadline=$((SECONDS + 30)) status served_fingerprint consecutive=0
+  while ((SECONDS < deadline)); do
+    status=$(curl -sS --noproxy '*' --max-time 4 --resolve "$domain:443:127.0.0.1" \
+      -o /dev/null -w '%{http_code}' "https://$domain/" 2>/dev/null) || status=
+    if [[ $status == 404 ]]; then
+      served_fingerprint=$(timeout 5s openssl s_client -connect 127.0.0.1:443 \
+        -servername "$domain" </dev/null 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null) || served_fingerprint=
+      if [[ $served_fingerprint == "$relay_cert_fingerprint" ]]; then
+        ((consecutive += 1))
+        if ((consecutive == 2)); then return 0; fi
+      else
+        consecutive=0
+      fi
+    else
+      consecutive=0
+    fi
+    sleep 1
+  done
+  echo 'Relay TLS vhost did not serve the issued certificate within 30 seconds' >&2
+  return 1
+}
+wait_for_relay_tls
+
 postflight() {
   local status
-  local -a resolved=(--resolve "$domain:443:127.0.0.1")
+  local -a resolved=(--noproxy '*' --resolve "$domain:443:127.0.0.1")
   status=$(curl -sS --max-time 15 "${resolved[@]}" -o "$workdir/telegram-response" \
     -w '%{http_code}' -X POST -H 'Content-Type: application/json' --data '{}' \
     "https://$domain/telegram-api/bot000000:invalid/getMe")
@@ -179,7 +205,7 @@ PY
   verify_aero
   systemctl is-active --quiet nginx
   local current_aero_status
-  current_aero_status=$(curl -sS --max-time 10 --resolve telegram.aerocrm.space:443:127.0.0.1 \
+  current_aero_status=$(curl -sS --noproxy '*' --max-time 10 --resolve telegram.aerocrm.space:443:127.0.0.1 \
     -o /dev/null -w '%{http_code}' https://telegram.aerocrm.space/)
   [[ $current_aero_status == "$aero_status" ]] || {
     echo 'aeroCRM response changed during relay deployment' >&2; return 1;
