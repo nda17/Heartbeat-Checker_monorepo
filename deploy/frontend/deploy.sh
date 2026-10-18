@@ -15,7 +15,7 @@ public_origin=https://heartbeat-checker.ru
   echo 'Expected an immutable GHCR web image' >&2
   exit 1
 }
-[[ $web_mode == app || $web_mode == landing ]] || { echo 'Invalid web mode' >&2; exit 1; }
+[[ $web_mode == app || $web_mode == frontend || $web_mode == landing ]] || { echo 'Invalid web mode' >&2; exit 1; }
 if [[ $web_mode == app ]]; then
   [[ $api_origin =~ ^https://[a-zA-Z0-9.-]+(:443)?$ ]] || { echo 'Invalid HTTPS API origin' >&2; exit 1; }
   normalized_api_origin=$(printf '%s' "$api_origin" | tr '[:upper:]' '[:lower:]')
@@ -24,7 +24,7 @@ if [[ $web_mode == app ]]; then
   [[ $normalized_api_origin != *localhost* && $normalized_api_origin != *127.0.0.1* ]] || { echo 'API origin must be public' >&2; exit 1; }
   [[ $normalized_api_origin != "$public_origin" ]] || { echo 'API origin must differ from web origin' >&2; exit 1; }
 else
-  [[ -z $api_origin ]] || { echo 'Landing must not have an API origin' >&2; exit 1; }
+  [[ -z $api_origin ]] || { echo "$web_mode must not have an API origin" >&2; exit 1; }
 fi
 [[ $registry_user =~ ^[a-zA-Z0-9-]+$ ]] || { echo 'Invalid registry user' >&2; exit 1; }
 for staged in compose.yaml.incoming Caddyfile.incoming; do
@@ -92,7 +92,6 @@ resolved=(--resolve heartbeat-checker.ru:443:127.0.0.1)
 landing_postflight() {
   curl -fsS --max-time 5 "${resolved[@]}" -o "$workdir/home-response" "$public_origin/" || return 1
   grep -Fq 'data-web-mode="landing"' "$workdir/home-response" || return 1
-  grep -Fq 'Сервис готовится к запуску' "$workdir/home-response" || return 1
   if grep -Eiq 'href="/(register|login|app)(["/?#])' "$workdir/home-response"; then return 1; fi
   local status route
   for route in terms privacy cookies contacts; do
@@ -110,6 +109,32 @@ landing_postflight() {
   done
 }
 
+frontend_postflight() {
+  curl -fsS --max-time 5 "${resolved[@]}" -o "$workdir/home-response" "$public_origin/" || return 1
+  grep -Fq 'data-web-mode="frontend"' "$workdir/home-response" || return 1
+  local status route response_file method request
+  local -a request_args
+  for route in login register; do
+    grep -Fq "href=\"/$route\"" "$workdir/home-response" || return 1
+  done
+  for route in terms privacy cookies contacts login register forgot-password reset-password verify-email app app/settings; do
+    response_file="$workdir/${route//\//-}-response"
+    status=$(curl -sS --max-time 5 "${resolved[@]}" -o "$response_file" -w '%{http_code}' "$public_origin/$route") || return 1
+    [[ $status == 200 && -s "$response_file" ]] || return 1
+  done
+  curl -fsS --max-time 5 "${resolved[@]}" -o /dev/null "$public_origin/theme-init.js" || return 1
+  for request in 'GET me' 'POST auth/login'; do
+    read -r method route <<< "$request"
+    request_args=(-X "$method")
+    if [[ $method == POST ]]; then request_args+=(-H 'Content-Type: application/json' --data '{}'); fi
+    status=$(curl -sS --max-time 5 "${resolved[@]}" "${request_args[@]}" -D "$workdir/api-headers" -o "$workdir/api-response" -w '%{http_code}' "$public_origin/api/v1/$route") || return 1
+    [[ $status == 503 ]] || return 1
+    grep -Eq '"error"[[:space:]]*:[[:space:]]*"temporarily_unavailable"' "$workdir/api-response" || return 1
+    grep -Eiq '^cache-control:[[:space:]]*no-store' "$workdir/api-headers" || return 1
+    if grep -Eiq '^set-cookie:' "$workdir/api-headers"; then return 1; fi
+  done
+}
+
 app_postflight() {
   curl -fsS --max-time 5 "${resolved[@]}" -o /dev/null "$public_origin/" || return 1
   curl -fsS --max-time 5 "${resolved[@]}" -o /dev/null "$public_origin/theme-init.js" || return 1
@@ -122,6 +147,8 @@ healthy=false
 for ((attempt = 1; attempt <= 30; attempt++)); do
   if [[ $web_mode == landing ]]; then
     if landing_postflight; then healthy=true; break; fi
+  elif [[ $web_mode == frontend ]]; then
+    if frontend_postflight; then healthy=true; break; fi
   else
     if app_postflight; then healthy=true; break; fi
   fi

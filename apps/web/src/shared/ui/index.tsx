@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { FooterLegalNotice } from "./legal-notice";
+export { FooterLegalNotice };
 export function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <Link href="/" className="brand" aria-label="Heartbeat Checker — главная">
@@ -13,7 +15,7 @@ export function Brand({ compact = false }: { compact?: boolean }) {
           />
         </svg>
       </span>
-      <span>
+      <span className="brand-wordmark">
         Heartbeat{!compact && <span className="brand-light"> Checker</span>}
       </span>
     </Link>
@@ -42,6 +44,7 @@ export function PublicFooter({ onHome = false }: { onHome?: boolean }) {
           </Link>
         )}
       </div>
+      <FooterLegalNotice />
     </footer>
   );
 }

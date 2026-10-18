@@ -4,7 +4,7 @@ export default function NotFound() {
   return (
     <main id="main" className="standalone">
       <p className="eyebrow">404 / СТРАНИЦА НЕ НАЙДЕНА</p>
-      <h1>Здесь пока ничего нет</h1>
+      <h1>Страница не найдена</h1>
       <p>
         {landingMode
           ? "Проверьте адрес или вернитесь на главную."

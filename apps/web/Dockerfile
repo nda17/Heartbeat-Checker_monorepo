@@ -15,9 +15,12 @@ ENV WEB_MODE=$WEB_MODE \
     WEB_PUBLIC_ORIGIN=$WEB_PUBLIC_ORIGIN \
     NEXT_PUBLIC_TURNSTILE_SITE_KEY=$NEXT_PUBLIC_TURNSTILE_SITE_KEY
 RUN test -n "$WEB_PUBLIC_ORIGIN" \
-    && { test "$WEB_MODE" = landing || { test "$WEB_MODE" = app \
-      && test -n "$GO_API_ORIGIN" \
-      && test -n "$NEXT_PUBLIC_TURNSTILE_SITE_KEY"; }; } \
+    && { case "$WEB_MODE" in \
+      app) test -n "$GO_API_ORIGIN" && test -n "$NEXT_PUBLIC_TURNSTILE_SITE_KEY" ;; \
+      frontend) test -z "$GO_API_ORIGIN" && test -n "$NEXT_PUBLIC_TURNSTILE_SITE_KEY" ;; \
+      landing) test -z "$GO_API_ORIGIN" ;; \
+      *) exit 1 ;; \
+    esac; } \
     && mkdir -p public \
     && npm run build
 

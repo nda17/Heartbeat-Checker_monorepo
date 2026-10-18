@@ -8,12 +8,13 @@ on:
         required: true
         type: string
       web_mode:
-        description: Public landing without backend, or the full application
+        description: Full application, frontend without backend, or public landing
         required: true
         default: app
         type: choice
         options:
           - app
+          - frontend
           - landing
 
 permissions:
@@ -44,7 +45,7 @@ jobs:
           set -euo pipefail
           [[ "$GITHUB_REF" == 'refs/heads/master' ]] || { echo 'Dispatch this workflow from master'; exit 1; }
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Provide a full lowercase commit SHA'; exit 1; }
-          [[ "$WEB_MODE" == app || "$WEB_MODE" == landing ]] || { echo 'Invalid web mode'; exit 1; }
+          [[ "$WEB_MODE" == app || "$WEB_MODE" == frontend || "$WEB_MODE" == landing ]] || { echo 'Invalid web mode'; exit 1; }
           [[ "$WEB_PUBLIC_ORIGIN" == 'https://heartbeat-checker.ru' ]] || { echo 'WEB_PUBLIC_ORIGIN must be the production HTTPS origin'; exit 1; }
           if [[ "$WEB_MODE" == app ]]; then
             [[ "$GO_API_ORIGIN" =~ ^https://[a-zA-Z0-9.-]+(:443)?$ ]] || { echo 'GO_API_ORIGIN must be a public HTTPS origin'; exit 1; }
@@ -52,6 +53,8 @@ jobs:
             normalized_api_origin=${normalized_api_origin%:443}
             normalized_api_origin=${normalized_api_origin%.}
             [[ "$normalized_api_origin" != "$WEB_PUBLIC_ORIGIN" && "$normalized_api_origin" != *localhost* && "$normalized_api_origin" != *127.0.0.1* ]] || { echo 'GO_API_ORIGIN must reach the separate public Go API'; exit 1; }
+          fi
+          if [[ "$WEB_MODE" != landing ]]; then
             [[ "$TURNSTILE_SITE_KEY" =~ ^0x4[A-Za-z0-9_-]{20,}$ ]] || { echo 'A production Turnstile site key is required'; exit 1; }
           fi
           [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ && "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo 'Invalid deploy host or user'; exit 1; }
@@ -91,8 +94,10 @@ jobs:
           image="ghcr.io/${GITHUB_REPOSITORY,,}/web"
           api_origin=$GO_API_ORIGIN
           site_key=$TURNSTILE_SITE_KEY
-          if [[ "$WEB_MODE" == landing ]]; then
+          if [[ "$WEB_MODE" != app ]]; then
             api_origin=
+          fi
+          if [[ "$WEB_MODE" == landing ]]; then
             site_key=
           fi
           tag="$SOURCE_SHA-$WEB_MODE"
@@ -129,7 +134,7 @@ jobs:
           ssh_opts=(-i "$ssh_dir/key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$ssh_dir/known_hosts" -o BatchMode=yes)
           target="$DEPLOY_USER@$DEPLOY_HOST"
           api_origin=$GO_API_ORIGIN
-          if [[ "$WEB_MODE" == landing ]]; then api_origin=; fi
+          if [[ "$WEB_MODE" != app ]]; then api_origin=; fi
           scp "${ssh_opts[@]}" deploy/frontend/compose.yaml "$target:/opt/heartbeat-checker/frontend/compose.yaml.incoming"
           scp "${ssh_opts[@]}" deploy/frontend/Caddyfile "$target:/opt/heartbeat-checker/frontend/Caddyfile.incoming"
           scp "${ssh_opts[@]}" deploy/frontend/deploy.sh "$target:/opt/heartbeat-checker/frontend/deploy.sh.incoming"
