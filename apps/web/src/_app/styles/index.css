@@ -561,10 +561,16 @@ input:read-only {
 }
 /* Landing */
 .landing {
-  max-width: 1440px;
-  margin: auto;
-  padding: 0 70px;
+  width: 100%;
+  padding: 0 clamp(23px, 4vw, 120px);
   background: #fafbf9;
+}
+.landing > header,
+.landing > main,
+.landing > footer {
+  width: 100%;
+  max-width: 1920px;
+  margin-inline: auto;
 }
 .landing-header {
   height: 104px;
@@ -3115,6 +3121,7 @@ button.primary:hover:not(:disabled) {
 }
 .landing .landing-faq details p {
   padding: 0 35px 22px 0;
+  max-width: 75ch;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.9;
@@ -3157,10 +3164,6 @@ button.primary:hover:not(:disabled) {
   letter-spacing: 0.13em;
   font-weight: 600;
   color: var(--accent);
-}
-.landing-demo .landing-demo-top > span:last-child {
-  font-size: 8px;
-  color: var(--muted);
 }
 .landing-demo .landing-demo-monitor {
   display: flex;
@@ -3648,9 +3651,6 @@ button.primary:hover:not(:disabled) {
   .landing-demo .landing-demo-label {
     font-size: 7px;
   }
-  .landing-demo .landing-demo-top > span:last-child {
-    font-size: 7px;
-  }
   .landing-demo .landing-demo-monitor {
     padding: 20px 17px 0;
     gap: 12px;
@@ -3708,5 +3708,112 @@ button.primary:hover:not(:disabled) {
   }
   .console-top .top-label {
     display: none;
+  }
+}
+
+/* Verified Informer chats and per-monitor routes. */
+.messenger-panel {
+  margin-top: 24px;
+  padding: 24px;
+}
+.messenger-panel .panel-heading {
+  padding: 0;
+  margin-bottom: 20px;
+}
+.messenger-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.messenger-options button {
+  font-size: 11px;
+}
+.messenger-destinations {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border-top: 1px solid var(--line);
+}
+.messenger-destinations li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+.messenger-destinations li > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.messenger-destinations strong {
+  font-size: 12px;
+}
+.messenger-command,
+.messenger-candidate {
+  padding: 14px;
+  margin-bottom: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.messenger-command p,
+.messenger-candidate strong {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.messenger-command code {
+  display: block;
+  overflow-wrap: anywhere;
+  user-select: all;
+  font-size: 11px;
+}
+.messenger-routes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.messenger-route {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.messenger-route h3 {
+  font-size: 15px;
+}
+.messenger-route label:not(.checkbox-label) {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 11px;
+}
+.messenger-route button {
+  align-self: flex-start;
+}
+.incident-target {
+  background: var(--soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.incident-number {
+  font-size: 10px;
+  user-select: all;
+}
+@media (max-width: 680px) {
+  .messenger-panel {
+    padding: 18px;
+  }
+  .messenger-destinations li {
+    align-items: flex-start;
+  }
+  .messenger-routes {
+    grid-template-columns: 1fr;
   }
 }

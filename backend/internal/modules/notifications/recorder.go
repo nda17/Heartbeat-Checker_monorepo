@@ -11,11 +11,45 @@ import (
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/outbox"
 )
 
-type Recorder struct{}
+type Recorder struct{ messenger *Messenger }
 
-func NewRecorder() Recorder { return Recorder{} }
+func NewRecorder(messenger ...*Messenger) Recorder {
+	if len(messenger) > 0 {
+		return Recorder{messenger: messenger[0]}
+	}
+	return Recorder{}
+}
 
-func (Recorder) Enqueue(ctx context.Context, tx pgx.Tx, n incidentcontracts.Notification) error {
+func (r Recorder) Enqueue(ctx context.Context, tx pgx.Tx, n incidentcontracts.Notification) error {
+	if err := enqueueWebhook(ctx, tx, n); err != nil {
+		return err
+	}
+	if r.messenger != nil && r.messenger.cfg.Enabled {
+		return r.messenger.Enqueue(ctx, tx, n)
+	}
+	return nil
+}
+
+func (r Recorder) ObserveDown(ctx context.Context, tx pgx.Tx, monitorID, accountID string, incident incidentcontracts.IncidentState, o incidentcontracts.Observation) error {
+	if r.messenger != nil && r.messenger.cfg.Enabled {
+		return r.messenger.ObserveDown(ctx, tx, monitorID, accountID, incident, o)
+	}
+	return nil
+}
+func (r Recorder) CancelReminders(ctx context.Context, tx pgx.Tx, monitorID string) error {
+	if r.messenger != nil && r.messenger.cfg.Enabled {
+		return r.messenger.CancelReminders(ctx, tx, monitorID)
+	}
+	return nil
+}
+func (r Recorder) CancelForReset(ctx context.Context, tx pgx.Tx, monitorID string) error {
+	if r.messenger != nil && r.messenger.cfg.Enabled {
+		return r.messenger.CancelForReset(ctx, tx, monitorID)
+	}
+	return nil
+}
+
+func enqueueWebhook(ctx context.Context, tx pgx.Tx, n incidentcontracts.Notification) error {
 	var kind string
 	switch n.Kind {
 	case "incident_opened":

@@ -168,6 +168,148 @@ func TestMockBillingPriceMigrationPreservesLegacyAmountsAndChecksNewAmounts(t *t
 	}
 }
 
+func TestSupportNoticeMigrationPreservesLegacyInboxRowsAndChecksums(t *testing.T) {
+	pool := testDatabase(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `CREATE TABLE public.schema_migrations(version text PRIMARY KEY,checksum text NOT NULL,applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
+		t.Fatal(err)
+	}
+	previousChecksums := map[string]string{}
+	names, err := fs.Glob(files, "*.sql")
+	if err != nil {
+		t.Fatalf("list embedded migrations: %v", err)
+	}
+	for _, name := range names {
+		if name >= "0010_support_notices.sql" {
+			break
+		}
+		data, err := files.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read legacy migration %s: %v", name, err)
+		}
+		if _, err := pool.Exec(ctx, string(data)); err != nil {
+			t.Fatalf("apply legacy migration %s: %v", name, err)
+		}
+		sum := sha256.Sum256(data)
+		checksum := hex.EncodeToString(sum[:])
+		version := strings.TrimSuffix(name, ".sql")
+		if _, err := pool.Exec(ctx, `INSERT INTO public.schema_migrations(version,checksum) VALUES($1,$2)`, version, checksum); err != nil {
+			t.Fatalf("record legacy migration %s: %v", name, err)
+		}
+		previousChecksums[version] = checksum
+	}
+	if len(previousChecksums) != 9 {
+		t.Fatalf("seeded %d pre-notice migrations, want 9", len(previousChecksums))
+	}
+	legacyPayload := []byte{1, 2, 3, 4}
+	legacyHash := []byte{5, 6, 7}
+	legacySender := []byte{8, 9}
+	if _, err := pool.Exec(ctx, `INSERT INTO support.inbox(provider,event_key,event_kind,sender_key,payload_hash,payload,status,attempts,last_error) VALUES('telegram','old-update','message',$1,$2,$3,'pending',2,'provider_unavailable')`, legacySender, legacyHash, legacyPayload); err != nil {
+		t.Fatalf("seed legacy message before notice migration: %v", err)
+	}
+	if err := Apply(ctx, pool); err != nil {
+		t.Fatalf("apply notice migration after legacy support row exists: %v", err)
+	}
+	var kind, status, lastError string
+	var attempts int
+	var gotSender, gotHash, gotPayload []byte
+	if err := pool.QueryRow(ctx, `SELECT event_kind,status,attempts,last_error,sender_key,payload_hash,payload FROM support.inbox WHERE event_key='old-update'`).Scan(&kind, &status, &attempts, &lastError, &gotSender, &gotHash, &gotPayload); err != nil {
+		t.Fatal(err)
+	}
+	if kind != "message" || status != "pending" || attempts != 2 || lastError != "provider_unavailable" || string(gotSender) != string(legacySender) || string(gotHash) != string(legacyHash) || string(gotPayload) != string(legacyPayload) {
+		t.Fatalf("legacy support row changed after 0010: kind=%s status=%s attempts=%d error=%s sender=%v hash=%v payload=%v", kind, status, attempts, lastError, gotSender, gotHash, gotPayload)
+	}
+	for version, checksum := range previousChecksums {
+		var after string
+		if err := pool.QueryRow(ctx, `SELECT checksum FROM public.schema_migrations WHERE version=$1`, version).Scan(&after); err != nil || after != checksum {
+			t.Errorf("legacy migration %s checksum changed: before=%s after=%s err=%v", version, checksum, after, err)
+		}
+	}
+	for _, eventKind := range []string{"welcome", "ack"} {
+		if _, err := pool.Exec(ctx, `INSERT INTO support.inbox(provider,event_key,event_kind,sender_key,payload_hash,payload) VALUES('telegram',$1,$2,$3,$4,$5)`, "new-"+eventKind, eventKind, []byte{1}, []byte{2}, []byte{3}); err != nil {
+			t.Errorf("insert new %s support kind after migration: %v", eventKind, err)
+		}
+	}
+}
+
+func TestMessengerMigrationNumbersExistingIncidentsAndPreservesPriorChecksums(t *testing.T) {
+	pool := testDatabase(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `CREATE TABLE public.schema_migrations(version text PRIMARY KEY,checksum text NOT NULL,applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
+		t.Fatal(err)
+	}
+	previousChecksums := map[string]string{}
+	names, err := fs.Glob(files, "*.sql")
+	if err != nil {
+		t.Fatalf("list embedded migrations: %v", err)
+	}
+	for _, name := range names {
+		if name >= "0011_messenger_notifications.sql" {
+			break
+		}
+		data, err := files.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read legacy migration %s: %v", name, err)
+		}
+		if _, err := pool.Exec(ctx, string(data)); err != nil {
+			t.Fatalf("apply legacy migration %s: %v", name, err)
+		}
+		sum := sha256.Sum256(data)
+		checksum := hex.EncodeToString(sum[:])
+		version := strings.TrimSuffix(name, ".sql")
+		if _, err := pool.Exec(ctx, `INSERT INTO public.schema_migrations(version,checksum) VALUES($1,$2)`, version, checksum); err != nil {
+			t.Fatalf("record legacy migration %s: %v", name, err)
+		}
+		previousChecksums[version] = checksum
+	}
+	if len(previousChecksums) != 10 {
+		t.Fatalf("seeded %d pre-messenger migrations, want 10", len(previousChecksums))
+	}
+	const accountID = "a1000000-0000-4000-8000-000000000001"
+	const monitorID = "b1000000-0000-4000-8000-000000000001"
+	if _, err := pool.Exec(ctx, `INSERT INTO accounts.accounts(id,name) VALUES($1,'Messenger migration owner')`, accountID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO monitors.monitors(id,account_id,name,url,target_key,method,expected_status) VALUES($1,$2,'Migration monitor','https://migration.example.test/health','migration.example.test:443','GET',200)`, monitorID, accountID); err != nil {
+		t.Fatal(err)
+	}
+	const openIncidentID = "c1000000-0000-4000-8000-000000000001"
+	const closedIncidentID = "c1000000-0000-4000-8000-000000000002"
+	if _, err := pool.Exec(ctx, `INSERT INTO incidents.incidents(id,monitor_id,account_id,opened_at,confirmed_at) VALUES($1,$2,$3,'2026-01-02T03:04:05Z','2026-01-02T03:05:05Z')`, openIncidentID, monitorID, accountID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO incidents.incidents(id,monitor_id,account_id,opened_at,confirmed_at,closed_at,close_reason) VALUES($1,$2,$3,'2026-01-01T03:04:05Z','2026-01-01T03:05:05Z','2026-01-01T04:05:05Z','recovered')`, closedIncidentID, monitorID, accountID); err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(ctx, pool); err != nil {
+		t.Fatalf("apply messenger migration with existing incidents: %v", err)
+	}
+	var openNumber, closedNumber int64
+	var openReason, closedReason string
+	var closeTime *time.Time
+	if err := pool.QueryRow(ctx, `SELECT number,close_reason FROM incidents.incidents WHERE id=$1`, openIncidentID).Scan(&openNumber, &openReason); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT number,close_reason,closed_at FROM incidents.incidents WHERE id=$1`, closedIncidentID).Scan(&closedNumber, &closedReason, &closeTime); err != nil {
+		t.Fatal(err)
+	}
+	if openNumber <= 0 || closedNumber <= 0 || openNumber == closedNumber || openReason != "" || closedReason != "recovered" || closeTime == nil {
+		t.Fatalf("existing incident migration state open=(%d,%q) closed=(%d,%q,%v)", openNumber, openReason, closedNumber, closedReason, closeTime)
+	}
+	for _, table := range []string{"notifications.messenger_links", "notifications.messenger_destinations", "notifications.messenger_routes", "notifications.messenger_deliveries", "notifications.messenger_reservations"} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); err != nil || !exists {
+			t.Errorf("messenger table %s exists=%t err=%v", table, exists, err)
+		}
+	}
+	for version, checksum := range previousChecksums {
+		var after string
+		if err := pool.QueryRow(ctx, `SELECT checksum FROM public.schema_migrations WHERE version=$1`, version).Scan(&after); err != nil || after != checksum {
+			t.Errorf("legacy migration %s checksum changed: before=%s after=%s err=%v", version, checksum, after, err)
+		}
+	}
+}
+
 func TestSchedulingMigrationPreservesExistingMonitorsAndDefaults(t *testing.T) {
 	pool := testDatabase(t)
 	ctx := context.Background()

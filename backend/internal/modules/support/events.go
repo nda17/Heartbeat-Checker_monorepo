@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 type attachment struct {
@@ -30,6 +31,7 @@ type event struct {
 	Attachments   []attachment `json:"attachments,omitempty"`
 	Unsupported   bool         `json:"unsupported,omitempty"`
 	Discovery     *Discovery   `json:"-"`
+	Start         bool         `json:"-"`
 }
 
 // Discovery deliberately contains no sender identity, title, message, token or attachment.
@@ -40,8 +42,9 @@ type Discovery struct {
 }
 
 type telegramMessage struct {
-	ID       int64 `json:"message_id"`
-	ThreadID int64 `json:"message_thread_id"`
+	ID       int64  `json:"message_id"`
+	ThreadID int64  `json:"message_thread_id"`
+	Text     string `json:"text"`
 	Chat     struct {
 		ID   int64  `json:"id"`
 		Type string `json:"type"`
@@ -73,6 +76,8 @@ func normalize(provider string, body []byte) (*event, string, error) {
 			return nil, "", errors.New("invalid message")
 		}
 		e := &event{Provider: provider, ChatID: msg.Chat.ID, MessageID: strconv.FormatInt(msg.ID, 10), SenderID: msg.From.ID, ThreadID: msg.ThreadID, Private: msg.Chat.Type == "private", Anonymous: len(msg.SenderChat) > 0 && string(msg.SenderChat) != "null", Bot: msg.From.Bot}
+		fields := strings.Fields(msg.Text)
+		e.Start = e.Private && len(fields) > 0 && fields[0] == "/start"
 		if msg.Reply != nil {
 			e.ReplyID = strconv.FormatInt(msg.Reply.ID, 10)
 		}
@@ -83,7 +88,11 @@ func normalize(provider string, body []byte) (*event, string, error) {
 		Type      string `json:"update_type"`
 		Timestamp int64  `json:"timestamp"`
 		ChatID    int64  `json:"chat_id"`
-		Message   *struct {
+		User      *struct {
+			ID  int64 `json:"user_id"`
+			Bot bool  `json:"is_bot"`
+		} `json:"user"`
+		Message *struct {
 			Sender struct {
 				ID  int64 `json:"user_id"`
 				Bot bool  `json:"is_bot"`
@@ -108,7 +117,13 @@ func normalize(provider string, body []byte) (*event, string, error) {
 	if err := json.Unmarshal(body, &u); err != nil || u.Type == "" {
 		return nil, "", errors.New("invalid update")
 	}
-	if u.Type == "bot_added" || u.Type == "bot_started" || u.Type == "bot_removed" {
+	if u.Type == "bot_started" {
+		if u.ChatID <= 0 || u.User == nil || u.User.ID <= 0 || u.Timestamp <= 0 {
+			return nil, "", errors.New("invalid start")
+		}
+		return &event{Provider: provider, ChatID: u.ChatID, SenderID: u.User.ID, Private: true, Bot: u.User.Bot, Start: true}, "", nil
+	}
+	if u.Type == "bot_added" || u.Type == "bot_removed" {
 		if u.ChatID == 0 || u.Timestamp <= 0 {
 			return nil, "", errors.New("invalid discovery")
 		}

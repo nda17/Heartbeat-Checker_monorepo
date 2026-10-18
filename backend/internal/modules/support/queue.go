@@ -18,17 +18,32 @@ var errChangedDuplicate = errors.New("conflicting support update")
 var errAdmissionLimit = errors.New("support admission limit")
 
 type job struct {
-	ID                   int64
-	Provider, Key, Lease string
-	Payload              []byte
-	Attempts             int
-	Created              time.Time
+	ID                         int64
+	Provider, Key, Kind, Lease string
+	Payload                    []byte
+	Attempts                   int
+	Created                    time.Time
+}
+
+type noticeRecipient struct {
+	Provider string `json:"provider"`
+	ChatID   int64  `json:"chatId"`
+	SenderID int64  `json:"senderId"`
+	Private  bool   `json:"private"`
 }
 
 func (m *Module) digest(value []byte) []byte {
 	mac := hmac.New(sha256.New, m.hashKey)
 	_, _ = mac.Write(value)
 	return mac.Sum(nil)
+}
+
+func (m *Module) seal(provider, key string, plain []byte) ([]byte, error) {
+	nonce := make([]byte, m.cipher.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, err
+	}
+	return m.cipher.Seal(nonce, nonce, plain, []byte(provider+":"+key)), nil
 }
 
 // Admission and the duplicate check share one short database lock so multiple API
@@ -44,6 +59,13 @@ func (m *Module) admit(ctx context.Context, provider, key string, e event) error
 		key = fmt.Sprintf("discovery:%s:%d", e.Discovery.Type, e.Discovery.ChatID)
 		plain, err = json.Marshal(e.Discovery)
 		sender = "discovery"
+	} else if e.Start {
+		if !e.Private || e.Bot || e.Anonymous || e.SenderID <= 0 || (provider == "telegram" && e.ChatID != e.SenderID) {
+			return errRejected
+		}
+		kind = "welcome"
+		key = "welcome:" + hex.EncodeToString(m.digest([]byte(sender)))
+		plain, err = json.Marshal(noticeRecipient{Provider: provider, ChatID: e.SenderID, SenderID: e.SenderID, Private: true})
 	} else {
 		plain, err = json.Marshal(e)
 	}
@@ -52,11 +74,10 @@ func (m *Module) admit(ctx context.Context, provider, key string, e event) error
 	}
 	hash := m.digest(plain)
 	senderKey := m.digest([]byte(sender))
-	nonce := make([]byte, m.cipher.NonceSize())
-	if _, err = rand.Read(nonce); err != nil {
+	payload, err := m.seal(provider, key, plain)
+	if err != nil {
 		return err
 	}
-	payload := m.cipher.Seal(nonce, nonce, plain, []byte(provider+":"+key))
 	tx, err := m.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -100,7 +121,7 @@ func (m *Module) admit(ctx context.Context, provider, key string, e event) error
 	if kind == "discovery" {
 		err = tx.QueryRow(ctx, `SELECT count(*)<1000 FROM support.inbox WHERE event_kind='discovery'`).Scan(&bounded)
 	} else {
-		err = tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM support.inbox WHERE status IN ('pending','sending'))<10000 AND (SELECT count(*) FROM support.inbox WHERE provider=$1 AND status IN ('pending','sending'))<5000 AND (SELECT count(*) FROM support.inbox WHERE provider=$1 AND sender_key=$2 AND status IN ('pending','sending'))<50 AND (SELECT count(*) FROM support.inbox WHERE provider=$1 AND sender_key=$2 AND created_at>now()-interval '1 hour')<120`, provider, senderKey).Scan(&bounded)
+		err = tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM support.inbox WHERE status IN ('pending','sending'))<10000 AND (SELECT count(*) FROM support.inbox WHERE provider=$1 AND status IN ('pending','sending'))<5000 AND (SELECT count(*) FROM support.inbox WHERE provider=$1 AND sender_key=$2 AND status IN ('pending','sending'))<50 AND (SELECT count(*) FROM support.inbox WHERE provider=$1 AND sender_key=$2 AND event_kind<>'ack' AND created_at>now()-interval '1 hour')<120`, provider, senderKey).Scan(&bounded)
 	}
 	if err != nil {
 		return err
@@ -117,6 +138,23 @@ func (m *Module) admit(ctx context.Context, provider, key string, e event) error
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// The acknowledgement is committed with the forwarded message route. It is
+// internal work and replaces the active source job, so it needs no admission cap.
+func (m *Module) enqueueAck(ctx context.Context, tx pgx.Tx, j job, r route) error {
+	key := fmt.Sprintf("ack:%d", j.ID)
+	plain, err := json.Marshal(noticeRecipient{Provider: r.Provider, ChatID: r.UserID, SenderID: r.UserID, Private: true})
+	if err != nil {
+		return err
+	}
+	payload, err := m.seal(r.Provider, key, plain)
+	if err != nil {
+		return err
+	}
+	sender := fmt.Sprintf("%s:%d", r.Provider, r.UserID)
+	_, err = tx.Exec(ctx, `INSERT INTO support.inbox(provider,event_key,event_kind,sender_key,payload_hash,payload) VALUES($1,$2,'ack',$3,$4,$5) ON CONFLICT(provider,event_key) DO NOTHING`, r.Provider, key, m.digest([]byte(sender)), m.digest(plain), payload)
+	return err
 }
 
 // ListDiscovery is an explicit read-only diagnostic; it never binds or enables a chat.
@@ -157,7 +195,7 @@ func (m *Module) claim(ctx context.Context) (*job, error) {
 	defer tx.Rollback(ctx)
 	// All queued messages expire after 24 hours, including unconfigured MAX.
 	// Separate provider admission caps preserve room for Telegram while MAX is paused.
-	if _, err = tx.Exec(ctx, `UPDATE support.inbox SET status='failed',finished_at=now(),payload=decode('','hex'),lease_token=NULL,lease_until=NULL,last_error='attempt_limit' WHERE event_kind='message' AND (attempts>=8 OR created_at<=now()-interval '24 hours') AND (status='pending' OR (status='sending' AND lease_until<now()))`); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE support.inbox SET status='failed',finished_at=now(),payload=decode('','hex'),lease_token=NULL,lease_until=NULL,last_error='attempt_limit' WHERE event_kind IN ('message','welcome','ack') AND (attempts>=8 OR created_at<=now()-interval '24 hours') AND (status='pending' OR (status='sending' AND lease_until<now()))`); err != nil {
 		return nil, err
 	}
 	j := &job{}
@@ -166,7 +204,7 @@ func (m *Module) claim(ctx context.Context) (*job, error) {
 		return nil, err
 	}
 	j.Lease = hex.EncodeToString(token[:])
-	err = tx.QueryRow(ctx, `SELECT id,provider,event_key,payload,attempts,created_at FROM support.inbox WHERE event_kind='message' AND (provider<>'max' OR $1::bigint<>0) AND attempts<8 AND created_at>now()-interval '24 hours' AND next_attempt_at<=now() AND (status='pending' OR (status='sending' AND lease_until<now())) ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1`, m.cfg.MAXSupportChatID).Scan(&j.ID, &j.Provider, &j.Key, &j.Payload, &j.Attempts, &j.Created)
+	err = tx.QueryRow(ctx, `SELECT id,provider,event_key,event_kind,payload,attempts,created_at FROM support.inbox WHERE event_kind IN ('message','welcome','ack') AND (provider<>'max' OR $1::bigint<>0) AND attempts<8 AND created_at>now()-interval '24 hours' AND next_attempt_at<=now() AND (status='pending' OR (status='sending' AND lease_until<now())) ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1`, m.cfg.MAXSupportChatID).Scan(&j.ID, &j.Provider, &j.Key, &j.Kind, &j.Payload, &j.Attempts, &j.Created)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if err = tx.Commit(ctx); err != nil {
 			return nil, err
@@ -200,7 +238,11 @@ func (m *Module) ProcessOne(ctx context.Context) (bool, error) {
 	if err != nil {
 		return true, m.finish(ctx, *j, "failed", "invalid_payload", 0, false)
 	}
-	err = m.process(sendCtx, *j, e)
+	if j.Kind == "welcome" || j.Kind == "ack" {
+		err = m.processNotice(sendCtx, *j, e)
+	} else {
+		err = m.process(sendCtx, *j, e)
+	}
 	if err == nil {
 		return true, m.finish(ctx, *j, "sent", "", 0, false)
 	}
@@ -272,7 +314,7 @@ func (m *Module) reserveTarget(ctx context.Context, provider, address string, in
 }
 
 func (m *Module) Cleanup(ctx context.Context, tx pgx.Tx) error {
-	if _, err := tx.Exec(ctx, `DELETE FROM support.inbox WHERE id IN (SELECT id FROM support.inbox WHERE (event_kind='discovery' AND created_at<now()-interval '7 days') OR (event_kind='message' AND finished_at<now()-interval '30 days') ORDER BY id LIMIT 1000)`); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM support.inbox WHERE id IN (SELECT id FROM support.inbox WHERE (event_kind='discovery' AND created_at<now()-interval '7 days') OR (event_kind IN ('message','ack') AND finished_at<now()-interval '30 days') ORDER BY id LIMIT 1000)`); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM support.message_routes WHERE (provider,operator_chat_id,operator_message_id) IN (SELECT provider,operator_chat_id,operator_message_id FROM support.message_routes WHERE created_at<now()-interval '90 days' ORDER BY created_at LIMIT 1000)`); err != nil {

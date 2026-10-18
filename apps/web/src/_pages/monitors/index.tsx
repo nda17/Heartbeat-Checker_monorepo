@@ -1,8 +1,9 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { MonitorForm } from "@/features/monitor-form";
+import { MonitorNotifications } from "@/features/monitor-notifications";
 import {
   CheckResult,
   Entitlement,
@@ -10,13 +11,14 @@ import {
   Monitor,
   Status,
 } from "@/entities/monitor";
-import { api, ApiError, errorMessage } from "@/shared/api";
+import { api, ApiError, errorMessage, safeAppReturnTo } from "@/shared/api";
 import { Dialog } from "@/shared/dialog";
 import { dateTime, Loading, Notice } from "@/shared/ui";
 type Detail = {
   monitor: Monitor;
   results: CheckResult[];
   incidents: Incident[];
+  targetIncidentId?: string;
 };
 const incidentCloseReasons: Record<string, string> = {
   recovered: "Сервис восстановился",
@@ -35,8 +37,13 @@ export function MonitorsPage() {
   const [deleting, setDeleting] = useState<Monitor | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [detailError, setDetailError] = useState("");
+  const [notifications, setNotifications] = useState<Monitor | null>(null);
   const [filter, setFilter] = useState("");
+  const openedDeepLink = useRef("");
+  const detailRequest = useRef(0);
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const deepLink = safeAppReturnTo(`/app?${searchParams.toString()}`);
   const load = useCallback(async () => {
     try {
       const [list, access] = await Promise.all([
@@ -48,8 +55,16 @@ export function MonitorsPage() {
       setUpdatedAt(new Date());
       setError("");
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) router.replace("/login");
-      else setError(errorMessage(e));
+      if (e instanceof ApiError && e.status === 401) {
+        const returnTo = safeAppReturnTo(
+          window.location.pathname + window.location.search,
+        );
+        router.replace(
+          returnTo
+            ? `/login?returnTo=${encodeURIComponent(returnTo)}`
+            : "/login",
+        );
+      } else setError(errorMessage(e));
     }
   }, [router]);
   // Bootstrap browser-only session data; state changes after asynchronous API requests.
@@ -94,30 +109,80 @@ export function MonitorsPage() {
       setBusy("");
     }
   }
-  async function showDetail(monitor: Monitor) {
-    setBusy(`detail-${monitor.id}`);
-    setError("");
-    setDetailError("");
-    try {
-      const [results, incidents] = await Promise.all([
-        api<{ results: CheckResult[] }>(
-          `/monitors/${encodeURIComponent(monitor.id)}/results?limit=50`,
-        ),
-        api<{ incidents: Incident[] }>(
-          `/monitors/${encodeURIComponent(monitor.id)}/incidents`,
-        ),
-      ]);
-      setDetail({
-        monitor,
-        results: results.results ?? [],
-        incidents: incidents.incidents ?? [],
-      });
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy("");
+  const showDetail = useCallback(
+    async (monitor: Monitor, targetIncidentId?: string) => {
+      const requestId = ++detailRequest.current;
+      setBusy(`detail-${monitor.id}`);
+      setError("");
+      setDetailError("");
+      try {
+        const [results, incidents, target] = await Promise.all([
+          api<{ results: CheckResult[] }>(
+            `/monitors/${encodeURIComponent(monitor.id)}/results?limit=50`,
+          ),
+          api<{ incidents: Incident[] }>(
+            `/monitors/${encodeURIComponent(monitor.id)}/incidents`,
+          ),
+          targetIncidentId
+            ? api<{ incident: Incident }>(
+                `/monitors/${encodeURIComponent(monitor.id)}/incidents/${encodeURIComponent(targetIncidentId)}`,
+              )
+            : Promise.resolve(null),
+        ]);
+        const listed = incidents.incidents ?? [];
+        const targetIncident = target?.incident;
+        if (requestId !== detailRequest.current) return;
+        setDetail({
+          monitor,
+          results: results.results ?? [],
+          incidents:
+            targetIncident &&
+            !listed.some((item) => item.id === targetIncident.id)
+              ? [targetIncident, ...listed]
+              : listed,
+          targetIncidentId,
+        });
+      } catch (e) {
+        if (requestId !== detailRequest.current) return;
+        setError(
+          targetIncidentId && e instanceof ApiError && e.status === 404
+            ? "Монитор или инцидент не найден или больше недоступен."
+            : errorMessage(e),
+        );
+      } finally {
+        if (requestId === detailRequest.current) setBusy("");
+      }
+    },
+    [],
+  );
+  useEffect(() => {
+    if (!deepLink) {
+      if (openedDeepLink.current) detailRequest.current += 1;
+      openedDeepLink.current = "";
+      return;
     }
-  }
+    if (!monitors || openedDeepLink.current === deepLink) return;
+    detailRequest.current += 1;
+    const params = new URLSearchParams(deepLink.split("?")[1]);
+    const monitor = monitors.find((item) => item.id === params.get("monitor"));
+    const timer = window.setTimeout(() => {
+      openedDeepLink.current = deepLink;
+      if (monitor)
+        void showDetail(monitor, params.get("incident") ?? undefined);
+      else setError("Монитор или инцидент не найден или больше недоступен.");
+    }, 0);
+    return () => window.clearTimeout(timer);
+    // React state refreshes every 15 seconds; each URL is opened only once.
+  }, [deepLink, monitors, showDetail]);
+  useEffect(() => {
+    if (!detail?.targetIncidentId) return;
+    const frame = requestAnimationFrame(() => {
+      document
+        .getElementById(`incident-${detail.targetIncidentId}`)
+        ?.scrollIntoView({ block: "center" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [detail]);
   async function olderResults() {
     if (!detail || !detail.results.length) return;
     setBusy("history");
@@ -319,7 +384,7 @@ export function MonitorsPage() {
                 <tr>
                   <th>Монитор / адрес</th>
                   <th>Состояние</th>
-                  <th>Ответ</th>
+                  <th>HTTP / время проверки</th>
                   <th>Последняя проверка</th>
                   <th>
                     <span className="sr-only">Действия</span>
@@ -388,6 +453,15 @@ export function MonitorsPage() {
                           ⚙
                         </button>
                         <button
+                          className="icon-button"
+                          title="Уведомления"
+                          aria-label={`Уведомления ${m.name}`}
+                          disabled={!!busy}
+                          onClick={() => setNotifications(m)}
+                        >
+                          ◔
+                        </button>
+                        <button
                           className="icon-button danger-text"
                           title="Удалить"
                           aria-label={`Удалить ${m.name}`}
@@ -431,6 +505,12 @@ export function MonitorsPage() {
           onSaved={load}
         />
       )}{" "}
+      {notifications && (
+        <MonitorNotifications
+          monitor={notifications}
+          onClose={() => setNotifications(null)}
+        />
+      )}
       {deleting && (
         <Dialog
           title="Удалить монитор?"
@@ -464,7 +544,10 @@ export function MonitorsPage() {
         <Dialog
           title={detail.monitor.name}
           wide
-          onClose={() => setDetail(null)}
+          onClose={() => {
+            detailRequest.current += 1;
+            setDetail(null);
+          }}
           busy={!!busy}
         >
           <div className="detail-summary">
@@ -484,6 +567,7 @@ export function MonitorsPage() {
               <table className="data-table">
                 <thead>
                   <tr>
+                    <th>Номер</th>
                     <th>Начало</th>
                     <th>Подтверждён</th>
                     <th>Завершение</th>
@@ -491,7 +575,26 @@ export function MonitorsPage() {
                 </thead>
                 <tbody>
                   {detail.incidents.map((i) => (
-                    <tr key={i.id}>
+                    <tr
+                      key={i.id}
+                      id={`incident-${i.id}`}
+                      className={
+                        i.id === detail.targetIncidentId
+                          ? "incident-target"
+                          : undefined
+                      }
+                      aria-label={
+                        i.id === detail.targetIncidentId
+                          ? "Инцидент из ссылки"
+                          : undefined
+                      }
+                    >
+                      <td>
+                        <span className="incident-number">№{i.number}</span>
+                        {i.id === detail.targetIncidentId && (
+                          <span className="cell-sub">Из уведомления</span>
+                        )}
+                      </td>
                       <td>{dateTime(i.openedAt)}</td>
                       <td>{dateTime(i.confirmedAt)}</td>
                       <td>
@@ -526,7 +629,7 @@ export function MonitorsPage() {
                       <th>Время</th>
                       <th>Результат</th>
                       <th>HTTP</th>
-                      <th>Время ответа</th>
+                      <th>Время HTTP-проверки</th>
                     </tr>
                   </thead>
                   <tbody>

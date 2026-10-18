@@ -27,13 +27,26 @@ NEXT_ENV = (
     "KEEP_EXISTING=one\n"
     "TELEGRAM_API_BASE_URL=https://messengers-proxy.heartbeat-checker.ru/telegram-api\n"
 )
+INFORMER_BASE_ENV = BASE_ENV + (
+    "MESSENGER_NOTIFICATIONS_ENABLED=false\n"
+    "TELEGRAM_SUPPORT_WEBHOOK_SECRET=support_telegram_secret_0123456789\n"
+    "MAX_SUPPORT_WEBHOOK_SECRET=support_max_secret_0123456789012\n"
+    "TELEGRAM_BOT_INFORMER_TOKEN=123456:existing_informer_token\n"
+    "MAX_BOT_INFORMER_TOKEN=old_max_token_1234567890\n"
+    "TELEGRAM_INFORMER_BOT_USERNAME=heartbeat_oldbot\n"
+    "MAX_INFORMER_BOT_URL=https://max.ru/heartbeat_oldbot\n"
+)
 DOCKER_MOCK = r'''#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
 with open(os.environ["DOCKER_LOG"], "a") as log:
     log.write(json.dumps(args) + "\n")
 if args[:2] == ["login", "ghcr.io"]:
-    sys.stdin.read(); raise SystemExit(0)
+    sys.stdin.read()
+    if os.environ.get("MUTATE_NEXT_DURING_DEPLOY") == "1":
+        with open(os.path.join(os.environ["DEPLOY_DIR"], ".env.next"), "a") as candidate:
+            candidate.write("# changed during deployment\n")
+    raise SystemExit(0)
 if args[:2] == ["image", "inspect"]:
     print(os.environ["SOURCE_SHA"]); raise SystemExit(0)
 if args and args[0] == "compose" and "config" in args and os.environ.get("FAIL_COMPOSE_PREFLIGHT") == "1":
@@ -177,7 +190,7 @@ class BackendDeployTests(unittest.TestCase):
         path.write_text(content)
         path.chmod(0o755)
 
-    def run_deploy(self, activate_next_config=None, **extra_env):
+    def run_deploy(self, activate_next_config=None, activate_messenger_notifications=None, **extra_env):
         env = os.environ.copy()
         env.update({
             "PATH": f"{self.bin}:{env['PATH']}",
@@ -191,6 +204,10 @@ class BackendDeployTests(unittest.TestCase):
         args = ["bash", str(self.script), SOURCE_SHA, *IMAGES, "nda17", BACKUP_IMAGE]
         if activate_next_config is not None:
             args.append("true" if activate_next_config else "false")
+        if activate_messenger_notifications is not None:
+            if activate_next_config is None:
+                args.append("false")
+            args.append("true" if activate_messenger_notifications else "false")
         return subprocess.run(
             args,
             input="test-token\n", cwd=self.root, env=env, text=True, capture_output=True,
@@ -201,6 +218,46 @@ class BackendDeployTests(unittest.TestCase):
         path.write_text(contents)
         path.chmod(mode)
         return path
+
+    def informer_candidate(self, relay=False, **overrides):
+        values = {
+            "MESSENGER_NOTIFICATIONS_ENABLED": "true",
+            "TELEGRAM_INFORMER_WEBHOOK_SECRET": "informer_telegram_secret_0123456789",
+            "MAX_INFORMER_WEBHOOK_SECRET": "informer_max_secret_012345678901",
+            "TELEGRAM_BOT_INFORMER_TOKEN": "123456:existing_informer_token",
+            "MAX_BOT_INFORMER_TOKEN": "max_token_1234567890_valid",
+            "TELEGRAM_INFORMER_BOT_USERNAME": "heartbeat_notifier_bot",
+            "MAX_INFORMER_BOT_URL": "https://max.ru/heartbeat_notifier_bot",
+        }
+        if relay:
+            values.update({
+                "TELEGRAM_API_BASE_URL": "https://messengers-proxy.heartbeat-checker.ru/telegram-api",
+                "TELEGRAM_API_PROXY_IP": "185.184.122.62",
+            })
+        values.update(overrides)
+        lines = (self.backend / ".env").read_text().splitlines()
+        present = set()
+        for index, line in enumerate(lines):
+            key, separator, _ = line.partition("=")
+            if separator and key in values:
+                lines[index] = key + "=" + values[key]
+                present.add(key)
+        lines.extend(key + "=" + value for key, value in values.items() if key not in present)
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def set_env_values(contents, **overrides):
+        lines = contents.splitlines()
+        for index, line in enumerate(lines):
+            key, separator, _ = line.partition("=")
+            if separator and key in overrides:
+                lines[index] = key + "=" + overrides[key]
+        return "\n".join(lines) + "\n"
+
+    def configure_informer_base(self):
+        path = self.backend / ".env"
+        path.write_text(INFORMER_BASE_ENV)
+        path.chmod(0o600)
 
     def docker_calls(self):
         if not self.log.exists():
@@ -258,8 +315,11 @@ class BackendDeployTests(unittest.TestCase):
         self.assertFalse((self.backend / "receipts" / f"{SOURCE_SHA}.json").exists())
 
     def assert_invalid_candidate_rejected(self, expected_error):
+        self.assert_invalid_activation_rejected(expected_error, relay=True)
+
+    def assert_invalid_activation_rejected(self, expected_error, relay=False, messenger=False):
         original_env = (self.backend / ".env").read_bytes()
-        result = self.run_deploy(activate_next_config=True)
+        result = self.run_deploy(activate_next_config=relay, activate_messenger_notifications=messenger)
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(expected_error, result.stderr)
         self.assertEqual((self.backend / ".env").read_bytes(), original_env)
@@ -275,6 +335,141 @@ class BackendDeployTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.backend / ".env").read_bytes(), before_env)
         self.assertEqual(candidate.read_bytes(), before_candidate)
+
+    def test_both_activation_flags_false_ignore_candidate(self):
+        candidate = self.write_next_config(NEXT_ENV)
+        before_env = (self.backend / ".env").read_bytes()
+        before_candidate = candidate.read_bytes()
+        result = self.run_deploy(activate_next_config=False, activate_messenger_notifications=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.backend / ".env").read_bytes(), before_env)
+        self.assertEqual(candidate.read_bytes(), before_candidate)
+        receipt = json.loads((self.backend / "receipts" / f"{SOURCE_SHA}.json").read_text())
+        self.assertFalse(receipt["telegram_relay_activated"])
+        self.assertFalse(receipt["messenger_notifications_activated"])
+
+    def assert_activation_mode(self, candidate_contents, relay, messenger):
+        candidate = self.write_next_config(candidate_contents)
+        result = self.run_deploy(activate_next_config=relay, activate_messenger_notifications=messenger)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.backend / ".env").read_text(), candidate_contents)
+        self.assertFalse(candidate.exists())
+        receipt = json.loads((self.backend / "receipts" / f"{SOURCE_SHA}.json").read_text())
+        self.assertEqual(receipt["telegram_relay_activated"], relay)
+        self.assertEqual(receipt["messenger_notifications_activated"], messenger)
+
+    def test_activation_mode_relay_only(self):
+        self.assert_activation_mode(NEXT_ENV, relay=True, messenger=False)
+
+    def test_activation_mode_messenger_only(self):
+        self.configure_informer_base()
+        self.assert_activation_mode(self.informer_candidate(), relay=False, messenger=True)
+
+    def test_activation_mode_combined(self):
+        self.configure_informer_base()
+        self.assert_activation_mode(self.informer_candidate(relay=True), relay=True, messenger=True)
+
+    def test_each_flag_rejects_changes_outside_its_selected_key_set(self):
+        self.configure_informer_base()
+        relay_candidate = self.set_env_values(INFORMER_BASE_ENV, TELEGRAM_API_BASE_URL="https://messengers-proxy.heartbeat-checker.ru/telegram-api", TELEGRAM_API_PROXY_IP="185.184.122.62")
+        self.write_next_config(relay_candidate)
+        self.assert_invalid_activation_rejected("Configuration activation rejected: changes outside selected keys", messenger=True)
+
+        self.configure_informer_base()
+        messenger_candidate = self.informer_candidate()
+        messenger_candidate = messenger_candidate.replace("KEEP_EXISTING=one\n", "KEEP_EXISTING=mutated\n")
+        self.write_next_config(messenger_candidate)
+        self.assert_invalid_activation_rejected("Configuration activation rejected: changes outside selected keys", messenger=True)
+
+    def test_informer_activation_requires_complete_keys_unchanged_telegram_token_and_distinct_secrets(self):
+        self.configure_informer_base()
+        cases = (
+            (self.informer_candidate().replace("MAX_INFORMER_WEBHOOK_SECRET=informer_max_secret_012345678901\n", ""), "invalid Informer webhook secret"),
+            (self.informer_candidate(TELEGRAM_BOT_INFORMER_TOKEN="123456:rotated_token"), "existing Telegram Informer token must remain unchanged"),
+            (self.informer_candidate(TELEGRAM_INFORMER_WEBHOOK_SECRET="support_telegram_secret_0123456789"), "Informer webhook secret matches Support"),
+            (self.informer_candidate(MAX_INFORMER_WEBHOOK_SECRET="support_max_secret_0123456789012"), "Informer webhook secret matches Support"),
+            (self.informer_candidate(MESSENGER_NOTIFICATIONS_ENABLED="false"), "messenger flag must be true"),
+        )
+        for candidate, reason in cases:
+            with self.subTest(reason=reason):
+                self.write_next_config(candidate)
+                self.assert_invalid_activation_rejected("Configuration activation rejected: " + reason, messenger=True)
+
+    def test_informer_candidate_rejects_control_bytes_and_unapproved_config_edits(self):
+        self.configure_informer_base()
+        self.write_next_config(self.informer_candidate() + "# invalid\x01\n")
+        self.assert_invalid_activation_rejected("Configuration activation rejected: invalid env content", messenger=True)
+
+        self.configure_informer_base()
+        self.write_next_config(self.informer_candidate() + "UNRELATED_SECRET=must-not-activate\n")
+        self.assert_invalid_activation_rejected("Configuration activation rejected: changes outside selected keys", messenger=True)
+
+    def test_informer_candidate_must_be_regular_mode_600(self):
+        self.configure_informer_base()
+        target = self.backend / ".env.next.target"
+        target.write_text(self.informer_candidate())
+        target.chmod(0o600)
+        (self.backend / ".env.next").symlink_to(target.name)
+        self.assert_invalid_activation_rejected("Configuration activation requires a regular mode-600 .env.next", messenger=True)
+
+        self.configure_informer_base()
+        self.write_next_config(self.informer_candidate(), mode=0o640)
+        self.assert_invalid_activation_rejected("Configuration activation requires a regular mode-600 .env.next", messenger=True)
+
+    def test_quoted_existing_telegram_token_is_accepted_only_when_raw_value_is_unchanged(self):
+        self.configure_informer_base()
+        baseline = (self.backend / ".env").read_text().replace(
+            "TELEGRAM_BOT_INFORMER_TOKEN=123456:existing_informer_token\n",
+            'TELEGRAM_BOT_INFORMER_TOKEN="123456:existing_informer_token"\n',
+        )
+        (self.backend / ".env").write_text(baseline)
+        (self.backend / ".env").chmod(0o600)
+        candidate_contents = self.informer_candidate(
+            TELEGRAM_BOT_INFORMER_TOKEN='"123456:existing_informer_token"',
+        )
+        self.assert_activation_mode(candidate_contents, relay=False, messenger=True)
+
+    def test_quote_normalized_telegram_token_change_is_rejected(self):
+        self.configure_informer_base()
+        baseline = (self.backend / ".env").read_text().replace(
+            "TELEGRAM_BOT_INFORMER_TOKEN=123456:existing_informer_token\n",
+            'TELEGRAM_BOT_INFORMER_TOKEN="123456:existing_informer_token"\n',
+        )
+        (self.backend / ".env").write_text(baseline)
+        (self.backend / ".env").chmod(0o600)
+        self.write_next_config(self.informer_candidate())
+        self.assert_invalid_activation_rejected(
+            "Configuration activation rejected: existing Telegram Informer token must remain unchanged",
+            messenger=True,
+        )
+
+    def test_quoted_support_secret_cannot_be_reused_for_informer(self):
+        self.configure_informer_base()
+        support_secret = "informer_telegram_secret_0123456789"
+        baseline = (self.backend / ".env").read_text().replace(
+            "TELEGRAM_SUPPORT_WEBHOOK_SECRET=support_telegram_secret_0123456789\n",
+            f'TELEGRAM_SUPPORT_WEBHOOK_SECRET="{support_secret}"\n',
+        )
+        (self.backend / ".env").write_text(baseline)
+        (self.backend / ".env").chmod(0o600)
+        self.write_next_config(self.informer_candidate(TELEGRAM_INFORMER_WEBHOOK_SECRET=support_secret))
+        self.assert_invalid_activation_rejected(
+            "Configuration activation rejected: Informer webhook secret matches Support",
+            messenger=True,
+        )
+
+    def test_mutated_candidate_after_activation_keeps_recovery_journal_without_receipt(self):
+        self.configure_informer_base()
+        activated_contents = self.informer_candidate()
+        candidate = self.write_next_config(activated_contents)
+        result = self.run_deploy(activate_next_config=False, activate_messenger_notifications=True, MUTATE_NEXT_DURING_DEPLOY="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Staged activation env changed during deployment", result.stderr)
+        self.assertTrue(candidate.exists())
+        self.assertIn("# changed during deployment", candidate.read_text())
+        self.assertIn("phase=migration_succeeded", (self.backend / "pending").read_text())
+        self.assertEqual((self.backend / ".env").read_text(), activated_contents)
+        self.assertFalse((self.backend / "receipts" / f"{SOURCE_SHA}.json").exists())
 
     def test_valid_two_key_candidate_is_activated_and_consumed_only_on_success(self):
         candidate = self.write_next_config(NEXT_ENV)

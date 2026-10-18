@@ -11,8 +11,9 @@ migrate_image=${5:?migration image digest is required}
 registry_user=${6:?registry user is required}
 backup_image=${7:?backup image digest is required}
 activate_telegram_relay=${8-false}
+activate_messenger_notifications=${9-false}
 
-[[ ( $# -eq 7 || $# -eq 8 ) && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) ]] || {
+[[ ( $# -eq 7 || $# -eq 8 || $# -eq 9 ) && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) && ( $activate_messenger_notifications == true || $activate_messenger_notifications == false ) ]] || {
   echo 'Invalid release arguments' >&2; exit 1;
 }
 for spec in "api:$api_image" "worker:$worker_image" "probe:$probe_image" "migrate:$migrate_image" "backup:$backup_image"; do
@@ -65,6 +66,7 @@ on_exit() {
       printf 'CRITICAL: remove heartbeat_restorecheck manually\n' >&2
   fi
   if ((status != 0)); then
+    rm -f -- "receipts/$source_sha.json.incoming"
     if $migration_started; then
       printf 'Backend release failed after migration began; keep database, backup and pending journal for forward recovery\n' >&2
     else
@@ -110,28 +112,56 @@ on_exit() {
 }
 trap on_exit EXIT
 
-if $activate_telegram_relay; then
+if $activate_telegram_relay || $activate_messenger_notifications; then
   [[ -f .env.next && ! -L .env.next && $(stat -c %a .env.next) == 600 ]] || {
-    echo 'Relay activation requires a regular mode-600 .env.next' >&2; exit 1;
+    if $activate_messenger_notifications; then
+      echo 'Configuration activation requires a regular mode-600 .env.next' >&2
+    else
+      echo 'Relay activation requires a regular mode-600 .env.next' >&2
+    fi
+    exit 1
   }
   [[ ! -e .env.activate.incoming && ! -L .env.activate.incoming && ! -e .env.rollback.incoming && ! -L .env.rollback.incoming ]] || {
-    echo 'Resolve the previous relay activation staging file' >&2; exit 1;
+    echo 'Resolve the previous configuration activation staging file' >&2; exit 1;
   }
   cp -p .env.next "$workdir/.env.next"
-  python3 - "$workdir/.env.next" <<'PY'
+  python3 - "$workdir/.env.next" "$activate_telegram_relay" "$activate_messenger_notifications" <<'PY'
 from pathlib import Path
 import re
 import sys
+from urllib.parse import urlsplit
 
-targets = {
+relay_targets = {
     b"TELEGRAM_API_BASE_URL": b"https://messengers-proxy.heartbeat-checker.ru/telegram-api",
     b"TELEGRAM_API_PROXY_IP": b"185.184.122.62",
 }
+messenger_keys = {
+    b"MESSENGER_NOTIFICATIONS_ENABLED",
+    b"TELEGRAM_INFORMER_WEBHOOK_SECRET",
+    b"MAX_INFORMER_WEBHOOK_SECRET",
+    b"TELEGRAM_BOT_INFORMER_TOKEN",
+    b"MAX_BOT_INFORMER_TOKEN",
+    b"TELEGRAM_INFORMER_BOT_USERNAME",
+    b"MAX_INFORMER_BOT_URL",
+}
+relay = sys.argv[2] == "true"
+messenger = sys.argv[3] == "true"
+allowed = (set(relay_targets) if relay else set()) | (messenger_keys if messenger else set())
+prefix = "Relay activation rejected" if relay and not messenger else "Configuration activation rejected"
+
+def reject(message):
+    raise SystemExit(f"{prefix}: {message}")
+
+def unquote_literal(value):
+    # Accept one dotenv-style outer quote pair without interpreting escapes or variables.
+    if len(value) >= 2 and value[:1] in (b"'", b'"') and value[-1:] == value[:1]:
+        return value[1:-1]
+    return value
 
 def parse(path):
     data = Path(path).read_bytes()
-    if any(c < 32 and c not in (9, 10) for c in data):
-        raise SystemExit("Relay activation rejected: invalid env content")
+    if any((c < 32 and c != 10) or c == 127 for c in data):
+        reject("invalid env content")
     ordinary = []
     values = {}
     for line in data.split(b"\n"):
@@ -140,21 +170,48 @@ def parse(path):
             continue
         match = re.fullmatch(rb"([A-Za-z_][A-Za-z0-9_]*)=(.*)", line)
         if match is None:
-            raise SystemExit("Relay activation rejected: invalid env line")
+            reject("invalid env line")
         key, value = match.groups()
         if key in values:
-            raise SystemExit("Relay activation rejected: duplicate env key")
+            reject("duplicate env key")
         values[key] = value
-        if key not in targets:
+        if key not in allowed:
             ordinary.append(line)
     return ordinary, values
 
-old_lines, _ = parse(".env")
+old_lines, old_values = parse(".env")
 new_lines, new_values = parse(sys.argv[1])
 if old_lines != new_lines:
-    raise SystemExit("Relay activation rejected: changes outside two Telegram keys")
-if any(new_values.get(key) != value for key, value in targets.items()):
-    raise SystemExit("Relay activation rejected: unexpected Telegram endpoint")
+    reject("changes outside selected keys")
+if relay and any(new_values.get(key) != value for key, value in relay_targets.items()):
+    reject("unexpected Telegram endpoint")
+if messenger:
+    if new_values.get(b"MESSENGER_NOTIFICATIONS_ENABLED") != b"true":
+        reject("messenger flag must be true")
+    secrets = (b"TELEGRAM_INFORMER_WEBHOOK_SECRET", b"MAX_INFORMER_WEBHOOK_SECRET")
+    for key in secrets:
+        value = new_values.get(key, b"")
+        if not re.fullmatch(rb"[A-Za-z0-9_-]{32,256}", value):
+            reject("invalid Informer webhook secret")
+        support_key = key.replace(b"INFORMER", b"SUPPORT")
+        if value == unquote_literal(old_values.get(support_key, b"")):
+            reject("Informer webhook secret matches Support")
+    telegram_token = old_values.get(b"TELEGRAM_BOT_INFORMER_TOKEN", b"")
+    if not re.fullmatch(rb"[0-9]+:[A-Za-z0-9_-]+", unquote_literal(telegram_token)) or new_values.get(b"TELEGRAM_BOT_INFORMER_TOKEN") != telegram_token:
+        reject("existing Telegram Informer token must remain unchanged")
+    max_token = new_values.get(b"MAX_BOT_INFORMER_TOKEN", b"")
+    if not 16 <= len(max_token) <= 512 or any(c < 33 or c > 126 or c in b"'\"$`\\#" for c in max_token):
+        reject("invalid MAX Informer token")
+    username = new_values.get(b"TELEGRAM_INFORMER_BOT_USERNAME", b"")
+    if not re.fullmatch(rb"[A-Za-z][A-Za-z0-9_]{4,31}", username) or not username.lower().endswith(b"bot"):
+        reject("invalid Telegram Informer bot username")
+    try:
+        url = urlsplit(new_values.get(b"MAX_INFORMER_BOT_URL", b"").decode("ascii"))
+    except (UnicodeDecodeError, ValueError):
+        reject("invalid MAX Informer bot URL")
+    if (url.scheme != "https" or url.netloc != "max.ru" or not re.fullmatch(r"/[A-Za-z0-9_-]+", url.path)
+            or url.query or url.fragment or url.username or url.password):
+        reject("invalid MAX Informer bot URL")
 PY
   cp -p .env "$workdir/.env"
   activation_stage_created=true
@@ -325,16 +382,18 @@ jq -n --arg source_sha "$source_sha" --arg api "$api_image" \
   --arg worker "$worker_image" --arg probe "$probe_image" --arg migrate "$migrate_image" --arg backup_image "$backup_image" \
   --arg backup "$backup" --arg backup_sha256 "$backup_sha" --argjson migrations "$ledger" \
   --argjson telegram_relay_activated "$activate_telegram_relay" \
-  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image},backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,completed_at:(now|todate)}' \
-  > "receipts/$source_sha.json"
+  --argjson messenger_notifications_activated "$activate_messenger_notifications" \
+  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image},backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,messenger_notifications_activated:$messenger_notifications_activated,completed_at:(now|todate)}' \
+  > "receipts/$source_sha.json.incoming"
 mv compose.backup.yaml.incoming compose.backup.yaml
 mv backup.sh.incoming backup.sh
 chmod 700 backup.sh
 if $activation_applied; then
   if [[ ! -f .env.next || -L .env.next || $(stat -c %a .env.next) != 600 ]] || ! cmp -s .env.next "$workdir/.env.next"; then
-    echo 'Staged relay env changed during deployment; retain pending for review' >&2; exit 1;
+    echo 'Staged activation env changed during deployment; retain pending for review' >&2; exit 1;
   fi
   rm -f .env.next
 fi
+mv "receipts/$source_sha.json.incoming" "receipts/$source_sha.json"
 rm -f pending
 printf 'Backend deployed: %s\n' "$source_sha"

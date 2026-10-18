@@ -42,11 +42,19 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 	if err != nil {
 		return err
 	}
-	incidentModule := incidents.New(pool, notifications.NewRecorder())
 	billingModule, err := billing.NewConfigured(pool, cfg.AppEnv == "local", billing.Config{Provider: cfg.BillingProvider, MockAccountIDs: cfg.BillingMockAccountIDs}, accountModule)
 	if err != nil {
 		return err
 	}
+	messengerModule, err := notifications.NewMessenger(pool, cfg.WebhookEncryptionKey, notifications.MessengerConfig{
+		Enabled: cfg.MessengerNotificationsEnabled, TelegramToken: cfg.TelegramInformerToken, MAXToken: cfg.MAXInformerToken,
+		TelegramBotUsername: cfg.TelegramInformerBotUsername, MAXBotURL: cfg.MAXInformerBotURL,
+		TelegramAPIBaseURL: cfg.TelegramAPIBaseURL, TelegramAPIIP: cfg.TelegramAPIIP, MAXRootCAFile: cfg.InformerMAXRootCAFile,
+	}, true, billingModule)
+	if err != nil {
+		return err
+	}
+	incidentModule := incidents.New(pool, notifications.NewRecorder(messengerModule))
 	monitorModule := monitors.New(pool, billingModule, incidentModule, accountModule)
 	var supportModule *support.Module
 	if cfg.SupportEnabled {
@@ -68,6 +76,10 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 	}
 	if reportWorker != nil {
 		startDeliveryLoop(ctx, &wg, logger, "payment report", reportWorker.ProcessOne)
+	}
+	if cfg.MessengerNotificationsEnabled {
+		startDeliveryLoop(ctx, &wg, logger, "messenger link verification", messengerModule.ProcessLink)
+		startDeliveryLoop(ctx, &wg, logger, "messenger notification", messengerModule.ProcessDelivery)
 	}
 	if cfg.AppEnv == "production" {
 		mailer, err := auth.NewProductionMailer(cfg.SMTPAddr, cfg.SMTPFrom, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPTLSMode)
@@ -194,6 +206,9 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 				}
 				if err == nil {
 					err = notificationModule.Cleanup(cleanupCtx, tx)
+				}
+				if err == nil {
+					err = messengerModule.Cleanup(cleanupCtx, tx)
 				}
 				if err == nil && supportModule != nil {
 					err = supportModule.Cleanup(cleanupCtx, tx)

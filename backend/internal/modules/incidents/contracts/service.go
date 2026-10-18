@@ -8,23 +8,49 @@ import (
 )
 
 type Service interface {
-	Apply(context.Context, pgx.Tx, string, string, int64, string, int, time.Time) error
+	Apply(context.Context, pgx.Tx, string, string, int64, string, int, time.Time, Observation) error
 	Reset(context.Context, pgx.Tx, string, string) error
 	List(context.Context, string, string) ([]monitorcontracts.Incident, error)
+	Get(context.Context, string, string, string) (monitorcontracts.Incident, error)
 }
 
 type Notification struct {
-	EventID    string
-	AccountID  string
-	MonitorID  string
-	IncidentID string
-	Kind       string
+	EventID     string
+	AccountID   string
+	MonitorID   string
+	IncidentID  string
+	Kind        string
+	Sequence    int64
+	At          time.Time
+	Observation Observation
+	Incident    IncidentState
+}
+
+type IncidentState struct {
+	ID          string
+	Number      int64
+	OpenedAt    time.Time
+	ConfirmedAt time.Time
+	ClosedAt    *time.Time
+}
+
+// Observation is copied from the accepted check while the monitor is locked.
+type Observation struct {
+	Name       string
+	URL        string
+	Outcome    string
+	HTTPStatus int
+	ErrorCode  string
+	LatencyMS  int64
+	CheckedAt  time.Time
 	Sequence   int64
-	At         time.Time
 }
 
 type Recorder interface {
 	Enqueue(context.Context, pgx.Tx, Notification) error
+	ObserveDown(context.Context, pgx.Tx, string, string, IncidentState, Observation) error
+	CancelReminders(context.Context, pgx.Tx, string) error
+	CancelForReset(context.Context, pgx.Tx, string) error
 }
 
 const (

@@ -320,6 +320,13 @@ func TestSupportMAXReplyUsesExactStoredRouteAndNativeMessage(t *testing.T) {
 	if first["token"] != "native-image-token" || len(first) != 1 || second["url"] != "https://cdn.example/fallback-image" || len(second) != 1 {
 		t.Fatalf("MAX image token preference or URL fallback failed: %#v", attachments)
 	}
+	var acknowledgements int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM support.inbox WHERE event_kind='ack'`).Scan(&acknowledgements); err != nil {
+		t.Fatal(err)
+	}
+	if acknowledgements != 0 {
+		t.Fatalf("operator reply created %d customer success acknowledgements", acknowledgements)
+	}
 }
 
 func TestSupportMAXDiscoveryPrivacyAndZeroChatPending(t *testing.T) {

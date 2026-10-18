@@ -336,6 +336,16 @@ func (s *Service) Incidents(ctx context.Context, owner, id string) ([]contracts.
 	}
 	return s.incidents.List(ctx, owner, id)
 }
+func (s *Service) Incident(ctx context.Context, owner, id, incidentID string) (contracts.Incident, error) {
+	if !ValidID(incidentID) {
+		return contracts.Incident{}, ErrNotFound
+	}
+	if _, err := s.Get(ctx, owner, id); err != nil {
+		return contracts.Incident{}, err
+	}
+	i, err := s.incidents.Get(ctx, owner, id, incidentID)
+	return i, translate(err)
+}
 
 // Claim acquires the global scheduler lock only for the short database transaction.
 // Account entitlement locks always precede monitor locks throughout API and worker.
@@ -386,7 +396,12 @@ func (s *Service) claimOne(ctx context.Context, tx pgx.Tx, c postgres.Candidate)
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now()
+	// Scheduling timestamps come from PostgreSQL. A small host/DB clock skew
+	// must not reject a row that the database has already marked due.
+	var now time.Time
+	if err = tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+		return nil, err
+	}
 	if !m.Enabled || m.NextCheckAt == nil || m.NextCheckAt.After(now) || (m.LeaseUntil != nil && m.LeaseUntil.After(now)) {
 		return nil, nil
 	}
@@ -454,7 +469,10 @@ func (s *Service) Complete(ctx context.Context, a contracts.Attempt, r probe.Res
 	if err = outbox.Append(ctx, tx, eventID, m.ID, m.AccountID, "CheckCompleted", map[string]any{"resultId": eventID, "sequence": m.Sequence + 1, "outcome": r.Outcome, "checkedAt": r.CheckedAt}, true); err != nil {
 		return false, err
 	}
-	if err = s.incidents.Apply(ctx, tx, m.ID, m.AccountID, m.Sequence+1, r.Outcome, m.FailureThreshold, r.CheckedAt); err != nil {
+	if err = s.incidents.Apply(ctx, tx, m.ID, m.AccountID, m.Sequence+1, r.Outcome, m.FailureThreshold, r.CheckedAt, incidents.Observation{
+		Name: m.Name, URL: m.URL, Outcome: r.Outcome, HTTPStatus: r.HTTPStatus,
+		ErrorCode: r.ErrorCode, LatencyMS: r.LatencyMS, CheckedAt: r.CheckedAt, Sequence: m.Sequence + 1,
+	}); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)

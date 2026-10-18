@@ -237,7 +237,7 @@ func TestRecorderEnqueueIsAtomicOrderedAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := incidentModule.Apply(ctx, tx, monitorID, owner, 1, "DOWN", 1, time.Now().UTC()); err != nil {
+	if err := incidentModule.Apply(ctx, tx, monitorID, owner, 1, "DOWN", 1, time.Now().UTC(), incidentcontracts.Observation{Outcome: "DOWN", CheckedAt: time.Now().UTC(), Sequence: 1}); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("apply incident inside transaction: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestRecorderEnqueueIsAtomicOrderedAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := incidentModule.Apply(ctx, tx, monitorID, owner, 1, "DOWN", 1, time.Now().UTC()); err != nil {
+	if err := incidentModule.Apply(ctx, tx, monitorID, owner, 1, "DOWN", 1, time.Now().UTC(), incidentcontracts.Observation{Outcome: "DOWN", CheckedAt: time.Now().UTC(), Sequence: 1}); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("apply committed incident: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestRecorderEnqueueIsAtomicOrderedAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := incidentModule.Apply(ctx, tx, monitorID, owner, 1, "DOWN", 1, time.Now().UTC()); err != nil {
+	if err := incidentModule.Apply(ctx, tx, monitorID, owner, 1, "DOWN", 1, time.Now().UTC(), incidentcontracts.Observation{Outcome: "DOWN", CheckedAt: time.Now().UTC(), Sequence: 1}); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("replay duplicate sequence: %v", err)
 	}

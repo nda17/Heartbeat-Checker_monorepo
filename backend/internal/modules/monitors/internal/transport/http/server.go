@@ -22,7 +22,8 @@ func (s *Server) Register(mux *http.ServeMux, protect func(http.Handler) http.Ha
 		"GET /api/v1/monitors": s.list, "POST /api/v1/monitors": s.create,
 		"GET /api/v1/monitors/{id}": s.get, "PATCH /api/v1/monitors/{id}": s.patch, "DELETE /api/v1/monitors/{id}": s.remove,
 		"GET /api/v1/monitors/{id}/results": s.results, "GET /api/v1/monitors/{id}/incidents": s.incidents,
-		"GET /api/v1/entitlement": s.entitlement,
+		"GET /api/v1/monitors/{id}/incidents/{incidentId}": s.incident,
+		"GET /api/v1/entitlement":                          s.entitlement,
 	}
 	for pattern, handler := range routes {
 		mux.Handle(pattern, protect(handler))
@@ -188,6 +189,18 @@ func (s *Server) incidents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, 200, map[string]any{"incidents": items})
+}
+func (s *Server) incident(w http.ResponseWriter, r *http.Request) {
+	ownerID, ok := owner(w, r)
+	if !ok {
+		return
+	}
+	i, err := s.service.Incident(r.Context(), ownerID, r.PathValue("id"), r.PathValue("incidentId"))
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	write(w, 200, map[string]any{"incident": i})
 }
 func (s *Server) entitlement(w http.ResponseWriter, r *http.Request) {
 	id, ok := owner(w, r)

@@ -70,6 +70,8 @@ const messages: Record<string, string> = {
   subscription_required: "Для включения проверок нужна действующая квота.",
   version_conflict:
     "Настройки уже изменены. Обновите список и попробуйте снова.",
+  link_not_ready:
+    "Чат ещё не проверен ботом или срок привязки истёк. Повторите подключение.",
   conflict: "Настройки уже изменены. Обновите список и попробуйте снова.",
   invalid_url:
     "Укажите публичный HTTP или HTTPS адрес. Внутренние и служебные адреса запрещены.",
@@ -79,4 +81,33 @@ export function errorMessage(error: unknown) {
     ? (messages[error.code] ??
         "Не удалось выполнить действие. Попробуйте ещё раз.")
     : "Не удалось выполнить действие. Попробуйте ещё раз.";
+}
+// Preserve only an incident deep link within the authenticated monitor page.
+export function safeAppReturnTo(value: string | null) {
+  if (!value?.startsWith("/app?")) return null;
+  try {
+    const url = new URL(value, "https://heartbeat-checker.invalid");
+    if (
+      url.origin !== "https://heartbeat-checker.invalid" ||
+      url.pathname !== "/app" ||
+      url.hash
+    )
+      return null;
+    const params = url.searchParams;
+    const uuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const monitor = params.get("monitor");
+    const incident = params.get("incident");
+    if (
+      params.size !== 2 ||
+      !monitor ||
+      !incident ||
+      !uuid.test(monitor) ||
+      !uuid.test(incident)
+    )
+      return null;
+    return `/app?monitor=${encodeURIComponent(monitor)}&incident=${encodeURIComponent(incident)}`;
+  } catch {
+    return null;
+  }
 }

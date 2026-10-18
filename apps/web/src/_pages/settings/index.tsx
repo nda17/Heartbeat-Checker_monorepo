@@ -2,6 +2,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Session, useSession } from "@/entities/session";
+import { MessengerLinks } from "@/features/messenger-links";
 import { api, errorMessage } from "@/shared/api";
 import { dateTime, Loading, Notice, PasswordInput } from "@/shared/ui";
 export function SettingsPage() {
@@ -221,6 +222,7 @@ export function SettingsPage() {
           </ul>
         )}
       </section>
+      <MessengerLinks />
     </>
   );
 }

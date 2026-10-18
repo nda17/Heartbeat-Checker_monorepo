@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { api, errorMessage } from "@/shared/api";
+import { api, errorMessage, safeAppReturnTo } from "@/shared/api";
 import { Turnstile } from "@/shared/turnstile";
 import { Notice, PasswordInput, Spinner } from "@/shared/ui";
 export type AuthMode =
@@ -97,7 +97,10 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
       await api(cfg.endpoint, { method: "POST", body });
       form.reset();
       if (mode === "login") {
-        router.replace("/app");
+        const returnTo = new URLSearchParams(window.location.search).get(
+          "returnTo",
+        );
+        router.replace(safeAppReturnTo(returnTo) ?? "/app");
         router.refresh();
       } else {
         setDone(true);

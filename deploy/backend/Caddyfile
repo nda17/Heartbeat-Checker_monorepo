@@ -12,11 +12,11 @@
 }
 
 api.heartbeat-checker.ru {
-    @support_webhook {
+    @messenger_webhook {
         method POST
-        path /webhooks/support/telegram /webhooks/support/max
+        path /webhooks/support/telegram /webhooks/support/max /webhooks/notifications/telegram /webhooks/notifications/max
     }
-    handle @support_webhook {
+    handle @messenger_webhook {
         request_body {
             max_size 1MB
         }
