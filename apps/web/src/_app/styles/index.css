@@ -2729,6 +2729,30 @@ button.primary:hover:not(:disabled) {
   gap: 50px;
   padding-bottom: 65px;
 }
+.landing .landing-awareness {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 32px;
+  padding: 38px 42px;
+  margin-bottom: 32px;
+  border: 1px solid var(--landing-border);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  background: var(--landing-card);
+}
+.landing .landing-awareness h2 {
+  max-width: 700px;
+  font-size: clamp(26px, 2.4vw, 34px);
+  line-height: 1.3;
+}
+.landing .landing-awareness p {
+  max-width: 700px;
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.9;
+}
 .landing .landing-facts {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -3334,6 +3358,13 @@ button.primary:hover:not(:disabled) {
     padding-bottom: 45px;
     gap: 38px;
   }
+  .landing .landing-awareness {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+  .landing .landing-awareness .button {
+    justify-self: start;
+  }
   .landing-demo {
     width: 100%;
     max-width: 580px;
@@ -3450,6 +3481,16 @@ button.primary:hover:not(:disabled) {
   }
   .landing .hero {
     padding-top: 40px;
+  }
+  .landing .landing-awareness {
+    padding: 26px 23px;
+    margin-bottom: 26px;
+  }
+  .landing .landing-awareness h2 {
+    font-size: 25px;
+  }
+  .landing .landing-awareness p {
+    font-size: 11px;
   }
   .landing .landing-facts {
     grid-template-columns: repeat(2, 1fr);
