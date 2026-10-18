@@ -6,11 +6,18 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
+import socket
+import ssl
+import subprocess
 import sys
 import tempfile
+import threading
 import types
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
+import urllib.request
 
 
 MODULE_PATH = Path(__file__).with_name("backup.py")
@@ -156,6 +163,94 @@ class BackupTests(unittest.TestCase):
         request = types.SimpleNamespace(full_url="https://api.telegram.org/sendMessage")
         with self.assertRaisesRegex(backup.BackupError, "http_redirect_rejected"):
             handler.redirect_request(request, None, 302, "Found", {}, "https://attacker.example/")
+
+    def test_telegram_transport_allowlists_base_and_public_pin(self):
+        for base in ("https://api.telegram.org", "https://messengers-proxy.heartbeat-checker.ru/telegram-api"):
+            with self.subTest(base=base), patch.dict(os.environ, {
+                "TELEGRAM_API_BASE_URL": base,
+                "TELEGRAM_API_PROXY_IP": "8.8.8.8",
+            }, clear=False):
+                captured = {}
+
+                def capture_handlers(*handlers):
+                    captured["handlers"] = handlers
+                    return types.SimpleNamespace(handlers=handlers)
+
+                with patch.object(backup.urllib.request, "build_opener", side_effect=capture_handlers):
+                    actual_base, opener = backup.telegram_transport()
+                self.assertEqual(actual_base, base)
+                self.assertTrue(any(isinstance(handler, urllib.request.ProxyHandler) and handler.proxies == {}
+                                    for handler in captured["handlers"]))
+                self.assertTrue(any(isinstance(handler, backup.NoRedirect) for handler in opener.handlers))
+
+        for env in (
+            {"TELEGRAM_API_BASE_URL": "http://api.telegram.org", "TELEGRAM_API_PROXY_IP": "8.8.8.8"},
+            {"TELEGRAM_API_BASE_URL": "https://127.0.0.1/telegram-api", "TELEGRAM_API_PROXY_IP": "8.8.8.8"},
+            {"TELEGRAM_API_BASE_URL": "https://api.telegram.org", "TELEGRAM_API_PROXY_IP": "127.0.0.1"},
+        ):
+            with self.subTest(env=env), patch.dict(os.environ, env, clear=False):
+                with self.assertRaises(backup.BackupError):
+                    backup.telegram_transport()
+
+    def test_pinned_https_uses_hostname_for_sni_and_certificate_validation_without_dns(self):
+        if not shutil.which("openssl"):
+            self.skipTest("openssl is required to create an isolated TLS certificate")
+        with tempfile.TemporaryDirectory() as directory:
+            cert = Path(directory) / "server.pem"
+            key = Path(directory) / "server-key.pem"
+            subprocess.run([
+                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+                "-keyout", str(key), "-out", str(cert), "-subj", "/CN=api.telegram.org",
+                "-addext", "subjectAltName=DNS:api.telegram.org",
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            class Handler(BaseHTTPRequestHandler):
+                def do_POST(self):
+                    self.send_response(200)
+                    self.send_header("Content-Length", "2")
+                    self.end_headers()
+                    self.wfile.write(b"ok")
+
+                def log_message(self, *_):
+                    pass
+
+            server = HTTPServer(("127.0.0.1", 0), Handler)
+            port = server.server_address[1]
+            tls_server = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            tls_server.load_cert_chain(certfile=str(cert), keyfile=str(key))
+            observed_sni = []
+            tls_server.set_servername_callback(lambda _socket, name, _context: observed_sni.append(name))
+            server.socket = tls_server.wrap_socket(server.socket, server_side=True)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            self.addCleanup(thread.join, 2)
+
+            context = ssl.create_default_context(cafile=str(cert))
+            class LocalPinnedConnection(backup.PinnedHTTPSConnection):
+                def __init__(self, host, *, pinned_ip, **kwargs):
+                    super().__init__(host, pinned_ip=pinned_ip, port=port, **kwargs)
+
+            handler = backup.PinnedHTTPSHandler("127.0.0.1")
+            handler._context = context
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), backup.NoRedirect(), handler)
+            request = urllib.request.Request(
+                "https://api.telegram.org/botfixture/sendMessage", data=b"{}", method="POST",
+            )
+            original_getaddrinfo = socket.getaddrinfo
+
+            def reject_hostname_lookup(host, *args, **kwargs):
+                if host == "api.telegram.org":
+                    raise AssertionError("pinned connection attempted hostname DNS lookup")
+                return original_getaddrinfo(host, *args, **kwargs)
+
+            with patch.object(socket, "getaddrinfo", side_effect=reject_hostname_lookup):
+                with patch.object(backup, "PinnedHTTPSConnection", LocalPinnedConnection):
+                    with opener.open(request, timeout=3) as response:
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(response.read(), b"ok")
+            self.assertEqual(observed_sni, ["api.telegram.org"])
 
     def test_download_checksum_failure_never_publishes_manifest_or_success(self):
         state = self.base_state()

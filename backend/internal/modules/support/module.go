@@ -32,6 +32,7 @@ type Config struct {
 	SupportTopicID        int64
 	MAXSupportChatID      int64
 	TelegramAPIIP         string
+	TelegramAPIBaseURL    string
 	MAXRootCAFile         string
 }
 
@@ -75,9 +76,21 @@ func newModule(pool *pgxpool.Pool, cfg Config, outbound bool) (*Module, error) {
 	if !outbound {
 		return &Module{pool: pool, cfg: cfg, cipher: box, hashKey: key}, nil
 	}
+	if cfg.TelegramAPIBaseURL == "" {
+		cfg.TelegramAPIBaseURL = "https://api.telegram.org"
+	}
+	if cfg.TelegramAPIBaseURL != "https://api.telegram.org" && cfg.TelegramAPIBaseURL != "https://messengers-proxy.heartbeat-checker.ru/telegram-api" {
+		return nil, errors.New("invalid TELEGRAM_API_BASE_URL")
+	}
+	telegramHost := "api.telegram.org"
+	if cfg.TelegramAPIBaseURL == "https://messengers-proxy.heartbeat-checker.ru/telegram-api" {
+		telegramHost = "messengers-proxy.heartbeat-checker.ru"
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	transport.DialContext = publicDial
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return publicDial(ctx, network, address, telegramHost)
+	}
 	if cfg.TelegramAPIIP != "" {
 		ip, err := netip.ParseAddr(cfg.TelegramAPIIP)
 		if err != nil || !safeIP(ip) {
@@ -85,11 +98,11 @@ func newModule(pool *pgxpool.Pool, cfg Config, outbound bool) (*Module, error) {
 		}
 		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(address)
-			if err == nil && host == "api.telegram.org" && port == "443" {
+			if err == nil && host == telegramHost && port == "443" {
 				d := net.Dialer{}
 				return d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 			}
-			return publicDial(ctx, network, address)
+			return publicDial(ctx, network, address, telegramHost)
 		}
 	}
 	var maxTransport *http.Transport

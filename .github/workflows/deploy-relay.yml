@@ -1,0 +1,86 @@
+name: Deploy Telegram relay
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full 40-character SHA merged into master and green in push CI
+        required: true
+        type: string
+      backup_sha256:
+        description: SHA-256 of the verified off-server reviewed nginx config archive
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: heartbeat-checker-relay-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production-relay
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      BACKUP_SHA256: ${{ inputs.backup_sha256 }}
+      CERT_EMAIL: ${{ vars.RELAY_CERT_EMAIL }}
+    steps:
+      - name: Validate release inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/master ]] || { echo 'Dispatch from master'; exit 1; }
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Provide a full lowercase source SHA'; exit 1; }
+          [[ "$BACKUP_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo 'Provide the off-server config archive SHA-256'; exit 1; }
+          [[ "$CERT_EMAIL" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] || { echo 'Set RELAY_CERT_EMAIL'; exit 1; }
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify master ancestry and exact-SHA CI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
+          git show-ref --verify --quiet refs/remotes/origin/master
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/master || { echo 'SHA is not in master'; exit 1; }
+          curl -fsS --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SOURCE_SHA&status=completed&per_page=100" \
+            | jq -e --arg sha "$SOURCE_SHA" \
+              '.workflow_runs | any(.[]; .event == "push" and .head_sha == $sha and .conclusion == "success")' >/dev/null \
+            || { echo 'No successful push CI run for the exact SHA'; exit 1; }
+
+      - name: Deploy and verify relay VPS
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.RELAY_DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.RELAY_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ -n "$SSH_PRIVATE_KEY" && -n "$SSH_KNOWN_HOSTS" ]] || { echo 'Missing relay SSH credentials'; exit 1; }
+          ssh_dir=$(mktemp -d)
+          trap 'rm -rf "$ssh_dir"' EXIT
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$ssh_dir/key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          chmod 600 "$ssh_dir/key" "$ssh_dir/known_hosts"
+          ssh_opts=(-i "$ssh_dir/key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$ssh_dir/known_hosts" -o BatchMode=yes)
+          target=root@185.184.122.62
+          ssh "${ssh_opts[@]}" "$target" 'install -d -m 700 /opt/heartbeat-checker/relay'
+          scp "${ssh_opts[@]}" deploy/relay/nginx-http.conf "$target:/opt/heartbeat-checker/relay/nginx-http.conf.incoming"
+          scp "${ssh_opts[@]}" deploy/relay/nginx-https.conf "$target:/opt/heartbeat-checker/relay/nginx-https.conf.incoming"
+          scp "${ssh_opts[@]}" deploy/relay/deploy.sh "$target:/opt/heartbeat-checker/relay/deploy.sh.incoming"
+          ssh "${ssh_opts[@]}" "$target" \
+            "bash /opt/heartbeat-checker/relay/deploy.sh.incoming '$SOURCE_SHA' '$BACKUP_SHA256' '$CERT_EMAIL'"

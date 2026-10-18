@@ -22,22 +22,31 @@ type paymentReporter struct {
 	chatID  int64
 	topicID int64
 	client  *http.Client
+	baseURL string
 }
 
 func newPaymentReporter(cfg config.IntegrationConfig) *paymentReporter {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
+	baseURL := cfg.TelegramAPIBaseURL
+	if baseURL == "" {
+		baseURL = "https://api.telegram.org"
+	}
+	baseHost := "api.telegram.org"
+	if baseURL == "https://messengers-proxy.heartbeat-checker.ru/telegram-api" {
+		baseHost = "messengers-proxy.heartbeat-checker.ru"
+	}
 	if cfg.TelegramAPIIP != "" {
 		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(address)
-			if err != nil || host != "api.telegram.org" || port != "443" {
+			if err != nil || host != baseHost || port != "443" {
 				return nil, errors.New("unexpected payment report destination")
 			}
 			dialer := net.Dialer{Timeout: 10 * time.Second}
 			return dialer.DialContext(ctx, network, net.JoinHostPort(cfg.TelegramAPIIP, port))
 		}
 	}
-	return &paymentReporter{token: cfg.TelegramInformerToken, chatID: cfg.TelegramInternalChatID, topicID: cfg.TelegramPaymentsTopicID, client: &http.Client{Timeout: 20 * time.Second, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	return &paymentReporter{token: cfg.TelegramInformerToken, chatID: cfg.TelegramInternalChatID, topicID: cfg.TelegramPaymentsTopicID, baseURL: baseURL, client: &http.Client{Timeout: 20 * time.Second, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
 func (p *paymentReporter) SendPaymentReport(ctx context.Context, report contracts.PaymentReport) error {
@@ -49,7 +58,7 @@ func (p *paymentReporter) SendPaymentReport(ctx context.Context, report contract
 	if err != nil {
 		return &contracts.ReportSendError{Code: "encode_failed"}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.telegram.org/bot"+p.token+"/sendMessage", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/bot"+p.token+"/sendMessage", bytes.NewReader(body))
 	if err != nil {
 		return &contracts.ReportSendError{Code: "request_invalid"}
 	}
