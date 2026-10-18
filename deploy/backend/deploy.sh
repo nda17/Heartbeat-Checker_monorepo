@@ -10,8 +10,9 @@ probe_image=${4:?probe image digest is required}
 migrate_image=${5:?migration image digest is required}
 registry_user=${6:?registry user is required}
 backup_image=${7:?backup image digest is required}
+activate_telegram_relay=${8-false}
 
-[[ $# -eq 7 && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ ]] || {
+[[ ( $# -eq 7 || $# -eq 8 ) && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) ]] || {
   echo 'Invalid release arguments' >&2; exit 1;
 }
 for spec in "api:$api_image" "worker:$worker_image" "probe:$probe_image" "migrate:$migrate_image" "backup:$backup_image"; do
@@ -51,9 +52,13 @@ release_installed=false
 migration_started=false
 scratch_created=false
 recovery_dir=
+activation_applied=false
+activation_stage_created=false
 on_exit() {
   local status=$?
+  local rollback_failed=false retained_dir
   trap - EXIT
+  set +e
   if $scratch_created; then
     docker compose --env-file .env --env-file .release.env exec -T postgres \
       dropdb -U heartbeat heartbeat_restorecheck >/dev/null 2>&1 ||
@@ -62,19 +67,101 @@ on_exit() {
   if ((status != 0)); then
     if $migration_started; then
       printf 'Backend release failed after migration began; keep database, backup and pending journal for forward recovery\n' >&2
-    elif $release_installed && $had_previous; then
-      for file in .release.env compose.yaml Caddyfile; do cp -p "$workdir/$file" "$file"; done
-      if ! docker compose --env-file .env --env-file .release.env up -d --pull never --remove-orphans; then
-        printf 'CRITICAL: previous backend could not be restarted\n' >&2
+    else
+      env_restored=true
+      if $activation_applied; then
+        if ! cp -p "$workdir/.env" .env.rollback.incoming || ! mv -f .env.rollback.incoming .env; then
+          env_restored=false
+          rollback_failed=true
+          printf 'CRITICAL: previous backend .env could not be restored\n' >&2
+        fi
+      fi
+      if $release_installed && $had_previous; then
+        for file in .release.env compose.yaml Caddyfile; do cp -p "$workdir/$file" "$file"; done
+        if $env_restored; then
+          if ! docker compose --env-file .env --env-file .release.env up -d --pull never --remove-orphans; then
+            printf 'CRITICAL: previous backend could not be restarted\n' >&2
+          fi
+        fi
       fi
     fi
-    if ! $migration_started; then rm -f pending; fi
-    if ! $migration_started && [[ -n $recovery_dir ]]; then rm -rf -- "$recovery_dir"; fi
+    if $rollback_failed; then
+      # Keep only the protected recovery inputs; the registry token is transient.
+      rm -rf -- "$workdir/docker-config"
+      rm -f -- "$workdir/.env.next"
+      mkdir -p recovery
+      retained_dir="recovery/${source_sha}-env-rollback-failed-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+      if mv -- "$workdir" "$retained_dir"; then workdir=$retained_dir; fi
+      if [[ -e pending ]]; then
+        printf 'env_rollback_failed=1\nenv_snapshot=%s/.env\n' "$workdir" >> pending
+      else
+        printf 'source_sha=%s\nphase=env_rollback_failed\nenv_snapshot=%s/.env\n' \
+          "$source_sha" "$workdir" > pending.incoming && mv pending.incoming pending
+      fi
+      printf 'CRITICAL: retained previous backend configuration at %s; resolve pending before retrying\n' "$workdir" >&2
+    else
+      if ! $migration_started; then rm -f pending; fi
+      if ! $migration_started && [[ -n $recovery_dir ]]; then rm -rf -- "$recovery_dir"; fi
+    fi
   fi
-  rm -rf -- "$workdir"
+  if $activation_stage_created; then rm -f .env.activate.incoming .env.rollback.incoming; fi
+  if ! $rollback_failed; then rm -rf -- "$workdir"; fi
   exit "$status"
 }
 trap on_exit EXIT
+
+if $activate_telegram_relay; then
+  [[ -f .env.next && ! -L .env.next && $(stat -c %a .env.next) == 600 ]] || {
+    echo 'Relay activation requires a regular mode-600 .env.next' >&2; exit 1;
+  }
+  [[ ! -e .env.activate.incoming && ! -L .env.activate.incoming && ! -e .env.rollback.incoming && ! -L .env.rollback.incoming ]] || {
+    echo 'Resolve the previous relay activation staging file' >&2; exit 1;
+  }
+  cp -p .env.next "$workdir/.env.next"
+  python3 - "$workdir/.env.next" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+targets = {
+    b"TELEGRAM_API_BASE_URL": b"https://messengers-proxy.heartbeat-checker.ru/telegram-api",
+    b"TELEGRAM_API_PROXY_IP": b"185.184.122.62",
+}
+
+def parse(path):
+    data = Path(path).read_bytes()
+    if any(c < 32 and c not in (9, 10) for c in data):
+        raise SystemExit("Relay activation rejected: invalid env content")
+    ordinary = []
+    values = {}
+    for line in data.split(b"\n"):
+        if not line.strip(b" \t") or line.lstrip(b" \t").startswith(b"#"):
+            ordinary.append(line)
+            continue
+        match = re.fullmatch(rb"([A-Za-z_][A-Za-z0-9_]*)=(.*)", line)
+        if match is None:
+            raise SystemExit("Relay activation rejected: invalid env line")
+        key, value = match.groups()
+        if key in values:
+            raise SystemExit("Relay activation rejected: duplicate env key")
+        values[key] = value
+        if key not in targets:
+            ordinary.append(line)
+    return ordinary, values
+
+old_lines, _ = parse(".env")
+new_lines, new_values = parse(sys.argv[1])
+if old_lines != new_lines:
+    raise SystemExit("Relay activation rejected: changes outside two Telegram keys")
+if any(new_values.get(key) != value for key, value in targets.items()):
+    raise SystemExit("Relay activation rejected: unexpected Telegram endpoint")
+PY
+  cp -p .env "$workdir/.env"
+  activation_stage_created=true
+  cp -p "$workdir/.env.next" .env.activate.incoming
+  activation_applied=true
+  mv -f .env.activate.incoming .env
+fi
 
 # The workflow passes its short-lived package token on stdin.
 docker login ghcr.io -u "$registry_user" --password-stdin >/dev/null
@@ -151,7 +238,11 @@ mkdir -p recovery
 candidate_recovery="recovery/${source_sha}-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -m 700 "$candidate_recovery"
 recovery_dir=$candidate_recovery
-cp -p .env "$recovery_dir/.env"
+if $activation_applied; then
+  cp -p "$workdir/.env" "$recovery_dir/.env"
+else
+  cp -p .env "$recovery_dir/.env"
+fi
 if $had_previous; then
   for file in .release.env compose.yaml Caddyfile; do cp -p "$workdir/$file" "$recovery_dir/$file"; done
 else
@@ -233,10 +324,17 @@ ledger=$("${compose[@]}" exec -T postgres psql -U heartbeat -d heartbeat -Atqc \
 jq -n --arg source_sha "$source_sha" --arg api "$api_image" \
   --arg worker "$worker_image" --arg probe "$probe_image" --arg migrate "$migrate_image" --arg backup_image "$backup_image" \
   --arg backup "$backup" --arg backup_sha256 "$backup_sha" --argjson migrations "$ledger" \
-  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image},backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,completed_at:(now|todate)}' \
+  --argjson telegram_relay_activated "$activate_telegram_relay" \
+  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image},backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,completed_at:(now|todate)}' \
   > "receipts/$source_sha.json"
 mv compose.backup.yaml.incoming compose.backup.yaml
 mv backup.sh.incoming backup.sh
 chmod 700 backup.sh
+if $activation_applied; then
+  if [[ ! -f .env.next || -L .env.next || $(stat -c %a .env.next) != 600 ]] || ! cmp -s .env.next "$workdir/.env.next"; then
+    echo 'Staged relay env changed during deployment; retain pending for review' >&2; exit 1;
+  fi
+  rm -f .env.next
+fi
 rm -f pending
 printf 'Backend deployed: %s\n' "$source_sha"
