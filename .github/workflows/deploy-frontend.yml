@@ -1,0 +1,114 @@
+name: Deploy frontend
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full 40-character SHA already merged into master and green in CI
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  packages: write
+
+concurrency:
+  group: heartbeat-checker-frontend-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      WEB_PUBLIC_ORIGIN: ${{ vars.WEB_PUBLIC_ORIGIN }}
+      GO_API_ORIGIN: ${{ vars.GO_API_ORIGIN }}
+      TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
+      DEPLOY_HOST: ${{ vars.FRONTEND_DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.FRONTEND_DEPLOY_USER }}
+    steps:
+      - name: Validate release configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == 'refs/heads/master' ]] || { echo 'Dispatch this workflow from master'; exit 1; }
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Provide a full lowercase commit SHA'; exit 1; }
+          [[ "$WEB_PUBLIC_ORIGIN" == 'https://heartbeat-checker.ru' ]] || { echo 'WEB_PUBLIC_ORIGIN must be the production HTTPS origin'; exit 1; }
+          [[ "$GO_API_ORIGIN" =~ ^https://[a-zA-Z0-9.-]+(:443)?$ ]] || { echo 'GO_API_ORIGIN must be a public HTTPS origin'; exit 1; }
+          normalized_api_origin=${GO_API_ORIGIN,,}
+          normalized_api_origin=${normalized_api_origin%:443}
+          normalized_api_origin=${normalized_api_origin%.}
+          [[ "$normalized_api_origin" != "$WEB_PUBLIC_ORIGIN" && "$normalized_api_origin" != *localhost* && "$normalized_api_origin" != *127.0.0.1* ]] || { echo 'GO_API_ORIGIN must reach the separate public Go API'; exit 1; }
+          [[ "$TURNSTILE_SITE_KEY" =~ ^0x4[A-Za-z0-9_-]{20,}$ ]] || { echo 'A production Turnstile site key is required'; exit 1; }
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ && "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo 'Invalid deploy host or user'; exit 1; }
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify master ancestry and exact-SHA CI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
+          git show-ref --verify --quiet refs/remotes/origin/master || { echo 'master tracking ref is unavailable'; exit 1; }
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/master || { echo 'SHA is not in master history'; exit 1; }
+          curl -fsS --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SOURCE_SHA&status=completed&per_page=100" \
+            | jq -e --arg sha "$SOURCE_SHA" '.workflow_runs | any(.[]; .event == "push" and .head_sha == $sha and .conclusion == "success")' >/dev/null \
+            || { echo 'No successful CI workflow run for the exact SHA'; exit 1; }
+
+      - name: Build and publish immutable web image
+        id: image
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG
+          DOCKER_CONFIG=$(mktemp -d)
+          trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/web"
+          printf '%s\n' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build -f apps/web/Dockerfile \
+            --build-arg "VCS_REF=$SOURCE_SHA" \
+            --build-arg "GO_API_ORIGIN=$GO_API_ORIGIN" \
+            --build-arg "WEB_PUBLIC_ORIGIN=$WEB_PUBLIC_ORIGIN" \
+            --build-arg "NEXT_PUBLIC_TURNSTILE_SITE_KEY=$TURNSTILE_SITE_KEY" \
+            -t "$image:$SOURCE_SHA" apps/web
+          [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image:$SOURCE_SHA")" == "$SOURCE_SHA" ]]
+          docker push "$image:$SOURCE_SHA"
+          digest=$(docker buildx imagetools inspect "$image:$SOURCE_SHA" | awk '$1 == "Digest:" { print $2; exit }')
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Unable to resolve pushed OCI digest'; exit 1; }
+          echo "ref=$image@$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy and verify on frontend VPS
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SSH_PRIVATE_KEY: ${{ secrets.FRONTEND_DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.FRONTEND_DEPLOY_KNOWN_HOSTS }}
+          WEB_IMAGE: ${{ steps.image.outputs.ref }}
+        run: |
+          set -euo pipefail
+          [[ -n "$SSH_PRIVATE_KEY" && -n "$SSH_KNOWN_HOSTS" ]] || { echo 'Missing scoped SSH credentials'; exit 1; }
+          ssh_dir=$(mktemp -d)
+          trap 'rm -rf "$ssh_dir"' EXIT
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$ssh_dir/key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          chmod 600 "$ssh_dir/key" "$ssh_dir/known_hosts"
+          ssh_opts=(-i "$ssh_dir/key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$ssh_dir/known_hosts" -o BatchMode=yes)
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          scp "${ssh_opts[@]}" deploy/frontend/compose.yaml "$target:/opt/heartbeat-checker/frontend/compose.yaml.incoming"
+          scp "${ssh_opts[@]}" deploy/frontend/Caddyfile "$target:/opt/heartbeat-checker/frontend/Caddyfile.incoming"
+          scp "${ssh_opts[@]}" deploy/frontend/deploy.sh "$target:/opt/heartbeat-checker/frontend/deploy.sh.incoming"
+          printf '%s\n' "$GH_TOKEN" | ssh "${ssh_opts[@]}" "$target" \
+            "bash /opt/heartbeat-checker/frontend/deploy.sh.incoming '$SOURCE_SHA' '$WEB_IMAGE' '$GO_API_ORIGIN' '$GITHUB_ACTOR'"
