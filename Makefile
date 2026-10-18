@@ -16,6 +16,8 @@ init-local:
 	@mkdir -p .local
 	@test -s .local/probe-secret || (umask 077 && openssl rand -hex 32 > .local/probe-secret)
 	@chmod 600 .local/probe-secret
+	@test -s .local/webhook-key || (umask 077 && openssl rand -base64 32 > .local/webhook-key)
+	@chmod 600 .local/webhook-key
 
 build-backend:
 	cd backend && go build -o bin/api ./cmd/api
@@ -30,7 +32,7 @@ db-down:
 migrate:
 	cd backend && go run ./cmd/migrate
 
-run:
+run: init-local
 	cd backend && APP_ENV="$${APP_ENV:-local}" AUTH_ORIGIN="$${AUTH_ORIGIN:-http://127.0.0.1:3000}" \
 		AUTH_COOKIE_SECURE="$${AUTH_COOKIE_SECURE:-false}" \
 		TURNSTILE_LOCAL_TEST_MODE="$${TURNSTILE_LOCAL_TEST_MODE:-true}" \
@@ -38,6 +40,7 @@ run:
 		TURNSTILE_HOSTNAME="$${TURNSTILE_HOSTNAME:-localhost}" \
 		SMTP_ADDR="$${SMTP_ADDR:-127.0.0.1:51025}" \
 		SMTP_FROM="$${SMTP_FROM:-no-reply@heartbeat.local}" \
+		WEBHOOK_ENCRYPTION_KEY="$${WEBHOOK_ENCRYPTION_KEY:-$$(cat ../.local/webhook-key)}" \
 		go run ./cmd/api
 
 web-dev:
@@ -46,6 +49,7 @@ web-dev:
 worker: init-local
 	cd backend && APP_ENV="$${APP_ENV:-local}" \
 		PROBE_URL="$${PROBE_URL:-http://127.0.0.1:8090}" \
+		WEBHOOK_ENCRYPTION_KEY="$${WEBHOOK_ENCRYPTION_KEY:-$$(cat ../.local/webhook-key)}" \
 		PROBE_SHARED_SECRET="$$(cat ../.local/probe-secret)" go run ./cmd/worker
 
 probe: init-local

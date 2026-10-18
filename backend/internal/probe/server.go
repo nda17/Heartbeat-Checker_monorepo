@@ -17,7 +17,7 @@ import (
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/probe/contracts"
 )
 
-// Handler exposes only the isolated check interface and process health.
+// Handler exposes only the isolated check and webhook interfaces and process health.
 func Handler(secret string) (http.Handler, error) {
 	if len(secret) < 32 || strings.TrimSpace(secret) != secret || strings.ContainsAny(secret, "\r\n") {
 		return nil, errors.New("PROBE_SHARED_SECRET must contain at least 32 random bytes")
@@ -50,6 +50,37 @@ func Handler(secret string) (http.Handler, error) {
 		if err != nil {
 			if errors.Is(err, ErrUnsupportedTarget) {
 				writeError(w, http.StatusBadRequest, "unsupported_target")
+				return
+			}
+			writeError(w, http.StatusServiceUnavailable, "probe_unavailable")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(result)
+	})
+	mux.HandleFunc("POST /internal/v1/webhook", func(w http.ResponseWriter, r *http.Request) {
+		got := sha256.Sum256([]byte(r.Header.Get("Authorization")))
+		if subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var request contracts.WebhookRequest
+		r.Body = http.MaxBytesReader(w, r.Body, 24<<10)
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		result, err := executor.DeliverWebhook(r.Context(), request)
+		if err != nil {
+			if errors.Is(err, ErrUnsupportedTarget) {
+				writeError(w, http.StatusBadRequest, "invalid_request")
 				return
 			}
 			writeError(w, http.StatusServiceUnavailable, "probe_unavailable")

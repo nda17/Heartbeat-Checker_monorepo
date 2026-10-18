@@ -38,4 +38,6 @@ type Service interface {
 // second pool connection while the worker holds a lease or entitlement lock.
 type ActiveGuard interface {
 	Active(context.Context, pgx.Tx, string) (bool, error)
+	// TryActive returns available=false when the row is locked or absent.
+	TryActive(context.Context, pgx.Tx, string) (bool, bool, error)
 }

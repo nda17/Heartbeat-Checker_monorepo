@@ -13,6 +13,7 @@ func clearConfigEnv(t *testing.T) {
 		"APP_ENV", "HTTP_ADDR", "DATABASE_URL", "DATABASE_TIMEOUT", "READINESS_TIMEOUT", "SHUTDOWN_TIMEOUT",
 		"AUTH_ORIGIN", "AUTH_COOKIE_SECURE", "AUTH_SESSION_TTL", "AUTH_CHALLENGE_TTL", "AUTH_RESET_TTL", "AUTH_RATE_LIMIT_WINDOW",
 		"TURNSTILE_SECRET_KEY", "TURNSTILE_HOSTNAME", "TURNSTILE_LOCAL_TEST_MODE", "SMTP_ADDR", "SMTP_FROM",
+		"WEBHOOK_ENCRYPTION_KEY",
 	} {
 		old, existed := os.LookupEnv(key)
 		t.Cleanup(func() {
@@ -70,6 +71,7 @@ func setRequiredConfigEnv(t *testing.T) {
 		"TURNSTILE_LOCAL_TEST_MODE": "true",
 		"SMTP_ADDR":                 "127.0.0.1:51025",
 		"SMTP_FROM":                 "noreply@example.com",
+		"WEBHOOK_ENCRYPTION_KEY":    "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
 	} {
 		_ = os.Setenv(key, value)
 	}
@@ -174,4 +176,40 @@ func TestLoadRejectsInvalidValuesWithoutEchoingSecrets(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLoadRequiresValidWebhookEncryptionKey(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		key  string
+	}{
+		{name: "missing"},
+		{name: "not base64", key: "not-base64"},
+		{name: "wrong decoded length", key: "c2hvcnQ="},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			setRequiredConfigEnv(t)
+			if test.key == "" {
+				_ = os.Unsetenv("WEBHOOK_ENCRYPTION_KEY")
+			} else {
+				_ = os.Setenv("WEBHOOK_ENCRYPTION_KEY", test.key)
+			}
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "WEBHOOK_ENCRYPTION_KEY") {
+				t.Fatalf("Load() error = %v, want encryption key validation error", err)
+			}
+		})
+	}
+
+	t.Run("valid 32 byte key", func(t *testing.T) {
+		clearConfigEnv(t)
+		setRequiredConfigEnv(t)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() with valid key: %v", err)
+		}
+		if cfg.WebhookEncryptionKey != "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=" {
+			t.Fatal("Load() did not preserve configured webhook encryption key")
+		}
+	})
 }

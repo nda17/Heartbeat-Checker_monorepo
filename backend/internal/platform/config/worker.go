@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"errors"
 	"net/netip"
 	"net/url"
@@ -11,15 +12,16 @@ import (
 )
 
 type WorkerConfig struct {
-	AppEnv            string
-	DatabaseURL       string
-	DatabaseTimeout   time.Duration
-	ProbeURL          string
-	ProbeSharedSecret string
+	AppEnv               string
+	DatabaseURL          string
+	DatabaseTimeout      time.Duration
+	ProbeURL             string
+	ProbeSharedSecret    string
+	WebhookEncryptionKey string
 }
 
 func LoadWorker() (WorkerConfig, error) {
-	cfg := WorkerConfig{AppEnv: os.Getenv("APP_ENV"), DatabaseURL: os.Getenv("DATABASE_URL"), DatabaseTimeout: 5 * time.Second, ProbeURL: os.Getenv("PROBE_URL"), ProbeSharedSecret: os.Getenv("PROBE_SHARED_SECRET")}
+	cfg := WorkerConfig{AppEnv: os.Getenv("APP_ENV"), DatabaseURL: os.Getenv("DATABASE_URL"), DatabaseTimeout: 5 * time.Second, ProbeURL: os.Getenv("PROBE_URL"), ProbeSharedSecret: os.Getenv("PROBE_SHARED_SECRET"), WebhookEncryptionKey: os.Getenv("WEBHOOK_ENCRYPTION_KEY")}
 	if cfg.AppEnv == "" {
 		cfg.AppEnv = "production"
 	}
@@ -36,6 +38,10 @@ func LoadWorker() (WorkerConfig, error) {
 	}
 	if cfg.ProbeURL == "" || len(cfg.ProbeSharedSecret) < 32 {
 		return cfg, errors.New("PROBE_URL and a PROBE_SHARED_SECRET of at least 32 bytes are required")
+	}
+	key, err := base64.StdEncoding.Strict().DecodeString(cfg.WebhookEncryptionKey)
+	if err != nil || len(key) != 32 {
+		return cfg, errors.New("WEBHOOK_ENCRYPTION_KEY must be base64 of 32 bytes")
 	}
 	return cfg, nil
 }

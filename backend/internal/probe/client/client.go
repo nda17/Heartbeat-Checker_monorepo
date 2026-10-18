@@ -16,9 +16,10 @@ import (
 )
 
 type Client struct {
-	endpoint string
-	secret   string
-	http     *http.Client
+	endpoint        string
+	webhookEndpoint string
+	secret          string
+	http            *http.Client
 }
 
 func New(endpoint, secret string) (*Client, error) {
@@ -36,9 +37,11 @@ func New(endpoint, secret string) (*Client, error) {
 		return nil, errors.New("probe endpoint must be internal")
 	}
 	u.Path = "/internal/v1/check"
+	checkEndpoint := u.String()
+	u.Path = "/internal/v1/webhook"
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	return &Client{endpoint: u.String(), secret: secret, http: &http.Client{Transport: transport, Timeout: 12 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+	return &Client{endpoint: checkEndpoint, webhookEndpoint: u.String(), secret: secret, http: &http.Client{Transport: transport, Timeout: 12 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
 
 func (c *Client) Check(ctx context.Context, request contracts.Request) (contracts.Result, error) {

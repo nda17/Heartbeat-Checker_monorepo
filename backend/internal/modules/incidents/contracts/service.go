@@ -13,6 +13,20 @@ type Service interface {
 	List(context.Context, string, string) ([]monitorcontracts.Incident, error)
 }
 
+type Notification struct {
+	EventID    string
+	AccountID  string
+	MonitorID  string
+	IncidentID string
+	Kind       string
+	Sequence   int64
+	At         time.Time
+}
+
+type Recorder interface {
+	Enqueue(context.Context, pgx.Tx, Notification) error
+}
+
 const (
 	CloseRecovered     = "recovered"
 	CloseConfigChanged = "config_changed"
