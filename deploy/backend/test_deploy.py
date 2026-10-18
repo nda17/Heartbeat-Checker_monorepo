@@ -15,6 +15,18 @@ IMAGES = [
     for name, digest in (("api", "1"), ("worker", "2"), ("probe", "3"), ("migrate", "4"))
 ]
 BACKUP_IMAGE = "ghcr.io/nda17/heartbeat-checker_monorepo/backup@sha256:" + "5" * 64
+BASE_ENV = (
+    "DATABASE_URL=test\n"
+    "TELEGRAM_API_BASE_URL=https://api.telegram.org\n"
+    "KEEP_EXISTING=one\n"
+    "TELEGRAM_API_PROXY_IP=\n"
+)
+NEXT_ENV = (
+    "DATABASE_URL=test\n"
+    "TELEGRAM_API_PROXY_IP=185.184.122.62\n"
+    "KEEP_EXISTING=one\n"
+    "TELEGRAM_API_BASE_URL=https://messengers-proxy.heartbeat-checker.ru/telegram-api\n"
+)
 DOCKER_MOCK = r'''#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
@@ -24,6 +36,8 @@ if args[:2] == ["login", "ghcr.io"]:
     sys.stdin.read(); raise SystemExit(0)
 if args[:2] == ["image", "inspect"]:
     print(os.environ["SOURCE_SHA"]); raise SystemExit(0)
+if args and args[0] == "compose" and "config" in args and os.environ.get("FAIL_COMPOSE_PREFLIGHT") == "1":
+    raise SystemExit(42)
 if "--profile" in args and "migration" in args:
     raise SystemExit(1 if os.environ.get("FAIL_MIGRATION") == "1" else 0)
 if args[:2] == ["inspect", "--format"]:
@@ -37,6 +51,7 @@ if args and args[0] == "compose":
             "api": {"environment": {"DATABASE_URL": "postgres://heartbeat:testpass@postgres:5432/heartbeat?sslmode=disable"}},
             "postgres": {"environment": {"POSTGRES_PASSWORD": "testpass"}},
             "worker": {"environment": {"SMTP_TLS_MODE": "implicit_tls"}},
+            "probe": {"environment": {"PROBE_SHARED_SECRET": "test-probe-secret"}},
         }})); raise SystemExit(0)
     if "ps" in args and "-q" in args:
         print("container-id"); raise SystemExit(0)
@@ -48,6 +63,31 @@ if args and args[0] == "compose":
         if "schema_migrations" in " ".join(args):
             print("6"); raise SystemExit(0)
 raise SystemExit(0)
+'''
+
+STAT_MOCK = r'''#!/usr/bin/env python3
+import os, stat, sys
+if sys.argv[1:3] == ["-c", "%a"] and len(sys.argv) == 4:
+    print(format(stat.S_IMODE(os.stat(sys.argv[3]).st_mode), "o"))
+    raise SystemExit(0)
+raise SystemExit(1)
+'''
+
+PYTHON_MOCK = r'''#!/bin/sh
+case "$*" in
+  *"Probe public GET and metadata rejection passed"*)
+    cat >/dev/null
+    printf '%s\n' "Probe public GET and metadata rejection passed"
+    exit 0
+    ;;
+esac
+exec "$REAL_PYTHON" "$@"
+'''
+
+CP_MOCK = r'''#!/bin/sh
+for last do :; done
+if [ "${FAIL_ENV_ROLLBACK_COPY:-0}" = 1 ] && [ "$last" = .env.rollback.incoming ]; then exit 1; fi
+exec "$REAL_CP" "$@"
 '''
 
 CURL_MOCK = r'''#!/usr/bin/env python3
@@ -114,10 +154,12 @@ class BackendDeployTests(unittest.TestCase):
         self.write_mock("docker", DOCKER_MOCK)
         self.write_mock("curl", CURL_MOCK)
         self.write_mock("sleep", "#!/bin/sh\nexit 0\n")
-        self.write_mock("stat", "#!/bin/sh\nif [ \"$1\" = \"-c\" ] && [ \"$2\" = \"%a\" ]; then echo 600; exit 0; fi\nexit 1\n")
+        self.write_mock("stat", STAT_MOCK)
+        self.write_mock("python3", PYTHON_MOCK)
+        self.write_mock("cp", CP_MOCK)
         self.write_mock("flock", "#!/bin/sh\nexit 0\n")
         self.write_mock("sha256sum", "#!/bin/sh\nprintf '%064d  %s\\n' 0 \"$1\"\n")
-        (self.backend / ".env").write_text("DATABASE_URL=test\n")
+        (self.backend / ".env").write_text(BASE_ENV)
         (self.backend / ".env").chmod(0o600)
         (self.backend / "compose.yaml.incoming").write_text("compose candidate\n")
         (self.backend / "Caddyfile.incoming").write_text("Caddy candidate\n")
@@ -135,19 +177,30 @@ class BackendDeployTests(unittest.TestCase):
         path.write_text(content)
         path.chmod(0o755)
 
-    def run_deploy(self, **extra_env):
+    def run_deploy(self, activate_next_config=None, **extra_env):
         env = os.environ.copy()
         env.update({
             "PATH": f"{self.bin}:{env['PATH']}",
             "DEPLOY_DIR": str(self.backend),
             "DOCKER_LOG": str(self.log),
             "SOURCE_SHA": SOURCE_SHA,
+            "REAL_PYTHON": os.sys.executable,
+            "REAL_CP": "/bin/cp",
         })
         env.update(extra_env)
+        args = ["bash", str(self.script), SOURCE_SHA, *IMAGES, "nda17", BACKUP_IMAGE]
+        if activate_next_config is not None:
+            args.append("true" if activate_next_config else "false")
         return subprocess.run(
-            ["bash", str(self.script), SOURCE_SHA, *IMAGES, "nda17", BACKUP_IMAGE],
+            args,
             input="test-token\n", cwd=self.root, env=env, text=True, capture_output=True,
         )
+
+    def write_next_config(self, contents, mode=0o600):
+        path = self.backend / ".env.next"
+        path.write_text(contents)
+        path.chmod(mode)
+        return path
 
     def docker_calls(self):
         if not self.log.exists():
@@ -183,7 +236,7 @@ class BackendDeployTests(unittest.TestCase):
         recovery_path = next(line.split("=", 1)[1] for line in pending.splitlines() if line.startswith("recovery="))
         recovery = self.backend / recovery_path
         self.assertEqual((recovery / ".release.env").read_text(), "API_IMAGE=old\n")
-        self.assertEqual((recovery / ".env").read_text(), "DATABASE_URL=test\n")
+        self.assertEqual((recovery / ".env").read_text(), BASE_ENV)
         backups = list((self.backend / "backups").glob("*.dump"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_text(), "isolated-test-database-dump\n")
@@ -203,6 +256,102 @@ class BackendDeployTests(unittest.TestCase):
         self.assertFalse(any("up" in call and "old" in call for call in flattened), "post-migration failure must not restart old binaries")
         self.assertTrue(any("stop" in call and "api" in call and "worker" in call and "probe" in call for call in flattened), "writers must stop before backup and migration")
         self.assertFalse((self.backend / "receipts" / f"{SOURCE_SHA}.json").exists())
+
+    def assert_invalid_candidate_rejected(self, expected_error):
+        original_env = (self.backend / ".env").read_bytes()
+        result = self.run_deploy(activate_next_config=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(expected_error, result.stderr)
+        self.assertEqual((self.backend / ".env").read_bytes(), original_env)
+        self.assertTrue((self.backend / ".env.next").exists() or (self.backend / ".env.next").is_symlink())
+        self.assertEqual(self.docker_calls(), [], "invalid activation must fail before Docker or release changes")
+        self.assertFalse((self.backend / "pending").exists())
+
+    def test_next_config_is_untouched_without_explicit_opt_in(self):
+        candidate = self.write_next_config(NEXT_ENV)
+        before_env = (self.backend / ".env").read_bytes()
+        before_candidate = candidate.read_bytes()
+        result = self.run_deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.backend / ".env").read_bytes(), before_env)
+        self.assertEqual(candidate.read_bytes(), before_candidate)
+
+    def test_valid_two_key_candidate_is_activated_and_consumed_only_on_success(self):
+        candidate = self.write_next_config(NEXT_ENV)
+        result = self.run_deploy(activate_next_config=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.backend / ".env").read_text(), NEXT_ENV)
+        self.assertFalse(candidate.exists(), ".env.next should be consumed after the release is complete")
+
+    def test_unapproved_next_config_key_fails_before_activation(self):
+        self.write_next_config(NEXT_ENV + "UNRELATED_SECRET=must-not-activate\n")
+        self.assert_invalid_candidate_rejected("Relay activation rejected:")
+
+    def test_unexpected_endpoint_and_missing_target_key_fail_before_activation(self):
+        variants = (
+            NEXT_ENV.replace("/telegram-api", "/other-path"),
+            NEXT_ENV.replace("TELEGRAM_API_PROXY_IP=185.184.122.62\n", ""),
+        )
+        for contents in variants:
+            with self.subTest(contents=contents):
+                self.write_next_config(contents)
+                self.assert_invalid_candidate_rejected("Relay activation rejected: unexpected Telegram endpoint")
+
+    def test_duplicate_next_config_key_fails_before_activation(self):
+        self.write_next_config(NEXT_ENV + "TELEGRAM_API_BASE_URL=https://api.telegram.org\n")
+        self.assert_invalid_candidate_rejected("Relay activation rejected: duplicate env key")
+
+    def test_malformed_next_config_line_fails_before_activation(self):
+        self.write_next_config(NEXT_ENV + "this is not a key-value row\n")
+        self.assert_invalid_candidate_rejected("Relay activation rejected: invalid env line")
+
+    def test_symlink_next_config_fails_before_activation(self):
+        target = self.backend / ".env.next.target"
+        target.write_text(NEXT_ENV)
+        target.chmod(0o600)
+        (self.backend / ".env.next").symlink_to(target.name)
+        self.assert_invalid_candidate_rejected("Relay activation requires a regular mode-600 .env.next")
+
+    def test_non_600_next_config_fails_before_activation(self):
+        self.write_next_config(NEXT_ENV, mode=0o644)
+        self.assert_invalid_candidate_rejected("Relay activation requires a regular mode-600 .env.next")
+
+    def test_pre_migration_failure_restores_old_env_and_keeps_candidate(self):
+        candidate = self.write_next_config(NEXT_ENV)
+        result = self.run_deploy(activate_next_config=True, FAIL_COMPOSE_PREFLIGHT="1")
+        self.assertEqual(result.returncode, 42, result.stderr)
+        self.assertTrue(any(call and call[0] == "compose" and "config" in call for call in self.docker_calls()),
+                        "the injected failure must occur during Compose preflight")
+        self.assertEqual((self.backend / ".env").read_text(), BASE_ENV)
+        self.assertEqual(candidate.read_text(), NEXT_ENV)
+        self.assertFalse((self.backend / "pending").exists())
+        self.assertEqual((self.backend / ".release.env").read_text(), "API_IMAGE=old\n")
+
+    def test_env_rollback_failure_retains_recovery_snapshot_without_registry_credentials(self):
+        self.write_next_config(NEXT_ENV)
+        result = self.run_deploy(activate_next_config=True, FAIL_COMPOSE_PREFLIGHT="1",
+                                 FAIL_ENV_ROLLBACK_COPY="1")
+        self.assertEqual(result.returncode, 42, result.stderr)
+        self.assertIn("previous backend .env could not be restored", result.stderr)
+        self.assertIn("phase=env_rollback_failed", (self.backend / "pending").read_text())
+        pending = (self.backend / "pending").read_text()
+        snapshot_line = next(line for line in pending.splitlines() if line.startswith("env_snapshot="))
+        snapshot = self.backend / snapshot_line.split("=", 1)[1]
+        self.assertEqual(snapshot.read_text(), BASE_ENV)
+        self.assertEqual(snapshot.stat().st_mode & 0o777, 0o600)
+        self.assertIn("TELEGRAM_API_PROXY_IP=185.184.122.62\n", (self.backend / ".env").read_text())
+        self.assertFalse((snapshot.parent / "docker-config").exists(), "registry credentials must be removed before retaining recovery data")
+        self.assertFalse(any("up" in call for call in self.docker_calls()), "failed env rollback must not restart services with the activated env")
+
+    def test_post_migration_failure_keeps_activated_env_and_pending_journal(self):
+        candidate = self.write_next_config(NEXT_ENV)
+        result = self.run_deploy(activate_next_config=True, FAIL_MIGRATION="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("phase=migration_started", (self.backend / "pending").read_text())
+        self.assertIn("TELEGRAM_API_BASE_URL=https://messengers-proxy.heartbeat-checker.ru/telegram-api\n",
+                      (self.backend / ".env").read_text())
+        self.assertIn("TELEGRAM_API_PROXY_IP=185.184.122.62\n", (self.backend / ".env").read_text())
+        self.assertTrue(candidate.exists(), ".env.next must remain available until full deployment succeeds")
 
 
 class ProbeFirewallTests(unittest.TestCase):
