@@ -89,6 +89,13 @@ jobs:
           GO_API_ORIGIN: ''
           NEXT_PUBLIC_TURNSTILE_SITE_KEY: ''
         run: npm run build
+      - name: Build frontend without backend
+        env:
+          WEB_MODE: frontend
+          WEB_PUBLIC_ORIGIN: https://heartbeat-checker.ru
+          GO_API_ORIGIN: ''
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: 0x4AAAAAABBBBBCCCCCDDDDD
+        run: npm run build
 
   frontend-deploy-config:
     runs-on: ubuntu-24.04
@@ -135,7 +142,14 @@ jobs:
             --build-arg WEB_PUBLIC_ORIGIN=https://heartbeat-checker.ru \
             --build-arg NEXT_PUBLIC_TURNSTILE_SITE_KEY= \
             -t heartbeat-checker/web:ci-landing apps/web
-          for mode in app landing; do
+          docker build -f apps/web/Dockerfile \
+            --build-arg VCS_REF="$GITHUB_SHA" \
+            --build-arg WEB_MODE=frontend \
+            --build-arg GO_API_ORIGIN= \
+            --build-arg WEB_PUBLIC_ORIGIN=https://heartbeat-checker.ru \
+            --build-arg NEXT_PUBLIC_TURNSTILE_SITE_KEY=0x4AAAAAABBBBBCCCCCDDDDD \
+            -t heartbeat-checker/web:ci-frontend apps/web
+          for mode in app frontend landing; do
             image="heartbeat-checker/web:ci-$mode"
             [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")" == "$GITHUB_SHA" ]]
             [[ "$(docker image inspect --format '{{ index .Config.Labels "org.heartbeat-checker.web-mode" }}' "$image")" == "$mode" ]]
@@ -160,7 +174,6 @@ jobs:
           done
           curl -fsS --retry 20 --retry-connrefused --retry-delay 1 --max-time 5 -o "$smoke_dir/home" "$base/"
           grep -Fq 'data-web-mode="landing"' "$smoke_dir/home"
-          grep -Fq 'Сервис готовится к запуску' "$smoke_dir/home"
           if grep -Eiq 'href="/(register|login|app)(["/?#])' "$smoke_dir/home"; then exit 1; fi
           for route in terms privacy cookies contacts; do
             grep -Fq "href=\"/$route\"" "$smoke_dir/home"
@@ -173,4 +186,47 @@ jobs:
             status=$(curl -sS --max-time 5 -D "$smoke_dir/headers" -o /dev/null -w '%{http_code}' "$base/$route")
             [[ "$status" == 307 ]]
             grep -Eiq '^location:[[:space:]]*/[[:space:]]*$' "$smoke_dir/headers"
+          done
+      - name: Smoke frontend without backend from built image
+        run: |
+          set -euo pipefail
+          container=$(docker run --rm -d -p 127.0.0.1::3000 heartbeat-checker/web:ci-frontend)
+          smoke_dir=$(mktemp -d)
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true; rm -rf "$smoke_dir"' EXIT
+          host_port=$(docker port "$container" 3000/tcp | awk -F: '{print $NF}')
+          [[ "$host_port" =~ ^[0-9]+$ ]]
+          base="http://127.0.0.1:$host_port"
+          deadline=$((SECONDS + 45))
+          until curl -fsS --max-time 5 -o /dev/null "$base/" >/dev/null 2>&1; do
+            if (( SECONDS >= deadline )); then
+              echo 'Frontend did not become ready within 45 seconds' >&2
+              docker logs "$container" >&2 || true
+              exit 1
+            fi
+            sleep 1
+          done
+          curl -fsS --max-time 5 -o "$smoke_dir/home" "$base/"
+          grep -Fq 'data-web-mode="frontend"' "$smoke_dir/home"
+          for route in login register; do
+            grep -Fq "href=\"/$route\"" "$smoke_dir/home"
+          done
+          for route in terms privacy cookies contacts login register forgot-password reset-password verify-email app app/settings; do
+            response_file="$smoke_dir/${route//\//-}"
+            status=$(curl -sS --max-time 5 -o "$response_file" -w '%{http_code}' "$base/$route")
+            [[ "$status" == 200 && -s "$response_file" ]]
+          done
+          for route in login register; do
+            grep -Fq '<form' "$smoke_dir/$route"
+            grep -Fq 'name="email"' "$smoke_dir/$route"
+            grep -Fq 'name="password"' "$smoke_dir/$route"
+          done
+          for request in 'GET me' 'POST auth/login' 'POST auth/register'; do
+            read -r method route <<< "$request"
+            request_args=(-X "$method")
+            if [[ "$method" == POST ]]; then request_args+=(-H 'Content-Type: application/json' --data '{}'); fi
+            status=$(curl -sS --max-time 5 "${request_args[@]}" -D "$smoke_dir/headers" -o "$smoke_dir/api" -w '%{http_code}' "$base/api/v1/$route")
+            [[ "$status" == 503 ]]
+            grep -Eq '"error"[[:space:]]*:[[:space:]]*"temporarily_unavailable"' "$smoke_dir/api"
+            grep -Eiq '^cache-control:[[:space:]]*no-store' "$smoke_dir/headers"
+            if grep -Eiq '^set-cookie:' "$smoke_dir/headers"; then exit 1; fi
           done

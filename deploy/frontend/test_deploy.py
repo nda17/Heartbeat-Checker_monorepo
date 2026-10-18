@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Regression tests for deploy.sh using temporary files and command mocks."""
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -58,6 +59,7 @@ out = option_value("-o")
 headers_out = option_value("-D")
 url = args[-1]
 is_postflight = "--resolve" in args
+method = option_value("-X") or ("POST" if "-d" in args or "--data" in args else "GET")
 with open(os.environ["CURL_LOG"], "a") as f:
     f.write(json.dumps(args) + "\n")
 path = url.split("heartbeat-checker.ru", 1)[-1] if is_postflight else ""
@@ -66,20 +68,45 @@ if is_postflight:
         raise SystemExit(22)
     if path == "/":
         status = "200"
-        body = (
-            '<html data-web-mode="landing">Сервис готовится к запуску '
-            '<footer><a href="/terms">Условия</a><a href="/privacy">'
-            'Конфиденциальность</a><a href="/cookies">Cookies</a>'
-            '<a href="/contacts">Контакты</a></footer></html>'
-        )
+        if os.environ.get("DEPLOY_MODE") == "frontend":
+            body = (
+                '<html data-web-mode="frontend"><a href="/login">Войти</a>'
+                '<a href="/register">Регистрация</a></html>'
+            )
+        else:
+            body = (
+                '<html data-web-mode="landing">'
+                '<footer><a href="/terms">Условия</a><a href="/privacy">'
+                'Конфиденциальность</a><a href="/cookies">Cookies</a>'
+                '<a href="/contacts">Контакты</a></footer></html>'
+            )
     elif path == "/theme-init.js":
         status, body = "200", ""
     elif path in ("/terms", "/privacy", "/cookies", "/contacts"):
         status = "500" if path == "/" + os.environ.get("FAIL_LEGAL_PAGE", "") else "200"
         body = "" if status == "500" else "Legal page: " + path
     elif path == "/api/v1/me":
-        status = "404" if os.environ.get("DEPLOY_MODE") == "landing" else "401"
-        body = '{"error":"unauthorized"}' if status == "401" else '{"error":"not_found"}'
+        mode = os.environ.get("DEPLOY_MODE")
+        status = "404" if mode == "landing" else "503" if mode == "frontend" else "401"
+        body = (
+            '{"error":"unauthorized"}' if status == "401" else
+            '{"error":"temporarily_unavailable"}' if status == "503" else
+            '{"error":"not_found"}'
+        )
+        if mode == "frontend" and os.environ.get("FAIL_FRONTEND_POSTFLIGHT") == "1":
+            status, body = "500", '{"error":"failed"}'
+        if headers_out:
+            with open(headers_out, "w") as f:
+                f.write(
+                    "HTTP/2 " + status + "\r\n"
+                    + ("cache-control: no-store\r\n" if mode == "frontend" else "")
+                )
+    elif path == "/api/v1/auth/login" and method == "POST":
+        status = "503" if os.environ.get("DEPLOY_MODE") == "frontend" else "404"
+        body = '{"error":"temporarily_unavailable"}' if status == "503" else '{"error":"not_found"}'
+        if headers_out:
+            with open(headers_out, "w") as f:
+                f.write("HTTP/2 " + status + "\r\ncache-control: no-store\r\n")
     elif path in (
         "/register",
         "/login",
@@ -89,10 +116,13 @@ if is_postflight:
         "/app",
         "/app/settings",
     ):
-        status, body = "307", ""
-        if headers_out:
-            with open(headers_out, "w") as f:
-                f.write("HTTP/2 307\r\nlocation: /\r\n")
+        if os.environ.get("DEPLOY_MODE") == "frontend":
+            status, body = "200", "Frontend page: " + path
+        else:
+            status, body = "307", ""
+            if headers_out:
+                with open(headers_out, "w") as f:
+                    f.write("HTTP/2 307\r\nlocation: /\r\n")
     else:
         status, body = "404", ""
 else:
@@ -100,6 +130,9 @@ else:
     body = os.environ.get("PREFLIGHT_BODY", '{"error":"unauthorized"}')
 if out and out != "/dev/null":
     open(out, "w").write(body)
+if headers_out and path.startswith("/api/v1/"):
+    with open(os.environ["CURL_HEADERS_LOG"], "a") as f:
+        f.write(json.dumps({"url": url, "method": method, "headers": open(headers_out).read()}) + "\n")
 if option_value("-w") is not None:
     sys.stdout.write(status)
 '''
@@ -133,6 +166,7 @@ class DeployTests(unittest.TestCase):
         (self.deploy_dir / "Caddyfile.incoming").write_text("new caddy\n")
         self.log = self.root / "docker.log"
         self.curl_log = self.root / "curl.log"
+        self.curl_headers_log = self.root / "curl-headers.log"
         self.state = self.root / "docker.state"
 
     def tearDown(self):
@@ -152,6 +186,7 @@ class DeployTests(unittest.TestCase):
             "DOCKER_LOG": str(self.log),
             "DOCKER_STATE": str(self.state),
             "CURL_LOG": str(self.curl_log),
+            "CURL_HEADERS_LOG": str(self.curl_headers_log),
             "IMAGE_REVISION": SOURCE_SHA,
             "IMAGE_MODE": "app",
         })
@@ -190,6 +225,13 @@ class DeployTests(unittest.TestCase):
             return []
         import json
         return [json.loads(line) for line in self.curl_log.read_text().splitlines()]
+
+    @staticmethod
+    def curl_option_value(args, flag):
+        try:
+            return args[args.index(flag) + 1]
+        except (ValueError, IndexError):
+            return None
 
     def test_successful_first_deployment(self):
         result = self.run_deploy()
@@ -238,6 +280,55 @@ class DeployTests(unittest.TestCase):
         ]
         self.assertEqual(len(mode_inspect), 1)
 
+    def test_frontend_deploys_without_api_origin_or_preflight(self):
+        result = self.run_deploy(mode="frontend", api_origin="", IMAGE_MODE="frontend")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Frontend deployed:", result.stdout)
+        urls = [call[-1] for call in self.curl_calls()]
+        self.assertNotIn(API_ORIGIN + "/api/v1/me", urls)
+        self.assertIn("https://heartbeat-checker.ru/", urls)
+        self.assertIn("https://heartbeat-checker.ru/theme-init.js", urls)
+        expected_pages = (
+            "/terms", "/privacy", "/cookies", "/contacts", "/login",
+            "/register", "/forgot-password", "/reset-password", "/verify-email",
+            "/app", "/app/settings",
+        )
+        for path in expected_pages:
+            self.assertIn("https://heartbeat-checker.ru" + path, urls)
+
+        api_calls = [call for call in self.curl_calls() if "/api/v1/" in call[-1]]
+        self.assertEqual(
+            {(self.curl_option_value(call, "-X") or "GET", call[-1]) for call in api_calls},
+            {
+                ("GET", "https://heartbeat-checker.ru/api/v1/me"),
+                ("POST", "https://heartbeat-checker.ru/api/v1/auth/login"),
+            },
+        )
+        headers = [
+            item["headers"].lower()
+            for item in (json.loads(line) for line in self.curl_headers_log.read_text().splitlines())
+        ]
+        self.assertEqual(len(headers), 2)
+        for response_headers in headers:
+            self.assertIn("cache-control: no-store", response_headers)
+            self.assertNotIn("set-cookie:", response_headers)
+        calls = self.docker_calls()
+        mode_inspect = [
+            call for call in calls
+            if call[:2] == ["image", "inspect"]
+            and "org.heartbeat-checker.web-mode" in call[3]
+        ]
+        self.assertEqual(len(mode_inspect), 1)
+
+    def test_frontend_rejects_nonempty_api_origin_before_registry_or_compose_actions(self):
+        self.old_deployment()
+        result = self.run_deploy(mode="frontend", IMAGE_MODE="frontend")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("frontend must not have an API origin", result.stderr)
+        self.assertEqual(self.docker_calls(), [])
+        self.assertFalse(self.curl_calls())
+        self.assertEqual((self.deploy_dir / ".env").read_text(), "WEB_IMAGE=old-image\n")
+
     def test_bad_api_auth_contract_prevents_switch(self):
         self.old_deployment()
         result = self.run_deploy(PREFLIGHT_BODY='{"error":"forbidden"}')
@@ -276,6 +367,15 @@ class DeployTests(unittest.TestCase):
         self.assertFalse(self.curl_calls())
         self.assertEqual((self.deploy_dir / ".env").read_text(), "WEB_IMAGE=old-image\n")
 
+    def test_frontend_image_mode_mismatch_prevents_switch(self):
+        self.old_deployment()
+        result = self.run_deploy(mode="frontend", api_origin="", IMAGE_MODE="app")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Image web mode does not match requested deployment mode", result.stderr)
+        self.assertFalse(any(call[:1] == ["compose"] for call in self.docker_calls()))
+        self.assertFalse(self.curl_calls())
+        self.assertEqual((self.deploy_dir / ".env").read_text(), "WEB_IMAGE=old-image\n")
+
     def test_failed_postflight_restores_previous_files_and_recreates(self):
         self.old_deployment()
         result = self.run_deploy(FAIL_POSTFLIGHT="1")
@@ -297,6 +397,25 @@ class DeployTests(unittest.TestCase):
             api_origin="",
             IMAGE_MODE="landing",
             FAIL_POSTFLIGHT="1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("restoring previous deployment", result.stderr)
+        for name, expected in ((".env", "WEB_IMAGE=old-image\n"),
+                               ("compose.yaml", "old compose\n"),
+                               ("Caddyfile", "old caddy\n")):
+            self.assertEqual((self.deploy_dir / name).read_text(), expected)
+        ups = [call for call in self.docker_calls() if "up" in call]
+        self.assertEqual(len(ups), 2)
+        self.assertIn("--force-recreate", ups[0])
+        self.assertIn("--force-recreate", ups[1])
+
+    def test_failed_frontend_postflight_restores_previous_files_and_recreates(self):
+        self.old_deployment()
+        result = self.run_deploy(
+            mode="frontend",
+            api_origin="",
+            IMAGE_MODE="frontend",
+            FAIL_FRONTEND_POSTFLIGHT="1",
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("restoring previous deployment", result.stderr)

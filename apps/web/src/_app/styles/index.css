@@ -756,7 +756,13 @@ input:read-only {
   font-weight: 500;
 }
 .auth-main > footer {
-  font-size: 9px;
+  font-size: 11px;
+}
+.auth-main > footer nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px 16px;
 }
 .auth-done h2 {
   font-size: 23px;
