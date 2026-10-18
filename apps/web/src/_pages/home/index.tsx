@@ -32,13 +32,13 @@ export function HomePage() {
               <span className="live-dot" /> ВАШИ СЕРВИСЫ В ПОЛЕ ЗРЕНИЯ
             </p>
             <h1>
-              Ведём круглосуточный мониторинг доступности
+              Ведем круглосуточный мониторинг доступности
               <br />
               <span>ваших сайтов и сервисов.</span>
             </h1>
             <p className="hero-description">
-              Сообщаем о сбоях и восстановлении по email, в MAX, Telegram,
-              WhatsApp или через вебхук. Выбирайте удобный канал.
+              Моментально сообщаем о сбоях и восстановлении по email, в MAX,
+              Telegram, WhatsApp или через вебхук. Выбирайте удобный канал.
             </p>
             <div className="hero-actions">
               <Link
