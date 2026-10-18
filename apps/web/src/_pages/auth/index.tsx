@@ -22,7 +22,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
           </p>
           <div className="auth-decoration" aria-hidden="true">
             {Array.from({ length: 13 }, (_, i) => (
-              <span key={i} />
+              <span key={i} style={{ animationDelay: `${i * 140}ms` }} />
             ))}
           </div>
           <span className="small">
