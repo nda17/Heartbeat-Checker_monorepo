@@ -284,6 +284,14 @@ strong {
   font-weight: 500;
   letter-spacing: -0.055em;
 }
+.brand-wordmark {
+  display: inline-block;
+  animation: brand-glitch 6s steps(1, end) infinite;
+}
+.brand:hover .brand-wordmark,
+.brand:focus-visible .brand-wordmark {
+  animation: brand-glitch-hover 500ms steps(1, end) 1;
+}
 .brand-mark {
   display: inline-flex;
   width: 32px;
@@ -297,6 +305,8 @@ strong {
 .brand-mark svg {
   width: 24px;
   height: 24px;
+  transform-origin: center;
+  animation: brand-heartbeat 6s ease-in-out infinite;
 }
 .brand-mark.mini {
   width: 26px;
@@ -306,6 +316,62 @@ strong {
 .brand-mark.mini svg {
   width: 21px;
   height: 21px;
+}
+@keyframes brand-heartbeat {
+  0%,
+  76%,
+  83%,
+  90%,
+  100% {
+    transform: scale(1);
+  }
+  80% {
+    transform: scale(1.08);
+  }
+  87% {
+    transform: scale(1.04);
+  }
+}
+@keyframes brand-glitch {
+  0%,
+  87%,
+  92%,
+  100% {
+    transform: translateX(0);
+    text-shadow: none;
+  }
+  88% {
+    transform: translateX(-1px);
+    text-shadow:
+      1px 0 #d97a8b,
+      -1px 0 #54bdb1;
+  }
+  90% {
+    transform: translateX(1px);
+    text-shadow:
+      -1px 0 #d97a8b,
+      1px 0 #54bdb1;
+  }
+}
+@keyframes brand-glitch-hover {
+  0%,
+  60%,
+  100% {
+    transform: translateX(0);
+    text-shadow: none;
+  }
+  20% {
+    transform: translateX(-1px);
+    text-shadow:
+      1px 0 #d97a8b,
+      -1px 0 #54bdb1;
+  }
+  40% {
+    transform: translateX(1px);
+    text-shadow:
+      -1px 0 #d97a8b,
+      1px 0 #54bdb1;
+  }
 }
 .skip-link {
   position: fixed;
@@ -531,6 +597,42 @@ input:read-only {
   max-width: 465px;
   color: var(--muted);
 }
+.hero-timing {
+  position: relative;
+  display: inline-block;
+}
+.hero-timing-trigger {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.hero-timing-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.hero-timing-tooltip {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 8px);
+  left: 0;
+  width: min(350px, calc(100vw - 46px));
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 8px 24px #14233422;
+  font-size: 12px;
+  line-height: 1.5;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+.hero-timing:hover .hero-timing-tooltip,
+.hero-timing:focus-within .hero-timing-tooltip {
+  visibility: visible;
+  opacity: 1;
+}
 .hero-actions {
   margin-top: 31px;
   display: flex;
@@ -636,6 +738,28 @@ input:read-only {
 .landing-footer nav a:hover,
 .landing-footer-contact a:hover {
   color: var(--accent);
+}
+.footer-legal-notice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  width: 100%;
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.footer-legal-notice a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.footer-legal-notice a:hover {
+  color: var(--accent);
+}
+.landing-footer .footer-legal-notice {
+  grid-column: 1 / -1;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
 }
 /* Auth */
 .auth-page {
@@ -764,6 +888,10 @@ input:read-only {
   flex-wrap: wrap;
   justify-content: center;
   gap: 10px 16px;
+}
+.auth-main > footer .footer-legal-notice {
+  justify-content: center;
+  margin-top: 16px;
 }
 .auth-done h2 {
   font-size: 23px;

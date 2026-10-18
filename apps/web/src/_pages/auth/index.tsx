@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { AuthForm, AuthMode } from "@/features/auth";
 import { ThemeToggle } from "@/features/theme-toggle";
-import { Brand } from "@/shared/ui";
+import { Brand, FooterLegalNotice } from "@/shared/ui";
 export function AuthPage({ mode }: { mode: AuthMode }) {
   return (
     <div className="auth-page">
@@ -48,6 +48,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
             <Link href="/cookies">Cookie</Link>
             <Link href="/contacts">Контакты</Link>
           </nav>
+          <FooterLegalNotice />
         </footer>
       </main>
     </div>

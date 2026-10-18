@@ -37,8 +37,25 @@ export function HomePage() {
               <span>ваших сайтов и сервисов.</span>
             </h1>
             <p className="hero-description">
-              Моментально сообщаем о сбоях и восстановлении по email, в MAX,
-              Telegram, WhatsApp или через вебхук. Выбирайте удобный канал.
+              <span className="hero-timing">
+                <span
+                  className="hero-timing-trigger"
+                  tabIndex={0}
+                  aria-describedby="hero-timing-tooltip"
+                >
+                  Моментально
+                </span>
+                <span
+                  className="hero-timing-tooltip"
+                  id="hero-timing-tooltip"
+                  role="tooltip"
+                >
+                  Обнаружение инцидента зависит от выбранных вами интервала
+                  проверок и порога сбоев.
+                </span>
+              </span>{" "}
+              сообщаем о сбоях и восстановлении по email, в MAX, Telegram,
+              WhatsApp или через вебхук. Выбирайте удобный канал.
             </p>
             <div className="hero-actions">
               <Link
