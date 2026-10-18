@@ -104,7 +104,7 @@ func (m *Module) telegram(ctx context.Context, method string, params any, out an
 			RetryAfter int64 `json:"retry_after"`
 		} `json:"parameters"`
 	}
-	if err = m.request(ctx, http.MethodPost, "https://api.telegram.org/bot"+m.cfg.TelegramToken+"/"+method, "", "application/json", bytes.NewReader(b), &response); err != nil {
+	if err = m.request(ctx, http.MethodPost, m.cfg.TelegramAPIBaseURL+"/bot"+m.cfg.TelegramToken+"/"+method, "", "application/json", bytes.NewReader(b), &response); err != nil {
 		return err
 	}
 	if !response.OK {
@@ -207,11 +207,11 @@ func (m *Module) maxSend(ctx context.Context, target int64, private bool, text s
 	return out.Message.Body.ID, err
 }
 
-// Native support connects only to official API hosts. All resolved addresses must
-// be public and the normal TLS certificate/hostname validation remains enabled.
-func publicDial(ctx context.Context, network, address string) (net.Conn, error) {
+// Support connects only to configured Telegram and official MAX hosts. All
+// resolved addresses must be public; TLS certificate validation remains enabled.
+func publicDial(ctx context.Context, network, address, telegramHost string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
-	if err != nil || port != "443" || (host != "api.telegram.org" && host != "platform-api2.max.ru") {
+	if err != nil || port != "443" || (host != telegramHost && host != "platform-api2.max.ru") {
 		return nil, errors.New("invalid support destination")
 	}
 	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)

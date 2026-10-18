@@ -50,7 +50,7 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 	monitorModule := monitors.New(pool, billingModule, incidentModule, accountModule)
 	var supportModule *support.Module
 	if cfg.SupportEnabled {
-		supportModule, err = support.New(pool, support.Config{EncryptionKey: cfg.SupportEncryptionKey, TelegramToken: cfg.TelegramSupportToken, MAXToken: cfg.MAXSupportToken, InternalChatID: cfg.TelegramInternalChatID, SupportTopicID: cfg.TelegramSupportTopicID, MAXSupportChatID: cfg.MAXSupportChatID, TelegramAPIIP: cfg.TelegramAPIIP, MAXRootCAFile: cfg.SupportMAXRootCAFile})
+		supportModule, err = support.New(pool, support.Config{EncryptionKey: cfg.SupportEncryptionKey, TelegramToken: cfg.TelegramSupportToken, MAXToken: cfg.MAXSupportToken, InternalChatID: cfg.TelegramInternalChatID, SupportTopicID: cfg.TelegramSupportTopicID, MAXSupportChatID: cfg.MAXSupportChatID, TelegramAPIIP: cfg.TelegramAPIIP, TelegramAPIBaseURL: cfg.TelegramAPIBaseURL, MAXRootCAFile: cfg.SupportMAXRootCAFile})
 		if err != nil {
 			return err
 		}

@@ -28,6 +28,7 @@ type IntegrationConfig struct {
 	MAXSupportWebhookSecret      string
 	TelegramSupportTopicID       int64
 	TelegramAPIIP                string
+	TelegramAPIBaseURL           string
 	MAXSupportChatID             int64
 	SupportMAXRootCAFile         string
 }
@@ -60,6 +61,13 @@ func loadIntegrations(worker bool) (IntegrationConfig, error) {
 	}
 	if !cfg.SupportEnabled && !cfg.BillingReportsEnabled {
 		return cfg, nil
+	}
+	cfg.TelegramAPIBaseURL = strings.TrimSpace(os.Getenv("TELEGRAM_API_BASE_URL"))
+	if cfg.TelegramAPIBaseURL == "" {
+		cfg.TelegramAPIBaseURL = "https://api.telegram.org"
+	}
+	if cfg.TelegramAPIBaseURL != "https://api.telegram.org" && cfg.TelegramAPIBaseURL != "https://messengers-proxy.heartbeat-checker.ru/telegram-api" {
+		return cfg, errors.New("TELEGRAM_API_BASE_URL must be an approved HTTPS Telegram endpoint")
 	}
 	cfg.TelegramInternalChatID, err = strconv.ParseInt(os.Getenv("TELEGRAM_INTERNAL_CHAT_ID"), 10, 64)
 	if err != nil || cfg.TelegramInternalChatID >= 0 {

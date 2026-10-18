@@ -114,6 +114,30 @@ jobs:
             "$caddy_image" caddy validate --config /dev/stdin --adapter caddyfile < deploy/frontend/Caddyfile
           python3 deploy/frontend/test_deploy.py
 
+  relay-deploy-config:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Validate relay deployment files
+        run: |
+          set -euo pipefail
+          shellcheck deploy/relay/deploy.sh
+          bash -n deploy/relay/deploy.sh
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nginx
+          cert_dir=/etc/letsencrypt/live/messengers-proxy.heartbeat-checker.ru
+          sudo install -d -m 755 "$cert_dir"
+          openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
+            -subj /CN=messengers-proxy.heartbeat-checker.ru \
+            -keyout /tmp/relay-ci-key.pem -out /tmp/relay-ci-cert.pem >/dev/null 2>&1
+          sudo install -m 600 /tmp/relay-ci-key.pem "$cert_dir/privkey.pem"
+          sudo install -m 644 /tmp/relay-ci-cert.pem "$cert_dir/fullchain.pem"
+          sudo install -m 644 deploy/relay/nginx-http.conf /etc/nginx/sites-available/heartbeat-relay-http.conf
+          sudo install -m 644 deploy/relay/nginx-https.conf /etc/nginx/sites-available/heartbeat-relay-https.conf
+          sudo ln -s /etc/nginx/sites-available/heartbeat-relay-http.conf /etc/nginx/sites-enabled/heartbeat-relay-http.conf
+          sudo ln -s /etc/nginx/sites-available/heartbeat-relay-https.conf /etc/nginx/sites-enabled/heartbeat-relay-https.conf
+          sudo nginx -t
+
   backend-deploy-config:
     runs-on: ubuntu-24.04
     steps:
@@ -160,6 +184,13 @@ jobs:
           docker build -f deploy/backend/backup/Dockerfile \
             --build-arg VCS_REF="$GITHUB_SHA" -t heartbeat-checker/backup:ci deploy/backend/backup
           [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' heartbeat-checker/backup:ci)" == "$GITHUB_SHA" ]]
+      - name: Relay rollback and cleanup regression
+        env:
+          HEARTBEAT_RELAY_TEST_IMAGE: heartbeat-checker/backup:ci
+        run: |
+          set -euo pipefail
+          docker image inspect "$HEARTBEAT_RELAY_TEST_IMAGE" >/dev/null
+          python3 -m unittest discover -s deploy/relay -p test_deploy.py
       - name: Build standalone web image
         run: |
           docker build -f apps/web/Dockerfile \

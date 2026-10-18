@@ -5,12 +5,15 @@ import argparse
 import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
+import http.client
+import ipaddress
 import io
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -34,6 +37,27 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise BackupError("http_redirect_rejected")
 
 
+class PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host, *, pinned_ip, **kwargs):
+        super().__init__(host, **kwargs)
+        self.pinned_ip = pinned_ip
+
+    def connect(self):
+        self.sock = socket.create_connection((self.pinned_ip, self.port), self.timeout, self.source_address)
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=self.host)
+
+
+class PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, pinned_ip):
+        super().__init__()
+        self.pinned_ip = pinned_ip
+
+    def https_open(self, request):
+        def connection(host, **kwargs):
+            return PinnedHTTPSConnection(host, pinned_ip=self.pinned_ip, **kwargs)
+        return self.do_open(connection, request, context=self._context)
+
+
 class BackupError(Exception):
     """Public, secret-free failure code suitable for logs and internal reporting."""
 
@@ -44,6 +68,23 @@ def utcnow():
 
 def timestamp():
     return utcnow().isoformat()
+
+
+def telegram_transport():
+    base_url = os.environ.get("TELEGRAM_API_BASE_URL", "").strip() or "https://api.telegram.org"
+    if base_url not in ("https://api.telegram.org", "https://messengers-proxy.heartbeat-checker.ru/telegram-api"):
+        raise BackupError("invalid_telegram_api_base_url")
+    pinned_ip = os.environ.get("TELEGRAM_API_PROXY_IP", "").strip()
+    handlers = [urllib.request.ProxyHandler({}), NoRedirect()]
+    if pinned_ip:
+        try:
+            address = ipaddress.ip_address(pinned_ip)
+        except ValueError as exc:
+            raise BackupError("invalid_telegram_api_proxy_ip") from exc
+        if not address.is_global or address.is_multicast or address.is_reserved:
+            raise BackupError("invalid_telegram_api_proxy_ip")
+        handlers.append(PinnedHTTPSHandler(pinned_ip))
+    return base_url, urllib.request.build_opener(*handlers)
 
 
 def digest(path):
@@ -310,10 +351,11 @@ def report(state, path, client):
     token = os.environ.get("TELEGRAM_BOT_INFORMER_TOKEN", "")
     if not token:
         raise BackupError("missing_telegram_token")
-    request = urllib.request.Request("https://api.telegram.org/bot" + token + "/sendMessage", data=payload,
+    base_url, opener = telegram_transport()
+    request = urllib.request.Request(base_url + "/bot" + token + "/sendMessage", data=payload,
                                      headers={"Content-Type": "application/json"}, method="POST")
     try:
-        with urllib.request.build_opener(NoRedirect()).open(request, timeout=20) as response:
+        with opener.open(request, timeout=20) as response:
             result = json.loads(response.read(1024 * 1024))
         if result.get("ok") is not True:
             raise BackupError("telegram_rejected")
