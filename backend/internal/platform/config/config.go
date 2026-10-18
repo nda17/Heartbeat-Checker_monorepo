@@ -13,24 +13,26 @@ import (
 )
 
 type Config struct {
-	AppEnv               string
-	HTTPAddr             string
-	DatabaseURL          string
-	DatabaseTimeout      time.Duration
-	ReadinessTimeout     time.Duration
-	ShutdownTimeout      time.Duration
-	AuthOrigin           string
-	AuthCookieSecure     bool
-	AuthSessionTTL       time.Duration
-	AuthChallengeTTL     time.Duration
-	AuthResetTTL         time.Duration
-	AuthRateWindow       time.Duration
-	TurnstileSecret      string
-	TurnstileHost        string
-	TurnstileLocal       bool
-	SMTPAddr             string
-	SMTPFrom             string
-	WebhookEncryptionKey string
+	AppEnv                string
+	HTTPAddr              string
+	DatabaseURL           string
+	DatabaseTimeout       time.Duration
+	ReadinessTimeout      time.Duration
+	ShutdownTimeout       time.Duration
+	AuthOrigin            string
+	AuthCookieSecure      bool
+	AuthSessionTTL        time.Duration
+	AuthChallengeTTL      time.Duration
+	AuthResetTTL          time.Duration
+	AuthRateWindow        time.Duration
+	TurnstileSecret       string
+	TurnstileHost         string
+	TurnstileLocal        bool
+	SMTPAddr              string
+	SMTPFrom              string
+	AuthMailEncryptionKey string
+	TrustedProxyCIDRs     string
+	WebhookEncryptionKey  string
 }
 
 func Load() (Config, error) {
@@ -74,8 +76,6 @@ func Load() (Config, error) {
 		{"AUTH_ORIGIN", &cfg.AuthOrigin},
 		{"TURNSTILE_SECRET_KEY", &cfg.TurnstileSecret},
 		{"TURNSTILE_HOSTNAME", &cfg.TurnstileHost},
-		{"SMTP_ADDR", &cfg.SMTPAddr},
-		{"SMTP_FROM", &cfg.SMTPFrom},
 		{"WEBHOOK_ENCRYPTION_KEY", &cfg.WebhookEncryptionKey},
 	} {
 		value := strings.TrimSpace(os.Getenv(setting.name))
@@ -87,6 +87,29 @@ func Load() (Config, error) {
 	key, err := base64.StdEncoding.Strict().DecodeString(cfg.WebhookEncryptionKey)
 	if err != nil || len(key) != 32 {
 		return Config{}, fmt.Errorf("WEBHOOK_ENCRYPTION_KEY must be base64 of 32 bytes")
+	}
+	if cfg.AppEnv == "local" {
+		cfg.SMTPAddr = strings.TrimSpace(os.Getenv("SMTP_ADDR"))
+		cfg.SMTPFrom = strings.TrimSpace(os.Getenv("SMTP_FROM"))
+		if cfg.SMTPAddr == "" || cfg.SMTPFrom == "" {
+			return Config{}, fmt.Errorf("SMTP_ADDR and SMTP_FROM are required locally")
+		}
+	} else {
+		cfg.AuthMailEncryptionKey = strings.TrimSpace(os.Getenv("AUTH_MAIL_ENCRYPTION_KEY"))
+		mailKey, err := base64.StdEncoding.Strict().DecodeString(cfg.AuthMailEncryptionKey)
+		if err != nil || len(mailKey) != 32 {
+			return Config{}, fmt.Errorf("AUTH_MAIL_ENCRYPTION_KEY must be base64 of 32 bytes")
+		}
+		cfg.TrustedProxyCIDRs = strings.TrimSpace(os.Getenv("TRUSTED_PROXY_CIDRS"))
+		if cfg.TrustedProxyCIDRs == "" {
+			return Config{}, fmt.Errorf("TRUSTED_PROXY_CIDRS is required")
+		}
+		for _, raw := range strings.Split(cfg.TrustedProxyCIDRs, ",") {
+			prefix, err := netip.ParsePrefix(strings.TrimSpace(raw))
+			if err != nil || !prefix.IsValid() || prefix.Addr().IsUnspecified() {
+				return Config{}, fmt.Errorf("TRUSTED_PROXY_CIDRS must contain valid IP prefixes")
+			}
+		}
 	}
 	for _, setting := range []struct {
 		name   string

@@ -45,7 +45,8 @@ actual_mode=$(docker image inspect --format '{{ index .Config.Labels "org.heartb
 [[ $actual_mode == "$web_mode" ]] || { echo 'Image web mode does not match requested deployment mode' >&2; exit 1; }
 
 if [[ $web_mode == app ]]; then
-  api_status=$(curl -sS -o "$workdir/api-response" -w '%{http_code}' --max-time 10 "$api_origin/api/v1/me")
+  api_status=$(curl -sS -H 'X-Heartbeat-Client-IP: 127.0.0.1' \
+    -o "$workdir/api-response" -w '%{http_code}' --max-time 10 "$api_origin/api/v1/me")
   [[ $api_status == 401 ]] || { echo "API preflight returned $api_status, expected 401" >&2; exit 1; }
   grep -Eq '"error"[[:space:]]*:[[:space:]]*"unauthorized"' "$workdir/api-response" || { echo 'API preflight response is not the Go auth contract' >&2; exit 1; }
 fi

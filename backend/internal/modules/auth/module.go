@@ -17,12 +17,13 @@ import (
 )
 
 type Config struct {
-	Origin          string
-	CookieSecure    bool
-	SessionTTL      time.Duration
-	ChallengeTTL    time.Duration
-	ResetTTL        time.Duration
-	RateLimitWindow time.Duration
+	Origin            string
+	MailEncryptionKey string
+	CookieSecure      bool
+	SessionTTL        time.Duration
+	ChallengeTTL      time.Duration
+	ResetTTL          time.Duration
+	RateLimitWindow   time.Duration
 }
 
 type Module struct{ server *authhttp.Server }
@@ -54,8 +55,15 @@ func New(pool *pgxpool.Pool, accounts contracts.Service, captcha CaptchaVerifier
 	if !cfg.CookieSecure && !(u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1")) {
 		return nil, errors.New("insecure cookies are allowed only on localhost")
 	}
-	if pool == nil || accounts == nil || captcha == nil || mailer == nil {
+	if pool == nil || accounts == nil || captcha == nil || (mailer == nil && cfg.MailEncryptionKey == "") {
 		return nil, errors.New("auth dependencies are required")
+	}
+	var mailKey []byte
+	if cfg.MailEncryptionKey != "" {
+		mailKey, err = service.DecodeMailKey(cfg.MailEncryptionKey)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if cfg.SessionTTL == 0 {
 		cfg.SessionTTL = 30 * 24 * time.Hour
@@ -73,11 +81,12 @@ func New(pool *pgxpool.Pool, accounts contracts.Service, captcha CaptchaVerifier
 		return nil, errors.New("auth durations must be at least one second")
 	}
 	svc := service.New(postgres.New(pool), accounts, captcha, mailer, service.Config{
-		Origin:          cfg.Origin,
-		SessionTTL:      cfg.SessionTTL,
-		ChallengeTTL:    cfg.ChallengeTTL,
-		ResetTTL:        cfg.ResetTTL,
-		RateLimitWindow: cfg.RateLimitWindow,
+		Origin:            cfg.Origin,
+		MailEncryptionKey: mailKey,
+		SessionTTL:        cfg.SessionTTL,
+		ChallengeTTL:      cfg.ChallengeTTL,
+		ResetTTL:          cfg.ResetTTL,
+		RateLimitWindow:   cfg.RateLimitWindow,
 	})
 	return &Module{server: authhttp.New(svc, cfg.Origin, cfg.CookieSecure, cfg.SessionTTL)}, nil
 }

@@ -12,12 +12,18 @@ import (
 )
 
 type WorkerConfig struct {
-	AppEnv               string
-	DatabaseURL          string
-	DatabaseTimeout      time.Duration
-	ProbeURL             string
-	ProbeSharedSecret    string
-	WebhookEncryptionKey string
+	AppEnv                string
+	DatabaseURL           string
+	DatabaseTimeout       time.Duration
+	ProbeURL              string
+	ProbeSharedSecret     string
+	WebhookEncryptionKey  string
+	AuthMailEncryptionKey string
+	SMTPAddr              string
+	SMTPFrom              string
+	SMTPUsername          string
+	SMTPPassword          string
+	SMTPTLSMode           string
 }
 
 func LoadWorker() (WorkerConfig, error) {
@@ -42,6 +48,24 @@ func LoadWorker() (WorkerConfig, error) {
 	key, err := base64.StdEncoding.Strict().DecodeString(cfg.WebhookEncryptionKey)
 	if err != nil || len(key) != 32 {
 		return cfg, errors.New("WEBHOOK_ENCRYPTION_KEY must be base64 of 32 bytes")
+	}
+	if cfg.AppEnv == "production" {
+		cfg.AuthMailEncryptionKey = strings.TrimSpace(os.Getenv("AUTH_MAIL_ENCRYPTION_KEY"))
+		mailKey, err := base64.StdEncoding.Strict().DecodeString(cfg.AuthMailEncryptionKey)
+		if err != nil || len(mailKey) != 32 {
+			return cfg, errors.New("AUTH_MAIL_ENCRYPTION_KEY must be base64 of 32 bytes")
+		}
+		cfg.SMTPAddr = strings.TrimSpace(os.Getenv("SMTP_ADDR"))
+		cfg.SMTPFrom = strings.TrimSpace(os.Getenv("SMTP_FROM"))
+		cfg.SMTPUsername = os.Getenv("SMTP_USERNAME")
+		cfg.SMTPPassword = os.Getenv("SMTP_PASSWORD")
+		cfg.SMTPTLSMode = strings.TrimSpace(os.Getenv("SMTP_TLS_MODE"))
+		if cfg.SMTPTLSMode == "" {
+			cfg.SMTPTLSMode = "implicit_tls"
+		}
+		if cfg.SMTPAddr == "" || cfg.SMTPFrom == "" || cfg.SMTPUsername == "" || cfg.SMTPPassword == "" || (cfg.SMTPTLSMode != "implicit_tls" && cfg.SMTPTLSMode != "starttls") {
+			return cfg, errors.New("production SMTP configuration is incomplete")
+		}
 	}
 	return cfg, nil
 }

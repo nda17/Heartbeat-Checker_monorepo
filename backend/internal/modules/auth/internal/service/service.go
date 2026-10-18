@@ -32,11 +32,12 @@ type Mailer interface {
 }
 
 type Config struct {
-	Origin          string
-	SessionTTL      time.Duration
-	ChallengeTTL    time.Duration
-	ResetTTL        time.Duration
-	RateLimitWindow time.Duration
+	Origin            string
+	MailEncryptionKey []byte
+	SessionTTL        time.Duration
+	ChallengeTTL      time.Duration
+	ResetTTL          time.Duration
+	RateLimitWindow   time.Duration
 }
 type Client struct {
 	IP        string
@@ -188,10 +189,21 @@ func (s *Service) Register(ctx context.Context, email, name, password, captchaTo
 		return ErrUnavailable
 	}
 	c := postgres.Challenge{ID: id, Email: email, Name: name, PasswordHash: hash, ExpiresAt: time.Now().Add(s.cfg.ChallengeTTL)}
+	link := s.cfg.Origin + "/verify-email#token=" + token
+	if len(s.cfg.MailEncryptionKey) > 0 {
+		jobID, err := security.ID()
+		if err != nil {
+			return ErrUnavailable
+		}
+		payload, err := encryptMail(s.cfg.MailEncryptionKey, jobID, "registration", mailPayload{email, "Confirm your Heartbeat Checker email", "Open " + link + " and enter your password to confirm registration."})
+		if err != nil || s.repo.InsertChallengeWithMail(ctx, c, security.Digest(token), payload, jobID) != nil {
+			return ErrUnavailable
+		}
+		return nil
+	}
 	if err = s.repo.InsertChallenge(ctx, c, security.Digest(token)); err != nil {
 		return ErrUnavailable
 	}
-	link := s.cfg.Origin + "/verify-email#token=" + token
 	if err = s.mailer.Send(ctx, email, "Confirm your Heartbeat Checker email", "Open "+link+" and enter your password to confirm registration."); err != nil {
 		slog.Error("registration email delivery failed")
 	}
@@ -396,10 +408,21 @@ func (s *Service) ResetRequest(ctx context.Context, email, captchaToken string, 
 	if err != nil {
 		return ErrUnavailable
 	}
+	link := s.cfg.Origin + "/reset-password#token=" + token
+	if len(s.cfg.MailEncryptionKey) > 0 {
+		jobID, err := security.ID()
+		if err != nil {
+			return ErrUnavailable
+		}
+		payload, err := encryptMail(s.cfg.MailEncryptionKey, jobID, "reset", mailPayload{email, "Reset your Heartbeat Checker password", "Open " + link + " to set a new password."})
+		if err != nil || s.repo.InsertResetWithMail(ctx, c.AccountID, c.Version, security.Digest(token), time.Now().Add(s.cfg.ResetTTL), payload, jobID) != nil {
+			return ErrUnavailable
+		}
+		return nil
+	}
 	if err = s.repo.InsertReset(ctx, c.AccountID, c.Version, security.Digest(token), time.Now().Add(s.cfg.ResetTTL)); err != nil {
 		return ErrUnavailable
 	}
-	link := s.cfg.Origin + "/reset-password#token=" + token
 	if err = s.mailer.Send(ctx, email, "Reset your Heartbeat Checker password", "Open "+link+" to set a new password."); err != nil {
 		slog.Error("password reset email delivery failed")
 	}

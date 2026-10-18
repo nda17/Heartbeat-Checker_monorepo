@@ -114,6 +114,28 @@ jobs:
             "$caddy_image" caddy validate --config /dev/stdin --adapter caddyfile < deploy/frontend/Caddyfile
           python3 deploy/frontend/test_deploy.py
 
+  backend-deploy-config:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Validate backend deployment files
+        run: |
+          set -euo pipefail
+          shellcheck deploy/backend/bootstrap.sh deploy/backend/probe-firewall.sh deploy/backend/deploy.sh
+          bash -n deploy/backend/bootstrap.sh deploy/backend/probe-firewall.sh deploy/backend/deploy.sh
+          export POSTGRES_PASSWORD=dummy DATABASE_URL=postgres://heartbeat:dummy@postgres:5432/heartbeat?sslmode=disable
+          export TURNSTILE_SECRET_KEY=dummy WEBHOOK_ENCRYPTION_KEY=dummy AUTH_MAIL_ENCRYPTION_KEY=dummy
+          export PROBE_SHARED_SECRET=dummy SMTP_ADDR=smtp.example:465 SMTP_FROM=no-reply@example.com
+          export SMTP_USERNAME=dummy SMTP_PASSWORD=dummy SMTP_TLS_MODE=implicit_tls
+          for target in API WORKER PROBE MIGRATE; do
+            export "${target}_IMAGE=ghcr.io/example/heartbeat-checker/${target,,}@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          done
+          docker compose --env-file /dev/null -f deploy/backend/compose.yaml config -q
+          caddy_image=$(docker compose --env-file /dev/null -f deploy/backend/compose.yaml config --format json | jq -er '.services.caddy.image')
+          [[ "$caddy_image" =~ @sha256:[0-9a-f]{64}$ ]]
+          docker run --rm -i --network none "$caddy_image" caddy validate --config /dev/stdin --adapter caddyfile < deploy/backend/Caddyfile
+          python3 deploy/backend/test_deploy.py
+
   images:
     runs-on: ubuntu-24.04
     needs: [backend, web]
