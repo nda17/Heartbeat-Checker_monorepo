@@ -22,3 +22,9 @@ func NewTurnstile(secret, hostname string, local bool) (CaptchaVerifier, error) 
 func NewLocalMailer(addr, from string) (MailSender, error) {
 	return smtp.New(addr, from)
 }
+
+type MailJobSender = smtp.JobSender
+
+func NewProductionMailer(addr, from, username, password, mode string) (*MailJobSender, error) {
+	return smtp.NewProduction(addr, from, username, password, mode)
+}

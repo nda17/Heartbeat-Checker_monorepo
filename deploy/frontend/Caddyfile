@@ -1,6 +1,8 @@
 heartbeat-checker.ru {
     encode zstd gzip
-    reverse_proxy web:3000
+    reverse_proxy web:3000 {
+        header_up X-Heartbeat-Client-IP {http.request.remote.host}
+    }
 
     log {
         output stdout

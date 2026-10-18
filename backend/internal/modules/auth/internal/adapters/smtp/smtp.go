@@ -109,8 +109,19 @@ func validAddress(address string) error {
 }
 
 func buildMessage(from, recipient, subject, body string) ([]byte, error) {
+	return buildMessageWithID(from, recipient, subject, body, "")
+}
+
+func buildMessageWithID(from, recipient, subject, body, messageID string) ([]byte, error) {
 	var message bytes.Buffer
 	fmt.Fprintf(&message, "From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n", from, recipient, mime.QEncoding.Encode("utf-8", subject))
+	if messageID != "" {
+		// Insert before the blank line that separates headers from the body.
+		data := message.Bytes()
+		message.Reset()
+		message.Write(data[:len(data)-2])
+		fmt.Fprintf(&message, "Message-ID: %s\r\n\r\n", messageID)
+	}
 	content := strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\r", "\n")
 	content = strings.ReplaceAll(content, "\n", "\r\n")
 	writer := quotedprintable.NewWriter(&message)

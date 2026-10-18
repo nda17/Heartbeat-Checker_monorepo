@@ -104,6 +104,10 @@ func newAuthFixture(t *testing.T) *authFixture {
 }
 
 func newAuthFixtureWithPoolSize(t *testing.T, maxConns int32) *authFixture {
+	return newAuthFixtureWithPoolSizeAndPrefix(t, maxConns, "hc_auth_test_")
+}
+
+func newAuthFixtureWithPoolSizeAndPrefix(t *testing.T, maxConns int32, dbPrefix string) *authFixture {
 	t.Helper()
 	baseURL := os.Getenv("HEARTBEAT_TEST_DATABASE_URL")
 	if baseURL == "" {
@@ -117,7 +121,7 @@ func newAuthFixtureWithPoolSize(t *testing.T, maxConns int32) *authFixture {
 	if err != nil {
 		t.Fatalf("connect to local test PostgreSQL: %v", err)
 	}
-	dbName := fmt.Sprintf("hc_auth_test_%d", time.Now().UnixNano())
+	dbName := fmt.Sprintf("%s%d", dbPrefix, time.Now().UnixNano())
 	if _, err := admin.Exec(context.Background(), "CREATE DATABASE "+dbName); err != nil {
 		_ = admin.Close(context.Background())
 		t.Fatalf("create isolated auth test database: %v", err)

@@ -1,0 +1,12 @@
+api.heartbeat-checker.ru {
+    @frontend remote_ip 157.22.184.14/32
+    handle @frontend {
+        reverse_proxy api:8080
+    }
+    respond "Forbidden" 403
+
+    log {
+        output stdout
+        format json
+    }
+}

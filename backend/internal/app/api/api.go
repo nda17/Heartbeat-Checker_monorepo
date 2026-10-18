@@ -29,17 +29,21 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("configure Turnstile: %w", err)
 	}
-	mailer, err := auth.NewLocalMailer(cfg.SMTPAddr, cfg.SMTPFrom)
-	if err != nil {
-		return fmt.Errorf("configure local SMTP: %w", err)
+	var mailer auth.MailSender
+	if cfg.AppEnv == "local" {
+		mailer, err = auth.NewLocalMailer(cfg.SMTPAddr, cfg.SMTPFrom)
+		if err != nil {
+			return fmt.Errorf("configure local SMTP: %w", err)
+		}
 	}
 	authModule, err := auth.New(pool, accounts.New(pool), captcha, mailer, auth.Config{
-		Origin:          cfg.AuthOrigin,
-		CookieSecure:    cfg.AuthCookieSecure,
-		SessionTTL:      cfg.AuthSessionTTL,
-		ChallengeTTL:    cfg.AuthChallengeTTL,
-		ResetTTL:        cfg.AuthResetTTL,
-		RateLimitWindow: cfg.AuthRateWindow,
+		Origin:            cfg.AuthOrigin,
+		MailEncryptionKey: cfg.AuthMailEncryptionKey,
+		CookieSecure:      cfg.AuthCookieSecure,
+		SessionTTL:        cfg.AuthSessionTTL,
+		ChallengeTTL:      cfg.AuthChallengeTTL,
+		ResetTTL:          cfg.AuthResetTTL,
+		RateLimitWindow:   cfg.AuthRateWindow,
 	})
 	if err != nil {
 		return fmt.Errorf("configure auth: %w", err)
@@ -56,7 +60,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           handler,
+		Handler:           trustedClientIP(handler, cfg.AppEnv, cfg.TrustedProxyCIDRs),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,

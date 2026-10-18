@@ -1,0 +1,118 @@
+name: Deploy backend
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full 40-character SHA already merged into master and green in CI
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  packages: write
+
+concurrency:
+  group: heartbeat-checker-backend-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    environment: production-backend
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      DEPLOY_HOST: ${{ vars.BACKEND_DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.BACKEND_DEPLOY_USER }}
+    steps:
+      - name: Validate release configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/master ]] || { echo 'Dispatch from master'; exit 1; }
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Provide a full lowercase commit SHA'; exit 1; }
+          [[ "$DEPLOY_HOST" == 176.12.64.115 && "$DEPLOY_USER" == heartbeat-deploy ]] || {
+            echo 'Backend host/user do not match the approved VPS'; exit 1;
+          }
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify master ancestry and exact-SHA CI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
+          git show-ref --verify --quiet refs/remotes/origin/master
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/master || { echo 'SHA is not in master'; exit 1; }
+          curl -fsS --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SOURCE_SHA&status=completed&per_page=100" \
+            | jq -e --arg sha "$SOURCE_SHA" \
+              '.workflow_runs | any(.[]; .event == "push" and .head_sha == $sha and .conclusion == "success")' >/dev/null \
+            || { echo 'No successful push CI run for the exact SHA'; exit 1; }
+
+      - name: Build and publish immutable backend images
+        id: images
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG
+          DOCKER_CONFIG=$(mktemp -d)
+          trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+          printf '%s\n' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for target in api worker probe migrate; do
+            image="ghcr.io/${GITHUB_REPOSITORY,,}/$target"
+            docker build -f backend/Dockerfile --target "$target" \
+              --build-arg "VCS_REF=$SOURCE_SHA" -t "$image:$SOURCE_SHA" backend
+            [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image:$SOURCE_SHA")" == "$SOURCE_SHA" ]]
+            docker push "$image:$SOURCE_SHA"
+            digest=$(docker buildx imagetools inspect "$image:$SOURCE_SHA" | awk '$1 == "Digest:" { print $2; exit }')
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "No digest for $target"; exit 1; }
+            echo "$target=$image@$digest" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Deploy and verify on backend VPS
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SSH_PRIVATE_KEY: ${{ secrets.BACKEND_DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.BACKEND_DEPLOY_KNOWN_HOSTS }}
+          API_IMAGE: ${{ steps.images.outputs.api }}
+          WORKER_IMAGE: ${{ steps.images.outputs.worker }}
+          PROBE_IMAGE: ${{ steps.images.outputs.probe }}
+          MIGRATE_IMAGE: ${{ steps.images.outputs.migrate }}
+        run: |
+          set -euo pipefail
+          [[ -n "$SSH_PRIVATE_KEY" && -n "$SSH_KNOWN_HOSTS" ]] || { echo 'Missing scoped SSH credentials'; exit 1; }
+          ssh_dir=$(mktemp -d)
+          trap 'rm -rf "$ssh_dir"' EXIT
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$ssh_dir/key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          chmod 600 "$ssh_dir/key" "$ssh_dir/known_hosts"
+          ssh_opts=(-i "$ssh_dir/key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$ssh_dir/known_hosts" -o BatchMode=yes)
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          scp "${ssh_opts[@]}" deploy/backend/compose.yaml "$target:/opt/heartbeat-checker/backend/compose.yaml.incoming"
+          scp "${ssh_opts[@]}" deploy/backend/Caddyfile "$target:/opt/heartbeat-checker/backend/Caddyfile.incoming"
+          scp "${ssh_opts[@]}" deploy/backend/deploy.sh "$target:/opt/heartbeat-checker/backend/deploy.sh.incoming"
+          printf '%s\n' "$GH_TOKEN" | ssh "${ssh_opts[@]}" "$target" \
+            "bash /opt/heartbeat-checker/backend/deploy.sh.incoming '$SOURCE_SHA' '$API_IMAGE' '$WORKER_IMAGE' '$PROBE_IMAGE' '$MIGRATE_IMAGE' '$GITHUB_ACTOR'"
+
+      - name: Verify public backend denies runner traffic
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' \
+            https://api.heartbeat-checker.ru/api/v1/me)
+          [[ "$status" == 403 ]] || { echo "Unexpected backend edge status: $status"; exit 1; }

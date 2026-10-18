@@ -13,7 +13,8 @@ func clearConfigEnv(t *testing.T) {
 		"APP_ENV", "HTTP_ADDR", "DATABASE_URL", "DATABASE_TIMEOUT", "READINESS_TIMEOUT", "SHUTDOWN_TIMEOUT",
 		"AUTH_ORIGIN", "AUTH_COOKIE_SECURE", "AUTH_SESSION_TTL", "AUTH_CHALLENGE_TTL", "AUTH_RESET_TTL", "AUTH_RATE_LIMIT_WINDOW",
 		"TURNSTILE_SECRET_KEY", "TURNSTILE_HOSTNAME", "TURNSTILE_LOCAL_TEST_MODE", "SMTP_ADDR", "SMTP_FROM",
-		"WEBHOOK_ENCRYPTION_KEY",
+		"SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_TLS_MODE", "AUTH_MAIL_ENCRYPTION_KEY", "TRUSTED_PROXY_CIDRS",
+		"WEBHOOK_ENCRYPTION_KEY", "PROBE_URL", "PROBE_SHARED_SECRET",
 	} {
 		old, existed := os.LookupEnv(key)
 		t.Cleanup(func() {
@@ -71,6 +72,13 @@ func setRequiredConfigEnv(t *testing.T) {
 		"TURNSTILE_LOCAL_TEST_MODE": "true",
 		"SMTP_ADDR":                 "127.0.0.1:51025",
 		"SMTP_FROM":                 "noreply@example.com",
+		"SMTP_USERNAME":             "test-user",
+		"SMTP_PASSWORD":             "test-password",
+		"SMTP_TLS_MODE":             "implicit_tls",
+		"AUTH_MAIL_ENCRYPTION_KEY":  "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+		"TRUSTED_PROXY_CIDRS":       "172.30.0.0/24,fd42:30::/64",
+		"PROBE_URL":                 "http://probe:8090",
+		"PROBE_SHARED_SECRET":       "0123456789abcdef0123456789abcdef",
 		"WEBHOOK_ENCRYPTION_KEY":    "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
 	} {
 		_ = os.Setenv(key, value)
@@ -92,6 +100,8 @@ func TestLoadLocalModeRequiresLoopbackAPIAndOrigin(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			clearConfigEnv(t)
 			setRequiredConfigEnv(t)
+			_ = os.Setenv("APP_ENV", "local")
+			_ = os.Setenv("DATABASE_URL", "postgres://user:secret@127.0.0.1:55432/heartbeat_local?sslmode=disable")
 			_ = os.Setenv("HTTP_ADDR", tt.httpAddr)
 			_ = os.Setenv("AUTH_ORIGIN", tt.origin)
 			_, err := Load()
@@ -115,8 +125,11 @@ func TestLoadDefaultsAndEnvironmentOverrides(t *testing.T) {
 	if cfg.DatabaseURL != "postgres://user:secret@localhost:5432/app" {
 		t.Fatalf("DatabaseURL = %q", cfg.DatabaseURL)
 	}
-	if cfg.AuthOrigin != "http://localhost:3000" || cfg.AuthCookieSecure || cfg.TurnstileSecret != "1x0000000000000000000000000000000AA" || !cfg.TurnstileLocal || cfg.SMTPAddr != "127.0.0.1:51025" {
+	if cfg.AuthOrigin != "http://localhost:3000" || cfg.AuthCookieSecure || cfg.TurnstileSecret != "1x0000000000000000000000000000000AA" || !cfg.TurnstileLocal || cfg.SMTPAddr != "" || cfg.SMTPFrom != "" {
 		t.Fatalf("unexpected auth/provider config: %+v", cfg)
+	}
+	if cfg.AuthMailEncryptionKey != "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=" || cfg.TrustedProxyCIDRs != "172.30.0.0/24,fd42:30::/64" {
+		t.Fatalf("production mail/proxy config was not loaded: %+v", cfg)
 	}
 	if cfg.AuthSessionTTL != 0 || cfg.AuthChallengeTTL != 0 || cfg.AuthResetTTL != 0 || cfg.AuthRateWindow != 0 {
 		t.Fatalf("unset auth TTLs should remain zero for module defaults: %+v", cfg)
@@ -212,4 +225,30 @@ func TestLoadRequiresValidWebhookEncryptionKey(t *testing.T) {
 			t.Fatal("Load() did not preserve configured webhook encryption key")
 		}
 	})
+}
+
+func TestProductionLoadRequiresMailEncryptionAndTrustedProxyConfig(t *testing.T) {
+	for _, test := range []struct {
+		name, key, cidrs, want string
+	}{
+		{"missing mail key", "", "172.30.0.0/24", "AUTH_MAIL_ENCRYPTION_KEY"},
+		{"malformed mail key", "not-base64", "172.30.0.0/24", "AUTH_MAIL_ENCRYPTION_KEY"},
+		{"missing proxy CIDRs", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", "", "TRUSTED_PROXY_CIDRS"},
+		{"malformed proxy CIDR", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", "0.0.0.0/0,not-a-prefix", "TRUSTED_PROXY_CIDRS"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			setRequiredConfigEnv(t)
+			_ = os.Setenv("APP_ENV", "production")
+			if test.key == "" {
+				_ = os.Unsetenv("AUTH_MAIL_ENCRYPTION_KEY")
+			} else {
+				_ = os.Setenv("AUTH_MAIL_ENCRYPTION_KEY", test.key)
+			}
+			_ = os.Setenv("TRUSTED_PROXY_CIDRS", test.cidrs)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Load() error = %v, want %s validation error", err, test.want)
+			}
+		})
+	}
 }

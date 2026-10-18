@@ -1,0 +1,163 @@
+name: heartbeat-checker-backend
+
+x-logs: &logs
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:18.6@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: heartbeat
+      POSTGRES_USER: heartbeat
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U heartbeat -d heartbeat"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    mem_limit: 512m
+    logging: *logs
+
+  migrate:
+    image: ${MIGRATE_IMAGE:?MIGRATE_IMAGE is required}
+    restart: "no"
+    profiles: [migration]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+    networks:
+      - database
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 192m
+    logging: *logs
+
+  api:
+    image: ${API_IMAGE:?API_IMAGE is required}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    environment:
+      APP_ENV: production
+      HTTP_ADDR: 0.0.0.0:8080
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      AUTH_ORIGIN: https://heartbeat-checker.ru
+      AUTH_COOKIE_SECURE: "true"
+      AUTH_SESSION_TTL: 720h
+      TRUSTED_PROXY_CIDRS: 172.30.64.2/32
+      TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:?TURNSTILE_SECRET_KEY is required}
+      TURNSTILE_HOSTNAME: heartbeat-checker.ru
+      TURNSTILE_LOCAL_TEST_MODE: "false"
+      WEBHOOK_ENCRYPTION_KEY: ${WEBHOOK_ENCRYPTION_KEY:?WEBHOOK_ENCRYPTION_KEY is required}
+      AUTH_MAIL_ENCRYPTION_KEY: ${AUTH_MAIL_ENCRYPTION_KEY:?AUTH_MAIL_ENCRYPTION_KEY is required}
+    networks:
+      edge:
+        ipv4_address: 172.30.64.3
+      database:
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 320m
+    logging: *logs
+
+  worker:
+    image: ${WORKER_IMAGE:?WORKER_IMAGE is required}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      PROBE_URL: http://probe:8090
+      PROBE_SHARED_SECRET: ${PROBE_SHARED_SECRET:?PROBE_SHARED_SECRET is required}
+      WEBHOOK_ENCRYPTION_KEY: ${WEBHOOK_ENCRYPTION_KEY:?WEBHOOK_ENCRYPTION_KEY is required}
+      AUTH_MAIL_ENCRYPTION_KEY: ${AUTH_MAIL_ENCRYPTION_KEY:?AUTH_MAIL_ENCRYPTION_KEY is required}
+      SMTP_ADDR: ${SMTP_ADDR:?SMTP_ADDR is required}
+      SMTP_FROM: ${SMTP_FROM:?SMTP_FROM is required}
+      SMTP_USERNAME: ${SMTP_USERNAME:?SMTP_USERNAME is required}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:?SMTP_PASSWORD is required}
+      SMTP_TLS_MODE: ${SMTP_TLS_MODE:?SMTP_TLS_MODE is required}
+    networks:
+      - database
+      - probe-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      probe:
+        condition: service_started
+    mem_limit: 320m
+    logging: *logs
+
+  probe:
+    image: ${PROBE_IMAGE:?PROBE_IMAGE is required}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: "1"
+      net.ipv6.conf.default.disable_ipv6: "1"
+    environment:
+      PROBE_HTTP_ADDR: 0.0.0.0:8090
+      PROBE_SHARED_SECRET: ${PROBE_SHARED_SECRET:?PROBE_SHARED_SECRET is required}
+    dns:
+      - 1.1.1.1
+      - 9.9.9.9
+    networks:
+      probe-network:
+        ipv4_address: 172.30.80.2
+    mem_limit: 96m
+    logging: *logs
+
+  caddy:
+    image: caddy:2.11.7@sha256:685ae3d7c34d9b5f8caeddc5d14051db7bbd88ff1f5a2fa0c16bd8ca328fb7af
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      edge:
+        ipv4_address: 172.30.64.2
+    depends_on:
+      - api
+    mem_limit: 128m
+    logging: *logs
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: 172.30.64.0/28
+    enable_ipv6: false
+  database:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.72.0/28
+    enable_ipv6: false
+  probe-network:
+    ipam:
+      config:
+        - subnet: 172.30.80.0/28
+    enable_ipv6: false
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:

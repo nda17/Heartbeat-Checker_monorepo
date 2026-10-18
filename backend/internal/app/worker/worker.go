@@ -44,6 +44,33 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 	incidentModule := incidents.New(pool, notifications.NewRecorder())
 	monitorModule := monitors.New(pool, billing.New(pool, cfg.AppEnv == "local"), incidentModule, accountModule)
 	var wg sync.WaitGroup
+	if cfg.AppEnv == "production" {
+		mailer, err := auth.NewProductionMailer(cfg.SMTPAddr, cfg.SMTPFrom, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPTLSMode)
+		if err != nil {
+			return err
+		}
+		mailWorker, err := auth.NewMailWorker(pool, cfg.AuthMailEncryptionKey, mailer)
+		if err != nil {
+			return err
+		}
+		wg.Go(func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+				attemptCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				_, err := mailWorker.ProcessOne(attemptCtx)
+				cancel()
+				if err != nil && ctx.Err() == nil {
+					logger.Error("auth mail delivery attempt failed")
+				}
+			}
+		})
+	}
 	for range 4 {
 		wg.Go(func() {
 			ticker := time.NewTicker(time.Second)

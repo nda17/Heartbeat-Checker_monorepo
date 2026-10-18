@@ -241,6 +241,12 @@ class DeployTests(unittest.TestCase):
         self.assertEqual((self.deploy_dir / "compose.yaml").read_text(), "new compose\n")
         self.assertEqual((self.deploy_dir / "Caddyfile").read_text(), "new caddy\n")
         self.assertFalse((self.deploy_dir / "previous").exists())
+        api_preflights = [
+            call for call in self.curl_calls()
+            if call[-1] == API_ORIGIN + "/api/v1/me"
+        ]
+        self.assertEqual(len(api_preflights), 1)
+        self.assertIn("X-Heartbeat-Client-IP: 127.0.0.1", api_preflights[0])
 
     def test_landing_deploys_without_api_preflight(self):
         result = self.run_deploy(mode="landing", api_origin="", IMAGE_MODE="landing")
