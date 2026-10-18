@@ -78,6 +78,22 @@ export function HomePage() {
           <MonitoringDemo />
         </section>
 
+        <section className="landing-awareness">
+          <div>
+            <h2>Сайт перестал работать, а вы узнали об этом от клиента?</h2>
+            <p>
+              Сбои случаются без предупреждения. Heartbeat Checker регулярно
+              проверяет ваши сайты и сервисы и сообщает о проблемах в выбранный
+              канал. Вам не нужно постоянно открывать сайт и проверять, всё ли
+              работает.
+            </p>
+          </div>
+          <Link href={landingMode ? "#demo" : "/register"} className="button">
+            {landingMode ? "Посмотреть демонстрацию" : "Создать аккаунт"}{" "}
+            <Arrow />
+          </Link>
+        </section>
+
         <div
           className="landing-facts"
           aria-label="Основные правила мониторинга"
