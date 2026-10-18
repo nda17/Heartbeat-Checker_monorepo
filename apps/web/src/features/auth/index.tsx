@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "@/shared/api";
 import { Turnstile } from "@/shared/turnstile";
-import { Notice, Spinner } from "@/shared/ui";
+import { Notice, PasswordInput, Spinner } from "@/shared/ui";
 export type AuthMode =
   "login" | "register" | "verify" | "reset-request" | "reset-confirm";
 const config = {
@@ -92,7 +92,6 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
     if (captcha) {
       body.turnstileToken = captchaToken;
       setCaptchaToken("");
-      setResetKey((v) => v + 1);
     }
     try {
       await api(cfg.endpoint, { method: "POST", body });
@@ -106,6 +105,7 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
       }
     } catch (e) {
       setError(errorMessage(e));
+      if (captcha) setResetKey((v) => v + 1);
     } finally {
       setBusy(false);
     }
@@ -148,7 +148,6 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
               className="quiet full"
               onClick={() => {
                 setDone(false);
-                setResetKey((v) => v + 1);
               }}
             >
               Отправить ещё раз
@@ -194,9 +193,8 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
           {mode !== "reset-request" && (
             <label>
               {mode === "reset-confirm" ? "Новый пароль" : "Пароль"}
-              <input
+              <PasswordInput
                 name="password"
-                type="password"
                 autoComplete={
                   mode === "register" || mode === "reset-confirm"
                     ? "new-password"

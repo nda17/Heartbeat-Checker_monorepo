@@ -12,6 +12,7 @@ import (
 )
 
 type WorkerConfig struct {
+	IntegrationConfig
 	AppEnv                string
 	DatabaseURL           string
 	DatabaseTimeout       time.Duration
@@ -67,6 +68,11 @@ func LoadWorker() (WorkerConfig, error) {
 			return cfg, errors.New("production SMTP configuration is incomplete")
 		}
 	}
+	integrations, err := loadIntegrations(true)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.IntegrationConfig = integrations
 	return cfg, nil
 }
 

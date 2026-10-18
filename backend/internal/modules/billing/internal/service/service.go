@@ -8,15 +8,21 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	accounts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing/contracts"
 )
 
 type Service struct {
-	pool  *pgxpool.Pool
-	local bool
+	pool     *pgxpool.Pool
+	local    bool
+	provider string
+	allowed  map[string]bool
+	accounts accounts.ActiveGuard
 }
 
-func New(pool *pgxpool.Pool, local bool) *Service { return &Service{pool: pool, local: local} }
+func New(pool *pgxpool.Pool, local bool) *Service {
+	return &Service{pool: pool, local: local, provider: "disabled"}
+}
 
 func (s *Service) Lock(ctx context.Context, tx pgx.Tx, accountID string) (contracts.Entitlement, error) {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 61729))`, accountID); err != nil {
@@ -24,7 +30,7 @@ func (s *Service) Lock(ctx context.Context, tx pgx.Tx, accountID string) (contra
 	}
 	var e contracts.Entitlement
 	var until time.Time
-	err := tx.QueryRow(ctx, `SELECT monitor_limit,valid_until,source FROM billing.entitlements WHERE account_id=$1 FOR UPDATE`, accountID).Scan(&e.Quota, &until, &e.Source)
+	err := tx.QueryRow(ctx, `SELECT monitor_limit,valid_until,source,COALESCE(renewal_anchor_day,0) FROM billing.entitlements WHERE account_id=$1 FOR UPDATE`, accountID).Scan(&e.Quota, &until, &e.Source, &e.RenewalAnchorDay)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return e, nil
 	}
@@ -32,7 +38,8 @@ func (s *Service) Lock(ctx context.Context, tx pgx.Tx, accountID string) (contra
 		return e, err
 	}
 	e.ActiveUntil = &until
-	if !s.local || e.Source != "local_test" || !until.After(time.Now()) {
+	validSource := (s.local && e.Source == "local_test") || (s.provider == "mock" && s.allowed[accountID] && e.Source == "mock_test")
+	if !validSource || !until.After(time.Now()) {
 		e.Quota = 0
 	}
 	return e, nil
@@ -64,7 +71,7 @@ func (s *Service) GrantLocalTx(ctx context.Context, tx pgx.Tx, accountID string,
 	}
 	_, err := tx.Exec(ctx, `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason)
  VALUES($1,$2,$3,'local_test',$4) ON CONFLICT(account_id) DO UPDATE SET monitor_limit=excluded.monitor_limit,
- valid_until=excluded.valid_until,source='local_test',version=billing.entitlements.version+1,granted_at=now(),reason=excluded.reason`, accountID, quota, until, reason)
+ valid_until=excluded.valid_until,source='local_test',renewal_anchor_day=NULL,version=billing.entitlements.version+1,granted_at=now(),reason=excluded.reason`, accountID, quota, until, reason)
 	return err
 }
 

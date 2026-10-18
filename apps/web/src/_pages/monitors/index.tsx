@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { MonitorForm } from "@/features/monitor-form";
 import {
   CheckResult,
@@ -221,6 +222,15 @@ export function MonitorsPage() {
           </p>
         </div>
       )}
+      {entitlement?.source === "mock_test" && (
+        <div className="local-banner">
+          <span className="badge">TEST</span>
+          <p>
+            Тестовая квота после имитации оплаты. Деньги не списывались. Срок
+            действия: {dateTime(entitlement.activeUntil)}.
+          </p>
+        </div>
+      )}
       {entitlement && !quotaActive && (
         <div className="quota-banner">
           <div>
@@ -229,6 +239,9 @@ export function MonitorsPage() {
               Кабинет и сохранённая история доступны. Для запуска проверок нужна
               действующая квота.
             </p>
+            <Link href="/app/billing" className="text-link">
+              Перейти к оплате →
+            </Link>
           </div>
           <span className="quota-symbol" aria-hidden="true">
             Ⅱ

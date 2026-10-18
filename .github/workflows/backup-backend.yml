@@ -1,0 +1,54 @@
+name: Backup backend
+
+on:
+  schedule:
+    # UTC: 01:00 is 04:00 Europe/Moscow. A separate schedule only retries reports.
+    - cron: '0 1 * * *'
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Daily backup or retry pending Telegram reports without another dump
+        type: choice
+        options: [run, report]
+        default: run
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heartbeat-checker-backup-production
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: production-backend
+    env:
+      DEPLOY_HOST: ${{ vars.BACKEND_DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.BACKEND_DEPLOY_USER }}
+      MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || github.event.schedule == '0 1 * * *' && 'run' || 'report' }}
+    steps:
+      - name: Run installed and verified backup image on backend VPS
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.BACKEND_DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.BACKEND_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/master ]] || { echo 'Run backup from master'; exit 1; }
+          [[ "$DEPLOY_HOST" == 176.12.64.115 && "$DEPLOY_USER" == heartbeat-deploy ]] || {
+            echo 'Backend host/user do not match the approved VPS'; exit 1;
+          }
+          [[ "$MODE" == run || "$MODE" == report ]]
+          [[ -n "$SSH_PRIVATE_KEY" && -n "$SSH_KNOWN_HOSTS" ]] || { echo 'Missing scoped SSH credentials'; exit 1; }
+          ssh_dir=$(mktemp -d)
+          trap 'rm -rf "$ssh_dir"' EXIT
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$ssh_dir/key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          chmod 600 "$ssh_dir/key" "$ssh_dir/known_hosts"
+          ssh -i "$ssh_dir/key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$ssh_dir/known_hosts" -o BatchMode=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" "bash /opt/heartbeat-checker/backend/backup.sh '$MODE'"

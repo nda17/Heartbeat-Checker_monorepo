@@ -46,6 +46,9 @@ export async function api<T>(
   return response.json() as Promise<T>;
 }
 const messages: Record<string, string> = {
+  mock_billing_forbidden: "Тестовая оплата недоступна для вашего аккаунта.",
+  billing_conflict:
+    "Завершите текущий тестовый заказ. Для действующей квоты выберите прежнее количество мониторов.",
   invalid_credentials: "Неверный email или пароль.",
   unauthorized: "Сессия завершена. Войдите снова.",
   invalid_request:

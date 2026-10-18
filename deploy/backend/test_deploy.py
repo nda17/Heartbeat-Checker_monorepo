@@ -14,6 +14,7 @@ IMAGES = [
     f"ghcr.io/nda17/heartbeat-checker_monorepo/{name}@sha256:{digest * 64}"
     for name, digest in (("api", "1"), ("worker", "2"), ("probe", "3"), ("migrate", "4"))
 ]
+BACKUP_IMAGE = "ghcr.io/nda17/heartbeat-checker_monorepo/backup@sha256:" + "5" * 64
 DOCKER_MOCK = r'''#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
@@ -120,6 +121,8 @@ class BackendDeployTests(unittest.TestCase):
         (self.backend / ".env").chmod(0o600)
         (self.backend / "compose.yaml.incoming").write_text("compose candidate\n")
         (self.backend / "Caddyfile.incoming").write_text("Caddy candidate\n")
+        (self.backend / "compose.backup.yaml.incoming").write_text("backup compose candidate\n")
+        (self.backend / "backup.sh.incoming").write_text("#!/usr/bin/env bash\nif [[ \"$1\" == preflight && \"${FAIL_BACKUP_PREFLIGHT:-0}\" == 1 ]]; then echo preflight-failed >&2; exit 1; fi\nexit 0\n")
         (self.backend / ".release.env").write_text("API_IMAGE=old\n")
         (self.backend / "compose.yaml").write_text("old compose\n")
         (self.backend / "Caddyfile").write_text("old Caddy\n")
@@ -142,7 +145,7 @@ class BackendDeployTests(unittest.TestCase):
         })
         env.update(extra_env)
         return subprocess.run(
-            ["bash", str(self.script), SOURCE_SHA, *IMAGES, "nda17"],
+            ["bash", str(self.script), SOURCE_SHA, *IMAGES, "nda17", BACKUP_IMAGE],
             input="test-token\n", cwd=self.root, env=env, text=True, capture_output=True,
         )
 
@@ -160,6 +163,16 @@ class BackendDeployTests(unittest.TestCase):
         self.assertIn("mode-600 .env", result.stderr)
         self.assertEqual(self.docker_calls(), [])
         self.assertEqual(after, before)
+
+    def test_backup_preflight_failure_preserves_release_and_skips_migration(self):
+        stable = {name: (self.backend / name).read_bytes() for name in (".release.env", "compose.yaml", "Caddyfile")}
+        result = self.run_deploy(FAIL_BACKUP_PREFLIGHT="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("preflight-failed", result.stderr)
+        self.assertFalse((self.backend / "pending").exists())
+        self.assertFalse(list((self.backend / "backups").glob("*.dump")))
+        self.assertFalse(any("--profile" in call and "migration" in call for call in self.docker_calls()))
+        self.assertEqual({name: (self.backend / name).read_bytes() for name in stable}, stable)
 
     def test_migration_failure_preserves_backup_journal_database_and_new_release(self):
         result = self.run_deploy(FAIL_MIGRATION="1")

@@ -25,9 +25,15 @@ export function Turnstile({
   const [ready, setReady] = useState(false);
   const [error, setError] = useState("");
   const theme = useTheme();
+  const onTokenRef = useRef(onToken);
+  const widgetRef = useRef<string | null>(null);
+  const previousResetKey = useRef(resetKey);
+  useEffect(() => {
+    onTokenRef.current = onToken;
+  }, [onToken]);
   useEffect(() => {
     // A new widget, including a theme change, always requires a fresh token.
-    onToken("");
+    onTokenRef.current("");
     if (!ready || !ref.current || !window.turnstile) return;
     const key =
       process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? "1x00000000000000000000AA";
@@ -40,6 +46,7 @@ export function Turnstile({
       setError("Проверка безопасности не настроена для этого домена.");
       return;
     }
+    let active = true;
     const widget = window.turnstile.render(ref.current, {
       sitekey: key,
       action,
@@ -47,29 +54,49 @@ export function Turnstile({
       size: "flexible",
       language: "ru",
       "response-field": false,
+      retry: "never",
+      "refresh-expired": "auto",
+      "refresh-timeout": "never",
       callback: (token: string) => {
+        if (!active) return;
         setError("");
-        onToken(token);
+        onTokenRef.current(token);
       },
       "expired-callback": () => {
-        onToken("");
-        window.turnstile?.reset(widget);
+        if (active) onTokenRef.current("");
       },
-      "error-callback": () => {
-        onToken("");
+      "error-callback": (code: string) => {
+        if (!active) return;
+        onTokenRef.current("");
         setError(
-          "Не удалось загрузить проверку безопасности. Обновите страницу или проверьте соединение.",
+          `Не удалось выполнить проверку безопасности.${/^\d{5,6}$/.test(code) ? ` Код: ${code}.` : ""} Повторите попытку или проверьте соединение.`,
         );
       },
       "timeout-callback": () => {
-        onToken("");
-        window.turnstile?.reset(widget);
+        if (!active) return;
+        onTokenRef.current("");
+        setError("Время проверки безопасности истекло. Повторите попытку.");
       },
     });
+    widgetRef.current = widget;
     return () => {
+      active = false;
+      widgetRef.current = null;
       window.turnstile?.remove(widget);
     };
-  }, [ready, action, resetKey, onToken, theme]);
+  }, [ready, action, theme]);
+  useEffect(() => {
+    if (resetKey === previousResetKey.current) return;
+    previousResetKey.current = resetKey;
+    onTokenRef.current("");
+    if (widgetRef.current) window.turnstile?.reset(widgetRef.current);
+  }, [resetKey]);
+  function retry() {
+    onTokenRef.current("");
+    setError("");
+    if (widgetRef.current) window.turnstile?.reset(widgetRef.current);
+    else window.location.reload();
+  }
   return (
     <div className="captcha">
       <Script
@@ -88,9 +115,14 @@ export function Turnstile({
         </p>
       )}
       {error && (
-        <p className="field-error" role="alert">
-          {error}
-        </p>
+        <>
+          <p className="field-error" role="alert">
+            {error}
+          </p>
+          <button type="button" className="quiet" onClick={retry}>
+            Повторить проверку
+          </button>
+        </>
       )}
     </div>
   );

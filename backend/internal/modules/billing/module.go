@@ -4,14 +4,35 @@ import (
 	"context"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	accounts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing/internal/service"
+	billinghttp "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing/internal/transport/http"
+	"net/http"
 	"time"
 )
 
 type Module struct{ service *service.Service }
 
 func New(pool *pgxpool.Pool, local bool) *Module { return &Module{service: service.New(pool, local)} }
+
+type Config struct {
+	Provider       string
+	MockAccountIDs []string
+}
+
+func NewConfigured(pool *pgxpool.Pool, local bool, cfg Config, guard accounts.ActiveGuard) (*Module, error) {
+	s := service.New(pool, local)
+	if err := s.Configure(cfg.Provider, cfg.MockAccountIDs, guard); err != nil {
+		return nil, err
+	}
+	return &Module{service: s}, nil
+}
+
+func (m *Module) Register(mux *http.ServeMux, protect func(http.Handler) http.Handler) {
+	billinghttp.New(m.service).Register(mux, protect)
+}
+
 func (m *Module) Lock(ctx context.Context, tx pgx.Tx, accountID string) (contracts.Entitlement, error) {
 	return m.service.Lock(ctx, tx, accountID)
 }

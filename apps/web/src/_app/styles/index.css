@@ -492,6 +492,31 @@ input:read-only {
   background: #f7f8f9;
   color: var(--muted);
 }
+.password-field {
+  display: block;
+  position: relative;
+}
+.password-field input {
+  padding-right: 52px;
+}
+.password-toggle {
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 36px;
+  min-height: 36px;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+}
+.password-toggle:hover {
+  color: var(--ink);
+}
+.password-toggle svg {
+  width: 20px;
+  height: 20px;
+}
 .field-hint {
   display: block;
   color: var(--muted);
@@ -797,6 +822,10 @@ input:read-only {
   line-height: 1.16;
   letter-spacing: -0.055em;
   margin: 27px 0;
+  animation: brand-glitch 6s steps(1, end) infinite;
+}
+.auth-aside-copy h2:hover {
+  animation: brand-glitch-hover 500ms steps(1, end) 1;
 }
 .auth-aside-copy h2 span {
   color: var(--accent);
