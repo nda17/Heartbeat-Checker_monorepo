@@ -27,7 +27,7 @@ export function PublicFooter({ onHome = false }: { onHome?: boolean }) {
     <footer className="landing-footer">
       <div className="landing-footer-main">
         <Brand />
-        <span>Мониторинг начинается с внимания.</span>
+        <span>Круглосуточный мониторинг сайтов и сервисов.</span>
       </div>
       <nav aria-label="Документы и контакты">
         <Link href="/terms">Условия и оферта</Link>
