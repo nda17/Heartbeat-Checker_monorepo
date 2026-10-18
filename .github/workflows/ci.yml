@@ -94,7 +94,7 @@ jobs:
           WEB_MODE: frontend
           WEB_PUBLIC_ORIGIN: https://heartbeat-checker.ru
           GO_API_ORIGIN: ''
-          NEXT_PUBLIC_TURNSTILE_SITE_KEY: 0x4AAAAAABBBBBCCCCCDDDDD
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: '0x4AAAAAABBBBBCCCCCDDDDD'
         run: npm run build
 
   frontend-deploy-config:

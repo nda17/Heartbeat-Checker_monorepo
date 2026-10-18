@@ -520,6 +520,7 @@ input:read-only {
   line-height: 1.25;
   margin: 24px 0;
   letter-spacing: -0.055em;
+  overflow-wrap: anywhere;
 }
 .hero h1 > span {
   color: var(--accent);
@@ -1848,7 +1849,7 @@ input:read-only {
     min-height: 0;
   }
   .hero h1 {
-    font-size: 34px;
+    font-size: clamp(28px, 7.8vw, 34px);
     line-height: 1.32;
     letter-spacing: -0.06em;
   }
