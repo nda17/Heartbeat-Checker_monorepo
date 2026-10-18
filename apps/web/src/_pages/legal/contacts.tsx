@@ -39,6 +39,17 @@ export function ContactsPage() {
           .
         </p>
         <p>
+          Канал сервиса в MAX:{" "}
+          <a
+            href="https://max.ru/id272385800008_biz"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            max.ru/id272385800008_biz
+          </a>
+          .
+        </p>
+        <p>
           По вопросам работы сайта и подписки обращайтесь по электронной почте
           или через ботов поддержки. Вопросы платежей, возвратов и персональных
           данных направляйте на info@heartbeat-checker.ru, чтобы обращение можно
