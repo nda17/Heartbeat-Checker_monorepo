@@ -3,7 +3,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Session, useSession } from "@/entities/session";
 import { api, errorMessage } from "@/shared/api";
-import { dateTime, Loading, Notice } from "@/shared/ui";
+import { dateTime, Loading, Notice, PasswordInput } from "@/shared/ui";
 export function SettingsPage() {
   const { profile, refresh } = useSession();
   const router = useRouter();
@@ -143,9 +143,8 @@ export function SettingsPage() {
           <form className="form-stack" onSubmit={changePassword}>
             <label>
               Текущий пароль
-              <input
+              <PasswordInput
                 name="currentPassword"
-                type="password"
                 autoComplete="current-password"
                 required
                 maxLength={1024}
@@ -153,9 +152,8 @@ export function SettingsPage() {
             </label>
             <label>
               Новый пароль
-              <input
+              <PasswordInput
                 name="newPassword"
-                type="password"
                 autoComplete="new-password"
                 required
                 minLength={12}

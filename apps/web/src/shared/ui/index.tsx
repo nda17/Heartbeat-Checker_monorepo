@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { FooterLegalNotice } from "./legal-notice";
 export { FooterLegalNotice };
+export { PasswordInput } from "./password-input";
 export function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <Link href="/" className="brand" aria-label="Heartbeat Checker — главная">

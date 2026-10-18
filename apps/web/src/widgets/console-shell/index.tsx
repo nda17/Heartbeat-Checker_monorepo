@@ -66,6 +66,12 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
               <span aria-hidden="true">◉</span> Обзор мониторов
             </Link>
             <Link
+              href="/app/billing"
+              aria-current={path === "/app/billing" ? "page" : undefined}
+            >
+              <span aria-hidden="true">₽</span> Оплата
+            </Link>
+            <Link
               href="/app/settings"
               aria-current={path === "/app/settings" ? "page" : undefined}
             >
@@ -100,7 +106,11 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
           <header className="console-top">
             <span>
               Heartbeat Checker <span className="slash">/</span>{" "}
-              {path.includes("settings") ? "Аккаунт" : "Мониторы"}
+              {path.includes("settings")
+                ? "Аккаунт"
+                : path.includes("billing")
+                  ? "Оплата"
+                  : "Мониторы"}
             </span>
             <div className="console-top-actions">
               <span className="top-label">HTTP MONITORING</span>

@@ -9,11 +9,12 @@ worker_image=${3:?worker image digest is required}
 probe_image=${4:?probe image digest is required}
 migrate_image=${5:?migration image digest is required}
 registry_user=${6:?registry user is required}
+backup_image=${7:?backup image digest is required}
 
-[[ $# -eq 6 && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ ]] || {
+[[ $# -eq 7 && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ ]] || {
   echo 'Invalid release arguments' >&2; exit 1;
 }
-for spec in "api:$api_image" "worker:$worker_image" "probe:$probe_image" "migrate:$migrate_image"; do
+for spec in "api:$api_image" "worker:$worker_image" "probe:$probe_image" "migrate:$migrate_image" "backup:$backup_image"; do
   target=${spec%%:*}
   image=${spec#*:}
   [[ $image =~ ^ghcr\.io/[a-z0-9_-]+/[a-z0-9_.-]+/$target@sha256:[0-9a-f]{64}$ ]] || {
@@ -23,7 +24,7 @@ done
 [[ -f .env && ! -L .env && $(stat -c %a .env) == 600 ]] || {
   echo 'Provision a regular mode-600 .env first' >&2; exit 1;
 }
-[[ -s compose.yaml.incoming && -s Caddyfile.incoming ]] || {
+[[ -s compose.yaml.incoming && -s Caddyfile.incoming && -s compose.backup.yaml.incoming && -s backup.sh.incoming ]] || {
   echo 'Missing staged deployment files' >&2; exit 1;
 }
 [[ ! -e pending ]] || { echo 'Resolve the previous pending deployment before retrying' >&2; exit 1; }
@@ -83,8 +84,11 @@ API_IMAGE=$api_image
 WORKER_IMAGE=$worker_image
 PROBE_IMAGE=$probe_image
 MIGRATE_IMAGE=$migrate_image
+BACKUP_IMAGE=$backup_image
+SOURCE_SHA=$source_sha
 EOF
 chmod 600 .release.env.incoming
+bash backup.sh.incoming preflight
 compose_new=(docker compose --env-file .env --env-file .release.env.incoming -f compose.yaml.incoming)
 "${compose_new[@]}" config -q
 "${compose_new[@]}" config --format json | python3 -c '
@@ -101,8 +105,9 @@ if c["worker"]["environment"]["SMTP_TLS_MODE"] not in ("implicit_tls", "starttls
     raise SystemExit("SMTP_TLS_MODE must use verified TLS")
 '
 "${compose_new[@]}" pull postgres caddy api worker probe migrate
+docker pull "$backup_image"
 
-for spec in "api:$api_image" "worker:$worker_image" "probe:$probe_image" "migrate:$migrate_image"; do
+for spec in "api:$api_image" "worker:$worker_image" "probe:$probe_image" "migrate:$migrate_image" "backup:$backup_image"; do
   image=${spec#*:}
   [[ $(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image") == "$source_sha" ]] || {
     echo "Image revision mismatch: ${spec%%:*}" >&2; exit 1;
@@ -226,9 +231,12 @@ ledger=$("${compose[@]}" exec -T postgres psql -U heartbeat -d heartbeat -Atqc \
 [[ $ledger =~ ^[1-9][0-9]*$ ]] || { echo 'Migration ledger is empty' >&2; exit 1; }
 
 jq -n --arg source_sha "$source_sha" --arg api "$api_image" \
-  --arg worker "$worker_image" --arg probe "$probe_image" --arg migrate "$migrate_image" \
+  --arg worker "$worker_image" --arg probe "$probe_image" --arg migrate "$migrate_image" --arg backup_image "$backup_image" \
   --arg backup "$backup" --arg backup_sha256 "$backup_sha" --argjson migrations "$ledger" \
-  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate},backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,completed_at:(now|todate)}' \
+  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image},backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,completed_at:(now|todate)}' \
   > "receipts/$source_sha.json"
+mv compose.backup.yaml.incoming compose.backup.yaml
+mv backup.sh.incoming backup.sh
+chmod 700 backup.sh
 rm -f pending
 printf 'Backend deployed: %s\n' "$source_sha"

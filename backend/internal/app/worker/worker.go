@@ -19,6 +19,7 @@ import (
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/monitors"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/notifications"
 	notificationcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/notifications/contracts"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/support"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/config"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/outbox"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/postgres"
@@ -42,8 +43,32 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 		return err
 	}
 	incidentModule := incidents.New(pool, notifications.NewRecorder())
-	monitorModule := monitors.New(pool, billing.New(pool, cfg.AppEnv == "local"), incidentModule, accountModule)
+	billingModule, err := billing.NewConfigured(pool, cfg.AppEnv == "local", billing.Config{Provider: cfg.BillingProvider, MockAccountIDs: cfg.BillingMockAccountIDs}, accountModule)
+	if err != nil {
+		return err
+	}
+	monitorModule := monitors.New(pool, billingModule, incidentModule, accountModule)
+	var supportModule *support.Module
+	if cfg.SupportEnabled {
+		supportModule, err = support.New(pool, support.Config{EncryptionKey: cfg.SupportEncryptionKey, TelegramToken: cfg.TelegramSupportToken, MAXToken: cfg.MAXSupportToken, InternalChatID: cfg.TelegramInternalChatID, SupportTopicID: cfg.TelegramSupportTopicID, MAXSupportChatID: cfg.MAXSupportChatID, TelegramAPIIP: cfg.TelegramAPIIP, MAXRootCAFile: cfg.SupportMAXRootCAFile})
+		if err != nil {
+			return err
+		}
+	}
+	var reportWorker *billing.ReportWorker
+	if cfg.BillingReportsEnabled {
+		reportWorker, err = billing.NewReportWorker(pool, newPaymentReporter(cfg.IntegrationConfig), logger)
+		if err != nil {
+			return err
+		}
+	}
 	var wg sync.WaitGroup
+	if supportModule != nil {
+		startDeliveryLoop(ctx, &wg, logger, "support", supportModule.ProcessOne)
+	}
+	if reportWorker != nil {
+		startDeliveryLoop(ctx, &wg, logger, "payment report", reportWorker.ProcessOne)
+	}
 	if cfg.AppEnv == "production" {
 		mailer, err := auth.NewProductionMailer(cfg.SMTPAddr, cfg.SMTPFrom, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPTLSMode)
 		if err != nil {
@@ -170,6 +195,9 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 				if err == nil {
 					err = notificationModule.Cleanup(cleanupCtx, tx)
 				}
+				if err == nil && supportModule != nil {
+					err = supportModule.Cleanup(cleanupCtx, tx)
+				}
 				if err == nil {
 					err = outbox.Cleanup(cleanupCtx, tx)
 				}
@@ -206,4 +234,24 @@ func signWebhookAttempt(encodedSecret, eventID string, body []byte, now time.Tim
 	mac.Write([]byte(timestamp + "." + eventID + "."))
 	mac.Write(body)
 	return timestamp, "v1=" + hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func startDeliveryLoop(ctx context.Context, wg *sync.WaitGroup, logger *slog.Logger, name string, process func(context.Context) (bool, error)) {
+	wg.Go(func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			attemptCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			_, err := process(attemptCtx)
+			cancel()
+			if err != nil && ctx.Err() == nil {
+				logger.Error(name + " delivery attempt failed")
+			}
+		}
+	})
 }

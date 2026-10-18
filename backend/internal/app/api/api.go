@@ -15,6 +15,7 @@ import (
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/incidents"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/monitors"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/notifications"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/support"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/config"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/postgres"
 )
@@ -55,7 +56,19 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("configure webhook notifications: %w", err)
 	}
-	monitors.New(pool, billing.New(pool, cfg.AppEnv == "local"), incidents.New(pool, notifications.NewRecorder()), accountModule).Register(handler, authModule.Protect)
+	billingModule, err := billing.NewConfigured(pool, cfg.AppEnv == "local", billing.Config{Provider: cfg.BillingProvider, MockAccountIDs: cfg.BillingMockAccountIDs}, accountModule)
+	if err != nil {
+		return fmt.Errorf("configure billing: %w", err)
+	}
+	billingModule.Register(handler, authModule.Protect)
+	monitors.New(pool, billingModule, incidents.New(pool, notifications.NewRecorder()), accountModule).Register(handler, authModule.Protect)
+	if cfg.SupportEnabled {
+		supportModule, err := support.NewWebhook(pool, support.Config{EncryptionKey: cfg.SupportEncryptionKey, TelegramWebhookSecret: cfg.TelegramSupportWebhookSecret, MAXWebhookSecret: cfg.MAXSupportWebhookSecret, InternalChatID: cfg.TelegramInternalChatID, SupportTopicID: cfg.TelegramSupportTopicID, MAXSupportChatID: cfg.MAXSupportChatID})
+		if err != nil {
+			return fmt.Errorf("configure support webhooks: %w", err)
+		}
+		supportModule.Register(handler)
+	}
 	notificationModule.Register(handler, authModule.Protect)
 
 	server := &http.Server{

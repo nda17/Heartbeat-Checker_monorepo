@@ -13,6 +13,7 @@ import (
 )
 
 type Config struct {
+	IntegrationConfig
 	AppEnv                string
 	HTTPAddr              string
 	DatabaseURL           string
@@ -177,5 +178,10 @@ func Load() (Config, error) {
 		}
 		*setting.target = duration
 	}
+	integrations, err := loadIntegrations(false)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.IntegrationConfig = integrations
 	return cfg, nil
 }

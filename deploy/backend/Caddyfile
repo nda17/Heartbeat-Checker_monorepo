@@ -1,4 +1,27 @@
+{
+    log {
+        output stdout
+        format filter {
+            wrap json
+            fields {
+                request>headers>X-Telegram-Bot-Api-Secret-Token delete
+                request>headers>X-Max-Bot-Api-Secret delete
+            }
+        }
+    }
+}
+
 api.heartbeat-checker.ru {
+    @support_webhook {
+        method POST
+        path /webhooks/support/telegram /webhooks/support/max
+    }
+    handle @support_webhook {
+        request_body {
+            max_size 1MB
+        }
+        reverse_proxy api:8080
+    }
     @frontend remote_ip 157.22.184.14/32
     handle @frontend {
         reverse_proxy api:8080
@@ -7,6 +30,12 @@ api.heartbeat-checker.ru {
 
     log {
         output stdout
-        format json
+        format filter {
+            wrap json
+            fields {
+                request>headers>X-Telegram-Bot-Api-Secret-Token delete
+                request>headers>X-Max-Bot-Api-Secret delete
+            }
+        }
     }
 }

@@ -1,0 +1,51 @@
+name: heartbeat-checker-backup
+
+services:
+  backup:
+    image: ${BACKUP_IMAGE:?BACKUP_IMAGE is required}
+    restart: "no"
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      BACKUP_SOURCE_SHA: ${SOURCE_SHA:?SOURCE_SHA is required}
+      BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:?BACKUP_S3_ENDPOINT is required}
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:?BACKUP_S3_BUCKET is required}
+      BACKUP_S3_REGION: ${BACKUP_S3_REGION:?BACKUP_S3_REGION is required}
+      BACKUP_S3_ACCESS_KEY_ID: ${BACKUP_S3_ACCESS_KEY_ID:?BACKUP_S3_ACCESS_KEY_ID is required}
+      BACKUP_S3_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET_ACCESS_KEY:?BACKUP_S3_SECRET_ACCESS_KEY is required}
+      BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:?BACKUP_AGE_RECIPIENT is required}
+      WEBHOOK_ENCRYPTION_KEY: ${WEBHOOK_ENCRYPTION_KEY:?WEBHOOK_ENCRYPTION_KEY is required}
+      AUTH_MAIL_ENCRYPTION_KEY: ${AUTH_MAIL_ENCRYPTION_KEY:?AUTH_MAIL_ENCRYPTION_KEY is required}
+      SUPPORT_ENCRYPTION_KEY: ${SUPPORT_ENCRYPTION_KEY:?SUPPORT_ENCRYPTION_KEY is required}
+      TELEGRAM_BOT_INFORMER_TOKEN: ${TELEGRAM_BOT_INFORMER_TOKEN:?TELEGRAM_BOT_INFORMER_TOKEN is required}
+      TELEGRAM_INTERNAL_CHAT_ID: ${TELEGRAM_INTERNAL_CHAT_ID:?TELEGRAM_INTERNAL_CHAT_ID is required}
+      TELEGRAM_BACKUPS_TOPIC_ID: ${TELEGRAM_BACKUPS_TOPIC_ID:?TELEGRAM_BACKUPS_TOPIC_ID is required}
+    volumes:
+      - backup-state:/state
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=2g,mode=1777
+    networks:
+      - database
+      - outbound
+    mem_limit: 1536m
+    cpus: 1.0
+    pids_limit: 96
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  database:
+    external: true
+    name: heartbeat-checker-backend_database
+  outbound:
+    enable_ipv6: false
+
+volumes:
+  backup-state:

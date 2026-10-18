@@ -121,8 +121,8 @@ jobs:
       - name: Validate backend deployment files
         run: |
           set -euo pipefail
-          shellcheck deploy/backend/bootstrap.sh deploy/backend/probe-firewall.sh deploy/backend/deploy.sh
-          bash -n deploy/backend/bootstrap.sh deploy/backend/probe-firewall.sh deploy/backend/deploy.sh
+          shellcheck deploy/backend/bootstrap.sh deploy/backend/probe-firewall.sh deploy/backend/deploy.sh deploy/backend/backup.sh
+          bash -n deploy/backend/bootstrap.sh deploy/backend/probe-firewall.sh deploy/backend/deploy.sh deploy/backend/backup.sh
           export POSTGRES_PASSWORD=dummy DATABASE_URL=postgres://heartbeat:dummy@postgres:5432/heartbeat?sslmode=disable
           export TURNSTILE_SECRET_KEY=dummy WEBHOOK_ENCRYPTION_KEY=dummy AUTH_MAIL_ENCRYPTION_KEY=dummy
           export PROBE_SHARED_SECRET=dummy SMTP_ADDR=smtp.example:465 SMTP_FROM=no-reply@example.com
@@ -135,6 +135,13 @@ jobs:
           [[ "$caddy_image" =~ @sha256:[0-9a-f]{64}$ ]]
           docker run --rm -i --network none "$caddy_image" caddy validate --config /dev/stdin --adapter caddyfile < deploy/backend/Caddyfile
           python3 deploy/backend/test_deploy.py
+          export BACKUP_IMAGE=ghcr.io/example/heartbeat-checker/backup@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          export SOURCE_SHA=$GITHUB_SHA SUPPORT_ENCRYPTION_KEY=dummy
+          export BACKUP_S3_ENDPOINT=https://s3.twcstorage.ru BACKUP_S3_BUCKET=heartbeat-data-1 BACKUP_S3_REGION=ru-1
+          export BACKUP_S3_ACCESS_KEY_ID=dummy BACKUP_S3_SECRET_ACCESS_KEY=dummy BACKUP_AGE_RECIPIENT=dummy
+          export TELEGRAM_BOT_INFORMER_TOKEN=dummy TELEGRAM_INTERNAL_CHAT_ID=-1004317880847 TELEGRAM_BACKUPS_TOPIC_ID=4
+          docker compose --env-file /dev/null -f deploy/backend/compose.backup.yaml config -q
+          python3 deploy/backend/backup/test_backup.py
 
   images:
     runs-on: ubuntu-24.04
@@ -148,6 +155,11 @@ jobs:
               --build-arg VCS_REF="$GITHUB_SHA" \
               -t "heartbeat-checker/$target:ci" backend
           done
+      - name: Build backup image
+        run: |
+          docker build -f deploy/backend/backup/Dockerfile \
+            --build-arg VCS_REF="$GITHUB_SHA" -t heartbeat-checker/backup:ci deploy/backend/backup
+          [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' heartbeat-checker/backup:ci)" == "$GITHUB_SHA" ]]
       - name: Build standalone web image
         run: |
           docker build -f apps/web/Dockerfile \

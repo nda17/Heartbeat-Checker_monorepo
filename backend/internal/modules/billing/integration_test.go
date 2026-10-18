@@ -1,0 +1,546 @@
+package billing
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing/contracts"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing/internal/service"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/outbox"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/migrations"
+)
+
+const billingTestOrigin = "http://localhost:3000"
+
+type billingFixture struct {
+	pool     *pgxpool.Pool
+	accounts *accounts.Module
+	module   *Module
+	handler  http.Handler
+}
+
+type billingActor struct {
+	id     string
+	cookie *http.Cookie
+	csrf   string
+}
+
+type billingCaptcha struct{}
+
+func (billingCaptcha) Verify(context.Context, string, string, string) error { return nil }
+
+type billingMailer struct{}
+
+func (billingMailer) Send(context.Context, string, string, string) error { return nil }
+
+func newBillingFixture(t *testing.T) *billingFixture {
+	t.Helper()
+	adminURL := os.Getenv("HEARTBEAT_TEST_DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("set HEARTBEAT_TEST_DATABASE_URL to the isolated local PostgreSQL server URL")
+	}
+	u, err := url.Parse(adminURL)
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.Host != "127.0.0.1:55432" {
+		t.Fatal("HEARTBEAT_TEST_DATABASE_URL must target local Compose PostgreSQL at 127.0.0.1:55432")
+	}
+	admin, err := pgx.Connect(context.Background(), adminURL)
+	if err != nil {
+		t.Fatalf("connect to local test PostgreSQL: %v", err)
+	}
+	dbName := fmt.Sprintf("hc_billing_test_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(context.Background(), "CREATE DATABASE "+dbName); err != nil {
+		_ = admin.Close(context.Background())
+		t.Fatalf("create isolated billing test database: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		if _, err := admin.Exec(ctx, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid <> pg_backend_pid()", dbName); err != nil {
+			t.Errorf("terminate isolated billing test connections: %v", err)
+		}
+		if _, err := admin.Exec(ctx, "DROP DATABASE IF EXISTS "+dbName); err != nil {
+			t.Errorf("drop isolated billing test database: %v", err)
+		}
+		if err := admin.Close(ctx); err != nil {
+			t.Errorf("close PostgreSQL admin connection: %v", err)
+		}
+	})
+	u.Path = "/" + dbName
+	cfg, err := pgxpool.ParseConfig(u.String())
+	if err != nil {
+		t.Fatalf("parse isolated billing test database URL: %v", err)
+	}
+	cfg.MaxConns = 16
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("connect to isolated billing test database: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	if err := migrations.Apply(context.Background(), pool); err != nil {
+		t.Fatalf("apply billing test migrations: %v", err)
+	}
+	accountModule := accounts.New(pool)
+	module, err := NewConfigured(pool, false, Config{Provider: "mock"}, accountModule)
+	if err != nil {
+		t.Fatalf("create billing module: %v", err)
+	}
+	authModule, err := auth.New(pool, accountModule, billingCaptcha{}, billingMailer{}, auth.Config{Origin: billingTestOrigin})
+	if err != nil {
+		t.Fatalf("create auth module: %v", err)
+	}
+	mux := http.NewServeMux()
+	module.Register(mux, authModule.Protect)
+	return &billingFixture{pool: pool, accounts: accountModule, module: module, handler: mux}
+}
+
+func (f *billingFixture) newActor(t *testing.T, name string) billingActor {
+	t.Helper()
+	tx, err := f.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := f.accounts.Create(context.Background(), tx, name)
+	if err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatalf("create test account: %v", err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatalf("commit test account: %v", err)
+	}
+	var tokenBytes [32]byte
+	if _, err := rand.Read(tokenBytes[:]); err != nil {
+		t.Fatal(err)
+	}
+	rawToken := base64.RawURLEncoding.EncodeToString(tokenBytes[:])
+	tokenHash := sha256.Sum256([]byte(rawToken))
+	sessionID, err := outbox.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.pool.Exec(context.Background(), `INSERT INTO auth.credentials(account_id,email,password_hash,version) VALUES($1,$2,'test-only-hash',1)`, account.ID, "billing-"+account.ID+"@example.test")
+	if err != nil {
+		t.Fatalf("insert test credential: %v", err)
+	}
+	_, err = f.pool.Exec(context.Background(), `INSERT INTO auth.sessions(id,account_id,token_hash,credential_version,expires_at,user_agent) VALUES($1,$2,$3,1,now()+interval '1 hour','billing integration test')`, sessionID, account.ID, tokenHash[:])
+	if err != nil {
+		t.Fatalf("insert test session: %v", err)
+	}
+	cookie := &http.Cookie{Name: "hc_session", Value: rawToken, Path: "/"}
+	return billingActor{id: account.ID, cookie: cookie, csrf: csrfToken(t, f.pool, account.ID, rawToken)}
+}
+
+func csrfToken(t *testing.T, pool *pgxpool.Pool, accountID, rawToken string) string {
+	t.Helper()
+	// A same-origin protected request validates the token against this session's
+	// derived CSRF value; obtain it through the auth endpoint on a small module.
+	accountsModule := accounts.New(pool)
+	authModule, err := auth.New(pool, accountsModule, billingCaptcha{}, billingMailer{}, auth.Config{Origin: billingTestOrigin})
+	if err != nil {
+		t.Fatalf("create auth module for CSRF token: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/csrf", nil)
+	req.AddCookie(&http.Cookie{Name: "hc_session", Value: rawToken, Path: "/"})
+	rec := httptest.NewRecorder()
+	authModule.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fetch billing test CSRF token: %d %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		CSRFToken string `json:"csrfToken"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.CSRFToken == "" {
+		t.Fatalf("decode CSRF token: %v", err)
+	}
+	return body.CSRFToken
+}
+
+func (f *billingFixture) request(t *testing.T, actor billingActor, method, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var encoded []byte
+	var err error
+	if body != nil {
+		encoded, err = json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	req := httptest.NewRequest(method, path, bytesReader(encoded))
+	req.AddCookie(actor.cookie)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if method != http.MethodGet {
+		req.Header.Set("Origin", billingTestOrigin)
+		req.Header.Set("X-CSRF-Token", actor.csrf)
+	}
+	rec := httptest.NewRecorder()
+	f.handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func bytesReader(b []byte) *strings.Reader { return strings.NewReader(string(b)) }
+
+func TestBillingMockOrderOwnershipAllowlistAndAuth(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Billing Owner")
+	other := f.newActor(t, "Other Billing Owner")
+	key := "b4a2d060-379b-4c95-9c7e-04db177835c7"
+	create := func(actor billingActor, count int, idem string) *httptest.ResponseRecorder {
+		return f.request(t, actor, http.MethodPost, "/api/v1/billing/orders", map[string]any{"monitorCount": count, "idempotencyKey": idem})
+	}
+	if got := create(owner, 1, key); got.Code != http.StatusForbidden {
+		t.Fatalf("empty allowlist create status=%d, want 403: %s", got.Code, got.Body.String())
+	}
+	if got := f.request(t, owner, http.MethodGet, "/api/v1/billing", nil); got.Code != http.StatusOK {
+		t.Fatalf("authenticated overview status=%d", got.Code)
+	}
+	unauth := httptest.NewRecorder()
+	f.handler.ServeHTTP(unauth, httptest.NewRequest(http.MethodGet, "/api/v1/billing", nil))
+	if unauth.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated overview status=%d, want 401", unauth.Code)
+	}
+	allowed, err := NewConfigured(f.pool, false, Config{Provider: "mock", MockAccountIDs: []string{owner.id, other.id}}, f.accounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	allowed.Register(mux, authProtect(t, f.pool, f.accounts))
+	f.module = allowed
+	f.handler = mux
+	created := create(owner, 2, key)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("allowlisted order status=%d: %s", created.Code, created.Body.String())
+	}
+	var payload struct {
+		Order contracts.Order `json:"order"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &payload); err != nil || payload.Order.ID == "" {
+		t.Fatalf("decode created order: %v", err)
+	}
+	foreign := f.request(t, other, http.MethodPost, "/api/v1/billing/orders/"+payload.Order.ID+"/simulate", map[string]string{"outcome": "succeeded"})
+	if foreign.Code != http.StatusNotFound {
+		t.Fatalf("foreign order simulation status=%d, want 404", foreign.Code)
+	}
+	if _, err := f.module.service.Simulate(context.Background(), other.id, payload.Order.ID, "succeeded"); !errors.Is(err, service.ErrNotFound) {
+		t.Fatalf("foreign account simulation error=%v, want not found", err)
+	}
+}
+
+func authProtect(t *testing.T, pool *pgxpool.Pool, accountModule *accounts.Module) func(http.Handler) http.Handler {
+	t.Helper()
+	m, err := auth.New(pool, accountModule, billingCaptcha{}, billingMailer{}, auth.Config{Origin: billingTestOrigin})
+	if err != nil {
+		t.Fatalf("create auth middleware: %v", err)
+	}
+	return m.Protect
+}
+
+func TestBillingConcurrentIdempotencySingleExtensionAndReport(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Concurrent Billing Owner")
+	module, err := NewConfigured(f.pool, false, Config{Provider: "mock", MockAccountIDs: []string{owner.id}}, f.accounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "6c1492bd-84d9-4018-8c5e-629feae06d75"
+	const n = 12
+	orders := make([]contracts.Order, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range orders {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			orders[i], errs[i] = module.service.CreateOrder(context.Background(), owner.id, 3, key)
+		}(i)
+	}
+	wg.Wait()
+	orderID := orders[0].ID
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent create %d: %v", i, err)
+		}
+		if orders[i].ID != orderID {
+			t.Fatalf("concurrent create %d returned order %s, want %s", i, orders[i].ID, orderID)
+		}
+	}
+	var sims sync.WaitGroup
+	simErrors := make([]error, n)
+	for i := range simErrors {
+		sims.Add(1)
+		go func(i int) {
+			defer sims.Done()
+			_, simErrors[i] = module.service.Simulate(context.Background(), owner.id, orderID, "succeeded")
+		}(i)
+	}
+	sims.Wait()
+	for i, err := range simErrors {
+		if err != nil {
+			t.Fatalf("concurrent simulation %d: %v", i, err)
+		}
+	}
+	var version, reportCount, orderCount int
+	if err := f.pool.QueryRow(context.Background(), `SELECT version FROM billing.entitlements WHERE account_id=$1`, owner.id).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.payment_reports WHERE order_id=$1`, orderID).Scan(&reportCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.orders WHERE account_id=$1`, owner.id).Scan(&orderCount); err != nil {
+		t.Fatal(err)
+	}
+	if version != 1 || reportCount != 1 || orderCount != 1 {
+		t.Fatalf("after concurrent completion entitlement version=%d report rows=%d orders=%d; want 1/1/1", version, reportCount, orderCount)
+	}
+	if _, err := module.service.CreateOrder(context.Background(), owner.id, 4, key); !errors.Is(err, service.ErrConflict) {
+		t.Fatalf("idempotency key with changed amount error=%v, want conflict", err)
+	}
+}
+
+func TestBillingActiveAccountExpiredOrderAndLocalTestIsolation(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Blocked Billing Owner")
+	if _, err := f.pool.Exec(context.Background(), `UPDATE accounts.accounts SET status='blocked' WHERE id=$1`, owner.id); err != nil {
+		t.Fatal(err)
+	}
+	module, err := NewConfigured(f.pool, false, Config{Provider: "mock", MockAccountIDs: []string{owner.id}}, f.accounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.service.CreateOrder(context.Background(), owner.id, 1, "a3afeb3c-3959-4f9b-96d1-9cb16c910f3f"); !errors.Is(err, service.ErrForbidden) {
+		t.Fatalf("blocked account create error=%v, want forbidden", err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `UPDATE accounts.accounts SET status='active' WHERE id=$1`, owner.id); err != nil {
+		t.Fatal(err)
+	}
+	order, err := module.service.CreateOrder(context.Background(), owner.id, 1, "a3afeb3c-3959-4f9b-96d1-9cb16c910f3f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.orders SET expires_at=now()-interval '1 second' WHERE id=$1`, order.ID); err != nil {
+		t.Fatal(err)
+	}
+	result, err := module.service.Simulate(context.Background(), owner.id, order.ID, "succeeded")
+	if err != nil || result.Status != "canceled" {
+		t.Fatalf("expired order result=%+v error=%v, want canceled", result, err)
+	}
+	local, err := NewConfigured(f.pool, false, Config{Provider: "mock", MockAccountIDs: []string{owner.id}}, f.accounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := New(f.pool, true).GrantLocal(context.Background(), owner.id, 5, time.Now().Add(time.Hour), "billing integration"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entitlement, err := local.service.Lock(context.Background(), tx, owner.id)
+	_ = tx.Rollback(context.Background())
+	if err != nil || entitlement.Quota != 0 {
+		t.Fatalf("production mock local_test quota=%d err=%v, want 0", entitlement.Quota, err)
+	}
+}
+
+type reportRecorder struct {
+	mu       sync.Mutex
+	failures int
+	failure  error
+	reports  []contracts.PaymentReport
+}
+
+func (r *reportRecorder) SendPaymentReport(_ context.Context, report contracts.PaymentReport) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reports = append(r.reports, report)
+	if r.failures > 0 {
+		r.failures--
+		if r.failure != nil {
+			return r.failure
+		}
+		return errors.New("temporary report failure")
+	}
+	return nil
+}
+
+func TestBillingReportRetryLeaseAndTerminalExhaustion(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Report Billing Owner")
+	module, err := NewConfigured(f.pool, false, Config{Provider: "mock", MockAccountIDs: []string{owner.id}}, f.accounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	order, err := module.service.CreateOrder(context.Background(), owner.id, 1, "75393bd8-6d7f-4c21-8b18-a5d6d25e4552")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.service.Simulate(context.Background(), owner.id, order.ID, "succeeded"); err != nil {
+		t.Fatal(err)
+	}
+	sender := &reportRecorder{failures: 1}
+	worker, err := NewReportWorker(f.pool, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if processed, err := worker.ProcessOne(context.Background()); err != nil || !processed {
+		t.Fatalf("first report processed=%v err=%v", processed, err)
+	}
+	var status string
+	var attempts int
+	if err := f.pool.QueryRow(context.Background(), `SELECT status,attempts FROM billing.payment_reports WHERE order_id=$1`, order.ID).Scan(&status, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" || attempts != 1 {
+		t.Fatalf("after retryable error status=%s attempts=%d", status, attempts)
+	}
+	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.payment_reports SET next_attempt_at=now() WHERE order_id=$1`, order.ID); err != nil {
+		t.Fatal(err)
+	}
+	if processed, err := worker.ProcessOne(context.Background()); err != nil || !processed {
+		t.Fatalf("retry report processed=%v err=%v", processed, err)
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT status,attempts FROM billing.payment_reports WHERE order_id=$1`, order.ID).Scan(&status, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if status != "sent" || attempts != 2 {
+		t.Fatalf("after successful retry status=%s attempts=%d", status, attempts)
+	}
+	sender.mu.Lock()
+	gotReports := append([]contracts.PaymentReport(nil), sender.reports...)
+	sender.mu.Unlock()
+	if len(gotReports) != 2 || gotReports[0].OrderID != order.ID || !gotReports[0].Test {
+		t.Fatalf("retry sender calls=%+v", gotReports)
+	}
+	second, err := module.service.CreateOrder(context.Background(), owner.id, 1, "22453bd0-73b7-482d-abed-cb409ff5a390")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.service.Simulate(context.Background(), owner.id, second.ID, "succeeded"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.payment_reports SET status='sending',attempts=1,attempt_token='bf7cd67d-3a8b-4cff-beda-9e9343e557db',lease_until=now()+interval '1 minute' WHERE order_id=$1`, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if processed, err := worker.ProcessOne(context.Background()); err != nil || processed {
+		t.Fatalf("active report lease processed=%v err=%v, want no delivery", processed, err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.payment_reports SET lease_until=now()-interval '1 second' WHERE order_id=$1`, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if processed, err := worker.ProcessOne(context.Background()); err != nil || !processed {
+		t.Fatalf("expired report lease processed=%v err=%v, want reclaim", processed, err)
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT status,attempts FROM billing.payment_reports WHERE order_id=$1`, second.ID).Scan(&status, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if status != "sent" || attempts != 2 {
+		t.Fatalf("reclaimed lease status=%s attempts=%d, want sent/2", status, attempts)
+	}
+	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.payment_reports SET status='sending',attempts=8,attempt_token='bf7cd67d-3a8b-4cff-beda-9e9343e557db',lease_until=now()-interval '1 second',finished_at=NULL WHERE order_id=$1`, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if processed, err := worker.ProcessOne(context.Background()); err != nil || processed {
+		t.Fatalf("exhausted report processed=%v err=%v, want no delivery", processed, err)
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT status,attempts FROM billing.payment_reports WHERE order_id=$1`, second.ID).Scan(&status, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" || attempts != 8 {
+		t.Fatalf("exhausted lease status=%s attempts=%d, want failed/8", status, attempts)
+	}
+}
+
+func TestBillingRenewalAnchorClampsMonthEndInMoscow(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Month End Billing Owner")
+	module, err := NewConfigured(f.pool, false, Config{Provider: "mock", MockAccountIDs: []string{owner.id}}, f.accounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, time.October, 31, 12, 0, 0, 0, time.UTC)
+	if _, err := f.pool.Exec(context.Background(), `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason,renewal_anchor_day) VALUES($1,1,$2,'mock_test','month end test',31)`, owner.id, start); err != nil {
+		t.Fatal(err)
+	}
+	wantDates := []string{"2026-11-30", "2026-12-31", "2027-01-31", "2027-02-28", "2027-03-31"}
+	moscow := time.FixedZone("MSK", 3*60*60)
+	for index, wantDate := range wantDates {
+		key := fmt.Sprintf("a4c1a100-0000-4000-8000-%012d", index+1)
+		order, err := module.service.CreateOrder(context.Background(), owner.id, 1, key)
+		if err != nil {
+			t.Fatalf("create renewal %d: %v", index+1, err)
+		}
+		completed, err := module.service.Simulate(context.Background(), owner.id, order.ID, "succeeded")
+		if err != nil {
+			t.Fatalf("simulate renewal %d: %v", index+1, err)
+		}
+		if completed.ActiveUntil == nil || completed.ActiveUntil.In(moscow).Format("2006-01-02") != wantDate {
+			t.Fatalf("renewal %d active until=%v, want Moscow date %s", index+1, completed.ActiveUntil, wantDate)
+		}
+	}
+}
+
+func TestBillingReportRecordsBoundedFailureAndTerminatesAfterEighthAttempt(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Payment Report Failure Owner")
+	module, err := NewConfigured(f.pool, false, Config{Provider: "mock", MockAccountIDs: []string{owner.id}}, f.accounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	order, err := module.service.CreateOrder(context.Background(), owner.id, 1, "b6a5f902-d5b9-4f06-a083-01004733bac5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.service.Simulate(context.Background(), owner.id, order.ID, "succeeded"); err != nil {
+		t.Fatal(err)
+	}
+	sender := &reportRecorder{failures: 1, failure: &contracts.ReportSendError{Code: "provider_http", HTTPStatus: http.StatusTooManyRequests, RetryAfter: 45 * time.Second}}
+	worker, err := NewReportWorker(f.pool, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if processed, err := worker.ProcessOne(context.Background()); err != nil || !processed {
+		t.Fatalf("429 report processed=%v err=%v", processed, err)
+	}
+	var status, code string
+	var httpStatus, attempts int
+	var retryBounded bool
+	if err := f.pool.QueryRow(context.Background(), `SELECT status,attempts,last_error_code,last_http_status,next_attempt_at>now()+interval '44 seconds' FROM billing.payment_reports WHERE order_id=$1`, order.ID).Scan(&status, &attempts, &code, &httpStatus, &retryBounded); err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" || attempts != 1 || code != "provider_http" || httpStatus != http.StatusTooManyRequests || !retryBounded {
+		t.Fatalf("429 report state status=%s attempts=%d code=%s http=%d retry_bounded=%v", status, attempts, code, httpStatus, retryBounded)
+	}
+	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.payment_reports SET attempts=7,next_attempt_at=now() WHERE order_id=$1`, order.ID); err != nil {
+		t.Fatal(err)
+	}
+	sender.mu.Lock()
+	sender.failures, sender.failure = 1, &contracts.ReportSendError{Code: "provider_rejected", HTTPStatus: http.StatusBadRequest}
+	sender.mu.Unlock()
+	if processed, err := worker.ProcessOne(context.Background()); err != nil || !processed {
+		t.Fatalf("terminal report processed=%v err=%v", processed, err)
+	}
+	var finished bool
+	if err := f.pool.QueryRow(context.Background(), `SELECT status,attempts,last_error_code,last_http_status,finished_at IS NOT NULL FROM billing.payment_reports WHERE order_id=$1`, order.ID).Scan(&status, &attempts, &code, &httpStatus, &finished); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" || attempts != 8 || code != "provider_rejected" || httpStatus != http.StatusBadRequest || !finished {
+		t.Fatalf("terminal report state status=%s attempts=%d code=%s http=%d finished=%v", status, attempts, code, httpStatus, finished)
+	}
+}

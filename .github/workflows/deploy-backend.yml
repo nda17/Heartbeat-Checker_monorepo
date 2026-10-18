@@ -81,6 +81,14 @@ jobs:
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "No digest for $target"; exit 1; }
             echo "$target=$image@$digest" >> "$GITHUB_OUTPUT"
           done
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/backup"
+          docker build -f deploy/backend/backup/Dockerfile \
+            --build-arg "VCS_REF=$SOURCE_SHA" -t "$image:$SOURCE_SHA" deploy/backend/backup
+          [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image:$SOURCE_SHA")" == "$SOURCE_SHA" ]]
+          docker push "$image:$SOURCE_SHA"
+          digest=$(docker buildx imagetools inspect "$image:$SOURCE_SHA" | awk '$1 == "Digest:" { print $2; exit }')
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'No digest for backup'; exit 1; }
+          echo "backup=$image@$digest" >> "$GITHUB_OUTPUT"
 
       - name: Deploy and verify on backend VPS
         shell: bash
@@ -92,6 +100,7 @@ jobs:
           WORKER_IMAGE: ${{ steps.images.outputs.worker }}
           PROBE_IMAGE: ${{ steps.images.outputs.probe }}
           MIGRATE_IMAGE: ${{ steps.images.outputs.migrate }}
+          BACKUP_IMAGE: ${{ steps.images.outputs.backup }}
         run: |
           set -euo pipefail
           [[ -n "$SSH_PRIVATE_KEY" && -n "$SSH_KNOWN_HOSTS" ]] || { echo 'Missing scoped SSH credentials'; exit 1; }
@@ -105,9 +114,11 @@ jobs:
           target="$DEPLOY_USER@$DEPLOY_HOST"
           scp "${ssh_opts[@]}" deploy/backend/compose.yaml "$target:/opt/heartbeat-checker/backend/compose.yaml.incoming"
           scp "${ssh_opts[@]}" deploy/backend/Caddyfile "$target:/opt/heartbeat-checker/backend/Caddyfile.incoming"
+          scp "${ssh_opts[@]}" deploy/backend/compose.backup.yaml "$target:/opt/heartbeat-checker/backend/compose.backup.yaml.incoming"
+          scp "${ssh_opts[@]}" deploy/backend/backup.sh "$target:/opt/heartbeat-checker/backend/backup.sh.incoming"
           scp "${ssh_opts[@]}" deploy/backend/deploy.sh "$target:/opt/heartbeat-checker/backend/deploy.sh.incoming"
           printf '%s\n' "$GH_TOKEN" | ssh "${ssh_opts[@]}" "$target" \
-            "bash /opt/heartbeat-checker/backend/deploy.sh.incoming '$SOURCE_SHA' '$API_IMAGE' '$WORKER_IMAGE' '$PROBE_IMAGE' '$MIGRATE_IMAGE' '$GITHUB_ACTOR'"
+            "bash /opt/heartbeat-checker/backend/deploy.sh.incoming '$SOURCE_SHA' '$API_IMAGE' '$WORKER_IMAGE' '$PROBE_IMAGE' '$MIGRATE_IMAGE' '$GITHUB_ACTOR' '$BACKUP_IMAGE'"
 
       - name: Verify public backend denies runner traffic
         shell: bash
