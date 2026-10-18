@@ -168,9 +168,7 @@ export function HomePage() {
         <section id="how" className="how-section">
           <div className="section-intro">
             <p className="eyebrow">ПОНЯТНЫЙ ПРОЦЕСС</p>
-            <h2>
-              От адреса —<br /> к ясной картине.
-            </h2>
+            <h2>Как работает мониторинг</h2>
           </div>
           <div className="how-grid">
             <article>
@@ -293,9 +291,6 @@ export function HomePage() {
               главную страницу, страницу входа или API. Проверки по расписанию
               входят в стоимость: 24 рубля в месяц за монитор.
             </p>
-            <span className="landing-planned-label">
-              24 рубля за монитор в месяц · Без пробного периода
-            </span>
           </div>
           <div className="landing-price-card">
             <div className="landing-price">

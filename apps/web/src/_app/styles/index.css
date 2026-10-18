@@ -2941,16 +2941,6 @@ button.primary:hover:not(:disabled) {
   max-width: 410px;
   margin-top: 20px;
 }
-.landing .landing-planned-label {
-  display: inline-block;
-  font-size: 9px;
-  line-height: 1.7;
-  border: 1px solid var(--landing-border);
-  border-radius: 6px;
-  padding: 8px 10px;
-  margin-top: 24px;
-  color: var(--muted);
-}
 .landing .landing-price-card {
   border: 1px solid var(--landing-border);
   border-radius: 12px;
@@ -3550,10 +3540,6 @@ button.primary:hover:not(:disabled) {
   }
   .landing .landing-pricing-copy > p:not(.eyebrow) {
     font-size: 11px;
-  }
-  .landing .landing-planned-label {
-    font-size: 8px;
-    padding: 8px;
   }
   .landing .landing-price-card {
     padding: 22px;
