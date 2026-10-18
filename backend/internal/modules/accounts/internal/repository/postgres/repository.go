@@ -70,3 +70,12 @@ func (r *Repository) Active(ctx context.Context, tx pgx.Tx, id string) (bool, er
 	}
 	return status == "active", err
 }
+
+func (r *Repository) TryActive(ctx context.Context, tx pgx.Tx, id string) (bool, bool, error) {
+	var status string
+	err := tx.QueryRow(ctx, `SELECT status FROM accounts.accounts WHERE id=$1 FOR SHARE SKIP LOCKED`, id).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, nil
+	}
+	return status == "active", err == nil, err
+}

@@ -12,9 +12,14 @@ import (
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/outbox"
 )
 
-type Service struct{ pool *pgxpool.Pool }
+type Service struct {
+	pool     *pgxpool.Pool
+	recorder contracts.Recorder
+}
 
-func New(pool *pgxpool.Pool) *Service { return &Service{pool: pool} }
+func New(pool *pgxpool.Pool, recorder contracts.Recorder) *Service {
+	return &Service{pool: pool, recorder: recorder}
+}
 
 // Apply is invoked in the accepted-result transaction while that monitor is locked.
 // Sequence prevents duplicate delivery from counting as a second failed check.
@@ -53,7 +58,7 @@ func (s *Service) Apply(ctx context.Context, tx pgx.Tx, monitorID, accountID str
 				return err
 			}
 			if tag.RowsAffected() > 0 {
-				if err = s.notify(ctx, tx, monitorID, accountID, id, "incident_opened", checked); err != nil {
+				if err = s.notify(ctx, tx, monitorID, accountID, id, "incident_opened", seq, checked); err != nil {
 					return err
 				}
 			}
@@ -67,7 +72,7 @@ func (s *Service) Apply(ctx context.Context, tx pgx.Tx, monitorID, accountID str
 			return err
 		}
 		if err == nil {
-			if err = s.notify(ctx, tx, monitorID, accountID, id, "incident_closed", checked); err != nil {
+			if err = s.notify(ctx, tx, monitorID, accountID, id, "incident_closed", seq, checked); err != nil {
 				return err
 			}
 		}
@@ -78,12 +83,21 @@ func (s *Service) Apply(ctx context.Context, tx pgx.Tx, monitorID, accountID str
 	_, err = tx.Exec(ctx, `UPDATE incidents.monitor_state SET last_sequence=$2,failure_count=$3,first_failure_at=$4 WHERE monitor_id=$1`, monitorID, seq, failures, first)
 	return err
 }
-func (s *Service) notify(ctx context.Context, tx pgx.Tx, monitorID, accountID, incidentID, kind string, at time.Time) error {
+func (s *Service) notify(ctx context.Context, tx pgx.Tx, monitorID, accountID, incidentID, kind string, sequence int64, at time.Time) error {
 	id, err := outbox.ID()
 	if err != nil {
 		return err
 	}
-	return outbox.Append(ctx, tx, id, monitorID, accountID, "NotificationRequested", map[string]any{"incidentId": incidentID, "kind": kind, "at": at}, false)
+	if err := outbox.Append(ctx, tx, id, monitorID, accountID, "NotificationRequested", map[string]any{"incidentId": incidentID, "kind": kind, "at": at, "sequence": sequence}, false); err != nil {
+		return err
+	}
+	if s.recorder != nil {
+		if err := s.recorder.Enqueue(ctx, tx, contracts.Notification{EventID: id, AccountID: accountID, MonitorID: monitorID, IncidentID: incidentID, Kind: kind, Sequence: sequence, At: at}); err != nil {
+			return err
+		}
+	}
+	_, err = tx.Exec(ctx, `UPDATE outbox.events SET processed_at=now() WHERE id=$1`, id)
+	return err
 }
 
 // Reset separates operational changes from recovery observed by an actual check.

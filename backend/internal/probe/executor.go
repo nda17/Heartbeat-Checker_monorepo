@@ -256,6 +256,10 @@ func resourceFailure(err error) bool {
 }
 
 func (e *Executor) requestIP(ctx context.Context, u *url.URL, method string, ip netip.Addr) (*http.Response, []byte, error) {
+	return e.requestIPWithPayload(ctx, u, method, ip, nil)
+}
+
+func (e *Executor) requestIPWithPayload(ctx context.Context, u *url.URL, method string, ip netip.Addr, webhook *contracts.WebhookRequest) (*http.Response, []byte, error) {
 	releaseIP, err := e.acquire("ip:" + ip.String())
 	if err != nil {
 		return nil, nil, err
@@ -296,16 +300,29 @@ func (e *Executor) requestIP(ctx context.Context, u *url.URL, method string, ip 
 	}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	request, err := http.NewRequestWithContext(ctx, method, u.String(), nil)
+	var requestBody io.Reader
+	if webhook != nil {
+		requestBody = bytes.NewReader(webhook.Body)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, u.String(), requestBody)
 	if err != nil {
 		return nil, nil, ErrUnsupportedTarget
 	}
 	request.Header.Set("User-Agent", "Heartbeat-Checker/0.2")
+	if webhook != nil {
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Heartbeat-Event-Id", webhook.EventID)
+		request.Header.Set("X-Heartbeat-Timestamp", webhook.Timestamp)
+		request.Header.Set("X-Heartbeat-Signature", webhook.Signature)
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer response.Body.Close()
+	if webhook != nil {
+		return response, nil, nil
+	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxBodyBytes+1))
 	return response, body, err
 }

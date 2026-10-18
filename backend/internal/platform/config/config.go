@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net"
 	"net/netip"
@@ -12,23 +13,24 @@ import (
 )
 
 type Config struct {
-	AppEnv           string
-	HTTPAddr         string
-	DatabaseURL      string
-	DatabaseTimeout  time.Duration
-	ReadinessTimeout time.Duration
-	ShutdownTimeout  time.Duration
-	AuthOrigin       string
-	AuthCookieSecure bool
-	AuthSessionTTL   time.Duration
-	AuthChallengeTTL time.Duration
-	AuthResetTTL     time.Duration
-	AuthRateWindow   time.Duration
-	TurnstileSecret  string
-	TurnstileHost    string
-	TurnstileLocal   bool
-	SMTPAddr         string
-	SMTPFrom         string
+	AppEnv               string
+	HTTPAddr             string
+	DatabaseURL          string
+	DatabaseTimeout      time.Duration
+	ReadinessTimeout     time.Duration
+	ShutdownTimeout      time.Duration
+	AuthOrigin           string
+	AuthCookieSecure     bool
+	AuthSessionTTL       time.Duration
+	AuthChallengeTTL     time.Duration
+	AuthResetTTL         time.Duration
+	AuthRateWindow       time.Duration
+	TurnstileSecret      string
+	TurnstileHost        string
+	TurnstileLocal       bool
+	SMTPAddr             string
+	SMTPFrom             string
+	WebhookEncryptionKey string
 }
 
 func Load() (Config, error) {
@@ -74,12 +76,17 @@ func Load() (Config, error) {
 		{"TURNSTILE_HOSTNAME", &cfg.TurnstileHost},
 		{"SMTP_ADDR", &cfg.SMTPAddr},
 		{"SMTP_FROM", &cfg.SMTPFrom},
+		{"WEBHOOK_ENCRYPTION_KEY", &cfg.WebhookEncryptionKey},
 	} {
 		value := strings.TrimSpace(os.Getenv(setting.name))
 		if value == "" {
 			return Config{}, fmt.Errorf("%s is required", setting.name)
 		}
 		*setting.target = value
+	}
+	key, err := base64.StdEncoding.Strict().DecodeString(cfg.WebhookEncryptionKey)
+	if err != nil || len(key) != 32 {
+		return Config{}, fmt.Errorf("WEBHOOK_ENCRYPTION_KEY must be base64 of 32 bytes")
 	}
 	for _, setting := range []struct {
 		name   string

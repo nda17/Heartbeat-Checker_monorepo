@@ -2,7 +2,13 @@ package worker
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
@@ -11,6 +17,8 @@ import (
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/incidents"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/monitors"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/notifications"
+	notificationcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/notifications/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/config"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/outbox"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/postgres"
@@ -28,8 +36,13 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 	if err != nil {
 		return err
 	}
-	incidentModule := incidents.New(pool)
-	monitorModule := monitors.New(pool, billing.New(pool, cfg.AppEnv == "local"), incidentModule, accounts.New(pool))
+	accountModule := accounts.New(pool)
+	notificationModule, err := notifications.New(pool, cfg.WebhookEncryptionKey, monitors.NewOwnership(), accountModule)
+	if err != nil {
+		return err
+	}
+	incidentModule := incidents.New(pool, notifications.NewRecorder())
+	monitorModule := monitors.New(pool, billing.New(pool, cfg.AppEnv == "local"), incidentModule, accountModule)
 	var wg sync.WaitGroup
 	for range 4 {
 		wg.Go(func() {
@@ -69,6 +82,50 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 			}
 		})
 	}
+	for range 2 {
+		wg.Go(func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+				claimCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				attempt, err := notificationModule.Claim(claimCtx)
+				cancel()
+				if err != nil {
+					if ctx.Err() == nil {
+						logger.Error("claim webhook delivery failed")
+					}
+					continue
+				}
+				if attempt == nil {
+					continue
+				}
+				timestamp, signature, err := signWebhookAttempt(attempt.Secret, attempt.EventID, attempt.Body, time.Now())
+				if err != nil {
+					logger.Error("decode webhook signing secret failed", "delivery_id", attempt.ID)
+					continue
+				}
+				result, err := client.DeliverWebhook(ctx, probe.WebhookRequest{URL: attempt.URL, Body: attempt.Body, EventID: attempt.EventID, Timestamp: timestamp, Signature: signature})
+				if ctx.Err() != nil {
+					return
+				}
+				outcome := notificationcontracts.Result{HTTPStatus: result.HTTPStatus, ErrorCode: result.ErrorCode, RetryAfterSeconds: result.RetryAfterSeconds}
+				if err != nil {
+					outcome = notificationcontracts.Result{ErrorCode: "probe_unavailable"}
+				}
+				saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				_, err = notificationModule.Complete(saveCtx, *attempt, outcome)
+				cancel()
+				if err != nil && ctx.Err() == nil {
+					logger.Error("complete webhook delivery failed", "delivery_id", attempt.ID)
+				}
+			}
+		})
+	}
 	wg.Go(func() {
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
@@ -82,6 +139,9 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 				}
 				if err == nil {
 					err = incidentModule.Cleanup(cleanupCtx, tx)
+				}
+				if err == nil {
+					err = notificationModule.Cleanup(cleanupCtx, tx)
 				}
 				if err == nil {
 					err = outbox.Cleanup(cleanupCtx, tx)
@@ -103,8 +163,20 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 			}
 		}
 	})
-	logger.Info("monitoring worker started", "concurrency", 4)
+	logger.Info("monitoring and webhook worker started", "monitor_concurrency", 4, "webhook_concurrency", 2)
 	<-ctx.Done()
 	wg.Wait()
 	return nil
+}
+
+func signWebhookAttempt(encodedSecret, eventID string, body []byte, now time.Time) (string, string, error) {
+	key, err := base64.RawURLEncoding.DecodeString(encodedSecret)
+	if err != nil || len(key) != 32 {
+		return "", "", errors.New("invalid webhook signing secret")
+	}
+	timestamp := strconv.FormatInt(now.UTC().Unix(), 10)
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(timestamp + "." + eventID + "."))
+	mac.Write(body)
+	return timestamp, "v1=" + hex.EncodeToString(mac.Sum(nil)), nil
 }

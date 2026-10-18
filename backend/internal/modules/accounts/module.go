@@ -52,3 +52,7 @@ func (m *Module) UpdateName(ctx context.Context, id, name string) (contracts.Acc
 func (m *Module) Active(ctx context.Context, tx pgx.Tx, id string) (bool, error) {
 	return m.repo.Active(ctx, tx, id)
 }
+
+func (m *Module) TryActive(ctx context.Context, tx pgx.Tx, id string) (bool, bool, error) {
+	return m.repo.TryActive(ctx, tx, id)
+}
