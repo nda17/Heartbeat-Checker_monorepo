@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useSyncExternalStore } from "react";
 
 const firstYear = 2026;
@@ -26,11 +25,6 @@ export function FooterLegalNotice() {
       <span>
         {year > firstYear ? `${firstYear}–${year}` : firstYear} © Все права
         защищены
-      </span>
-      <span>
-        Информация на сайте, за исключением{" "}
-        <Link href="/terms">публичной оферты</Link>, не является публичной
-        офертой согласно ст. 437 ГК РФ.
       </span>
     </div>
   );
