@@ -149,6 +149,15 @@ jobs:
           host_port=$(docker port "$container" 3000/tcp | awk -F: '{print $NF}')
           [[ "$host_port" =~ ^[0-9]+$ ]]
           base="http://127.0.0.1:$host_port"
+          deadline=$((SECONDS + 45))
+          until curl -fsS --max-time 5 -o /dev/null "$base/" >/dev/null 2>&1; do
+            if (( SECONDS >= deadline )); then
+              echo 'Landing did not become ready within 45 seconds' >&2
+              docker logs "$container" >&2 || true
+              exit 1
+            fi
+            sleep 1
+          done
           curl -fsS --retry 20 --retry-connrefused --retry-delay 1 --max-time 5 -o "$smoke_dir/home" "$base/"
           grep -Fq 'data-web-mode="landing"' "$smoke_dir/home"
           grep -Fq 'Сервис готовится к запуску' "$smoke_dir/home"
