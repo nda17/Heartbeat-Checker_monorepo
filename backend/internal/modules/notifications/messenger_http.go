@@ -21,6 +21,8 @@ func messengerFailure(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, auth.ErrEmailUnverified):
 		status, code = 409, "email_not_verified"
+	case errors.Is(err, ErrTelegramPrivateRequired):
+		status, code = 409, "telegram_private_required"
 	case errors.Is(err, ErrMessengerInvalid):
 		status, code = 400, "invalid_request"
 	case errors.Is(err, ErrMessengerNotFound):

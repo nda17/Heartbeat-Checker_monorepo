@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Destination,
   DestinationKind,
@@ -42,6 +42,56 @@ function safeBotUrl(value: string | null) {
   }
 }
 
+const linkFailureReasons: Record<string, string> = {
+  telegram_private_required:
+    "Сначала подключите личный Telegram администратора, который отправит команду. Используйте тот же профиль, без анонимной отправки и отправки от имени группы.",
+  telegram_bot_admin_required:
+    "Назначьте Informer администратором группы, затем начните подключение заново.",
+  telegram_user_admin_required:
+    "Команду должен отправить администратор группы с того же Telegram-профиля, который подключён в личном чате. Проверьте права и начните заново.",
+  telegram_target_mismatch:
+    "Тип чата не совпадает с выбранной привязкой. Для обычной группы выберите «Telegram · группа», для группы с темами — «Telegram · топик группы» и отправьте команду в нужном топике, кроме «Общие».",
+  telegram_chat_unavailable:
+    "Telegram не разрешил проверить чат. Убедитесь, что Informer добавлен в группу и назначен администратором, затем начните заново.",
+  verification_unavailable:
+    "Не удалось проверить доступ к чату. Попробуйте начать заново немного позже.",
+  verification_failed:
+    "Не удалось проверить эту привязку. Проверьте выбранный чат и начните заново.",
+};
+function linkFailureReason(link: MessengerLink) {
+  if (link.status === "expired")
+    return link.errorCode === "link_expired"
+      ? "Срок действия ссылки истёк. Начните подключение заново."
+      : "Эта попытка привязки недоступна. Начните заново.";
+  return (
+    linkFailureReasons[link.errorCode ?? ""] ??
+    "Эта попытка привязки недоступна. Начните заново."
+  );
+}
+async function linkRequest<T>(
+  controller: AbortController,
+  request: (signal: AbortSignal) => Promise<T>,
+) {
+  let rejectAbort: () => void = () => {};
+  const aborted = new Promise<never>((_, reject) => {
+    rejectAbort = () =>
+      reject(new DOMException("Request aborted", "AbortError"));
+    controller.signal.addEventListener("abort", rejectAbort, { once: true });
+  });
+  const timer = window.setTimeout(() => controller.abort(), 10_000);
+  try {
+    if (controller.signal.aborted)
+      throw new DOMException("Request aborted", "AbortError");
+    const response = await Promise.race([request(controller.signal), aborted]);
+    if (controller.signal.aborted)
+      throw new DOMException("Request aborted", "AbortError");
+    return response;
+  } finally {
+    window.clearTimeout(timer);
+    controller.signal.removeEventListener("abort", rejectAbort);
+  }
+}
+
 export function MessengerLinks({ email }: { email?: string }) {
   const [enabled, setEnabled] = useState(true);
   const [emailEnabled, setEmailEnabled] = useState(false);
@@ -54,6 +104,39 @@ export function MessengerLinks({ email }: { email?: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [pollError, setPollError] = useState("");
+  const alive = useRef(true);
+  const generation = useRef(0);
+  const linkID = useRef<string | null>(null);
+  const pollRequest = useRef<AbortController | null>(null);
+  const linkAction = useRef<AbortController | null>(null);
+  const destinationRefresh = useRef<AbortController | null>(null);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      generation.current += 1;
+      pollRequest.current?.abort();
+      linkAction.current?.abort();
+      destinationRefresh.current?.abort();
+    };
+  }, []);
+  function replaceLink(value: MessengerLink | null) {
+    linkID.current = value?.id ?? null;
+    setLink(value);
+  }
+  function cancelDestinationRefresh() {
+    const controller = destinationRefresh.current;
+    destinationRefresh.current = null;
+    controller?.abort();
+  }
+  function pauseLinkRequests() {
+    ++generation.current;
+    pollRequest.current?.abort();
+    cancelDestinationRefresh();
+    setPollError("");
+    return generation.current;
+  }
   const loadDestinations = useCallback(async (signal?: AbortSignal) => {
     const response = await api<{
       enabled?: boolean;
@@ -87,113 +170,191 @@ export function MessengerLinks({ email }: { email?: string }) {
     };
   }, [loadDestinations, loadAttempt]);
   useEffect(() => {
-    if (!link || (link.status !== "pending" && link.status !== "observed"))
+    if (
+      !link ||
+      busy ||
+      !["pending", "observed", "candidate"].includes(link.status)
+    )
       return;
+    const id = link.id;
+    const view = generation.current;
     let active = true;
     let timer: number;
-    let requestTimeout: number;
-    let request: AbortController | null = null;
+    let controller: AbortController | null = null;
+    const current = () =>
+      active &&
+      alive.current &&
+      view === generation.current &&
+      linkID.current === id &&
+      !linkAction.current;
     const poll = async () => {
+      if (!current()) return;
       if (document.visibilityState === "visible") {
-        request = new AbortController();
-        requestTimeout = window.setTimeout(() => request?.abort(), 10000);
+        controller = new AbortController();
+        pollRequest.current = controller;
         try {
-          const response = await api<{ link: MessengerLink }>(
-            `/messenger-links/${encodeURIComponent(link.id)}`,
-            { signal: request.signal },
+          const response = await linkRequest(controller, (signal) =>
+            api<{ link: MessengerLink }>(
+              `/messenger-links/${encodeURIComponent(id)}`,
+              { signal },
+            ),
           );
-          if (active) {
-            setLink(response.link);
-            setError("");
+          if (current() && response.link.id === id) {
+            replaceLink(response.link);
+            setPollError("");
           }
         } catch (e) {
-          if (active) setError(errorMessage(e));
+          if (current())
+            setPollError(
+              e instanceof DOMException && e.name === "AbortError"
+                ? "Проверка статуса заняла слишком много времени. Повторим запрос автоматически."
+                : errorMessage(e),
+            );
         } finally {
-          window.clearTimeout(requestTimeout);
-          request = null;
+          if (pollRequest.current === controller) pollRequest.current = null;
         }
       }
-      if (active) timer = window.setTimeout(() => void poll(), 3000);
+      if (current()) timer = window.setTimeout(() => void poll(), 3000);
     };
     timer = window.setTimeout(() => void poll(), 3000);
     return () => {
       active = false;
       window.clearTimeout(timer);
-      window.clearTimeout(requestTimeout);
-      request?.abort();
+      controller?.abort();
+      if (pollRequest.current === controller) pollRequest.current = null;
     };
-  }, [link]);
-  useEffect(() => {
-    if (!link || !["pending", "observed", "candidate"].includes(link.status))
-      return;
-    const remaining = Date.parse(link.expiresAt) - Date.now();
-    const timer = window.setTimeout(
-      () => {
-        setLink((value) =>
-          value?.id === link.id &&
-          ["pending", "observed", "candidate"].includes(value.status)
-            ? { ...value, status: "expired" }
-            : value,
-        );
-      },
-      Math.max(0, remaining),
-    );
-    return () => window.clearTimeout(timer);
-  }, [link]);
+  }, [link, busy]);
   async function begin(provider: Provider, kind: DestinationKind) {
+    if (linkAction.current || busy) return;
+    const view = pauseLinkRequests();
+    const controller = new AbortController();
+    linkAction.current = controller;
     setBusy(true);
     setError("");
     setSuccess("");
     try {
-      const response = await api<LinkStart>("/messenger-links", {
-        method: "POST",
-        authenticated: true,
-        body: { provider, kind },
-      });
+      const response = await linkRequest(controller, (signal) =>
+        api<LinkStart>("/messenger-links", {
+          method: "POST",
+          authenticated: true,
+          body: { provider, kind },
+          signal,
+        }),
+      );
+      if (!alive.current || view !== generation.current) return;
       setStarted(response);
-      setLink(response.link);
+      replaceLink(response.link);
     } catch (e) {
-      setError(errorMessage(e));
+      if (alive.current && view === generation.current)
+        setError(
+          e instanceof DOMException && e.name === "AbortError"
+            ? "Не удалось получить новую ссылку вовремя. Начните подключение заново."
+            : errorMessage(e),
+        );
     } finally {
-      setBusy(false);
+      if (linkAction.current === controller) linkAction.current = null;
+      if (alive.current && view === generation.current) setBusy(false);
     }
   }
+  function confirmed(view: number) {
+    setStarted(null);
+    replaceLink(null);
+    setError("");
+    setSuccess("Чат подтверждён. Теперь его можно выбрать для монитора.");
+    const controller = new AbortController();
+    destinationRefresh.current = controller;
+    void linkRequest(controller, (signal) => loadDestinations(signal))
+      .catch((e) => {
+        if (
+          alive.current &&
+          view === generation.current &&
+          destinationRefresh.current === controller
+        )
+          setError(
+            `Чат подтверждён, но список не обновился: ${errorMessage(e)}`,
+          );
+      })
+      .finally(() => {
+        if (destinationRefresh.current === controller)
+          destinationRefresh.current = null;
+      });
+  }
   async function confirm() {
-    if (!link || link.status !== "candidate") return;
-    if (Date.parse(link.expiresAt) <= Date.now()) {
-      setLink({ ...link, status: "expired" });
+    if (!link || link.status !== "candidate" || linkAction.current || busy)
       return;
-    }
+    const id = link.id;
+    const view = pauseLinkRequests();
+    let controller = new AbortController();
+    linkAction.current = controller;
     setBusy(true);
     setError("");
     setSuccess("");
     try {
-      const response = await api<{ destination: Destination }>(
-        `/messenger-links/${encodeURIComponent(link.id)}/confirm`,
-        { method: "POST", authenticated: true },
+      const response = await linkRequest(controller, (signal) =>
+        api<{ destination: Destination }>(
+          `/messenger-links/${encodeURIComponent(id)}/confirm`,
+          { method: "POST", authenticated: true, signal },
+        ),
       );
+      if (
+        !alive.current ||
+        view !== generation.current ||
+        linkID.current !== id
+      )
+        return;
       setDestinations((current) => [
         ...(current ?? []).filter(
           (item) => item.id !== response.destination.id,
         ),
         response.destination,
       ]);
-      setStarted(null);
-      setLink(null);
-      setSuccess("Чат подтверждён. Теперь его можно выбрать для монитора.");
-      try {
-        await loadDestinations();
-      } catch (e) {
-        setError(`Чат подтверждён, но список не обновился: ${errorMessage(e)}`);
-      }
+      confirmed(view);
     } catch (e) {
-      setError(errorMessage(e));
+      if (
+        !alive.current ||
+        view !== generation.current ||
+        linkID.current !== id
+      )
+        return;
+      setError(
+        `${errorMessage(e)} Проверяем состояние привязки; повторное подтверждение автоматически не отправляется.`,
+      );
+      controller = new AbortController();
+      linkAction.current = controller;
+      try {
+        const response = await linkRequest(controller, (signal) =>
+          api<{ link: MessengerLink }>(
+            `/messenger-links/${encodeURIComponent(id)}`,
+            { signal },
+          ),
+        );
+        if (
+          !alive.current ||
+          view !== generation.current ||
+          linkID.current !== id ||
+          response.link.id !== id
+        )
+          return;
+        if (response.link.status === "confirmed") confirmed(view);
+        else replaceLink(response.link);
+      } catch {
+        if (
+          alive.current &&
+          view === generation.current &&
+          linkID.current === id
+        )
+          setPollError(
+            "Не удалось обновить состояние привязки. Проверим его снова автоматически.",
+          );
+      }
     } finally {
-      setBusy(false);
+      if (linkAction.current === controller) linkAction.current = null;
+      if (alive.current && view === generation.current) setBusy(false);
     }
   }
   async function disconnect() {
     if (!removing) return;
+    cancelDestinationRefresh();
     setBusy(true);
     setError("");
     setSuccess("");
@@ -223,6 +384,7 @@ export function MessengerLinks({ email }: { email?: string }) {
     }
   }
   async function connectEmail() {
+    cancelDestinationRefresh();
     setBusy(true);
     setError("");
     setSuccess("");
@@ -368,7 +530,9 @@ export function MessengerLinks({ email }: { email?: string }) {
         <Dialog
           title="Подключить чат"
           onClose={() => {
-            setLink(null);
+            pauseLinkRequests();
+            linkAction.current?.abort();
+            replaceLink(null);
             setStarted(null);
             setError("");
           }}
@@ -376,9 +540,12 @@ export function MessengerLinks({ email }: { email?: string }) {
         >
           <p className="dialog-description">
             {providerName[link.provider]} · {destinationKindName[link.kind]}.
-            Ссылка действует до {dateTime(link.expiresAt)}.
+            {["pending", "observed", "candidate"].includes(link.status) && (
+              <> Ссылка действует до {dateTime(link.expiresAt)}.</>
+            )}
           </p>
           {error && <Notice>{error}</Notice>}
+          {pollError && <Notice>{pollError}</Notice>}
           {(link.status === "pending" || link.status === "observed") && (
             <>
               {botUrl ? (
@@ -394,17 +561,15 @@ export function MessengerLinks({ email }: { email?: string }) {
               ) : started.command ? (
                 <div className="messenger-command">
                   <p>
-                    Сначала подключите личный Telegram того же администратора.
-                    Убедитесь, что администратор и Informer имеют доступ к
-                    группе
-                    {link.kind === "topic" ? " и нужному топику" : ""}.
+                    Informer и отправитель команды должны быть администраторами
+                    группы. Отправляйте команду с того же Telegram-профиля,
+                    который подключён в личном чате, без анонимной отправки и
+                    отправки от имени группы.
                   </p>
                   <p>
-                    Добавьте Informer в{" "}
                     {link.kind === "topic"
-                      ? "группу и отправьте команду в нужном топике"
-                      : "группу и отправьте команду в ней"}
-                    :
+                      ? "Для группы с темами откройте нужный топик, кроме «Общие», и отправьте команду в нём. Для каждого топика нужна отдельная привязка:"
+                      : "Для обычной группы без тем добавьте Informer и отправьте команду прямо в группе:"}
                   </p>
                   <code>{started.command}</code>
                 </div>
@@ -445,8 +610,17 @@ export function MessengerLinks({ email }: { email?: string }) {
               </div>
             </>
           )}
-          {link.status === "expired" && (
-            <Notice>Срок привязки истёк. Начните подключение заново.</Notice>
+          {(link.status === "expired" || link.status === "failed") && (
+            <>
+              <Notice>{linkFailureReason(link)}</Notice>
+              <button
+                className="secondary"
+                disabled={busy}
+                onClick={() => void begin(link.provider, link.kind)}
+              >
+                {busy ? "Создаём ссылку…" : "Начать заново"}
+              </button>
+            </>
           )}
           {link.status === "confirmed" && (
             <>
@@ -454,11 +628,8 @@ export function MessengerLinks({ email }: { email?: string }) {
               <button
                 className="secondary"
                 onClick={() => {
-                  void loadDestinations().catch((e) =>
-                    setError(errorMessage(e)),
-                  );
-                  setLink(null);
-                  setStarted(null);
+                  const view = pauseLinkRequests();
+                  confirmed(view);
                 }}
               >
                 Обновить список чатов

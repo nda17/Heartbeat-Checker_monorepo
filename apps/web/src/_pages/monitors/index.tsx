@@ -452,7 +452,7 @@ export function MonitorsPage() {
           </strong>
           <small>
             {quotaActive
-              ? `До ${dateTime(entitlement?.activeUntil)}`
+              ? `До ${dateTime(entitlement?.activeUntil, { year: true })}`
               : "Нет действующей квоты"}
           </small>
         </div>
@@ -471,7 +471,7 @@ export function MonitorsPage() {
           <span className="badge">Квота</span>
           <p>
             Квота после демонстрации оплаты. Деньги не списывались. Срок
-            действия: {dateTime(entitlement.activeUntil)}.
+            действия: {dateTime(entitlement.activeUntil, { year: true })}.
           </p>
         </div>
       )}
@@ -480,7 +480,8 @@ export function MonitorsPage() {
           <span className="badge">Квота</span>
           <p>
             Доступ к проверкам выдан администратором. Лимит: {entitlement.quota}
-            , срок действия: {dateTime(entitlement.activeUntil)}.
+            , срок действия: {dateTime(entitlement.activeUntil, { year: true })}
+            .
           </p>
         </div>
       )}

@@ -326,11 +326,15 @@ export function Loading({ text = "Загрузка…" }: { text?: string }) {
     </div>
   );
 }
-export function dateTime(value: string | null | undefined) {
+export function dateTime(
+  value: string | null | undefined,
+  { year = false }: { year?: boolean } = {},
+) {
   return value
     ? new Intl.DateTimeFormat("ru", {
         day: "2-digit",
         month: "short",
+        year: year ? "numeric" : undefined,
         hour: "2-digit",
         minute: "2-digit",
       }).format(new Date(value))

@@ -382,6 +382,11 @@ func TestMessengerLinkKindsAndDisabledDefault(t *testing.T) {
 	if _, _, _, _, err := m.CreateLink(context.Background(), owner, "max", "group"); !errors.Is(err, ErrMessengerInvalid) {
 		t.Fatalf("MAX group link error=%v, want invalid kind", err)
 	}
+	confirmPrivateTelegramTarget(t, f, m, owner, 321)
+	var destinationsBeforeLink int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM notifications.messenger_destinations`).Scan(&destinationsBeforeLink); err != nil {
+		t.Fatal(err)
+	}
 	link, token, startURL, command, err := m.CreateLink(context.Background(), owner, "telegram", "topic")
 	if err != nil {
 		t.Fatalf("create Telegram topic link: %v", err)
@@ -393,8 +398,8 @@ func TestMessengerLinkKindsAndDisabledDefault(t *testing.T) {
 	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM notifications.messenger_destinations`).Scan(&destinationCount); err != nil {
 		t.Fatal(err)
 	}
-	if destinationCount != 0 {
-		t.Fatalf("link creation made %d destinations before verification", destinationCount)
+	if destinationCount != destinationsBeforeLink {
+		t.Fatalf("link creation changed destination count from %d to %d before verification", destinationsBeforeLink, destinationCount)
 	}
 }
 
@@ -641,10 +646,11 @@ func TestMessengerGroupAndTopicLinksRequireBoundUserAndBothAdmins(t *testing.T) 
 		}
 	})
 
-	t.Run("group candidate without confirmed private identity is rejected", func(t *testing.T) {
+	t.Run("group candidate without a currently ready matching private identity is rejected", func(t *testing.T) {
 		f := newWebhookFixture(t)
 		owner, _ := f.addMonitor(t, "unbound group owner")
 		m := testMessenger(t, f, true)
+		private := confirmPrivateTelegramTarget(t, f, m, owner, 555)
 		group, _, _, command, err := m.CreateLink(context.Background(), owner, "telegram", "group")
 		if err != nil {
 			t.Fatal(err)
@@ -659,6 +665,9 @@ func TestMessengerGroupAndTopicLinksRequireBoundUserAndBothAdmins(t *testing.T) 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("group link webhook status=%d", rec.Code)
 		}
+		if _, err := f.pool.Exec(context.Background(), `UPDATE notifications.messenger_destinations SET status='disconnected' WHERE id=$1`, private.ID); err != nil {
+			t.Fatal(err)
+		}
 		m.client = &http.Client{Transport: messengerRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 			return nil, errors.New("provider request must not run before private ownership check")
 		})}
@@ -666,8 +675,8 @@ func TestMessengerGroupAndTopicLinksRequireBoundUserAndBothAdmins(t *testing.T) 
 			t.Fatalf("process unbound group link=%t err=%v", processed, err)
 		}
 		link, err := m.GetLink(context.Background(), owner, group.ID)
-		if err != nil || link.Status != "expired" {
-			t.Fatalf("unbound group link status=%s err=%v, want expired", link.Status, err)
+		if err != nil || link.Status != "failed" || link.ErrorCode != "telegram_private_required" {
+			t.Fatalf("unbound group link status=%s errorCode=%s err=%v, want failed/telegram_private_required", link.Status, link.ErrorCode, err)
 		}
 	})
 }

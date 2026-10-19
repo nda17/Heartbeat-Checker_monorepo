@@ -23,11 +23,12 @@ import (
 )
 
 var (
-	ErrMessengerInvalid     = errors.New("invalid messenger request")
-	ErrMessengerNotFound    = errors.New("messenger resource not found")
-	ErrMessengerConflict    = errors.New("messenger version conflict")
-	ErrMessengerNotReady    = errors.New("messenger link not ready")
-	ErrMessengerUnavailable = errors.New("messenger notifications unavailable")
+	ErrTelegramPrivateRequired = errors.New("ready private Telegram destination required")
+	ErrMessengerInvalid        = errors.New("invalid messenger request")
+	ErrMessengerNotFound       = errors.New("messenger resource not found")
+	ErrMessengerConflict       = errors.New("messenger version conflict")
+	ErrMessengerNotReady       = errors.New("messenger link not ready")
+	ErrMessengerUnavailable    = errors.New("messenger notifications unavailable")
 )
 
 type MessengerConfig struct {
@@ -69,6 +70,7 @@ type MessengerLink struct {
 	Provider      string              `json:"provider"`
 	Kind          string              `json:"kind"`
 	Status        string              `json:"status"`
+	ErrorCode     string              `json:"errorCode,omitempty"`
 	ExpiresAt     time.Time           `json:"expiresAt"`
 	Candidate     *MessengerCandidate `json:"candidate"`
 	DestinationID *string             `json:"destinationId"`
@@ -254,11 +256,15 @@ func messengerKind(provider, kind string) bool {
 }
 
 func (m *Messenger) Cleanup(ctx context.Context, tx pgx.Tx) error {
-	_, err := tx.Exec(ctx, `UPDATE notifications.messenger_links SET status='expired',encrypted_observation=NULL,encrypted_candidate=NULL,attempt_token=NULL,lease_until=NULL WHERE (expires_at<=now() AND status IN ('pending','observed','candidate')) OR (status='observed' AND attempts>=8 AND lease_until<=now())`)
+	_, err := tx.Exec(ctx, `UPDATE notifications.messenger_links SET status='expired',error_code='link_expired',encrypted_observation=NULL,encrypted_candidate=NULL,attempt_token=NULL,lease_until=NULL WHERE expires_at<=now() AND status IN ('pending','observed','candidate')`)
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `DELETE FROM notifications.messenger_links WHERE status='expired' AND expires_at<now()-interval '1 day' OR status='confirmed' AND created_at<now()-interval '30 days'`)
+	_, err = tx.Exec(ctx, `UPDATE notifications.messenger_links SET status='failed',error_code='verification_unavailable',encrypted_observation=NULL,encrypted_candidate=NULL,attempt_token=NULL,lease_until=NULL WHERE status='observed' AND attempts>=8 AND expires_at>now() AND (lease_until IS NULL OR lease_until<=now())`)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `DELETE FROM notifications.messenger_links WHERE status IN ('expired','failed') AND expires_at<now()-interval '1 day' OR status='confirmed' AND created_at<now()-interval '30 days'`)
 	if err != nil {
 		return err
 	}

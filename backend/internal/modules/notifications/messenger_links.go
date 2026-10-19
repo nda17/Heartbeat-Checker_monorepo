@@ -40,6 +40,15 @@ func (m *Messenger) CreateLink(ctx context.Context, accountID, provider, kind st
 	if !active {
 		return MessengerLink{}, "", "", "", ErrMessengerNotFound
 	}
+	if provider == "telegram" && kind != "private" {
+		var linked bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM notifications.messenger_destinations WHERE account_id=$1 AND provider='telegram' AND kind='private' AND status='ready')`, accountID).Scan(&linked); err != nil {
+			return MessengerLink{}, "", "", "", err
+		}
+		if !linked {
+			return MessengerLink{}, "", "", "", ErrTelegramPrivateRequired
+		}
+	}
 	id, err := outbox.ID()
 	if err != nil {
 		return MessengerLink{}, "", "", "", err
@@ -78,7 +87,7 @@ func (m *Messenger) GetLink(ctx context.Context, accountID, id string) (Messenge
 	var link MessengerLink
 	var encrypted []byte
 	var destination *string
-	err := m.pool.QueryRow(ctx, `SELECT id::text,provider,kind,CASE WHEN expires_at<=now() AND status IN ('pending','observed','candidate') THEN 'expired' ELSE status END,expires_at,encrypted_candidate,destination_id::text FROM notifications.messenger_links WHERE account_id=$1 AND id=$2`, accountID, id).Scan(&link.ID, &link.Provider, &link.Kind, &link.Status, &link.ExpiresAt, &encrypted, &destination)
+	err := m.pool.QueryRow(ctx, `SELECT id::text,provider,kind,CASE WHEN expires_at<=now() AND status IN ('pending','observed','candidate') THEN 'expired' ELSE status END,CASE WHEN expires_at<=now() AND status IN ('pending','observed','candidate') THEN 'link_expired' ELSE error_code END,expires_at,encrypted_candidate,destination_id::text FROM notifications.messenger_links WHERE account_id=$1 AND id=$2`, accountID, id).Scan(&link.ID, &link.Provider, &link.Kind, &link.Status, &link.ErrorCode, &link.ExpiresAt, &encrypted, &destination)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MessengerLink{}, ErrMessengerNotFound
 	}
@@ -197,7 +206,7 @@ func (m *Messenger) ConfirmLink(ctx context.Context, accountID, id string) (Mess
 			return MessengerDestination{}, err
 		}
 		if !linked {
-			return MessengerDestination{}, ErrMessengerNotReady
+			return MessengerDestination{}, ErrTelegramPrivateRequired
 		}
 	}
 	fingerprint := m.recipientFingerprint(target)

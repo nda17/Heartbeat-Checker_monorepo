@@ -745,7 +745,7 @@ export function AdminPage() {
                   </div>
                   <p>
                     {detail.entitlement
-                      ? `${detail.entitlement.monitorCount} из ${detail.entitlement.quota} мониторов · до ${dateTime(detail.entitlement.activeUntil)}`
+                      ? `${detail.entitlement.monitorCount} из ${detail.entitlement.quota} мониторов · до ${dateTime(detail.entitlement.activeUntil, { year: true })}`
                       : "Действующей квоты нет."}
                   </p>
                   {detail.entitlement && (

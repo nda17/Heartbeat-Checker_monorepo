@@ -53,11 +53,11 @@ func (m *Messenger) ProcessLink(ctx context.Context) (bool, error) {
 	defer cancel()
 	plain, err := m.open(a.accountID, a.id, "observation", a.encrypted)
 	if err != nil {
-		return true, m.finishLink(ctx, a, "", messengerTarget{}, messengerProviderError{permanent: true})
+		return true, m.finishLink(ctx, a, "", messengerTarget{}, messengerProviderError{permanent: true, linkCode: "verification_failed"})
 	}
 	var target messengerTarget
 	if err = target.decode(plain); err != nil || target.Provider != a.provider || target.Kind != a.kind {
-		return true, m.finishLink(ctx, a, "", messengerTarget{}, messengerProviderError{permanent: true})
+		return true, m.finishLink(ctx, a, "", messengerTarget{}, messengerProviderError{permanent: true, linkCode: "verification_failed"})
 	}
 	if target.Kind != "private" {
 		var linked bool
@@ -66,7 +66,7 @@ func (m *Messenger) ProcessLink(ctx context.Context) (bool, error) {
 			return true, err
 		}
 		if !linked {
-			return true, m.finishLink(ctx, a, "", target, messengerProviderError{permanent: true})
+			return true, m.finishLink(ctx, a, "", target, messengerProviderError{permanent: true, linkCode: "telegram_private_required"})
 		}
 	}
 	if target.Provider == "max" {
@@ -77,7 +77,7 @@ func (m *Messenger) ProcessLink(ctx context.Context) (bool, error) {
 		}
 		err = m.providerRequest(verifyCtx, http.MethodGet, "https://platform-api2.max.ru/me", m.cfg.MAXToken, nil, &bot)
 		if err == nil && (!bot.Bot || bot.ID <= 0 || !strings.EqualFold("https://max.ru/"+bot.Username, m.cfg.MAXBotURL)) {
-			err = messengerProviderError{permanent: true}
+			err = messengerProviderError{permanent: true, linkCode: "verification_unavailable"}
 		}
 		if err != nil {
 			return true, m.finishLink(ctx, a, "", target, err)
@@ -96,9 +96,9 @@ func (m *Messenger) finishLink(ctx context.Context, a messengerLinkAttempt, labe
 	var status string
 	var token *string
 	var attempts int
-	var expires time.Time
+	var expired bool
 	var lease *time.Time
-	err = tx.QueryRow(ctx, `SELECT status,attempt_token::text,attempts,expires_at,lease_until FROM notifications.messenger_links WHERE id=$1 FOR UPDATE`, a.id).Scan(&status, &token, &attempts, &expires, &lease)
+	err = tx.QueryRow(ctx, `SELECT status,attempt_token::text,attempts,expires_at<=now(),lease_until FROM notifications.messenger_links WHERE id=$1 FOR UPDATE`, a.id).Scan(&status, &token, &attempts, &expired, &lease)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -108,11 +108,17 @@ func (m *Messenger) finishLink(ctx context.Context, a messengerLinkAttempt, labe
 	if status != "observed" || token == nil || *token != a.token || lease == nil || !lease.After(time.Now()) {
 		return nil
 	}
-	if verifyErr != nil || !expires.After(time.Now()) {
+	if verifyErr != nil || expired {
 		var p messengerProviderError
 		permanent := errors.As(verifyErr, &p) && p.permanent
-		if permanent || attempts >= 8 || !expires.After(time.Now()) {
-			_, err = tx.Exec(ctx, `UPDATE notifications.messenger_links SET status='expired',encrypted_observation=NULL,attempt_token=NULL,lease_until=NULL WHERE id=$1`, a.id)
+		if permanent || attempts >= 8 || expired {
+			status, code := "failed", "verification_unavailable"
+			if expired {
+				status, code = "expired", "link_expired"
+			} else if permanent {
+				code = messengerLinkErrorCode(p.linkCode)
+			}
+			_, err = tx.Exec(ctx, `UPDATE notifications.messenger_links SET status=$2,error_code=$3,encrypted_observation=NULL,encrypted_candidate=NULL,attempt_token=NULL,lease_until=NULL WHERE id=$1`, a.id, status, code)
 		} else {
 			backoff := time.Duration(1<<min(attempts, 6)) * time.Second
 			if p.retryAfter > backoff {
@@ -136,9 +142,18 @@ func (m *Messenger) finishLink(ctx context.Context, a messengerLinkAttempt, labe
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `UPDATE notifications.messenger_links SET status='candidate',encrypted_observation=NULL,encrypted_candidate=$2,attempt_token=NULL,lease_until=NULL WHERE id=$1`, a.id, encrypted)
+	_, err = tx.Exec(ctx, `UPDATE notifications.messenger_links SET status='candidate',error_code='',encrypted_observation=NULL,encrypted_candidate=$2,attempt_token=NULL,lease_until=NULL WHERE id=$1`, a.id, encrypted)
 	if err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func messengerLinkErrorCode(code string) string {
+	switch code {
+	case "telegram_private_required", "telegram_bot_admin_required", "telegram_user_admin_required", "telegram_target_mismatch", "telegram_chat_unavailable", "verification_failed":
+		return code
+	default:
+		return "verification_unavailable"
+	}
 }
