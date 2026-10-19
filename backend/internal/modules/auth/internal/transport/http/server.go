@@ -55,6 +55,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/mfa/recovery", s.mfaRecovery)
 	mux.HandleFunc("POST /api/v1/auth/mfa/recovery-codes", s.mfaRecoveryCodes)
 	mux.HandleFunc("GET /api/v1/me", s.me)
+	mux.HandleFunc("POST /api/v1/me/email-verification", s.requestEmailVerification)
+	mux.HandleFunc("POST /api/v1/me/email-verification/confirm", s.confirmEmailVerification)
 	mux.HandleFunc("PATCH /api/v1/me", s.editMe)
 	mux.HandleFunc("DELETE /api/v1/me", s.deleteMe)
 	mux.HandleFunc("GET /api/v1/me/sessions", s.sessions)
@@ -310,6 +312,40 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, profile)
+}
+
+func (s *Server) requestEmailVerification(w http.ResponseWriter, r *http.Request) {
+	p, _, ok := s.require(w, r, true)
+	if !ok {
+		return
+	}
+	var in struct{}
+	if !decode(w, r, &in) {
+		return
+	}
+	if err := s.service.RequestEmailVerification(r.Context(), p, client(r)); err != nil {
+		failService(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Server) confirmEmailVerification(w http.ResponseWriter, r *http.Request) {
+	p, _, ok := s.require(w, r, true)
+	if !ok {
+		return
+	}
+	var in struct {
+		Token string `json:"token"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if err := s.service.ConfirmEmailVerification(r.Context(), p, in.Token, client(r)); err != nil {
+		failService(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) editMe(w http.ResponseWriter, r *http.Request) {
 	p, _, ok := s.require(w, r, true)

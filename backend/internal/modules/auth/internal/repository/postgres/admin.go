@@ -3,11 +3,29 @@ package postgres
 import (
 	"bytes"
 	"context"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	auth "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/security"
 )
+
+func EmailForNotificationsTx(ctx context.Context, tx pgx.Tx, accountID string) (string, error) {
+	var email string
+	var verified *time.Time
+	err := tx.QueryRow(ctx, `SELECT email,email_verified_at FROM auth.credentials WHERE account_id=$1 FOR SHARE`, accountID).Scan(&email, &verified)
+	if err != nil {
+		return "", err
+	}
+	if !security.ValidEmail(email) || email != security.NormalizeEmail(email) || strings.HasSuffix(email, "@invalid.local") {
+		return "", pgx.ErrNoRows
+	}
+	if verified == nil {
+		return "", auth.ErrEmailUnverified
+	}
+	return email, nil
+}
 
 // VerifyAdminTx is the in-transaction authorization fence after the caller has
 // locked involved account rows. It detects revoked/rotated sessions and MFA.

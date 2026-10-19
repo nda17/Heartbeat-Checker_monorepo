@@ -1,5 +1,5 @@
-export type Provider = "telegram" | "max";
-export type DestinationKind = "private" | "group" | "topic";
+export type Provider = "telegram" | "max" | "email";
+export type DestinationKind = "private" | "group" | "topic" | "email";
 export type Candidate = {
   label: string;
   chatId: string;
@@ -19,6 +19,7 @@ export type Destination = Candidate & {
   id: string;
   provider: Provider;
   kind: DestinationKind;
+  email?: string;
   ready: boolean;
   version: number;
 };
@@ -29,9 +30,14 @@ export type MessengerRoute = {
   reminderMinutes: number;
   version: number;
 };
-export const providerName = { telegram: "Telegram", max: "MAX" };
+export const providerName = {
+  telegram: "Telegram",
+  max: "MAX",
+  email: "Email",
+} as const;
 export const destinationKindName = {
   private: "личный чат",
   group: "группа",
   topic: "топик группы",
-};
+  email: "подтверждённый email",
+} as const;

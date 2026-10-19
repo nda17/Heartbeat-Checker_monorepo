@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/mail"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ type messengerTarget struct {
 	ChatID   string `json:"chatId"`
 	UserID   string `json:"userId"`
 	ThreadID string `json:"threadId,omitempty"`
+	Email    string `json:"email,omitempty"`
 }
 
 type messengerRecipient struct {
@@ -45,7 +47,7 @@ func (m *Messenger) readRecipient(accountID, id, field string, encrypted []byte)
 	if err = json.Unmarshal(plain, &recipient); err != nil {
 		return messengerRecipient{}, err
 	}
-	if err = recipient.Target.decodeMust(); err != nil || recipient.Label == "" || len([]rune(recipient.Label)) > 120 {
+	if err = recipient.Target.decodeMust(); err != nil || recipient.Label == "" || (recipient.Target.Provider == "email" && recipient.Label != recipient.Target.Email) || (recipient.Target.Provider != "email" && len([]rune(recipient.Label)) > 120) {
 		return messengerRecipient{}, ErrMessengerInvalid
 	}
 	return recipient, nil
@@ -64,6 +66,16 @@ func (t messengerTarget) threadString() string { return t.ThreadID }
 func (t *messengerTarget) decode(data []byte) error {
 	if err := json.Unmarshal(data, t); err != nil {
 		return err
+	}
+	if t.Provider == "email" {
+		address, err := mail.ParseAddress(t.Email)
+		if err != nil || address.Address != t.Email || t.Email != strings.ToLower(strings.TrimSpace(t.Email)) || len(t.Email) > 254 || strings.ContainsAny(t.Email, "\r\n") || strings.HasSuffix(t.Email, "@invalid.local") || t.Kind != "email" || t.ChatID != "" || t.UserID != "" || t.ThreadID != "" {
+			return ErrMessengerInvalid
+		}
+		return nil
+	}
+	if t.Email != "" {
+		return ErrMessengerInvalid
 	}
 	if !messengerKind(t.Provider, t.Kind) || t.ChatID == "" || t.UserID == "" {
 		return ErrMessengerInvalid

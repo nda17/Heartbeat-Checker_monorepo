@@ -21,7 +21,7 @@ func NewTurnstile(secret, hostname string, local bool) (CaptchaVerifier, error) 
 	return turnstile.New(secret, hostname, local)
 }
 
-func NewLocalMailer(addr, from string) (MailSender, error) {
+func NewLocalMailer(addr, from string) (*smtp.Sender, error) {
 	return smtp.New(addr, from)
 }
 

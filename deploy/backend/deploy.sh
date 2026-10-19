@@ -18,8 +18,9 @@ activate_oauth=${12-false}
 firewall_image=${13:?firewall image digest is required}
 firewall_policy_sha=${14:?firewall policy hash is required}
 activate_yookassa_test=${15-false}
+activate_email_notifications=${16-false}
 
-[[ ( $# -eq 14 || $# -eq 15 ) && ( $activate_yookassa_test == true || $activate_yookassa_test == false ) && $firewall_policy_sha =~ ^[0-9a-f]{64}$ && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) && ( $activate_messenger_notifications == true || $activate_messenger_notifications == false ) && ( $provision_owner == true || $provision_owner == false ) && ( $activate_admin_mfa == true || $activate_admin_mfa == false ) && ( $activate_oauth == true || $activate_oauth == false ) ]] || {
+[[ ( $# -eq 14 || $# -eq 15 || $# -eq 16 ) && ( $activate_email_notifications == true || $activate_email_notifications == false ) && ( $activate_yookassa_test == true || $activate_yookassa_test == false ) && $firewall_policy_sha =~ ^[0-9a-f]{64}$ && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) && ( $activate_messenger_notifications == true || $activate_messenger_notifications == false ) && ( $provision_owner == true || $provision_owner == false ) && ( $activate_admin_mfa == true || $activate_admin_mfa == false ) && ( $activate_oauth == true || $activate_oauth == false ) ]] || {
   echo 'Invalid release arguments' >&2; exit 1;
 }
 for spec in "api:$api_image" "worker:$worker_image" "probe:$probe_image" "migrate:$migrate_image" "backup:$backup_image" "firewall:$firewall_image"; do
@@ -129,7 +130,7 @@ if ! IFS= read -r -n 4097 registry_token || [[ -z $registry_token || ${#registry
   echo 'Invalid registry credential framing' >&2; exit 1
 fi
 if $activate_yookassa_test; then
-  if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $provision_owner; then
+  if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $provision_owner || $activate_email_notifications; then
     echo 'YooKassa activation must be a separate configuration operation' >&2; exit 1
   fi
   [[ ! -e .env.next && ! -L .env.next ]] || { echo 'Resolve the existing staged configuration before YooKassa activation' >&2; exit 1; }
@@ -142,6 +143,34 @@ else
   if ! python3 -c 'import sys; sys.exit(1 if sys.stdin.buffer.read(1) else 0)'; then
     echo 'Unexpected deployment input' >&2; exit 1
   fi
+fi
+
+# This activation changes one non-secret flag under the deployment lock. SMTP,
+# encryption keys and every other byte remain the currently active values.
+if $activate_email_notifications; then
+  if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $provision_owner || $activate_yookassa_test; then
+    echo 'Email activation must be a separate configuration operation' >&2; exit 1
+  fi
+  [[ ! -e .env.next && ! -L .env.next ]] || { echo 'Resolve the existing staged configuration before email activation' >&2; exit 1; }
+  python3 - "$workdir/.env.next" <<'EMAIL'
+from pathlib import Path
+import sys
+raw = Path(".env").read_bytes()
+lines = raw.split(b"\n")
+indices = [i for i, line in enumerate(lines) if line.startswith(b"EMAIL_NOTIFICATIONS_ENABLED=")]
+if len(indices) > 1:
+    raise SystemExit("Duplicate email notification flag")
+if indices:
+    lines[indices[0]] = b"EMAIL_NOTIFICATIONS_ENABLED=true"
+else:
+    if lines[-1] == b"":
+        lines[-1] = b"EMAIL_NOTIFICATIONS_ENABLED=true"
+        lines.append(b"")
+    else:
+        lines.append(b"EMAIL_NOTIFICATIONS_ENABLED=true")
+Path(sys.argv[1]).write_bytes(b"\n".join(lines))
+EMAIL
+  activation_generated=true
 fi
 
 if $provision_owner; then
@@ -186,7 +215,7 @@ except (OSError, UnicodeError, ValueError, TypeError):
 PY
 fi
 
-if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $activate_yookassa_test; then
+if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $activate_yookassa_test || $activate_email_notifications; then
   if ! $activation_generated; then
     [[ -f .env.next && ! -L .env.next && $(stat -c %a .env.next) == 600 ]] || {
       if $activate_messenger_notifications; then
@@ -201,7 +230,7 @@ if $activate_telegram_relay || $activate_messenger_notifications || $activate_ad
   [[ ! -e .env.activate.incoming && ! -L .env.activate.incoming && ! -e .env.rollback.incoming && ! -L .env.rollback.incoming ]] || {
     echo 'Resolve the previous configuration activation staging file' >&2; exit 1;
   }
-  python3 - "$workdir/.env.next" "$activate_telegram_relay" "$activate_messenger_notifications" "$activate_admin_mfa" "$activate_oauth" "$activate_yookassa_test" <<'PY'
+  python3 - "$workdir/.env.next" "$activate_telegram_relay" "$activate_messenger_notifications" "$activate_admin_mfa" "$activate_oauth" "$activate_yookassa_test" "$activate_email_notifications" <<'PY'
 import base64
 import binascii
 from pathlib import Path
@@ -232,8 +261,10 @@ oauth_keys = {
 }
 oauth = sys.argv[5] == "true"
 yookassa_test = sys.argv[6] == "true"
+email_notifications = sys.argv[7] == "true"
+email_key = b"EMAIL_NOTIFICATIONS_ENABLED"
 yookassa_keys = {b"BILLING_PROVIDER", b"BILLING_TEST_ACCOUNT_IDS", b"YOOKASSA_MODE", b"YOOKASSA_TEST_SHOP_ID", b"YOOKASSA_TEST_SECRET_KEY"}
-allowed = (set(relay_targets) if relay else set()) | (messenger_keys if messenger else set()) | ({mfa_key} if admin_mfa else set()) | (oauth_keys if oauth else set()) | (yookassa_keys if yookassa_test else set())
+allowed = (set(relay_targets) if relay else set()) | (messenger_keys if messenger else set()) | ({mfa_key} if admin_mfa else set()) | (oauth_keys if oauth else set()) | (yookassa_keys if yookassa_test else set()) | ({email_key} if email_notifications else set())
 prefix = "Relay activation rejected" if relay and not messenger else "Configuration activation rejected"
 
 def reject(message):
@@ -270,6 +301,8 @@ old_lines, old_values = parse(".env")
 new_lines, new_values = parse(sys.argv[1])
 if old_lines != new_lines:
     reject("changes outside selected keys")
+if email_notifications and new_values.get(email_key) != b"true":
+    reject("email notification flag must be true")
 if yookassa_test:
     target = {b"BILLING_PROVIDER": b"yookassa", b"YOOKASSA_MODE": b"test", b"BILLING_TEST_ACCOUNT_IDS": b"51ec7d19-80c4-4fb6-8edb-79dc7abe3120"}
     for key, expected in target.items():
@@ -375,6 +408,11 @@ if (u.scheme not in ("postgres", "postgresql") or u.hostname != "postgres" or
     u.port != 5432 or u.username != "heartbeat" or u.password != p or
     u.path != "/heartbeat" or parse_qs(u.query) != {"sslmode": ["disable"]}):
     raise SystemExit("DATABASE_URL must target this Compose PostgreSQL with matching credentials")
+email_flag = "EMAIL_NOTIFICATIONS_ENABLED"
+if c["api"]["environment"].get(email_flag) not in ("true", "false") or c["api"]["environment"].get(email_flag) != c["worker"]["environment"].get(email_flag):
+    raise SystemExit("API and worker email notification flags must match")
+if any(email_flag in c.get(name, {}).get("environment", {}) for name in ("probe", "postgres", "caddy", "migrate")):
+    raise SystemExit("Email notifications must be scoped to API and worker only")
 if c["worker"]["environment"]["SMTP_TLS_MODE"] not in ("implicit_tls", "starttls"):
     raise SystemExit("SMTP_TLS_MODE must use verified TLS")
 try:
@@ -576,9 +614,10 @@ jq -n --arg source_sha "$source_sha" --arg api "$api_image" \
   --arg firewall_image "$firewall_image" --arg firewall_policy_sha256 "$firewall_policy_sha" \
   --argjson telegram_relay_activated "$activate_telegram_relay" \
   --argjson messenger_notifications_activated "$activate_messenger_notifications" \
+  --argjson email_notifications_activated "$activate_email_notifications" \
   --argjson owner_import_requested "$provision_owner" --argjson admin_mfa_activated "$activate_admin_mfa" \
   --argjson oauth_activated "$activate_oauth" --argjson yookassa_test_activated "$activate_yookassa_test" \
-  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image,firewall:$firewall_image},firewall_policy_sha256:$firewall_policy_sha256,backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,messenger_notifications_activated:$messenger_notifications_activated,owner_import_requested:$owner_import_requested,admin_mfa_activated:$admin_mfa_activated,oauth_activated:$oauth_activated,yookassa_test_activated:$yookassa_test_activated,completed_at:(now|todate)}' \
+  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image,firewall:$firewall_image},firewall_policy_sha256:$firewall_policy_sha256,backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,messenger_notifications_activated:$messenger_notifications_activated,email_notifications_activated:$email_notifications_activated,owner_import_requested:$owner_import_requested,admin_mfa_activated:$admin_mfa_activated,oauth_activated:$oauth_activated,yookassa_test_activated:$yookassa_test_activated,completed_at:(now|todate)}' \
   > "receipts/$source_sha.json.incoming"
 mv compose.backup.yaml.incoming compose.backup.yaml
 mv backup.sh.incoming backup.sh

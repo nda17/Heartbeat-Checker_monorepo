@@ -19,6 +19,8 @@ func messengerWrite(w http.ResponseWriter, status int, value any) {
 func messengerFailure(w http.ResponseWriter, err error) {
 	status, code := http.StatusServiceUnavailable, "temporarily_unavailable"
 	switch {
+	case errors.Is(err, auth.ErrEmailUnverified):
+		status, code = 409, "email_not_verified"
 	case errors.Is(err, ErrMessengerInvalid):
 		status, code = 400, "invalid_request"
 	case errors.Is(err, ErrMessengerNotFound):
@@ -61,6 +63,7 @@ func messengerDecode(w http.ResponseWriter, r *http.Request, value any) bool {
 
 func (m *Messenger) RegisterAPI(mux *http.ServeMux, protect func(http.Handler) http.Handler) {
 	for pattern, handler := range map[string]http.HandlerFunc{
+		"POST /api/v1/messenger-destinations/email":             m.connectEmail,
 		"POST /api/v1/messenger-links":                          m.createLink,
 		"GET /api/v1/messenger-links/{id}":                      m.getLink,
 		"POST /api/v1/messenger-links/{id}/confirm":             m.confirmLink,
@@ -128,8 +131,8 @@ func (m *Messenger) destinations(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !m.cfg.Enabled {
-		messengerWrite(w, 200, map[string]any{"enabled": false, "destinations": []MessengerDestination{}})
+	if !m.cfg.Enabled && !m.cfg.EmailEnabled {
+		messengerWrite(w, 200, map[string]any{"enabled": false, "emailEnabled": false, "destinations": []MessengerDestination{}})
 		return
 	}
 	items, err := m.ListDestinations(r.Context(), owner)
@@ -137,7 +140,7 @@ func (m *Messenger) destinations(w http.ResponseWriter, r *http.Request) {
 		messengerFailure(w, err)
 		return
 	}
-	messengerWrite(w, 200, map[string]any{"enabled": true, "destinations": items})
+	messengerWrite(w, 200, map[string]any{"enabled": m.cfg.Enabled, "emailEnabled": m.cfg.EmailEnabled, "destinations": items})
 }
 func (m *Messenger) disconnect(w http.ResponseWriter, r *http.Request) {
 	owner, ok := messengerOwner(w, r)
@@ -156,8 +159,8 @@ func (m *Messenger) routes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !m.cfg.Enabled {
-		messengerWrite(w, 200, map[string]any{"enabled": false, "routes": []MessengerRoute{}})
+	if !m.cfg.Enabled && !m.cfg.EmailEnabled {
+		messengerWrite(w, 200, map[string]any{"enabled": false, "emailEnabled": false, "routes": []MessengerRoute{}})
 		return
 	}
 	items, err := m.ListRoutes(r.Context(), owner, r.PathValue("id"))
@@ -165,7 +168,7 @@ func (m *Messenger) routes(w http.ResponseWriter, r *http.Request) {
 		messengerFailure(w, err)
 		return
 	}
-	messengerWrite(w, 200, map[string]any{"enabled": true, "routes": items})
+	messengerWrite(w, 200, map[string]any{"enabled": m.cfg.Enabled, "emailEnabled": m.cfg.EmailEnabled, "routes": items})
 }
 func (m *Messenger) putRoute(w http.ResponseWriter, r *http.Request) {
 	owner, ok := messengerOwner(w, r)

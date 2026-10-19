@@ -14,6 +14,7 @@ import (
 
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth"
+	authcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/incidents"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/monitors"
@@ -46,7 +47,21 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 	if err != nil {
 		return err
 	}
+	var alertSender interface {
+		SendWithID(context.Context, string, string, authcontracts.MailContent, string) error
+	}
+	if cfg.EmailNotificationsEnabled {
+		if cfg.AppEnv == "production" {
+			alertSender, err = auth.NewProductionMailer(cfg.SMTPAddr, cfg.SMTPFrom, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPTLSMode)
+		} else {
+			alertSender, err = auth.NewLocalMailer(cfg.SMTPAddr, cfg.SMTPFrom)
+		}
+		if err != nil {
+			return err
+		}
+	}
 	messengerModule, err := notifications.NewMessenger(pool, cfg.WebhookEncryptionKey, notifications.MessengerConfig{
+		EmailEnabled: cfg.EmailNotificationsEnabled, EmailAddressReader: auth.EmailForNotificationsTx, EmailSender: alertSender,
 		Enabled: cfg.MessengerNotificationsEnabled, TelegramToken: cfg.TelegramInformerToken, MAXToken: cfg.MAXInformerToken,
 		TelegramBotUsername: cfg.TelegramInformerBotUsername, MAXBotURL: cfg.MAXInformerBotURL,
 		TelegramAPIBaseURL: cfg.TelegramAPIBaseURL, TelegramAPIIP: cfg.TelegramAPIIP, MAXRootCAFile: cfg.InformerMAXRootCAFile,
@@ -82,7 +97,9 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 	}
 	if cfg.MessengerNotificationsEnabled {
 		startDeliveryLoop(ctx, &wg, logger, "messenger link verification", messengerModule.ProcessLink)
-		startDeliveryLoop(ctx, &wg, logger, "messenger notification", messengerModule.ProcessDelivery)
+	}
+	if cfg.MessengerNotificationsEnabled || cfg.EmailNotificationsEnabled {
+		startDeliveryLoop(ctx, &wg, logger, "incident notification", messengerModule.ProcessDelivery)
 	}
 	if cfg.AppEnv == "production" {
 		mailer, err := auth.NewProductionMailer(cfg.SMTPAddr, cfg.SMTPFrom, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPTLSMode)

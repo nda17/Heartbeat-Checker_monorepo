@@ -9,6 +9,7 @@ export type Profile = {
     createdAt: string;
   };
   email: string;
+  emailVerified?: boolean;
   hasPassword: boolean;
 };
 export type Session = {

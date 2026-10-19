@@ -51,7 +51,7 @@ func (m *Messenger) PutRoute(ctx context.Context, accountID, monitorID, provider
 	if err := m.enabled(); err != nil {
 		return MessengerRoute{}, err
 	}
-	if !messengerValidID(monitorID) || !messengerValidID(in.DestinationID) || !messengerProvider(provider) || !reminderInterval(in.ReminderMinutes) || in.Version < 0 {
+	if !messengerValidID(monitorID) || !messengerValidID(in.DestinationID) || !m.providerEnabled(provider) || !reminderInterval(in.ReminderMinutes) || in.Version < 0 {
 		return MessengerRoute{}, ErrMessengerInvalid
 	}
 	tx, err := m.pool.Begin(ctx)
@@ -66,6 +66,16 @@ func (m *Messenger) PutRoute(ctx context.Context, accountID, monitorID, provider
 	if !active {
 		return MessengerRoute{}, ErrMessengerNotFound
 	}
+	var currentEmail string
+	if provider == "email" && in.Enabled {
+		currentEmail, err = m.cfg.EmailAddressReader(ctx, tx, accountID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return MessengerRoute{}, ErrMessengerNotFound
+		}
+		if err != nil {
+			return MessengerRoute{}, err
+		}
+	}
 	var monitorOutcome string
 	err = tx.QueryRow(ctx, `SELECT outcome FROM monitors.monitors WHERE id=$1 AND account_id=$2 FOR UPDATE`, monitorID, accountID).Scan(&monitorOutcome)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -75,7 +85,8 @@ func (m *Messenger) PutRoute(ctx context.Context, accountID, monitorID, provider
 		return MessengerRoute{}, err
 	}
 	var ready bool
-	err = tx.QueryRow(ctx, `SELECT status='ready' FROM notifications.messenger_destinations WHERE id=$1 AND account_id=$2 AND provider=$3 FOR SHARE`, in.DestinationID, accountID, provider).Scan(&ready)
+	var encryptedTarget []byte
+	err = tx.QueryRow(ctx, `SELECT status='ready',encrypted_target FROM notifications.messenger_destinations WHERE id=$1 AND account_id=$2 AND provider=$3 FOR SHARE`, in.DestinationID, accountID, provider).Scan(&ready, &encryptedTarget)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MessengerRoute{}, ErrMessengerNotFound
 	}
@@ -84,6 +95,15 @@ func (m *Messenger) PutRoute(ctx context.Context, accountID, monitorID, provider
 	}
 	if in.Enabled && !ready {
 		return MessengerRoute{}, ErrMessengerInvalid
+	}
+	if provider == "email" && in.Enabled {
+		recipient, err := m.readRecipient(accountID, in.DestinationID, "target", encryptedTarget)
+		if err != nil {
+			return MessengerRoute{}, err
+		}
+		if currentEmail == "" || recipient.Target.Email != currentEmail {
+			return MessengerRoute{}, ErrMessengerNotReady
+		}
 	}
 	var id, currentDestination string
 	var enabled bool

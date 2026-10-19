@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Session, useSession } from "@/entities/session";
 import { MessengerLinks } from "@/features/messenger-links";
@@ -8,6 +8,132 @@ import { OAuthIdentities } from "@/features/oauth-identities";
 import { AccountDeletion } from "@/features/account-deletion";
 import { api, errorMessage } from "@/shared/api";
 import { dateTime, Loading, Notice, PasswordInput } from "@/shared/ui";
+
+function EmailVerification() {
+  const { profile, refresh } = useSession();
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [confirmed, setConfirmed] = useState(false);
+  const request = useRef<AbortController | null>(null);
+  const requestTimeout = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.hash.slice(1));
+    const value = params.get("verify-email");
+    if (value) {
+      // Capture the private link only inside the authenticated settings page.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setToken(value);
+      params.delete("verify-email");
+      const remaining = params.toString();
+      window.history.replaceState(
+        null,
+        "",
+        window.location.pathname +
+          window.location.search +
+          (remaining ? `#${remaining}` : ""),
+      );
+    }
+    return () => {
+      request.current?.abort();
+      window.clearTimeout(requestTimeout.current);
+    };
+  }, []);
+  async function submit(confirm: boolean) {
+    if (request.current) return;
+    if (confirm && !/^[A-Za-z0-9_-]{43}$/.test(token)) {
+      setError("Ссылка некорректна. Запросите новое письмо.");
+      return;
+    }
+    const controller = new AbortController();
+    request.current = controller;
+    setBusy(true);
+    setError("");
+    setSuccess("");
+    const timeout = window.setTimeout(() => {
+      controller.abort();
+      if (request.current === controller) request.current = null;
+      setBusy(false);
+      setError(
+        "Ответ занял слишком много времени. Обновите страницу и проверьте состояние email перед повтором.",
+      );
+    }, 10_000);
+    requestTimeout.current = timeout;
+    try {
+      await api(`/me/email-verification${confirm ? "/confirm" : ""}`, {
+        method: "POST",
+        authenticated: true,
+        body: confirm ? { token } : {},
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      // The POST outcome is known. A slow profile refresh cannot make the
+      // committed confirmation look like an ambiguous write.
+      window.clearTimeout(timeout);
+      setBusy(false);
+      if (confirm) {
+        setToken("");
+        setConfirmed(true);
+      }
+      setSuccess(
+        confirm
+          ? "Email подтверждён. Теперь можно подключить email-уведомления."
+          : "Письмо с подтверждением запрошено. Откройте ссылку в этом аккаунте; она действует 30 минут.",
+      );
+      if (confirm) {
+        try {
+          await refresh();
+        } catch (cause) {
+          if (!controller.signal.aborted)
+            setError(
+              `Email подтверждён, но профиль не обновился: ${errorMessage(cause)}`,
+            );
+        }
+      }
+    } catch (cause) {
+      if (!controller.signal.aborted) setError(errorMessage(cause));
+    } finally {
+      window.clearTimeout(timeout);
+      if (request.current === controller) request.current = null;
+      if (!controller.signal.aborted) setBusy(false);
+    }
+  }
+  return (
+    <div className="form-stack" style={{ marginTop: 20 }}>
+      {error && <Notice>{error}</Notice>}
+      {success && <Notice success>{success}</Notice>}
+      {profile.emailVerified || confirmed ? (
+        <p className="small muted">Email подтверждён.</p>
+      ) : (
+        <>
+          <p className="small muted">
+            Для email-уведомлений подтвердите адрес аккаунта. Пароль и текущие
+            сеансы не изменятся. Если ссылка предложила войти, после входа
+            откройте её ещё раз.
+          </p>
+          {token && (
+            <button
+              className="primary"
+              disabled={busy}
+              onClick={() => void submit(true)}
+            >
+              Подтвердить email
+            </button>
+          )}
+          <button
+            className="secondary"
+            disabled={busy}
+            onClick={() => void submit(false)}
+          >
+            {busy ? "Отправляем…" : "Отправить письмо для подтверждения email"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function SettingsPage() {
   const { profile, refresh, beginSessionTransition, endSessionTransition } =
     useSession();
@@ -164,12 +290,17 @@ export function SettingsPage() {
             <label>
               Email
               <input value={profile.email} readOnly type="email" />
-              <span className="field-hint">Подтверждённый адрес аккаунта.</span>
+              <span className="field-hint">
+                {profile.emailVerified
+                  ? "Подтверждённый адрес аккаунта."
+                  : "Подтверждение адреса нужно для email-уведомлений."}
+              </span>
             </label>
             <button disabled={!!busy} className="primary">
               {busy === "profile" ? "Сохраняем…" : "Сохранить изменения"}
             </button>
           </form>
+          <EmailVerification key={profile.account.id} />
         </section>
         <section className="panel settings-panel">
           <div className="panel-heading">
@@ -296,7 +427,7 @@ export function SettingsPage() {
           </ul>
         )}
       </section>
-      <MessengerLinks />
+      <MessengerLinks email={profile.email} />
       <AccountDeletion />
     </>
   );

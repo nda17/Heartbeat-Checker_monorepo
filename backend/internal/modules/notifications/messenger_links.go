@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	authcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/outbox"
 )
 
@@ -21,8 +22,8 @@ func (m *Messenger) accountActive(ctx context.Context, tx pgx.Tx, accountID stri
 }
 
 func (m *Messenger) CreateLink(ctx context.Context, accountID, provider, kind string) (MessengerLink, string, string, string, error) {
-	if err := m.enabled(); err != nil {
-		return MessengerLink{}, "", "", "", err
+	if !m.cfg.Enabled {
+		return MessengerLink{}, "", "", "", ErrMessengerUnavailable
 	}
 	if !messengerKind(provider, kind) {
 		return MessengerLink{}, "", "", "", ErrMessengerInvalid
@@ -68,8 +69,8 @@ func (m *Messenger) CreateLink(ctx context.Context, accountID, provider, kind st
 }
 
 func (m *Messenger) GetLink(ctx context.Context, accountID, id string) (MessengerLink, error) {
-	if err := m.enabled(); err != nil {
-		return MessengerLink{}, err
+	if !m.cfg.Enabled {
+		return MessengerLink{}, ErrMessengerUnavailable
 	}
 	if !messengerValidID(id) {
 		return MessengerLink{}, ErrMessengerNotFound
@@ -99,7 +100,29 @@ func (m *Messenger) ListDestinations(ctx context.Context, accountID string) ([]M
 	if err := m.enabled(); err != nil {
 		return nil, err
 	}
-	rows, err := m.pool.Query(ctx, `SELECT id::text,provider,kind,encrypted_target,status='ready',version FROM notifications.messenger_destinations WHERE account_id=$1 ORDER BY created_at,id`, accountID)
+	var currentEmail string
+	if m.cfg.EmailEnabled {
+		tx, err := m.pool.Begin(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback(ctx)
+		active, err := m.accountActive(ctx, tx, accountID)
+		if err != nil {
+			return nil, err
+		}
+		if !active {
+			return nil, ErrMessengerNotFound
+		}
+		currentEmail, err = m.cfg.EmailAddressReader(ctx, tx, accountID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) && !errors.Is(err, authcontracts.ErrEmailUnverified) {
+			return nil, err
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+	}
+	rows, err := m.pool.Query(ctx, `SELECT id::text,provider,kind,encrypted_target,status='ready',version FROM notifications.messenger_destinations WHERE account_id=$1 AND (provider='email' AND $2 OR provider IN ('telegram','max') AND $3) ORDER BY created_at,id`, accountID, m.cfg.EmailEnabled, m.cfg.Enabled)
 	if err != nil {
 		return nil, err
 	}
@@ -116,6 +139,10 @@ func (m *Messenger) ListDestinations(ctx context.Context, accountID string) ([]M
 			return nil, err
 		}
 		d.Label, d.ChatID, d.UserID = recipient.Label, recipient.Target.ChatID, recipient.Target.UserID
+		d.Email = recipient.Target.Email
+		if d.Provider == "email" {
+			d.Ready = d.Ready && currentEmail != "" && d.Email == currentEmail
+		}
 		if recipient.Target.ThreadID != "" {
 			d.ThreadID = &recipient.Target.ThreadID
 		}
@@ -125,8 +152,8 @@ func (m *Messenger) ListDestinations(ctx context.Context, accountID string) ([]M
 }
 
 func (m *Messenger) ConfirmLink(ctx context.Context, accountID, id string) (MessengerDestination, error) {
-	if err := m.enabled(); err != nil {
-		return MessengerDestination{}, err
+	if !m.cfg.Enabled {
+		return MessengerDestination{}, ErrMessengerUnavailable
 	}
 	if !messengerValidID(id) {
 		return MessengerDestination{}, ErrMessengerNotFound

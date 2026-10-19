@@ -4517,6 +4517,8 @@ html[data-installed-app="true"] .android-hero {
 }
 .messenger-route {
   display: flex;
+  min-width: 0;
+  overflow-wrap: anywhere;
   flex-direction: column;
   gap: 15px;
   padding: 18px;

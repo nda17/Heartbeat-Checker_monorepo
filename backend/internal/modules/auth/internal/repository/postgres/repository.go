@@ -24,10 +24,11 @@ func New(pool *pgxpool.Pool) *Repository {
 }
 
 type Credential struct {
-	AccountID    string
-	Email        string
-	PasswordHash string
-	Version      int64
+	AccountID     string
+	Email         string
+	PasswordHash  string
+	Version       int64
+	EmailVerified bool
 }
 type Challenge struct {
 	ID           string
@@ -121,7 +122,7 @@ func (r *Repository) CompleteRegistration(ctx context.Context, c Challenge, pass
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO auth.credentials (account_id,email,password_hash) VALUES ($1,$2,$3)`, accountID, c.Email, c.PasswordHash)
+	_, err = tx.Exec(ctx, `INSERT INTO auth.credentials (account_id,email,password_hash,email_verified_at) VALUES ($1,$2,$3,now())`, accountID, c.Email, c.PasswordHash)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -170,13 +171,13 @@ func (r *Repository) BootstrapLocal(ctx context.Context, email, name, hash strin
 
 func (r *Repository) CredentialByEmail(ctx context.Context, email string) (Credential, error) {
 	var c Credential
-	err := r.pool.QueryRow(ctx, `SELECT account_id,email,COALESCE(password_hash,''),version FROM auth.credentials WHERE email=$1`, email).Scan(&c.AccountID, &c.Email, &c.PasswordHash, &c.Version)
+	err := r.pool.QueryRow(ctx, `SELECT account_id,email,COALESCE(password_hash,''),version,email_verified_at IS NOT NULL FROM auth.credentials WHERE email=$1`, email).Scan(&c.AccountID, &c.Email, &c.PasswordHash, &c.Version, &c.EmailVerified)
 	return c, err
 }
 
 func (r *Repository) CredentialByAccount(ctx context.Context, accountID string) (Credential, error) {
 	var c Credential
-	err := r.pool.QueryRow(ctx, `SELECT account_id,email,COALESCE(password_hash,''),version FROM auth.credentials WHERE account_id=$1`, accountID).Scan(&c.AccountID, &c.Email, &c.PasswordHash, &c.Version)
+	err := r.pool.QueryRow(ctx, `SELECT account_id,email,COALESCE(password_hash,''),version,email_verified_at IS NOT NULL FROM auth.credentials WHERE account_id=$1`, accountID).Scan(&c.AccountID, &c.Email, &c.PasswordHash, &c.Version, &c.EmailVerified)
 	return c, err
 }
 
@@ -350,7 +351,7 @@ func (r *Repository) CompleteReset(ctx context.Context, accountID string, tokenH
 	if consumed != nil || tokenVersion != version || !expires.After(time.Now()) {
 		return ErrInvalid
 	}
-	if _, err = tx.Exec(ctx, `UPDATE auth.credentials SET password_hash=$2,version=version+1,password_changed_at=now() WHERE account_id=$1`, accountID, newHash); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE auth.credentials SET password_hash=$2,version=version+1,password_changed_at=now(),email_verified_at=now() WHERE account_id=$1`, accountID, newHash); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE auth.password_reset_tokens SET consumed_at=now() WHERE account_id=$1 AND consumed_at IS NULL`, accountID); err != nil {
@@ -399,11 +400,13 @@ func Cleanup(ctx context.Context, tx pgx.Tx) error {
 		`UPDATE auth.mail_jobs SET status='expired',finished_at=now(),payload=decode('','hex'),lease_token=NULL,lease_until=NULL,last_error='token_expired'
 			WHERE id IN (SELECT id FROM auth.mail_jobs WHERE status IN ('pending','sending') AND (expires_at<=now()
 			OR (purpose='registration' AND NOT EXISTS (SELECT 1 FROM auth.registration_challenges c WHERE c.token_hash=auth.mail_jobs.token_hash AND c.consumed_at IS NULL AND c.expires_at>now()))
+			OR (purpose='email_verification' AND NOT EXISTS (SELECT 1 FROM auth.email_verification_tokens t JOIN auth.credentials c ON c.account_id=t.account_id JOIN accounts.accounts a ON a.id=t.account_id WHERE t.token_hash=auth.mail_jobs.token_hash AND t.consumed_at IS NULL AND t.expires_at>now() AND c.email=t.email AND c.email_verified_at IS NULL AND a.status='active'))
 			OR (purpose='reset' AND NOT EXISTS (SELECT 1 FROM auth.password_reset_tokens t JOIN auth.credentials c ON c.account_id=t.account_id WHERE t.token_hash=auth.mail_jobs.token_hash AND t.consumed_at IS NULL AND t.expires_at>now() AND t.credential_version=c.version)))
 			ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.mail_jobs WHERE id IN (SELECT id FROM auth.mail_jobs WHERE status IN ('sent','failed','expired') AND finished_at<now()-interval '30 days' ORDER BY finished_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.sessions WHERE id IN (SELECT id FROM auth.sessions WHERE expires_at<=now() OR revoked_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.registration_challenges WHERE id IN (SELECT id FROM auth.registration_challenges WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
+		`DELETE FROM auth.email_verification_tokens WHERE token_hash IN (SELECT token_hash FROM auth.email_verification_tokens WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.password_reset_tokens WHERE token_hash IN (SELECT token_hash FROM auth.password_reset_tokens WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.oauth_attempts WHERE state_hash IN (SELECT state_hash FROM auth.oauth_attempts WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.rate_limits WHERE (scope,key_hash) IN (SELECT scope,key_hash FROM auth.rate_limits WHERE window_end<=now() ORDER BY window_end LIMIT 500 FOR UPDATE SKIP LOCKED)`,

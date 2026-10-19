@@ -21,6 +21,8 @@ type OAuthProvider = service.OAuthProvider
 type OAuthIdentityProfile = service.OAuthIdentityProfile
 type AccountDeletion = postgres.AccountDeletion
 
+var ErrEmailUnverified = authcontracts.ErrEmailUnverified
+
 type Config struct {
 	OAuthProviders    map[string]OAuthProvider
 	OAuthAudit        postgres.OAuthAudit
@@ -39,6 +41,12 @@ type Config struct {
 type Module struct {
 	server *authhttp.Server
 	repo   *postgres.Repository
+}
+
+// EmailForNotificationsTx reads the confirmed account address after the caller
+// has locked the active account. Pending registrations have no credential row.
+func EmailForNotificationsTx(ctx context.Context, tx pgx.Tx, accountID string) (string, error) {
+	return postgres.EmailForNotificationsTx(ctx, tx, accountID)
 }
 
 type BootstrapInput = service.BootstrapInput

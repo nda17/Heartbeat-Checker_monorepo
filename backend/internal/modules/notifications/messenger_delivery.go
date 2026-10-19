@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	authcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/outbox"
 )
 
@@ -29,18 +30,18 @@ type MessengerAttempt struct {
 var errMessengerCancelled = errors.New("messenger delivery cancelled")
 
 func (m *Messenger) ClaimDelivery(ctx context.Context) (*MessengerAttempt, error) {
-	if !m.cfg.Enabled {
+	if !m.cfg.Enabled && !m.cfg.EmailEnabled {
 		return nil, nil
 	}
-	rows, err := m.pool.Query(ctx, `SELECT id::text,account_id::text,monitor_id::text,route_id::text,destination_id::text FROM notifications.messenger_deliveries WHERE status IN ('pending','leased') AND (status='pending' AND next_attempt_at<=now() OR status='leased' AND lease_until<=now()) AND NOT EXISTS (SELECT 1 FROM notifications.messenger_deliveries p WHERE p.route_id=messenger_deliveries.route_id AND p.sequence<messenger_deliveries.sequence AND p.status IN ('pending','leased')) ORDER BY next_attempt_at,id LIMIT 100`)
+	rows, err := m.pool.Query(ctx, `SELECT d.id::text,d.account_id::text,d.monitor_id::text,d.route_id::text,d.destination_id::text,t.provider FROM notifications.messenger_deliveries d JOIN notifications.messenger_destinations t ON t.id=d.destination_id WHERE d.status IN ('pending','leased') AND (t.provider='email' AND $1 OR t.provider IN ('telegram','max') AND $2) AND (d.status='pending' AND d.next_attempt_at<=now() OR d.status='leased' AND d.lease_until<=now()) AND NOT EXISTS (SELECT 1 FROM notifications.messenger_deliveries p WHERE p.route_id=d.route_id AND p.sequence<d.sequence AND p.status IN ('pending','leased')) ORDER BY d.next_attempt_at,d.id LIMIT 100`, m.cfg.EmailEnabled, m.cfg.Enabled)
 	if err != nil {
 		return nil, err
 	}
-	type candidate struct{ id, account, monitor, route, destination string }
+	type candidate struct{ id, account, monitor, route, destination, provider string }
 	items := []candidate{}
 	for rows.Next() {
 		var c candidate
-		if err = rows.Scan(&c.id, &c.account, &c.monitor, &c.route, &c.destination); err != nil {
+		if err = rows.Scan(&c.id, &c.account, &c.monitor, &c.route, &c.destination, &c.provider); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -72,7 +73,7 @@ func (m *Messenger) ClaimDelivery(ctx context.Context) (*MessengerAttempt, error
 	return nil, nil
 }
 
-func (m *Messenger) claimDelivery(ctx context.Context, tx pgx.Tx, c struct{ id, account, monitor, route, destination string }) (*MessengerAttempt, error) {
+func (m *Messenger) claimDelivery(ctx context.Context, tx pgx.Tx, c struct{ id, account, monitor, route, destination, provider string }) (*MessengerAttempt, error) {
 	// Capacity is serialized across worker processes; no external request runs in this transaction.
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(7349281725)`); err != nil {
 		return nil, err
@@ -95,6 +96,13 @@ func (m *Messenger) claimDelivery(ctx context.Context, tx pgx.Tx, c struct{ id, 
 	}
 	if err != nil {
 		return nil, err
+	}
+	var currentEmail string
+	if c.provider == "email" && accountStatus == "active" {
+		currentEmail, err = m.cfg.EmailAddressReader(ctx, tx, c.account)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) && !errors.Is(err, authcontracts.ErrEmailUnverified) {
+			return nil, err
+		}
 	}
 	var monitorEnabled bool
 	var outcome string
@@ -155,7 +163,7 @@ func (m *Messenger) claimDelivery(ctx context.Context, tx pgx.Tx, c struct{ id, 
 	if status == "pending" && next.After(now) || status == "leased" && (lease == nil || lease.After(now)) || status != "pending" && status != "leased" {
 		return nil, nil
 	}
-	valid := accountStatus == "active" && monitorEnabled && entitlement.Quota >= rank && rank > 0 && routeEnabled && generation == storedGeneration && routeDestination == a.DestinationID && c.destination == a.DestinationID && destinationStatus == "ready" && sequence >= storedSequence
+	valid := m.providerEnabled(c.provider) && (c.provider != "email" || currentEmail != "") && accountStatus == "active" && monitorEnabled && entitlement.Quota >= rank && rank > 0 && routeEnabled && generation == storedGeneration && routeDestination == a.DestinationID && c.destination == a.DestinationID && destinationStatus == "ready" && sequence >= storedSequence
 	if a.Kind == "reminder" {
 		var open bool
 		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM incidents.incidents WHERE id=$1 AND monitor_id=$2 AND closed_at IS NULL)`, a.IncidentID, c.monitor).Scan(&open)
@@ -186,6 +194,10 @@ func (m *Messenger) claimDelivery(ctx context.Context, tx pgx.Tx, c struct{ id, 
 	a.Target = recipient.Target
 	if err = a.Target.decodeMust(); err != nil || a.Target.Provider != destinationProvider || !bytes.Equal(recipientFingerprint, m.recipientFingerprint(a.Target)) {
 		return nil, ErrMessengerInvalid
+	}
+	if a.Target.Provider == "email" && a.Target.Email != currentEmail {
+		_, err = tx.Exec(ctx, `UPDATE notifications.messenger_deliveries SET status='cancelled',attempt_token=NULL,lease_until=NULL,completed_at=now(),error_code='destination_changed' WHERE id=$1`, a.ID)
+		return nil, err
 	}
 	sendFingerprint := m.sendFingerprint(a.Target)
 	var earlier, busy bool
@@ -223,7 +235,7 @@ func (m *Messenger) claimDelivery(ctx context.Context, tx pgx.Tx, c struct{ id, 
 	interval := time.Second
 	if a.Target.Provider == "max" {
 		interval = 500 * time.Millisecond
-	} else if a.Target.Kind != "private" {
+	} else if a.Target.Provider == "telegram" && a.Target.Kind != "private" {
 		interval = 3 * time.Second
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO notifications.messenger_target_rates(provider,recipient_fingerprint,next_send_at) VALUES($1,$2,now()+$3::interval) ON CONFLICT(provider,recipient_fingerprint) DO UPDATE SET next_send_at=EXCLUDED.next_send_at`, a.Target.Provider, sendFingerprint, interval.String())
@@ -317,7 +329,8 @@ func (m *Messenger) CompleteDelivery(ctx context.Context, a MessengerAttempt, se
 		}
 	} else {
 		var p messengerProviderError
-		permanent := errors.As(sendErr, &p) && p.permanent
+		var smtpErr interface{ Permanent() bool }
+		permanent := errors.As(sendErr, &p) && p.permanent || errors.As(sendErr, &smtpErr) && smtpErr.Permanent()
 		if permanent || attempts >= 8 || !deadline.After(time.Now()) {
 			_, err = tx.Exec(ctx, `UPDATE notifications.messenger_deliveries SET status='failed',attempt_token=NULL,lease_until=NULL,completed_at=now(),error_code='provider_failed' WHERE id=$1`, a.ID)
 		} else {
@@ -338,7 +351,7 @@ func (m *Messenger) extendPacing(ctx context.Context, tx pgx.Tx, target messenge
 	interval := time.Second
 	if target.Provider == "max" {
 		interval = 500 * time.Millisecond
-	} else if target.Kind != "private" {
+	} else if target.Provider == "telegram" && target.Kind != "private" {
 		interval = 3 * time.Second
 	}
 	globalInterval := time.Second
@@ -386,6 +399,16 @@ func (m *Messenger) deliveryStillEligible(ctx context.Context, a MessengerAttemp
 	if err != nil {
 		return false, err
 	}
+	var currentEmail string
+	if a.Target.Provider == "email" && active {
+		currentEmail, err = m.cfg.EmailAddressReader(ctx, tx, a.AccountID)
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, authcontracts.ErrEmailUnverified) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+	}
 	err = tx.QueryRow(ctx, `SELECT enabled,outcome,sequence,interval_minutes,last_checked_at FROM monitors.monitors WHERE id=$1 AND account_id=$2 FOR SHARE`, a.MonitorID, a.AccountID).Scan(&monitorEnabled, &outcome, &sequence, &intervalMinutes, &lastChecked)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
@@ -418,7 +441,7 @@ func (m *Messenger) deliveryStillEligible(ctx context.Context, a MessengerAttemp
 	if err != nil {
 		return false, err
 	}
-	valid := active && monitorEnabled && entitlement.Quota >= rank && rank > 0 && ready && targetVersion == a.TargetVersion && routeEnabled && generation == a.Generation && routeDestination != nil && *routeDestination == a.DestinationID && status == "leased" && token != nil && *token == a.Token && lease != nil && lease.After(time.Now()) && sequence >= a.Snapshot.Sequence
+	valid := m.providerEnabled(a.Target.Provider) && (a.Target.Provider != "email" || currentEmail == a.Target.Email && currentEmail != "") && active && monitorEnabled && entitlement.Quota >= rank && rank > 0 && ready && targetVersion == a.TargetVersion && routeEnabled && generation == a.Generation && routeDestination != nil && *routeDestination == a.DestinationID && status == "leased" && token != nil && *token == a.Token && lease != nil && lease.After(time.Now()) && sequence >= a.Snapshot.Sequence
 	if a.Kind == "reminder" {
 		var open bool
 		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM incidents.incidents WHERE id=$1 AND monitor_id=$2 AND closed_at IS NULL)`, a.IncidentID, a.MonitorID).Scan(&open)
@@ -468,11 +491,8 @@ func (m *Messenger) disconnectIfCurrent(ctx context.Context, a MessengerAttempt)
 }
 
 func (m *Messenger) ProcessDelivery(ctx context.Context) (bool, error) {
-	if !m.cfg.Enabled {
+	if !m.cfg.Enabled && !m.cfg.EmailEnabled {
 		return false, nil
-	}
-	if m.client == nil {
-		return false, ErrMessengerUnavailable
 	}
 	a, err := m.ClaimDelivery(ctx)
 	if err != nil || a == nil {
@@ -501,8 +521,19 @@ func (m *Messenger) ProcessDelivery(ctx context.Context) (bool, error) {
 		_, err = m.CompleteDelivery(ctx, *a, errMessengerCancelled)
 		return true, err
 	}
-	text, buttons := messengerMessage(a.Snapshot)
-	sendErr := m.sendTarget(attemptCtx, a.Target, text, buttons)
+	var sendErr error
+	if a.Target.Provider == "email" {
+		if m.cfg.EmailSender == nil {
+			return true, ErrMessengerUnavailable
+		}
+		sendErr = m.sendEmail(attemptCtx, *a)
+	} else {
+		if m.client == nil {
+			return true, ErrMessengerUnavailable
+		}
+		text, buttons := messengerMessage(a.Snapshot)
+		sendErr = m.sendTarget(attemptCtx, a.Target, text, buttons)
+	}
 	var providerErr messengerProviderError
 	if a.Target.Provider == "telegram" && a.Target.Kind != "private" && errors.As(sendErr, &providerErr) && (providerErr.statusCode == 403 || providerErr.statusCode == 404 || providerErr.rebind) {
 		if disconnectErr := m.disconnectIfCurrent(ctx, *a); disconnectErr != nil {

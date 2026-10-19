@@ -24,26 +24,26 @@ func (r Recorder) Enqueue(ctx context.Context, tx pgx.Tx, n incidentcontracts.No
 	if err := enqueueWebhook(ctx, tx, n); err != nil {
 		return err
 	}
-	if r.messenger != nil && r.messenger.cfg.Enabled {
+	if r.messenger != nil && (r.messenger.cfg.Enabled || r.messenger.cfg.EmailEnabled) {
 		return r.messenger.Enqueue(ctx, tx, n)
 	}
 	return nil
 }
 
 func (r Recorder) ObserveDown(ctx context.Context, tx pgx.Tx, monitorID, accountID string, incident incidentcontracts.IncidentState, o incidentcontracts.Observation) error {
-	if r.messenger != nil && r.messenger.cfg.Enabled {
+	if r.messenger != nil && (r.messenger.cfg.Enabled || r.messenger.cfg.EmailEnabled) {
 		return r.messenger.ObserveDown(ctx, tx, monitorID, accountID, incident, o)
 	}
 	return nil
 }
 func (r Recorder) CancelReminders(ctx context.Context, tx pgx.Tx, monitorID string) error {
-	if r.messenger != nil && r.messenger.cfg.Enabled {
+	if r.messenger != nil && (r.messenger.cfg.Enabled || r.messenger.cfg.EmailEnabled) {
 		return r.messenger.CancelReminders(ctx, tx, monitorID)
 	}
 	return nil
 }
 func (r Recorder) CancelForReset(ctx context.Context, tx pgx.Tx, monitorID string) error {
-	if r.messenger != nil && r.messenger.cfg.Enabled {
+	if r.messenger != nil && (r.messenger.cfg.Enabled || r.messenger.cfg.EmailEnabled) {
 		return r.messenger.CancelForReset(ctx, tx, monitorID)
 	}
 	return nil

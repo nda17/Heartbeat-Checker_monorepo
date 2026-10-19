@@ -70,10 +70,13 @@ if args[:2] == ["inspect"]:
     print("healthy" if "Health.Status" in args[1] else "true"); raise SystemExit(0)
 if args and args[0] == "compose":
     if "config" in args and "--format" in args:
-        api_environment = {"DATABASE_URL": "postgres://heartbeat:testpass@postgres:5432/heartbeat?sslmode=disable", "AUTH_MFA_ENCRYPTION_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}
+        api_environment = {"DATABASE_URL": "postgres://heartbeat:testpass@postgres:5432/heartbeat?sslmode=disable", "AUTH_MFA_ENCRYPTION_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "EMAIL_NOTIFICATIONS_ENABLED": "false"}
         if os.environ.get("COMPOSE_OAUTH_KEYS") == "1":
             api_environment.update({"YANDEX_CLIENT_ID": "synthetic-yandex-client", "YANDEX_CLIENT_SECRET": "synthetic-yandex-secret-0123456789", "YANDEX_REDIRECT_URI": "https://heartbeat-checker.ru/api/v1/auth/oauth/yandex/callback", "YANDEX_SCOPES": "login:email login:info", "VK_CLIENT_ID": "12345678", "VK_CALLBACK_URL": "https://heartbeat-checker.ru/api/v1/auth/oauth/vk/callback"})
-        worker_environment = {"SMTP_TLS_MODE": "implicit_tls"}
+        worker_environment = {"SMTP_TLS_MODE": "implicit_tls", "EMAIL_NOTIFICATIONS_ENABLED": "false"}
+        if os.environ.get("COMPOSE_EMAIL_KEYS") == "1":
+            api_environment["EMAIL_NOTIFICATIONS_ENABLED"] = "true"
+            worker_environment["EMAIL_NOTIFICATIONS_ENABLED"] = "true"
         if os.environ.get("COMPOSE_YOOKASSA_KEYS") == "1":
             yookassa_environment = {"BILLING_PROVIDER": "yookassa", "BILLING_TEST_ACCOUNT_IDS": "51ec7d19-80c4-4fb6-8edb-79dc7abe3120", "YOOKASSA_MODE": "test", "YOOKASSA_TEST_SHOP_ID": "123456", "YOOKASSA_TEST_SECRET_KEY": "test_synthetic_secret_123"}
             api_environment.update(yookassa_environment)
@@ -222,7 +225,8 @@ class BackendDeployTests(unittest.TestCase):
 
     def run_deploy(self, activate_next_config=None, activate_messenger_notifications=None,
                    provision_owner=None, activate_admin_mfa=None, activate_oauth=None,
-                   activate_yookassa_test=None, stdin_payload="test-token\n", **extra_env):
+                   activate_yookassa_test=None, activate_email_notifications=None,
+                   stdin_payload="test-token\n", **extra_env):
         env = os.environ.copy()
         env.update({
             "PATH": f"{self.bin}:{env['PATH']}",
@@ -245,10 +249,51 @@ class BackendDeployTests(unittest.TestCase):
         ]
         if activate_yookassa_test is not None:
             args.append("true" if activate_yookassa_test else "false")
+        if activate_email_notifications is not None:
+            if activate_yookassa_test is None:
+                args.append("false")
+            args.append("true" if activate_email_notifications else "false")
         return subprocess.run(
             args,
             input=stdin_payload, cwd=self.root, env=env, text=True, capture_output=True,
         )
+
+    def test_email_only_activation_changes_one_flag_and_records_receipt(self):
+        smtp = (
+            "EMAIL_NOTIFICATIONS_ENABLED=false\n"
+            "SMTP_ADDR=smtp.example.test:465\n"
+            "SMTP_FROM=alerts@example.test\n"
+            "SMTP_USERNAME=synthetic-smtp-user\n"
+            "SMTP_PASSWORD=synthetic-smtp-password\n"
+            "SMTP_TLS_MODE=implicit_tls\n"
+            "AUTH_MAIL_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n"
+        )
+        original = BASE_ENV + smtp
+        (self.backend / ".env").write_text(original)
+        (self.backend / ".env").chmod(0o600)
+
+        result = self.run_deploy(activate_email_notifications=True, COMPOSE_EMAIL_KEYS="1")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        activated = (self.backend / ".env").read_text()
+        self.assertEqual(activated, original.replace("EMAIL_NOTIFICATIONS_ENABLED=false", "EMAIL_NOTIFICATIONS_ENABLED=true"))
+        receipt = json.loads((self.backend / "receipts" / f"{SOURCE_SHA}.json").read_text())
+        self.assertTrue(receipt["email_notifications_activated"])
+        self.assertNotIn("synthetic-smtp-password", result.stdout + result.stderr + self.log.read_text())
+
+    def test_email_activation_rejects_mixed_changes_and_staged_other_key(self):
+        for flags in ({"activate_messenger_notifications": True}, {"activate_yookassa_test": True}):
+            with self.subTest(flags=flags):
+                result = self.run_deploy(activate_email_notifications=True, **flags)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("separate configuration operation", result.stderr)
+                self.assertEqual(self.docker_calls(), [])
+
+        self.write_next_config(BASE_ENV + "SMTP_ADDR=attacker.example.test:465\n")
+        result = self.run_deploy(activate_email_notifications=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Resolve the existing staged configuration", result.stderr)
+        self.assertEqual(self.docker_calls(), [])
 
     def write_next_config(self, contents, mode=0o600):
         path = self.backend / ".env.next"

@@ -1,6 +1,11 @@
 package contracts
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+var ErrEmailUnverified = errors.New("account email is not verified")
 
 // Principal is the authenticated identity passed between modules.
 type Principal struct {
