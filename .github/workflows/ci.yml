@@ -163,7 +163,8 @@ jobs:
           "$adb_bin" -s emulator-5554 shell input keyevent 82
           "$adb_bin" -s emulator-5554 shell svc wifi disable
           "$adb_bin" -s emulator-5554 shell svc data disable
-          test -n "$(rg --files app/src/androidTest -g '*.java')"
+          test -n "$(find app/src/androidTest -type f -name '*.java' -print -quit)"
+          echo 'Emulator boot complete; running native instrumentation tests'
           ANDROID_SERIAL=emulator-5554 ./gradlew --no-daemon :app:connectedDebugAndroidTest
       - name: Retain instrumentation reports
         if: always()
