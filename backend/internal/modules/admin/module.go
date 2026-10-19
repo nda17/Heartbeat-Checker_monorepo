@@ -222,7 +222,10 @@ func (m *Module) beginMutation(ctx context.Context, p authcontracts.Principal, t
 		return nil, ErrForbidden
 	}
 	if err := m.auth.VerifyAdminTx(ctx, tx, p, true); err != nil {
-		return nil, ErrForbidden
+		if errors.Is(err, auth.ErrAdminVerificationDenied) {
+			return nil, ErrForbidden
+		}
+		return nil, err
 	}
 	targetEntitlement := entitlements[targetID]
 	if locked[targetID].Status != "active" {
@@ -266,7 +269,7 @@ func (m *Module) PatchAccount(ctx context.Context, p authcontracts.Principal, id
 	if id == p.AccountID && ((in.Role != nil && *in.Role != "admin") || (in.Status != nil && *in.Status != "active")) {
 		return Account{}, ErrForbidden
 	}
-	before := map[string]any{"role": mut.target.Role, "status": mut.target.Status, "version": mut.target.Version}
+	before := map[string]any{"name": mut.target.Name, "role": mut.target.Role, "status": mut.target.Status, "version": mut.target.Version}
 	a, changedAccess, err := m.accounts.AdminUpdate(ctx, mut.tx, mut.target, in.Version, in.Name, in.Role, in.Status)
 	if errors.Is(err, accounts.ErrAdminConflict) {
 		return Account{}, ErrConflict
@@ -282,7 +285,7 @@ func (m *Module) PatchAccount(ctx context.Context, p authcontracts.Principal, id
 			return Account{}, err
 		}
 	}
-	if err := m.audit(ctx, mut.tx, p, id, id, "account.updated", in.Reason, before, map[string]any{"role": a.Role, "status": a.Status, "version": a.Version}); err != nil {
+	if err := m.audit(ctx, mut.tx, p, id, id, "account.updated", in.Reason, before, map[string]any{"name": a.Name, "role": a.Role, "status": a.Status, "version": a.Version}); err != nil {
 		return Account{}, err
 	}
 	result, err := m.accountWithEmail(ctx, mut.tx, a)

@@ -52,20 +52,19 @@ export function MessengerLinks() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const loadDestinations = useCallback(async () => {
-    try {
-      const response = await api<{
-        enabled?: boolean;
-        destinations: Destination[];
-      }>("/messenger-destinations");
-      setEnabled(response.enabled !== false);
-      setDestinations(response.destinations ?? []);
-      setError("");
-    } catch (e) {
-      setError(errorMessage(e));
-    }
+    const response = await api<{
+      enabled?: boolean;
+      destinations: Destination[];
+    }>("/messenger-destinations");
+    setEnabled(response.enabled !== false);
+    setDestinations(response.destinations ?? []);
+    setError("");
   }, []);
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadDestinations(), 0);
+    const timer = window.setTimeout(
+      () => void loadDestinations().catch((e) => setError(errorMessage(e))),
+      0,
+    );
     return () => window.clearTimeout(timer);
   }, [loadDestinations]);
   useEffect(() => {
@@ -148,15 +147,26 @@ export function MessengerLinks() {
     }
     setBusy(true);
     setError("");
+    setSuccess("");
     try {
-      await api(`/messenger-links/${encodeURIComponent(link.id)}/confirm`, {
-        method: "POST",
-        authenticated: true,
-      });
-      await loadDestinations();
+      const response = await api<{ destination: Destination }>(
+        `/messenger-links/${encodeURIComponent(link.id)}/confirm`,
+        { method: "POST", authenticated: true },
+      );
+      setDestinations((current) => [
+        ...(current ?? []).filter(
+          (item) => item.id !== response.destination.id,
+        ),
+        response.destination,
+      ]);
       setStarted(null);
       setLink(null);
       setSuccess("Чат подтверждён. Теперь его можно выбрать для монитора.");
+      try {
+        await loadDestinations();
+      } catch (e) {
+        setError(`Чат подтверждён, но список не обновился: ${errorMessage(e)}`);
+      }
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -167,14 +177,22 @@ export function MessengerLinks() {
     if (!removing) return;
     setBusy(true);
     setError("");
+    setSuccess("");
     try {
       await api(`/messenger-destinations/${encodeURIComponent(removing.id)}`, {
         method: "DELETE",
         authenticated: true,
       });
+      setDestinations(
+        (current) => current?.filter((item) => item.id !== removing.id) ?? null,
+      );
       setRemoving(null);
-      await loadDestinations();
       setSuccess("Чат отключён. Уведомления для него остановлены.");
+      try {
+        await loadDestinations();
+      } catch (e) {
+        setError(`Чат отключён, но список не обновился: ${errorMessage(e)}`);
+      }
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -333,7 +351,9 @@ export function MessengerLinks() {
               <button
                 className="secondary"
                 onClick={() => {
-                  void loadDestinations();
+                  void loadDestinations().catch((e) =>
+                    setError(errorMessage(e)),
+                  );
                   setLink(null);
                   setStarted(null);
                 }}

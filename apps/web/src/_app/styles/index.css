@@ -101,7 +101,7 @@
   --bg: #f6f7f9;
   --surface: #fff;
   --ink: #142334;
-  --muted: #687584;
+  --muted: #5d6a79;
   --line: #e5e9ed;
   --accent: #007f73;
   --accent-solid: #007f73;
@@ -160,7 +160,7 @@ button,
   border-radius: 8px;
   min-height: 44px;
   padding: 11px 18px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   line-height: 1.4;
   transition:
@@ -254,7 +254,7 @@ strong {
   font-weight: 600;
 }
 .small {
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.6;
 }
 .muted {
@@ -262,10 +262,10 @@ strong {
 }
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: 14px;
 }
 .eyebrow {
-  font-size: 10px;
+  font-size: 14px;
   font-weight: 600;
   line-height: 1.7;
   letter-spacing: 0.14em;
@@ -401,7 +401,7 @@ strong {
   border: 1px solid #f1d4cf;
   color: #943c33;
   border-radius: 8px;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.6;
 }
 .notice.success {
@@ -457,7 +457,7 @@ label {
   display: flex;
   flex-direction: column;
   gap: 9px;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 500;
   color: var(--ink);
 }
@@ -470,7 +470,7 @@ textarea {
   background: #fff;
   border-radius: 7px;
   padding: 12px 13px;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.4;
   color: var(--ink);
   outline: none;
@@ -520,13 +520,13 @@ input:read-only {
 .field-hint {
   display: block;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 14px;
   line-height: 1.65;
   font-weight: 400;
 }
 .field-error {
   color: var(--red);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.6;
 }
 .form-row {
@@ -535,7 +535,7 @@ input:read-only {
   gap: 16px;
 }
 .optional {
-  font-size: 10px;
+  font-size: 14px;
   color: var(--muted);
   font-weight: 400;
 }
@@ -583,12 +583,12 @@ input:read-only {
   display: flex;
   align-items: center;
   gap: 31px;
-  font-size: 12px;
+  font-size: 14px;
 }
 .small-button {
   min-height: 40px;
   padding: 10px 16px;
-  font-size: 11px;
+  font-size: 14px;
 }
 .hero {
   min-height: 620px;
@@ -602,7 +602,7 @@ input:read-only {
   display: flex;
   gap: 9px;
   align-items: center;
-  font-size: 9px;
+  font-size: 14px;
   color: #43756c;
 }
 .live-dot {
@@ -657,7 +657,7 @@ input:read-only {
   background: var(--surface);
   color: var(--ink);
   box-shadow: 0 8px 24px #14233422;
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.5;
   visibility: hidden;
   opacity: 0;
@@ -676,12 +676,12 @@ input:read-only {
   align-items: center;
 }
 .text-link {
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 500;
 }
 .hero-note {
   margin-top: 22px;
-  font-size: 10px;
+  font-size: 14px;
 }
 .how-section {
   border-top: 1px solid var(--line);
@@ -702,7 +702,7 @@ input:read-only {
 .step {
   display: block;
   font-family: ui-monospace, monospace;
-  font-size: 11px;
+  font-size: 14px;
   color: var(--accent);
   margin: 4px 0 23px;
 }
@@ -711,7 +711,7 @@ input:read-only {
   margin-bottom: 12px;
 }
 .how-grid p {
-  font-size: 11px;
+  font-size: 14px;
   color: var(--muted);
   line-height: 1.9;
 }
@@ -729,7 +729,7 @@ input:read-only {
   margin: 13px 0 15px;
 }
 .landing-cta p:not(.eyebrow) {
-  font-size: 11px;
+  font-size: 14px;
   color: var(--muted);
 }
 .landing-footer {
@@ -832,7 +832,7 @@ input:read-only {
   border-radius: 6px;
   background: var(--surface);
   color: var(--ink);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.5;
   visibility: hidden;
   pointer-events: none;
@@ -847,7 +847,7 @@ input:read-only {
   align-items: center;
   gap: 6px;
   width: 100%;
-  font-size: 10px;
+  font-size: 14px;
   line-height: 1.6;
   color: var(--muted);
   text-align: center;
@@ -1069,7 +1069,7 @@ input:read-only {
   padding: 35px 0;
 }
 .auth-aside-copy .eyebrow {
-  font-size: 10px;
+  font-size: 14px;
   color: #668377;
 }
 .auth-aside-copy h2 {
@@ -1120,7 +1120,7 @@ input:read-only {
   }
 }
 .auth-aside-copy > span {
-  font-size: 11px;
+  font-size: 14px;
   color: #6a7c70;
 }
 .auth-main {
@@ -1144,7 +1144,7 @@ input:read-only {
   margin-bottom: 31px;
 }
 .auth-heading .eyebrow {
-  font-size: 8px;
+  font-size: 14px;
   margin-bottom: 14px;
 }
 .auth-heading h1 {
@@ -1152,7 +1152,7 @@ input:read-only {
   margin-bottom: 13px;
 }
 .auth-heading > p:last-child {
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.9;
   color: var(--muted);
 }
@@ -1166,13 +1166,13 @@ input:read-only {
   text-align: right;
   color: var(--accent);
   margin-top: -7px;
-  font-size: 11px;
+  font-size: 14px;
 }
 .captcha {
   min-height: 65px;
 }
 .auth-switch {
-  font-size: 11px;
+  font-size: 14px;
   color: var(--muted);
   margin-top: 24px;
   text-align: center;
@@ -1186,7 +1186,7 @@ input:read-only {
 }
 .oauth-divider {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 14px;
   text-align: center;
   margin-bottom: 13px;
 }
@@ -1202,7 +1202,7 @@ input:read-only {
   margin-top: 13px;
 }
 .auth-main > footer {
-  font-size: 11px;
+  font-size: 14px;
 }
 .auth-main > footer nav {
   display: flex;
@@ -1219,12 +1219,12 @@ input:read-only {
   margin: 18px 0 10px;
 }
 .auth-done p {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--muted);
   margin-bottom: 25px;
 }
 .auth-done .quiet {
-  font-size: 11px;
+  font-size: 14px;
 }
 .success-icon {
   display: flex;
@@ -1260,7 +1260,7 @@ input:read-only {
   gap: 9px;
 }
 .sidebar-label {
-  font-size: 8px;
+  font-size: 14px;
   letter-spacing: 0.1em;
   color: #9aa4ad;
   margin: 51px 0 16px 10px;
@@ -1271,7 +1271,7 @@ input:read-only {
   gap: 7px;
 }
 .sidebar nav a {
-  font-size: 11px;
+  font-size: 14px;
   padding: 13px 12px;
   display: flex;
   gap: 12px;
@@ -1295,7 +1295,7 @@ input:read-only {
   margin-top: auto;
 }
 .sidebar-bottom > .small {
-  font-size: 11px;
+  font-size: 14px;
   line-height: 1.8;
   padding: 0 10px 29px;
 }
@@ -1316,7 +1316,7 @@ input:read-only {
   align-items: center;
   justify-content: center;
   border-radius: 8px;
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 600;
   flex-shrink: 0;
 }
@@ -1331,17 +1331,17 @@ input:read-only {
   white-space: nowrap;
 }
 .account-mini strong {
-  font-size: 10px;
+  font-size: 14px;
   margin-bottom: 4px;
 }
 .account-mini div > span {
-  font-size: 9px;
+  font-size: 14px;
   color: var(--muted);
 }
 .logout {
   width: 100%;
   justify-content: space-between;
-  font-size: 10px;
+  font-size: 14px;
   min-height: 30px;
   margin-top: 11px;
 }
@@ -1360,7 +1360,7 @@ input:read-only {
   justify-content: space-between;
   padding: 0 40px;
   background: #fff;
-  font-size: 10px;
+  font-size: 14px;
   color: #7c8995;
 }
 .slash {
@@ -1368,7 +1368,7 @@ input:read-only {
   padding: 0 10px;
 }
 .top-label {
-  font-size: 8px;
+  font-size: 14px;
   letter-spacing: 0.16em;
   color: #9ba5af;
 }
@@ -1387,7 +1387,7 @@ input:read-only {
   margin-bottom: 33px;
 }
 .page-heading .eyebrow {
-  font-size: 8px;
+  font-size: 14px;
   margin-bottom: 12px;
 }
 .page-heading h1 {
@@ -1397,12 +1397,12 @@ input:read-only {
   color: var(--accent);
 }
 .page-heading p:not(.eyebrow) {
-  font-size: 11px;
+  font-size: 14px;
   margin-top: 12px;
   color: var(--muted);
 }
 .page-heading > .primary {
-  font-size: 11px;
+  font-size: 14px;
   padding: 12px 16px;
 }
 .page-heading > .primary > span {
@@ -1425,7 +1425,7 @@ input:read-only {
   display: flex;
   gap: 7px;
   align-items: center;
-  font-size: 10px;
+  font-size: 14px;
   color: var(--muted);
 }
 .stat > strong {
@@ -1438,7 +1438,7 @@ input:read-only {
   margin: 12px 0 7px;
 }
 .stat > small {
-  font-size: 8px;
+  font-size: 14px;
   color: #8b96a1;
 }
 .stat em {
@@ -1474,7 +1474,7 @@ input:read-only {
   border-radius: 9px;
 }
 .local-banner p {
-  font-size: 10px;
+  font-size: 14px;
   color: #687b8b;
 }
 .local-banner .badge {
@@ -1498,7 +1498,7 @@ input:read-only {
   letter-spacing: -0.025em;
 }
 .quota-banner p {
-  font-size: 11px;
+  font-size: 14px;
   color: #8d806b;
   max-width: 650px;
   margin-top: 7px;
@@ -1532,7 +1532,7 @@ input:read-only {
   align-items: center;
   justify-content: center;
   font-family: "Golos Text", sans-serif;
-  font-size: 9px;
+  font-size: 14px;
   letter-spacing: 0;
   padding: 2px 6px;
   min-width: 22px;
@@ -1543,7 +1543,7 @@ input:read-only {
   font-weight: 500;
 }
 .table-toolbar p {
-  font-size: 9px;
+  font-size: 14px;
   margin-top: 6px;
 }
 .toolbar-actions {
@@ -1552,7 +1552,7 @@ input:read-only {
   align-items: center;
 }
 .search {
-  font-size: 10px;
+  font-size: 14px;
   min-height: 34px;
   width: 185px;
   background: #fafbfc;
@@ -1588,7 +1588,7 @@ input:read-only {
 }
 .monitor-table th,
 .data-table th {
-  font-size: 8px;
+  font-size: 14px;
   font-weight: 500;
   color: #83919d;
   padding: 12px 20px;
@@ -1603,7 +1603,7 @@ input:read-only {
 .monitor-table td {
   padding: 20px;
   border-bottom: 1px solid #eef1f3;
-  font-size: 10px;
+  font-size: 14px;
 }
 .monitor-table tr:last-child td {
   border-bottom: 0;
@@ -1619,12 +1619,12 @@ input:read-only {
   justify-content: flex-start;
   border: 0;
   gap: 14px;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
 }
 .monitor-name span {
   color: #9dacae;
-  font-size: 11px;
+  font-size: 14px;
 }
 .monitor-name:hover {
   color: var(--accent);
@@ -1635,7 +1635,7 @@ input:read-only {
   gap: 6px;
   color: #84909b;
   font-family: ui-monospace, monospace;
-  font-size: 8px;
+  font-size: 14px;
   margin-top: 7px;
   max-width: 260px;
 }
@@ -1647,7 +1647,7 @@ input:read-only {
 }
 .cell-sub {
   display: block;
-  font-size: 8px;
+  font-size: 14px;
   color: #9aa4ae;
   margin-top: 5px;
 }
@@ -1659,7 +1659,7 @@ input:read-only {
   width: 26px;
   height: 26px;
   min-height: 26px;
-  font-size: 13px;
+  font-size: 14px;
 }
 .badge {
   display: inline-flex;
@@ -1669,7 +1669,7 @@ input:read-only {
   padding: 5px 7px;
   background: #f0f3f5;
   color: #6d7b86;
-  font-size: 8px;
+  font-size: 14px;
   font-weight: 500;
   white-space: nowrap;
   letter-spacing: 0;
@@ -1684,23 +1684,23 @@ input:read-only {
 }
 .badge.up {
   background: #e9f5ef;
-  color: #248663;
+  color: #176b4e;
 }
 .badge.down {
   background: #fcf0ef;
-  color: #b6534d;
+  color: #a2443e;
 }
 .badge.paused {
   background: #eef1f6;
-  color: #7c8799;
+  color: #58657d;
 }
 .badge.subscription_required {
   background: #f8f1e5;
-  color: #9e8246;
+  color: #79602d;
 }
 .badge.unknown {
   background: #f0f3f5;
-  color: #87929b;
+  color: #5d6b75;
 }
 .table-footnote {
   border-top: 1px solid var(--line);
@@ -1709,7 +1709,7 @@ input:read-only {
   justify-content: space-between;
   gap: 15px;
   background: #fdfefe;
-  font-size: 8px;
+  font-size: 14px;
   color: #9aa6af;
 }
 .empty-state {
@@ -1737,13 +1737,13 @@ input:read-only {
 }
 .empty-state p {
   max-width: 365px;
-  font-size: 11px;
+  font-size: 14px;
   line-height: 1.85;
   color: var(--muted);
   margin: 12px auto 21px;
 }
 .empty-state button {
-  font-size: 10px;
+  font-size: 14px;
   min-height: 37px;
   padding: 9px 15px;
 }
@@ -1758,7 +1758,7 @@ input:read-only {
   font-size: 14px;
 }
 .explanation > p {
-  font-size: 9px;
+  font-size: 14px;
   line-height: 1.9;
   max-width: 700px;
 }
@@ -1768,7 +1768,7 @@ input:read-only {
   padding: 21px 0;
   display: flex;
   justify-content: space-between;
-  font-size: 8px;
+  font-size: 14px;
   color: #a0aab4;
 }
 /* Settings */
@@ -1789,7 +1789,7 @@ input:read-only {
 }
 .panel-index {
   font-family: ui-monospace, monospace;
-  font-size: 10px;
+  font-size: 14px;
   color: #98aaa7;
   margin-top: 4px;
 }
@@ -1798,7 +1798,7 @@ input:read-only {
   letter-spacing: -0.03em;
 }
 .panel-heading p {
-  font-size: 10px;
+  font-size: 14px;
   color: var(--muted);
   margin-top: 7px;
   line-height: 1.7;
@@ -1808,7 +1808,7 @@ input:read-only {
 }
 .settings-panel .form-stack button {
   align-self: flex-start;
-  font-size: 10px;
+  font-size: 14px;
   margin-top: 4px;
   min-height: 38px;
 }
@@ -1834,7 +1834,7 @@ input:read-only {
   min-width: 0;
 }
 .oauth-identity strong {
-  font-size: 13px;
+  font-size: 14px;
 }
 .oauth-identity p {
   margin-top: 6px;
@@ -1845,7 +1845,7 @@ input:read-only {
   gap: 12px;
 }
 .oauth-identity-form label {
-  font-size: 10px;
+  font-size: 14px;
   min-width: 185px;
 }
 .oauth-identity-form button {
@@ -1860,7 +1860,7 @@ input:read-only {
 }
 .sessions-panel .panel-heading > .quiet {
   margin-left: auto;
-  font-size: 10px;
+  font-size: 14px;
   flex-shrink: 0;
 }
 .session-list {
@@ -1896,24 +1896,24 @@ input:read-only {
   flex: 1;
 }
 .session-info > strong {
-  font-size: 11px;
+  font-size: 14px;
   display: flex;
   align-items: center;
   gap: 9px;
   flex-wrap: wrap;
 }
 .session-agent {
-  font-size: 9px;
+  font-size: 14px;
   color: #7f8d99;
   overflow-wrap: anywhere;
   line-height: 1.8;
   margin: 5px 0;
 }
 .session-info .small {
-  font-size: 8px;
+  font-size: 14px;
 }
 .session-list .quiet {
-  font-size: 10px;
+  font-size: 14px;
   padding-left: 10px;
 }
 /* Dialogs and history */
@@ -1952,7 +1952,7 @@ input:read-only {
   flex-shrink: 0;
 }
 .dialog-description {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--muted);
   line-height: 1.8;
   margin-bottom: 26px;
@@ -1964,7 +1964,7 @@ input:read-only {
   margin-top: 10px;
 }
 .dialog-actions button {
-  font-size: 11px;
+  font-size: 14px;
 }
 .detail-summary {
   display: flex;
@@ -1975,7 +1975,7 @@ input:read-only {
   border-bottom: 1px solid var(--line);
 }
 .detail-url {
-  font-size: 10px;
+  font-size: 14px;
   color: var(--muted);
   overflow-wrap: anywhere;
   min-width: 0;
@@ -1986,7 +1986,7 @@ input:read-only {
   margin: 27px 0 12px;
 }
 .detail-section-title + p {
-  font-size: 9px;
+  font-size: 14px;
   margin-bottom: 14px;
 }
 .detail-empty {
@@ -1994,22 +1994,22 @@ input:read-only {
   background: #f8faf9;
   border: 1px solid #edf1ee;
   border-radius: 7px;
-  font-size: 11px;
+  font-size: 14px;
   color: var(--muted);
 }
 .data-table th {
-  font-size: 9px;
+  font-size: 14px;
 }
 .data-table td {
-  font-size: 11px;
+  font-size: 14px;
   padding: 13px 20px;
   border-bottom: 1px solid var(--line);
 }
 .data-table .badge {
-  font-size: 9px;
+  font-size: 14px;
 }
 .history-button {
-  font-size: 10px;
+  font-size: 14px;
   margin-top: 15px;
   min-height: 34px;
 }
@@ -2032,38 +2032,38 @@ input:read-only {
     padding: 25px;
   }
   .stat > span {
-    font-size: 12px;
+    font-size: 14px;
   }
   .stat > strong {
     font-size: 38px;
   }
   .stat > small {
-    font-size: 10px;
+    font-size: 14px;
   }
   .monitor-table td {
-    font-size: 12px;
+    font-size: 14px;
   }
   .monitor-table th {
-    font-size: 10px;
+    font-size: 14px;
   }
   .monitor-name {
-    font-size: 13px;
+    font-size: 14px;
   }
   .monitor-url {
-    font-size: 10px;
+    font-size: 14px;
   }
   .badge {
-    font-size: 10px;
+    font-size: 14px;
   }
   .cell-sub {
-    font-size: 10px;
+    font-size: 14px;
   }
   .page-heading p:not(.eyebrow) {
-    font-size: 13px;
+    font-size: 14px;
   }
   .table-footnote,
   .explanation > p {
-    font-size: 10px;
+    font-size: 14px;
   }
 }
 @media (max-width: 1200px) {
@@ -2080,7 +2080,7 @@ input:read-only {
     gap: 15px;
   }
   .hero-actions .button {
-    font-size: 11px;
+    font-size: 14px;
   }
   .how-section {
     gap: 30px;
@@ -2210,10 +2210,10 @@ input:read-only {
     font-size: clamp(28px, 4vw, 38px);
   }
   .auth-aside-copy > p:not(.eyebrow) {
-    font-size: 11px;
+    font-size: 14px;
   }
   .auth-aside-copy .eyebrow {
-    font-size: 7px;
+    font-size: 14px;
   }
   .auth-main {
     padding: 35px;
@@ -2234,11 +2234,11 @@ input:read-only {
     height: 27px;
   }
   .sidebar-label {
-    font-size: 7px;
+    font-size: 14px;
     margin-left: 6px;
   }
   .sidebar nav a {
-    font-size: 9px;
+    font-size: 14px;
     gap: 9px;
     padding: 12px 8px;
   }
@@ -2268,7 +2268,7 @@ input:read-only {
     align-items: flex-start;
   }
   .page-heading > .primary {
-    font-size: 10px;
+    font-size: 14px;
     gap: 7px;
     flex-shrink: 0;
     margin-top: 22px;
@@ -2332,10 +2332,10 @@ input:read-only {
     display: none;
   }
   .landing-header nav > a {
-    font-size: 11px;
+    font-size: 14px;
   }
   .landing-header-home nav > a {
-    font-size: 13px;
+    font-size: 14px;
   }
   .hero {
     padding: 48px 0 45px;
@@ -2348,11 +2348,11 @@ input:read-only {
     letter-spacing: -0.06em;
   }
   .hero-copy .eyebrow {
-    font-size: 7px;
+    font-size: 14px;
     letter-spacing: 0.09em;
   }
   .hero-description {
-    font-size: 12px;
+    font-size: 14px;
     line-height: 1.9;
   }
   .hero-actions {
@@ -2362,10 +2362,10 @@ input:read-only {
     margin-top: 25px;
   }
   .hero-actions .button {
-    font-size: 11px;
+    font-size: 14px;
   }
   .hero-note {
-    font-size: 9px;
+    font-size: 14px;
     line-height: 1.8;
   }
   .how-grid {
@@ -2385,7 +2385,7 @@ input:read-only {
     margin-bottom: 7px;
   }
   .how-grid p {
-    font-size: 11px;
+    font-size: 14px;
   }
   .section-intro h2 {
     font-size: 24px;
@@ -2401,13 +2401,13 @@ input:read-only {
     font-size: 25px;
   }
   .landing-cta p:not(.eyebrow) {
-    font-size: 10px;
+    font-size: 14px;
   }
   .landing-cta .eyebrow {
-    font-size: 8px;
+    font-size: 14px;
   }
   .landing-cta .button {
-    font-size: 11px;
+    font-size: 14px;
   }
   .auth-page {
     display: block;
@@ -2466,7 +2466,7 @@ input:read-only {
   .sidebar nav a {
     border-radius: 6px 6px 0 0;
     padding: 12px;
-    font-size: 10px;
+    font-size: 14px;
   }
   .sidebar nav a > span {
     font-size: 14px;
@@ -2478,10 +2478,10 @@ input:read-only {
   .console-top {
     height: 46px;
     padding: 0 20px;
-    font-size: 9px;
+    font-size: 14px;
   }
   .top-label {
-    font-size: 6px;
+    font-size: 14px;
     letter-spacing: 0.1em;
   }
   .workspace {
@@ -2492,20 +2492,20 @@ input:read-only {
     margin-bottom: 24px;
   }
   .page-heading .eyebrow {
-    font-size: 7px;
+    font-size: 14px;
     margin-bottom: 10px;
   }
   .page-heading h1 {
     font-size: 28px;
   }
   .page-heading p:not(.eyebrow) {
-    font-size: 10px;
+    font-size: 14px;
     margin-top: 10px;
   }
   .page-heading > .primary {
     margin-top: 19px;
     min-height: 39px;
-    font-size: 10px;
+    font-size: 14px;
   }
   .stats-grid {
     gap: 10px;
@@ -2515,14 +2515,14 @@ input:read-only {
     padding: 16px;
   }
   .stat > span {
-    font-size: 9px;
+    font-size: 14px;
   }
   .stat > strong {
     font-size: 30px;
     margin: 9px 0 6px;
   }
   .stat > small {
-    font-size: 7px;
+    font-size: 14px;
   }
   .stat em {
     font-size: 20px;
@@ -2534,7 +2534,7 @@ input:read-only {
     gap: 8px;
   }
   .local-banner p {
-    font-size: 9px;
+    font-size: 14px;
     line-height: 1.9;
   }
   .quota-banner {
@@ -2546,7 +2546,7 @@ input:read-only {
     font-size: 14px;
   }
   .quota-banner p {
-    font-size: 10px;
+    font-size: 14px;
     line-height: 1.9;
   }
   .quota-symbol {
@@ -2560,7 +2560,7 @@ input:read-only {
     font-size: 15px;
   }
   .table-toolbar p {
-    font-size: 8px;
+    font-size: 14px;
   }
   .toolbar-actions {
     width: 100%;
@@ -2571,7 +2571,7 @@ input:read-only {
   }
   .table-footnote {
     padding: 13px 18px;
-    font-size: 7px;
+    font-size: 14px;
     line-height: 1.8;
   }
   .empty-state {
@@ -2582,19 +2582,19 @@ input:read-only {
     font-size: 15px;
   }
   .empty-state p {
-    font-size: 10px;
+    font-size: 14px;
   }
   .explanation {
     padding: 20px 0;
     gap: 8px;
   }
   .explanation > p {
-    font-size: 8px;
+    font-size: 14px;
   }
   .console-footer {
     margin: 0 18px;
     padding: 17px 0;
-    font-size: 7px;
+    font-size: 14px;
   }
   .settings-panel,
   .sessions-panel,
@@ -2614,7 +2614,7 @@ input:read-only {
     min-width: 0;
   }
   .panel-heading p {
-    font-size: 9px;
+    font-size: 14px;
   }
   .panel-heading h2 {
     font-size: 16px;
@@ -2632,7 +2632,7 @@ input:read-only {
     margin-left: 45px;
     padding: 0;
     min-height: 24px;
-    font-size: 9px;
+    font-size: 14px;
   }
   .sessions-panel .panel-heading > .quiet {
     margin-top: -5px;
@@ -2646,16 +2646,16 @@ input:read-only {
     font-size: 22px;
   }
   .dialog-description {
-    font-size: 11px;
+    font-size: 14px;
   }
   .form-row {
     gap: 12px;
   }
   .form-row > label {
-    font-size: 10px;
+    font-size: 14px;
   }
   .dialog-actions button {
-    font-size: 10px;
+    font-size: 14px;
     padding: 11px 13px;
   }
   .data-table {
@@ -2665,7 +2665,7 @@ input:read-only {
     gap: 8px;
   }
   .detail-url {
-    font-size: 9px;
+    font-size: 14px;
     width: 100%;
   }
   .detail-section-title {
@@ -2965,6 +2965,7 @@ button.primary:hover:not(:disabled) {
 
 /* Landing content and the explicitly labelled monitoring example. */
 .landing {
+  --landing-success: #006f64;
   --landing-card: #fff;
   --landing-soft: #eff4ef;
   --landing-border: #dce6df;
@@ -2974,6 +2975,7 @@ button.primary:hover:not(:disabled) {
   --landing-incident-bg: #fceeea;
 }
 [data-theme="dark"] .landing {
+  --landing-success: var(--accent);
   --landing-card: #1a2d31;
   --landing-soft: #1d3430;
   --landing-border: #3e5955;
@@ -3010,7 +3012,7 @@ button.primary:hover:not(:disabled) {
 .legal-date {
   margin-top: 22px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 14px;
 }
 .legal-nav {
   display: flex;
@@ -3020,7 +3022,7 @@ button.primary:hover:not(:disabled) {
   padding: 18px 0;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
-  font-size: 12px;
+  font-size: 14px;
 }
 .legal-nav a:hover,
 .legal-content a:hover {
@@ -3097,7 +3099,7 @@ button.primary:hover:not(:disabled) {
   flex-shrink: 0;
 }
 .android-app-identity .eyebrow {
-  font-size: 11px;
+  font-size: 14px;
   line-height: 1.8;
   color: var(--accent);
 }
@@ -3294,7 +3296,7 @@ button.primary:hover:not(:disabled) {
   color: var(--ink);
 }
 .android-verification code {
-  font-size: 13px;
+  font-size: 14px;
   overflow-wrap: anywhere;
 }
 @media (max-width: 1000px) {
@@ -3366,7 +3368,7 @@ button.primary:hover:not(:disabled) {
 .legal-content table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 14px;
   text-align: left;
 }
 .legal-content th,
@@ -3408,7 +3410,7 @@ button.primary:hover:not(:disabled) {
   max-width: 700px;
   margin-top: 18px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.9;
 }
 .landing .landing-facts {
@@ -3435,7 +3437,7 @@ button.primary:hover:not(:disabled) {
 .landing .landing-facts span {
   display: block;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 14px;
   margin-top: 7px;
   line-height: 1.6;
 }
@@ -3458,7 +3460,7 @@ button.primary:hover:not(:disabled) {
 }
 .landing .landing-section-heading > p {
   max-width: 360px;
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.9;
   color: var(--muted);
 }
@@ -3492,7 +3494,7 @@ button.primary:hover:not(:disabled) {
 }
 .landing .landing-case-type {
   color: var(--muted);
-  font-size: 8px;
+  font-size: 14px;
   letter-spacing: 0.1em;
 }
 .landing .landing-use-cases h3 {
@@ -3501,7 +3503,7 @@ button.primary:hover:not(:disabled) {
 }
 .landing .landing-use-cases p {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 14px;
   line-height: 1.9;
   margin-bottom: 26px;
 }
@@ -3514,11 +3516,11 @@ button.primary:hover:not(:disabled) {
   border-top: 1px solid var(--line);
   padding-top: 15px;
   margin-top: auto;
-  font-size: 9px;
+  font-size: 14px;
   color: var(--muted);
 }
 .landing .landing-case-setting code {
-  font-size: 10px;
+  font-size: 14px;
   color: var(--accent);
 }
 .landing .how-section {
@@ -3533,7 +3535,7 @@ button.primary:hover:not(:disabled) {
 }
 .landing .landing-observability-copy > p:not(.eyebrow) {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.9;
   margin-top: 20px;
   max-width: 440px;
@@ -3559,7 +3561,7 @@ button.primary:hover:not(:disabled) {
   margin-bottom: 6px;
 }
 .landing .landing-observability-copy li p {
-  font-size: 11px;
+  font-size: 14px;
   color: var(--muted);
   line-height: 1.8;
 }
@@ -3578,7 +3580,7 @@ button.primary:hover:not(:disabled) {
   color: var(--accent);
 }
 .landing .landing-states-heading .eyebrow {
-  font-size: 8px;
+  font-size: 14px;
 }
 .landing .landing-states article {
   display: grid;
@@ -3590,22 +3592,22 @@ button.primary:hover:not(:disabled) {
 }
 .landing .landing-states .badge {
   justify-content: center;
-  font-size: 9px;
+  font-size: 14px;
   padding: 6px 8px;
 }
 .landing .landing-states h3 {
-  font-size: 12px;
+  font-size: 14px;
   letter-spacing: -0.02em;
   line-height: 1.6;
   margin-bottom: 5px;
 }
 .landing .landing-states p {
-  font-size: 10px;
+  font-size: 14px;
   color: var(--muted);
   line-height: 1.8;
 }
 .landing .landing-state-note {
-  font-size: 10px;
+  font-size: 14px;
   color: var(--muted);
   line-height: 1.9;
   padding-top: 18px;
@@ -3621,7 +3623,7 @@ button.primary:hover:not(:disabled) {
   align-items: center;
 }
 .landing .landing-pricing-copy > p:not(.eyebrow) {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--muted);
   line-height: 1.9;
   max-width: 410px;
@@ -3654,7 +3656,7 @@ button.primary:hover:not(:disabled) {
   color: var(--accent);
 }
 .landing .landing-price > p {
-  font-size: 11px;
+  font-size: 14px;
   color: var(--muted);
   line-height: 1.8;
 }
@@ -3668,7 +3670,7 @@ button.primary:hover:not(:disabled) {
 }
 .landing .landing-price-examples > div > span {
   display: block;
-  font-size: 10px;
+  font-size: 14px;
   color: var(--muted);
   margin-bottom: 9px;
 }
@@ -3678,19 +3680,19 @@ button.primary:hover:not(:disabled) {
   white-space: nowrap;
 }
 .landing .landing-price-examples small {
-  font-size: 9px;
+  font-size: 14px;
   font-weight: 400;
   color: var(--muted);
 }
 .landing .landing-price-note {
   margin: 18px 0;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 14px;
   line-height: 1.9;
 }
 .landing .landing-price-card .button {
   width: 100%;
-  font-size: 11px;
+  font-size: 14px;
 }
 .landing .landing-faq {
   display: grid;
@@ -3702,7 +3704,7 @@ button.primary:hover:not(:disabled) {
 }
 .landing .landing-faq .section-intro > p:last-child {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 14px;
   line-height: 1.9;
   margin-top: 17px;
   max-width: 280px;
@@ -3724,7 +3726,7 @@ button.primary:hover:not(:disabled) {
   cursor: pointer;
   list-style: none;
   padding: 21px 0;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 500;
   line-height: 1.7;
 }
@@ -3746,7 +3748,7 @@ button.primary:hover:not(:disabled) {
   padding: 0 35px 22px 0;
   max-width: 75ch;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 14px;
   line-height: 1.9;
 }
 .landing .landing-faq summary:focus-visible {
@@ -3756,7 +3758,7 @@ button.primary:hover:not(:disabled) {
 }
 
 .landing-demo {
-  --demo-signal: var(--accent);
+  --demo-signal: var(--landing-success);
   --demo-signal-bg: var(--soft);
   border: 1px solid var(--landing-border);
   border-radius: 15px;
@@ -3783,7 +3785,7 @@ button.primary:hover:not(:disabled) {
   border-bottom: 1px solid var(--landing-border);
 }
 .landing-demo .landing-demo-label {
-  font-size: 8px;
+  font-size: 14px;
   letter-spacing: 0.13em;
   font-weight: 600;
   color: var(--accent);
@@ -3796,12 +3798,12 @@ button.primary:hover:not(:disabled) {
   padding: 23px 22px 0;
 }
 .landing-demo .landing-demo-monitor strong {
-  font-size: 12px;
+  font-size: 14px;
   display: block;
   margin-bottom: 7px;
 }
 .landing-demo .landing-demo-monitor code {
-  font-size: 9px;
+  font-size: 14px;
   color: var(--muted);
 }
 .landing-demo .landing-demo-status {
@@ -3812,7 +3814,7 @@ button.primary:hover:not(:disabled) {
   color: var(--demo-signal);
   padding: 6px 8px;
   border-radius: 6px;
-  font-size: 8px;
+  font-size: 14px;
   font-weight: 500;
   white-space: nowrap;
   transition:
@@ -3883,7 +3885,7 @@ button.primary:hover:not(:disabled) {
 .landing-demo .landing-demo-readings > div > span {
   display: block;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 14px;
   margin-bottom: 7px;
 }
 .landing-demo .landing-demo-readings strong {
@@ -3900,7 +3902,7 @@ button.primary:hover:not(:disabled) {
 }
 .landing-demo .landing-demo-stage > p {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 14px;
   line-height: 1.85;
   min-height: 38px;
 }
@@ -3909,7 +3911,7 @@ button.primary:hover:not(:disabled) {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 9px;
+  font-size: 14px;
   margin-top: 15px;
 }
 .landing-demo .landing-demo-event > span {
@@ -3920,7 +3922,7 @@ button.primary:hover:not(:disabled) {
   width: 18px;
   border-radius: 50%;
   background: var(--demo-signal-bg);
-  font-size: 12px;
+  font-size: 14px;
 }
 .landing-demo .landing-demo-controls {
   display: flex;
@@ -3941,7 +3943,7 @@ button.primary:hover:not(:disabled) {
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 6px;
-  font-size: 9px;
+  font-size: 14px;
   background: transparent;
   color: var(--muted);
 }
@@ -3955,14 +3957,14 @@ button.primary:hover:not(:disabled) {
   color: var(--ink);
   padding: 5px 0;
   min-height: 30px;
-  font-size: 9px;
+  font-size: 14px;
   gap: 7px;
 }
 .landing-demo .landing-demo-play > span {
   font-size: 14px;
 }
 .landing-demo .landing-demo-caption {
-  font-size: 8px;
+  font-size: 14px;
   color: var(--muted);
   padding: 12px 22px 16px;
   line-height: 1.7;
@@ -4036,7 +4038,7 @@ button.primary:hover:not(:disabled) {
   }
   .landing .landing-section-heading > p {
     max-width: 260px;
-    font-size: 11px;
+    font-size: 14px;
   }
   .landing .landing-use-cases {
     gap: 12px;
@@ -4048,10 +4050,10 @@ button.primary:hover:not(:disabled) {
     font-size: 16px;
   }
   .landing .landing-use-cases p {
-    font-size: 10px;
+    font-size: 14px;
   }
   .landing .landing-case-type {
-    font-size: 7px;
+    font-size: 14px;
   }
   .landing .landing-observability {
     gap: 30px;
@@ -4129,7 +4131,7 @@ button.primary:hover:not(:disabled) {
   }
   .legal-lead,
   .legal-content {
-    font-size: 12px;
+    font-size: 14px;
   }
   .legal-nav {
     gap: 12px 18px;
@@ -4145,7 +4147,7 @@ button.primary:hover:not(:disabled) {
     font-size: 25px;
   }
   .landing .landing-awareness p {
-    font-size: 11px;
+    font-size: 14px;
   }
   .landing .landing-facts {
     grid-template-columns: repeat(2, 1fr);
@@ -4163,7 +4165,7 @@ button.primary:hover:not(:disabled) {
     font-size: 23px;
   }
   .landing .landing-facts span {
-    font-size: 8px;
+    font-size: 14px;
   }
   .landing .landing-section {
     padding: 43px 0;
@@ -4179,7 +4181,7 @@ button.primary:hover:not(:disabled) {
   .landing .landing-section-heading > p {
     max-width: none;
     margin-top: 18px;
-    font-size: 11px;
+    font-size: 14px;
   }
   .landing .landing-use-cases {
     grid-template-columns: 1fr;
@@ -4194,14 +4196,14 @@ button.primary:hover:not(:disabled) {
     margin-bottom: 20px;
   }
   .landing .landing-case-type {
-    font-size: 8px;
+    font-size: 14px;
   }
   .landing .landing-use-cases h3 {
     font-size: 19px;
     margin: 9px 0 12px;
   }
   .landing .landing-use-cases p {
-    font-size: 11px;
+    font-size: 14px;
     margin-bottom: 19px;
   }
   .landing .how-section {
@@ -4212,10 +4214,10 @@ button.primary:hover:not(:disabled) {
     gap: 27px;
   }
   .landing .landing-observability-copy > p:not(.eyebrow) {
-    font-size: 11px;
+    font-size: 14px;
   }
   .landing .landing-observability-copy li p {
-    font-size: 10px;
+    font-size: 14px;
   }
   .landing .landing-states {
     padding: 20px;
@@ -4225,10 +4227,10 @@ button.primary:hover:not(:disabled) {
     gap: 12px;
   }
   .landing .landing-states h3 {
-    font-size: 11px;
+    font-size: 14px;
   }
   .landing .landing-states p {
-    font-size: 10px;
+    font-size: 14px;
   }
   .landing .landing-pricing {
     grid-template-columns: 1fr;
@@ -4239,7 +4241,7 @@ button.primary:hover:not(:disabled) {
     font-size: 24px;
   }
   .landing .landing-pricing-copy > p:not(.eyebrow) {
-    font-size: 11px;
+    font-size: 14px;
   }
   .landing .landing-price-card {
     padding: 22px;
@@ -4256,23 +4258,23 @@ button.primary:hover:not(:disabled) {
   }
   .landing .landing-faq .section-intro > p:last-child {
     max-width: none;
-    font-size: 10px;
+    font-size: 14px;
   }
   .landing .landing-faq summary {
-    font-size: 11px;
+    font-size: 14px;
     gap: 18px;
     padding: 19px 0;
   }
   .landing .landing-faq details p {
     padding-right: 20px;
-    font-size: 10px;
+    font-size: 14px;
   }
   .landing-demo .landing-demo-top {
     padding: 13px 17px;
     gap: 8px;
   }
   .landing-demo .landing-demo-label {
-    font-size: 7px;
+    font-size: 14px;
   }
   .landing-demo .landing-demo-monitor {
     padding: 20px 17px 0;
@@ -4280,13 +4282,13 @@ button.primary:hover:not(:disabled) {
     flex-wrap: wrap;
   }
   .landing-demo .landing-demo-monitor strong {
-    font-size: 11px;
+    font-size: 14px;
   }
   .landing-demo .landing-demo-monitor code {
-    font-size: 8px;
+    font-size: 14px;
   }
   .landing-demo .landing-demo-status {
-    font-size: 8px;
+    font-size: 14px;
   }
   .landing-demo .landing-demo-stage {
     padding: 16px 17px 19px;
@@ -4299,7 +4301,7 @@ button.primary:hover:not(:disabled) {
     gap: 28px;
   }
   .landing-demo .landing-demo-readings > div > span {
-    font-size: 8px;
+    font-size: 14px;
   }
   .landing-demo .landing-demo-readings strong {
     font-size: 15px;
@@ -4319,13 +4321,13 @@ button.primary:hover:not(:disabled) {
   .landing-demo .landing-demo-caption {
     padding-left: 17px;
     padding-right: 17px;
-    font-size: 7px;
+    font-size: 14px;
   }
 }
 @media (max-width: 640px) {
   .mobile-logout {
     display: flex;
-    font-size: 9px;
+    font-size: 14px;
     min-height: 28px;
     padding: 5px 0;
   }
@@ -4350,7 +4352,7 @@ button.primary:hover:not(:disabled) {
   margin-bottom: 20px;
 }
 .messenger-options button {
-  font-size: 11px;
+  font-size: 14px;
 }
 .messenger-destinations {
   list-style: none;
@@ -4374,7 +4376,7 @@ button.primary:hover:not(:disabled) {
   overflow-wrap: anywhere;
 }
 .messenger-destinations strong {
-  font-size: 12px;
+  font-size: 14px;
 }
 .messenger-command,
 .messenger-candidate {
@@ -4388,13 +4390,13 @@ button.primary:hover:not(:disabled) {
 .messenger-candidate strong {
   display: block;
   margin-bottom: 8px;
-  font-size: 12px;
+  font-size: 14px;
 }
 .messenger-command code {
   display: block;
   overflow-wrap: anywhere;
   user-select: all;
-  font-size: 11px;
+  font-size: 14px;
 }
 .messenger-routes {
   display: grid;
@@ -4416,7 +4418,7 @@ button.primary:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   gap: 7px;
-  font-size: 11px;
+  font-size: 14px;
 }
 .messenger-route button {
   align-self: flex-start;
@@ -4426,7 +4428,7 @@ button.primary:hover:not(:disabled) {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 .incident-number {
-  font-size: 10px;
+  font-size: 14px;
   user-select: all;
 }
 @media (max-width: 680px) {
@@ -4490,5 +4492,245 @@ button.primary:hover:not(:disabled) {
     max-width: none;
     gap: 12px;
     padding: 16px;
+  }
+}
+
+/* Readable cabinet controls and compact administrative workflows. */
+.console :is(input, select, textarea),
+.auth-page :is(input, select, textarea) {
+  font-size: 16px;
+}
+.console :is(.field-hint, .cell-sub, .small, .eyebrow, .badge, small) {
+  font-size: 14px;
+  line-height: 1.5;
+}
+.console
+  :is(.page-heading p:not(.eyebrow), .panel-heading p, .form-stack label),
+.sidebar nav a {
+  font-size: 16px;
+  line-height: 1.5;
+}
+.sidebar-label,
+.top-label,
+.stat > small {
+  color: var(--muted);
+}
+.sidebar nav a {
+  color: var(--muted);
+}
+.admin-mfa-heading,
+.admin-form-actions,
+.admin-detail-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.admin-mfa-heading {
+  justify-content: space-between;
+}
+.admin-mfa-heading p {
+  margin-top: 8px;
+  color: var(--muted);
+}
+.admin-mfa-panel .form-stack {
+  max-width: none;
+}
+.admin-mfa-panel > .form-stack {
+  max-width: 520px;
+  margin-top: 20px;
+}
+.admin-enrollment {
+  max-width: none;
+}
+.admin-enrollment-grid {
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  align-items: start;
+  gap: 24px;
+  margin-top: 20px;
+}
+.admin-qr {
+  width: fit-content;
+  max-width: 100%;
+  padding: 12px;
+  background: white;
+  border-radius: 10px;
+}
+.admin-qr svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+.admin-secret {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+}
+.admin-secret code {
+  display: block;
+  padding: 10px;
+  background: var(--soft);
+  border-radius: 6px;
+}
+.admin-secret a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.admin-mfa-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 18px 0;
+  color: var(--muted);
+}
+.admin-mfa-settings {
+  margin-top: 20px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+.admin-mfa-settings summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.admin-security-forms {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 24px;
+  margin-top: 20px;
+}
+.admin-layout {
+  grid-template-columns: minmax(260px, 0.7fr) minmax(0, 1.3fr);
+}
+.admin-account-list {
+  max-height: 640px;
+  overflow-y: auto;
+}
+.admin-detail-panel[hidden] {
+  display: none;
+}
+.admin-detail-nav {
+  gap: 6px;
+}
+.admin-detail-nav button {
+  padding: 10px 14px;
+}
+.admin-detail-nav button[aria-pressed="true"] {
+  background: var(--soft);
+  color: var(--accent);
+}
+.admin-detail-panel .form-stack {
+  max-width: 640px;
+}
+.admin-detail-panel .small,
+.admin-audit-list {
+  overflow-wrap: anywhere;
+}
+/* Public copy keeps the same hierarchy with a readable minimum size. */
+.landing
+  :is(
+    .hero-description,
+    .landing-awareness p,
+    .landing-section-heading > p,
+    .landing-use-cases p,
+    .how-grid p,
+    .landing-observability-copy p,
+    .landing-states p,
+    .landing-pricing-copy p,
+    .landing-faq p,
+    .landing-faq summary,
+    .landing-cta p
+  ),
+.legal-lead,
+.legal-content {
+  font-size: 16px;
+}
+.legal-date,
+.legal-nav {
+  font-size: 14px;
+}
+.landing-demo .landing-demo-label {
+  color: var(--ink);
+  letter-spacing: 0.06em;
+}
+.landing-demo .landing-demo-stage > p {
+  font-size: 16px;
+}
+.landing-demo .landing-demo-top,
+.landing-demo .landing-demo-controls,
+.landing-demo .landing-demo-readings {
+  flex-wrap: wrap;
+}
+.landing-demo .landing-demo-steps button {
+  width: 34px;
+  min-height: 36px;
+  height: auto;
+}
+.landing .landing-states article {
+  grid-template-columns: minmax(100px, auto) minmax(0, 1fr);
+}
+.landing :is(.landing-case-setting, .landing-price-note, .hero-note) {
+  color: var(--muted);
+}
+@media (min-width: 641px) {
+  .sidebar {
+    width: 260px;
+    padding-inline: 20px;
+  }
+  .console-content {
+    margin-left: 260px;
+    width: calc(100% - 260px);
+  }
+}
+@media (max-width: 1180px) {
+  .admin-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 640px) {
+  .sidebar nav {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .sidebar nav a {
+    padding: 10px;
+    font-size: 14px;
+  }
+  .console-top {
+    height: auto;
+    min-height: 54px;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding-block: 8px;
+  }
+  .admin-mfa-panel,
+  .admin-accounts,
+  .admin-detail-panel {
+    padding: 20px;
+  }
+  .admin-enrollment-grid,
+  .admin-security-forms {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .admin-search {
+    flex-wrap: wrap;
+  }
+  .admin-search input {
+    flex-basis: 180px;
+  }
+  .landing .landing-states article {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .landing .hero-actions {
+    flex-wrap: wrap;
+  }
+  .landing .hero-description,
+  .landing .hero p,
+  .auth-heading > p:last-child,
+  .auth-done p,
+  .legal-content,
+  .legal-lead {
+    font-size: 16px;
   }
 }

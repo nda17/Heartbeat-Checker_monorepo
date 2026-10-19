@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Profile, SessionContext } from "@/entities/session";
 import { ThemeToggle } from "@/features/theme-toggle";
 import { api, ApiError, errorMessage, safeAppReturnTo } from "@/shared/api";
@@ -18,13 +18,33 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
   const [leaving, setLeaving] = useState(false);
   const path = usePathname();
   const router = useRouter();
+  const profileRequest = useRef(0);
+  const sessionTransitions = useRef(0);
+  const beginSessionTransition = useCallback(() => {
+    ++sessionTransitions.current;
+    ++profileRequest.current;
+  }, []);
+  const endSessionTransition = useCallback(() => {
+    sessionTransitions.current = Math.max(0, sessionTransitions.current - 1);
+    ++profileRequest.current;
+  }, []);
   const refresh = useCallback(async () => {
+    if (sessionTransitions.current > 0)
+      throw new DOMException("Session transition in progress", "AbortError");
+    const request = ++profileRequest.current;
     try {
       const current = await api<Profile>("/me");
+      if (request !== profileRequest.current)
+        throw new DOMException("Session request superseded", "AbortError");
       readMonitorDraft(current.account.id);
       setProfile(current);
       setError("");
     } catch (e) {
+      if (
+        request !== profileRequest.current ||
+        (e instanceof DOMException && e.name === "AbortError")
+      )
+        throw new DOMException("Session request superseded", "AbortError");
       if (e instanceof ApiError && e.status === 401) {
         setProfile(null);
         const returnTo = safeAppReturnTo(
@@ -36,6 +56,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
             : "/login",
         );
       } else setError(errorMessage(e));
+      throw e;
     }
   }, [router]);
   // Bootstrap browser-only session data; state changes after asynchronous API requests.
@@ -43,14 +64,17 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
     const problem = captureMonitorDraft();
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (problem) setDraftError(problem);
-    void refresh();
+    void refresh().catch(() => undefined);
     const visible = () => {
-      if (document.visibilityState === "visible") void refresh();
+      if (document.visibilityState === "visible")
+        void refresh().catch(() => undefined);
     };
-    const focused = () => void refresh();
+    const focused = () => void refresh().catch(() => undefined);
     document.addEventListener("visibilitychange", visible);
     window.addEventListener("focus", focused);
     return () => {
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- Invalidate any latest in-flight request on cleanup.
+      ++profileRequest.current;
       document.removeEventListener("visibilitychange", visible);
       window.removeEventListener("focus", focused);
     };
@@ -81,7 +105,9 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
         {error ? (
           <>
             <Notice>{error}</Notice>
-            <button onClick={() => void refresh()}>Повторить</button>
+            <button onClick={() => void refresh().catch(() => undefined)}>
+              Повторить
+            </button>
           </>
         ) : (
           <Loading text="Открываем кабинет…" />
@@ -89,7 +115,10 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
       </main>
     );
   return (
-    <SessionContext key={profile.account.id} value={{ profile, refresh }}>
+    <SessionContext
+      key={profile.account.id}
+      value={{ profile, refresh, beginSessionTransition, endSessionTransition }}
+    >
       <div className="console">
         <aside className="sidebar">
           <Brand compact />

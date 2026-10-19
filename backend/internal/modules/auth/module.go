@@ -43,6 +43,7 @@ type BootstrapInput = service.BootstrapInput
 
 var ErrAlreadyExists = postgres.ErrAlreadyExists
 var ErrInvalidBootstrap = service.ErrInvalid
+var ErrAdminVerificationDenied = errors.New("admin verification denied")
 
 // BootstrapLocal is used by the guarded local CLI, never an HTTP handler.
 func BootstrapLocal(ctx context.Context, pool *pgxpool.Pool, input BootstrapInput,
@@ -134,7 +135,11 @@ func (m *Module) RequireRole(role string, next http.Handler) http.Handler {
 func (m *Module) Protect(next http.Handler) http.Handler { return m.server.Protect(next) }
 
 func (m *Module) VerifyAdminTx(ctx context.Context, tx pgx.Tx, p authcontracts.Principal, mutation bool) error {
-	return m.repo.VerifyAdminTx(ctx, tx, p, mutation)
+	err := m.repo.VerifyAdminTx(ctx, tx, p, mutation)
+	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, postgres.ErrConflict) {
+		return ErrAdminVerificationDenied
+	}
+	return err
 }
 func (m *Module) RevokeAccountSessionsTx(ctx context.Context, tx pgx.Tx, accountID string) error {
 	return m.repo.RevokeAccountSessionsTx(ctx, tx, accountID)

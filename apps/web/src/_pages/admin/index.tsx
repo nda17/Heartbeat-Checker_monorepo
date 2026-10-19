@@ -49,7 +49,8 @@ function localDateTime(value: string | null) {
 }
 
 export function AdminPage() {
-  const { profile } = useSession();
+  const { profile, beginSessionTransition, endSessionTransition } =
+    useSession();
   const router = useRouter();
   const [mfa, setMfa] = useState<MfaState | null>(null);
   const [now, setNow] = useState(0);
@@ -62,6 +63,9 @@ export function AdminPage() {
   const [auditCursor, setAuditCursor] = useState<string | null>(null);
   const [monitorForm, setMonitorForm] = useState<Monitor | "new" | null>(null);
   const [error, setError] = useState("");
+  const [refreshError, setRefreshError] = useState("");
+  const [mfaBusy, setMfaBusy] = useState(false);
+  const [detailTab, setDetailTab] = useState("profile");
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState("");
   const selectedId = useRef<string | null>(null);
@@ -70,79 +74,169 @@ export function AdminPage() {
   const auditRequest = useRef(0);
   const mutationBusy = useRef(false);
 
-  const onMfaState = useCallback((value: MfaState | null) => setMfa(value), []);
-  const canRead = !!mfa?.verifiedUntil && Date.parse(mfa.verifiedUntil) > now;
+  const accessError = useRef(false);
+  const reportError = useCallback((cause: unknown) => {
+    accessError.current =
+      cause instanceof ApiError &&
+      [
+        "unauthorized",
+        "invalid_csrf",
+        "mfa_required",
+        "mfa_step_up_required",
+        "mfa_enrollment_required",
+      ].includes(cause.code);
+    setError(errorMessage(cause, "admin"));
+  }, []);
+  const accessTransition = useRef(false);
+  const onMfaState = useCallback((value: MfaState | null) => {
+    setMfa(value);
+    setNow(Date.now());
+  }, []);
+  const onMfaBusy = useCallback(
+    (value: boolean) => {
+      if (accessTransition.current === value) return;
+      accessTransition.current = value;
+      ++accountRequest.current;
+      ++detailRequest.current;
+      ++auditRequest.current;
+      if (value) beginSessionTransition();
+      else endSessionTransition();
+      setMfaBusy(value);
+    },
+    [beginSessionTransition, endSessionTransition],
+  );
+  const canRead =
+    !!mfa?.enabled &&
+    !!mfa?.verifiedUntil &&
+    Date.parse(mfa.verifiedUntil) > now;
   const canWrite =
     canRead && !!mfa?.stepUpUntil && Date.parse(mfa.stepUpUntil) > now;
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 15_000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      // Invalidate current requests when leaving the administration route.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      ++accountRequest.current;
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      ++detailRequest.current;
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      ++auditRequest.current;
+    };
   }, []);
 
   const loadAccounts = useCallback(
-    async (search: string, cursor = "", append = false) => {
+    async (search: string, cursor = "", append = false, force = false) => {
+      if (accessTransition.current && !force) return;
       const request = ++accountRequest.current;
       const params = new URLSearchParams({ limit: "25" });
       if (search) params.set("q", search);
       if (cursor) params.set("cursor", cursor);
-      const result = await api<{
-        items: AdminAccount[];
-        nextCursor: string | null;
-      }>(`/admin/accounts?${params}`);
-      if (request !== accountRequest.current) return;
-      setAccounts((current) =>
-        append ? [...(current ?? []), ...result.items] : result.items,
-      );
-      setNextCursor(result.nextCursor);
+      try {
+        const result = await api<{
+          items: AdminAccount[];
+          nextCursor: string | null;
+        }>(`/admin/accounts?${params}`);
+        if (request !== accountRequest.current) return;
+        setAccounts((current) =>
+          append ? [...(current ?? []), ...result.items] : result.items,
+        );
+        setNextCursor(result.nextCursor);
+      } catch (cause) {
+        if (request === accountRequest.current) throw cause;
+      }
     },
     [],
   );
   const loadAudit = useCallback(
     async (accountId: string, cursor = "", append = false) => {
+      if (accessTransition.current) return;
       const request = ++auditRequest.current;
       const params = new URLSearchParams({ accountId, limit: "20" });
       if (cursor) params.set("cursor", cursor);
-      const result = await api<{
-        items: AuditEvent[];
-        nextCursor: string | null;
-      }>(`/admin/audit?${params}`);
-      if (request !== auditRequest.current || selectedId.current !== accountId)
-        return;
-      setAudit((current) =>
-        append ? [...(current ?? []), ...result.items] : result.items,
-      );
-      setAuditCursor(result.nextCursor);
+      try {
+        const result = await api<{
+          items: AuditEvent[];
+          nextCursor: string | null;
+        }>(`/admin/audit?${params}`);
+        if (
+          request !== auditRequest.current ||
+          selectedId.current !== accountId
+        )
+          return;
+        setAudit((current) =>
+          append ? [...(current ?? []), ...result.items] : result.items,
+        );
+        setAuditCursor(result.nextCursor);
+      } catch (cause) {
+        if (
+          request === auditRequest.current &&
+          selectedId.current === accountId
+        )
+          throw cause;
+      }
     },
     [],
   );
-  const loadDetail = useCallback(async (id: string) => {
+  const loadDetail = useCallback(async (id: string, force = false) => {
+    if (accessTransition.current && !force) return;
     const request = ++detailRequest.current;
     ++auditRequest.current;
     const prefix = `/admin/accounts/${encodeURIComponent(id)}`;
     const params = new URLSearchParams({ accountId: id, limit: "20" });
-    const [accountResult, monitorResult, auditResult] = await Promise.all([
-      api<AccountDetail>(prefix),
-      api<{ monitors: Monitor[] }>(`${prefix}/monitors`),
-      api<{ items: AuditEvent[]; nextCursor: string | null }>(
-        `/admin/audit?${params}`,
-      ),
-    ]);
-    if (request !== detailRequest.current || selectedId.current !== id) return;
-    setDetail(accountResult);
-    setMonitors(monitorResult.monitors);
-    setAudit(auditResult.items);
-    setAuditCursor(auditResult.nextCursor);
+    try {
+      const [accountResult, monitorResult, auditResult] = await Promise.all([
+        api<AccountDetail>(prefix),
+        api<{ monitors: Monitor[] }>(`${prefix}/monitors`),
+        api<{ items: AuditEvent[]; nextCursor: string | null }>(
+          `/admin/audit?${params}`,
+        ),
+      ]);
+      if (request !== detailRequest.current || selectedId.current !== id)
+        return;
+      setDetail(accountResult);
+      setMonitors(monitorResult.monitors);
+      setAudit(auditResult.items);
+      setAuditCursor(auditResult.nextCursor);
+    } catch (cause) {
+      if (request === detailRequest.current && selectedId.current === id)
+        throw cause;
+    }
   }, []);
+  const onSessionVerified = useCallback(async () => {
+    setNow(Date.now());
+    if (accessError.current) {
+      setError("");
+      accessError.current = false;
+    }
+    setRefreshError("");
+    ++accountRequest.current;
+    ++detailRequest.current;
+    ++auditRequest.current;
+    try {
+      await Promise.all([
+        loadAccounts(query, "", false, true),
+        selectedId.current
+          ? loadDetail(selectedId.current, true)
+          : Promise.resolve(),
+      ]);
+    } catch (cause) {
+      setRefreshError(errorMessage(cause, "admin"));
+      throw cause;
+    }
+  }, [loadAccounts, loadDetail, query]);
   useEffect(() => {
-    if (!canRead || accounts !== null) return;
+    if (!canRead || mfaBusy || accounts !== null) return;
     // Bootstrap the MFA-gated list after the asynchronous API request.
-    void loadAccounts(query).catch((cause) => setError(errorMessage(cause)));
-  }, [accounts, canRead, loadAccounts, query]);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Fetch completes asynchronously; no state changes before the response.
+    void loadAccounts(query).catch((cause) => reportError(cause));
+  }, [accounts, canRead, mfaBusy, loadAccounts, query, reportError]);
 
   function search(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (accessTransition.current || mutationBusy.current) return;
     const value = String(
       new FormData(event.currentTarget).get("q") ?? "",
     ).trim();
@@ -152,10 +246,11 @@ export function AdminPage() {
     setAccounts(null);
   }
   async function select(id: string) {
-    if (mutationBusy.current) return;
+    if (mutationBusy.current || accessTransition.current) return;
     selectedId.current = id;
     ++detailRequest.current;
     ++auditRequest.current;
+    setDetailTab("profile");
     setDetail(null);
     setMonitors(null);
     setAudit(null);
@@ -169,43 +264,59 @@ export function AdminPage() {
         router.replace("/login");
         return;
       }
-      setError(errorMessage(cause));
+      reportError(cause);
     }
   }
   async function mutate(
     label: string,
     action: () => Promise<unknown>,
     message: string,
+    logout = false,
   ) {
     if (!canWrite) {
+      accessError.current = true;
       setError("Для изменения данных повторно подтвердите вход в блоке MFA.");
       return;
     }
-    if (mutationBusy.current) return;
+    if (mutationBusy.current || accessTransition.current) return;
     mutationBusy.current = true;
     const targetId = detail?.account.id ?? null;
     setBusy(label);
     setError("");
     setSuccess("");
+    setRefreshError("");
     try {
-      await action();
-      if (targetId && selectedId.current === targetId)
-        await loadDetail(targetId);
-      await loadAccounts(query);
+      try {
+        await action();
+      } catch (cause) {
+        if (cause instanceof ApiError && cause.status === 401)
+          router.replace("/login");
+        else reportError(cause);
+        return;
+      }
       setSuccess(message);
-    } catch (cause) {
-      if (cause instanceof ApiError && cause.status === 401) {
+      if (logout) {
         router.replace("/login");
         return;
       }
-      setError(errorMessage(cause));
-      if (targetId && selectedId.current === targetId)
-        void loadDetail(targetId).catch(() => undefined);
+      try {
+        await Promise.all([
+          targetId && selectedId.current === targetId
+            ? loadDetail(targetId)
+            : Promise.resolve(),
+          loadAccounts(query),
+        ]);
+      } catch {
+        setRefreshError(
+          "Изменение сохранено, но данные не обновились. Обновите данные; повторять действие не нужно.",
+        );
+      }
     } finally {
       mutationBusy.current = false;
       setBusy("");
     }
   }
+
   function accountPath(suffix = "") {
     return `/admin/accounts/${encodeURIComponent(detail?.account.id ?? "")}${suffix}`;
   }
@@ -235,7 +346,14 @@ export function AdminPage() {
     event.preventDefault();
     if (!detail) return;
     const data = new FormData(event.currentTarget);
-    const validUntil = new Date(String(data.get("validUntil"))).toISOString();
+    const date = new Date(String(data.get("validUntil") ?? ""));
+    // eslint-disable-next-line react-hooks/purity -- Submit-time validation must compare with the current clock.
+    if (!Number.isFinite(date.getTime()) || date.getTime() <= Date.now()) {
+      accessError.current = false;
+      setError("Укажите корректную дату окончания квоты в будущем.");
+      return;
+    }
+    const validUntil = date.toISOString();
     await mutate(
       "entitlement",
       () =>
@@ -288,6 +406,7 @@ export function AdminPage() {
           body: { reason: String(data.get("reason") ?? "").trim() },
         }),
       "Сессии завершены.",
+      detail.account.id === profile.account.id,
     );
   }
   async function deleteMonitor(monitor: Monitor, reason: string) {
@@ -316,9 +435,27 @@ export function AdminPage() {
           <p>Аккаунты, квоты, мониторы и история действий.</p>
         </div>
       </div>
-      <AdminMfa onState={onMfaState} />
+      <AdminMfa
+        onState={onMfaState}
+        onSessionVerified={onSessionVerified}
+        onBusyChange={onMfaBusy}
+        disabled={!!busy || !!monitorForm}
+      />
       {error && <Notice>{error}</Notice>}
       {success && <Notice success>{success}</Notice>}
+      {refreshError && (
+        <Notice>
+          {refreshError}{" "}
+          <button
+            type="button"
+            className="quiet"
+            disabled={mfaBusy || !!busy}
+            onClick={() => void onSessionVerified().catch(() => undefined)}
+          >
+            Обновить данные
+          </button>
+        </Notice>
+      )}
       {canRead && (
         <div className="admin-layout">
           <section
@@ -342,7 +479,7 @@ export function AdminPage() {
                 maxLength={200}
                 placeholder="Имя или email"
               />
-              <button className="secondary" disabled={!!busy}>
+              <button className="secondary" disabled={!!busy || mfaBusy}>
                 Найти
               </button>
             </form>
@@ -359,7 +496,7 @@ export function AdminPage() {
                       className={
                         detail?.account.id === account.id ? "selected" : ""
                       }
-                      disabled={!!busy}
+                      disabled={!!busy || mfaBusy}
                       onClick={() => void select(account.id)}
                     >
                       <strong>{account.name}</strong>
@@ -382,9 +519,10 @@ export function AdminPage() {
               <button
                 className="quiet"
                 type="button"
+                disabled={mfaBusy || !!busy}
                 onClick={() =>
                   void loadAccounts(query, nextCursor, true).catch((cause) =>
-                    setError(errorMessage(cause)),
+                    reportError(cause),
                   )
                 }
               >
@@ -393,13 +531,40 @@ export function AdminPage() {
             )}
           </section>
           <div className="admin-detail">
+            {detail && (
+              <div
+                className="admin-detail-nav"
+                role="group"
+                aria-label="Разделы аккаунта"
+              >
+                {[
+                  ["profile", "Профиль"],
+                  ["quota", "Квота"],
+                  ["monitors", "Мониторы"],
+                  ["audit", "История"],
+                ].map(([key, label]) => (
+                  <button
+                    type="button"
+                    key={key}
+                    className="quiet"
+                    aria-pressed={detailTab === key}
+                    onClick={() => setDetailTab(key)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
             {!detail ? (
               <section className="panel">
                 <p className="muted">Выберите аккаунт, чтобы увидеть детали.</p>
               </section>
             ) : (
               <>
-                <section className="panel admin-detail-panel">
+                <section
+                  className="panel admin-detail-panel"
+                  hidden={detailTab !== "profile"}
+                >
                   <div className="panel-heading">
                     <div>
                       <h2>{detail.account.name}</h2>
@@ -470,7 +635,10 @@ export function AdminPage() {
                             maxLength={500}
                           />
                         </label>
-                        <button className="secondary" disabled={!!busy}>
+                        <button
+                          className="secondary"
+                          disabled={!!busy || mfaBusy}
+                        >
                           Сохранить профиль и права
                         </button>
                       </form>
@@ -490,7 +658,9 @@ export function AdminPage() {
                         </label>
                         <button
                           className="secondary"
-                          disabled={!!busy || detail.sessionsCount === 0}
+                          disabled={
+                            !!busy || mfaBusy || detail.sessionsCount === 0
+                          }
                         >
                           Завершить все сессии
                         </button>
@@ -498,7 +668,10 @@ export function AdminPage() {
                     </>
                   )}
                 </section>
-                <section className="panel admin-detail-panel">
+                <section
+                  className="panel admin-detail-panel"
+                  hidden={detailTab !== "quota"}
+                >
                   <div className="panel-heading">
                     <div>
                       <h2>Квота</h2>
@@ -558,7 +731,10 @@ export function AdminPage() {
                             maxLength={500}
                           />
                         </label>
-                        <button className="secondary" disabled={!!busy}>
+                        <button
+                          className="secondary"
+                          disabled={!!busy || mfaBusy}
+                        >
                           Сохранить квоту
                         </button>
                       </form>
@@ -578,7 +754,7 @@ export function AdminPage() {
                           </label>
                           <button
                             className="quiet danger-text"
-                            disabled={!!busy}
+                            disabled={!!busy || mfaBusy}
                           >
                             Отозвать квоту
                           </button>
@@ -587,7 +763,10 @@ export function AdminPage() {
                     </>
                   )}
                 </section>
-                <section className="panel admin-detail-panel">
+                <section
+                  className="panel admin-detail-panel"
+                  hidden={detailTab !== "monitors"}
+                >
                   <div className="panel-heading">
                     <div>
                       <h2>Мониторы</h2>
@@ -597,6 +776,7 @@ export function AdminPage() {
                       <button
                         className="secondary"
                         type="button"
+                        disabled={mfaBusy || !!busy}
                         onClick={() => setMonitorForm("new")}
                       >
                         Добавить
@@ -621,7 +801,7 @@ export function AdminPage() {
                               <button
                                 className="quiet"
                                 type="button"
-                                disabled={!!busy}
+                                disabled={!!busy || mfaBusy}
                                 onClick={() => setMonitorForm(monitor)}
                               >
                                 Изменить
@@ -650,7 +830,7 @@ export function AdminPage() {
                                 </label>
                                 <button
                                   className="quiet danger-text"
-                                  disabled={!!busy}
+                                  disabled={!!busy || mfaBusy}
                                 >
                                   Удалить
                                 </button>
@@ -662,7 +842,10 @@ export function AdminPage() {
                     </ul>
                   )}
                 </section>
-                <section className="panel admin-detail-panel">
+                <section
+                  className="panel admin-detail-panel"
+                  hidden={detailTab !== "audit"}
+                >
                   <div className="panel-heading">
                     <div>
                       <h2>Журнал действий</h2>
@@ -693,12 +876,13 @@ export function AdminPage() {
                     <button
                       className="quiet"
                       type="button"
+                      disabled={mfaBusy || !!busy}
                       onClick={() =>
                         void loadAudit(
                           detail.account.id,
                           auditCursor,
                           true,
-                        ).catch((cause) => setError(errorMessage(cause)))
+                        ).catch((cause) => reportError(cause))
                       }
                     >
                       Показать ещё

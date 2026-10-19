@@ -23,6 +23,8 @@ export type Session = {
 export const SessionContext = createContext<{
   profile: Profile;
   refresh: () => Promise<void>;
+  beginSessionTransition: () => void;
+  endSessionTransition: () => void;
 } | null>(null);
 export function useSession() {
   const session = useContext(SessionContext);

@@ -10,6 +10,7 @@ import {
   Incident,
   Monitor,
   Status,
+  resultErrorMessage,
 } from "@/entities/monitor";
 import { api, ApiError, errorMessage, safeAppReturnTo } from "@/shared/api";
 import { Dialog } from "@/shared/dialog";
@@ -53,20 +54,24 @@ export function MonitorsPage() {
   const [filter, setFilter] = useState("");
   const openedDeepLink = useRef("");
   const detailRequest = useRef(0);
+  const listRequest = useRef(0);
   const router = useRouter();
   const searchParams = useSearchParams();
   const deepLink = safeAppReturnTo(`/app?${searchParams.toString()}`);
   const load = useCallback(async () => {
+    const request = ++listRequest.current;
     try {
       const [list, access] = await Promise.all([
         api<{ monitors: Monitor[] }>("/monitors"),
         api<{ entitlement: Entitlement }>("/entitlement"),
       ]);
+      if (request !== listRequest.current) return;
       setMonitors(list.monitors ?? []);
       setEntitlement(access.entitlement);
       setUpdatedAt(new Date());
       setError("");
     } catch (e) {
+      if (request !== listRequest.current) return;
       if (e instanceof ApiError && e.status === 401) {
         const returnTo = safeAppReturnTo(
           window.location.pathname + window.location.search,
@@ -77,16 +82,23 @@ export function MonitorsPage() {
             : "/login",
         );
       } else setError(errorMessage(e));
+      throw e;
     }
   }, [router]);
   // Bootstrap browser-only session data; state changes after asynchronous API requests.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void load();
+    void load().catch(() => undefined);
     const timer = setInterval(() => {
-      if (document.visibilityState === "visible") void load();
+      if (document.visibilityState === "visible")
+        void load().catch(() => undefined);
     }, 15000);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- Fence the latest read when leaving this route.
+      ++listRequest.current;
+      ++detailRequest.current;
+    };
   }, [load]);
   useEffect(() => {
     const update = () => setSharedDraft(readMonitorDraft(profile.account.id));
@@ -103,7 +115,11 @@ export function MonitorsPage() {
         authenticated: true,
         body: { enabled: !monitor.enabled, version: monitor.version },
       });
-      await load();
+      await load().catch(() =>
+        setError(
+          "Изменение сохранено, но список не обновился. Обновите мониторы; повторять действие не нужно.",
+        ),
+      );
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -120,7 +136,11 @@ export function MonitorsPage() {
         authenticated: true,
       });
       setDeleting(null);
-      await load();
+      await load().catch(() =>
+        setError(
+          "Монитор удалён, но список не обновился. Обновите мониторы; повторять удаление не нужно.",
+        ),
+      );
     } catch (e) {
       setDeleteError(errorMessage(e));
     } finally {
@@ -203,6 +223,7 @@ export function MonitorsPage() {
   }, [detail]);
   async function olderResults() {
     if (!detail || !detail.results.length) return;
+    const request = ++detailRequest.current;
     setBusy("history");
     setDetailError("");
     try {
@@ -210,6 +231,7 @@ export function MonitorsPage() {
       const response = await api<{ results: CheckResult[] }>(
         `/monitors/${encodeURIComponent(detail.monitor.id)}/results?limit=50&before=${encodeURIComponent(cursor)}`,
       );
+      if (request !== detailRequest.current) return;
       setDetail({
         ...detail,
         results: [...detail.results, ...(response.results ?? [])],
@@ -217,9 +239,9 @@ export function MonitorsPage() {
       if (!response.results?.length)
         setDetailError("Более ранних результатов нет.");
     } catch (e) {
-      setDetailError(errorMessage(e));
+      if (request === detailRequest.current) setDetailError(errorMessage(e));
     } finally {
-      setBusy("");
+      if (request === detailRequest.current) setBusy("");
     }
   }
   const up = monitors?.filter((m) => m.state === "UP").length ?? 0;
@@ -374,7 +396,7 @@ export function MonitorsPage() {
               className="icon-button"
               title="Обновить"
               aria-label="Обновить мониторы"
-              onClick={() => void load()}
+              onClick={() => void load().catch(() => undefined)}
             >
               ↻
             </button>
@@ -712,7 +734,9 @@ export function MonitorsPage() {
                                 : "Ошибка"}
                           </span>
                           {r.errorCode && (
-                            <span className="cell-sub mono">{r.errorCode}</span>
+                            <span className="cell-sub">
+                              {resultErrorMessage(r.errorCode)}
+                            </span>
                           )}
                         </td>
                         <td className="mono">{r.httpStatus ?? "—"}</td>
