@@ -191,6 +191,7 @@ export function PublicFooter({
         <nav
           className="landing-footer-install"
           aria-label="Установка приложения"
+          data-install-promotion
         >
           <h2>Установка приложения</h2>
           {androidAvailable ? (

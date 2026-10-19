@@ -4,13 +4,15 @@ import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import {
   api,
+  ApiError,
   errorMessage,
   oauthAuthorizationUrl,
   oauthCallbackMessage,
   safeAppReturnTo,
 } from "@/shared/api";
 import { Turnstile } from "@/shared/turnstile";
-import { Notice, PasswordInput, Spinner } from "@/shared/ui";
+import { Loading, Notice, PasswordInput, Spinner } from "@/shared/ui";
+export { PublicAuthLinks } from "./public-auth-links";
 export type AuthMode =
   "login" | "register" | "verify" | "reset-request" | "reset-confirm";
 const config = {
@@ -111,6 +113,67 @@ function OAuthButtons() {
       )}
       {error && <Notice>{error}</Notice>}
     </div>
+  );
+}
+export function AuthEntry({ mode }: { mode: "login" | "register" }) {
+  const router = useRouter();
+  const [showForm, setShowForm] = useState(false);
+  const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const account = params.get("account");
+    if (
+      mode === "login" &&
+      (params.get("oauthError") ||
+        account === "deleted" ||
+        account === "unknown")
+    ) {
+      // Let the form capture and display one-time action results before clearing the URL.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setShowForm(true);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      controller.abort();
+      setError(
+        "Проверка входа заняла слишком много времени. Повторите попытку.",
+      );
+    }, 10_000);
+    void api("/me", { signal: controller.signal })
+      .then(() => {
+        if (!controller.signal.aborted)
+          router.replace(safeAppReturnTo(params.get("returnTo")) ?? "/app");
+      })
+      .catch((failure) => {
+        if (controller.signal.aborted) return;
+        if (failure instanceof ApiError && failure.status === 401)
+          setShowForm(true);
+        else setError(errorMessage(failure));
+      })
+      .finally(() => window.clearTimeout(timer));
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [mode, router, attempt]);
+  if (showForm) return <AuthForm mode={mode} />;
+  return error ? (
+    <div className="form-stack">
+      <Notice>{error}</Notice>
+      <button
+        type="button"
+        onClick={() => {
+          setError("");
+          setAttempt((value) => value + 1);
+        }}
+      >
+        Повторить
+      </button>
+    </div>
+  ) : (
+    <Loading text="Проверяем вход…" />
   );
 }
 export function AuthForm({ mode }: { mode: AuthMode }) {

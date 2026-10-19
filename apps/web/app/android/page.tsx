@@ -53,6 +53,7 @@ export default function AndroidPage() {
           <aside
             className="android-download-card"
             aria-labelledby="android-download-title"
+            data-install-promotion
           >
             <h2 id="android-download-title">Установите приложение</h2>
             <p className="android-download-intro">Для Android 10 и новее</p>
@@ -171,7 +172,7 @@ export default function AndroidPage() {
           </nav>
         </section>
         {release && (
-          <details className="android-verification">
+          <details className="android-verification" data-install-promotion>
             <summary>Проверка файла</summary>
             <div className="android-verification-content">
               <p>

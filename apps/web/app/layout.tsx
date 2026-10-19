@@ -18,7 +18,7 @@ export default function RootLayout({
   return (
     <html lang="ru" suppressHydrationWarning>
       <head>
-        {/* Apply the saved theme before paint; this static same-origin script contains no user data. */}
+        {/* Apply the theme and installed-app UI before paint using a static same-origin script. */}
         {/* eslint-disable-next-line @next/next/no-sync-scripts */}
         <script src="/theme-init.js" />
       </head>

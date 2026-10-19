@@ -28,6 +28,8 @@ export function OAuthIdentities({
   const { beginSessionTransition, endSessionTransition } = useSession();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [identities, setIdentities] = useState<Identity[] | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -36,6 +38,7 @@ export function OAuthIdentities({
       api<{ providers: Provider[] }>("/auth/oauth/providers", { signal }),
       api<{ identities: Identity[] }>("/me/identities", { signal }),
     ]);
+    if (signal?.aborted) return;
     setProviders(available.providers);
     setIdentities(linked.identities);
   }, []);
@@ -56,13 +59,30 @@ export function OAuthIdentities({
           ),
         );
     }
+  }, [onChange]);
+  useEffect(() => {
     const controller = new AbortController();
-    void load(controller.signal).catch((cause) => {
-      if (!(cause instanceof DOMException && cause.name === "AbortError"))
-        setError(errorMessage(cause));
-    });
-    return () => controller.abort();
-  }, [load, onChange]);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoadError("");
+    const timer = window.setTimeout(() => {
+      controller.abort();
+      setLoadError(
+        "Загрузка способов входа заняла слишком много времени. Повторите попытку.",
+      );
+    }, 10_000);
+    void load(controller.signal)
+      .catch((cause) => {
+        if (!controller.signal.aborted) {
+          setLoadError(errorMessage(cause));
+          controller.abort();
+        }
+      })
+      .finally(() => window.clearTimeout(timer));
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [load, loadAttempt]);
 
   async function connect(
     event: FormEvent<HTMLFormElement>,
@@ -159,7 +179,18 @@ export function OAuthIdentities({
           <Link href="/app/admin">разделе администрирования</Link>.
         </p>
       )}
-      {!identities ? (
+      {loadError ? (
+        <div className="form-stack">
+          <Notice>{loadError}</Notice>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => setLoadAttempt((value) => value + 1)}
+          >
+            Повторить загрузку способов входа
+          </button>
+        </div>
+      ) : !identities ? (
         <Loading />
       ) : (
         <div className="oauth-identity-list">

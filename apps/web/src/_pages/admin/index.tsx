@@ -69,6 +69,8 @@ export function AdminPage() {
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState("");
   const selectedId = useRef<string | null>(null);
+  const selectionFocus = useRef<string | null>(null);
+  const detailHeading = useRef<HTMLHeadingElement>(null);
   const detailRequest = useRef(0);
   const accountRequest = useRef(0);
   const auditRequest = useRef(0);
@@ -111,6 +113,14 @@ export function AdminPage() {
     Date.parse(mfa.verifiedUntil) > now;
   const canWrite =
     canRead && !!mfa?.stepUpUntil && Date.parse(mfa.stepUpUntil) > now;
+  useEffect(() => {
+    if (!detail || selectionFocus.current !== detail.account.id) return;
+    selectionFocus.current = null;
+    if (window.matchMedia?.("(max-width: 950px)").matches) {
+      detailHeading.current?.focus({ preventScroll: true });
+      detailHeading.current?.scrollIntoView?.({ block: "start" });
+    }
+  }, [detail]);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setNow(Date.now());
@@ -274,6 +284,7 @@ export function AdminPage() {
     )
       return;
     selectedId.current = id;
+    selectionFocus.current = id;
     ++detailRequest.current;
     ++auditRequest.current;
     setDetailTab("profile");
@@ -287,6 +298,7 @@ export function AdminPage() {
       await loadDetail(id);
     } catch (cause) {
       if (selectedId.current !== id) return;
+      selectionFocus.current = null;
       if (cause instanceof ApiError && cause.status === 401) {
         router.replace("/login");
         return;
@@ -523,6 +535,7 @@ export function AdminPage() {
                       className={
                         detail?.account.id === account.id ? "selected" : ""
                       }
+                      aria-pressed={detail?.account.id === account.id}
                       disabled={
                         !!busy || mfaBusy || account.status === "deleted"
                       }
@@ -590,8 +603,32 @@ export function AdminPage() {
               </div>
             )}
             {!detail ? (
-              <section className="panel">
-                <p className="muted">Выберите аккаунт, чтобы увидеть детали.</p>
+              <section
+                className="panel admin-empty"
+                aria-labelledby="admin-empty-title"
+              >
+                <span className="admin-empty-icon" aria-hidden="true">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                    <circle
+                      cx="12"
+                      cy="8"
+                      r="4"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                    />
+                    <path
+                      d="M4 21v-2a8 8 0 0 1 16 0v2"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                    />
+                  </svg>
+                </span>
+                <h2 id="admin-empty-title">Выберите аккаунт</h2>
+                <p>
+                  Найдите пользователя по имени или email и выберите его в
+                  списке. Здесь появятся профиль, квота, мониторы и история
+                  действий.
+                </p>
               </section>
             ) : (
               <>
@@ -601,7 +638,9 @@ export function AdminPage() {
                 >
                   <div className="panel-heading">
                     <div>
-                      <h2>{detail.account.name}</h2>
+                      <h2 ref={detailHeading} tabIndex={-1}>
+                        {detail.account.name}
+                      </h2>
                       <p>{detail.account.email}</p>
                     </div>
                   </div>
@@ -933,11 +972,6 @@ export function AdminPage() {
             )}
           </div>
         </div>
-      )}
-      {canRead && !canWrite && (
-        <Notice>
-          Для изменения данных повторно подтвердите вход в блоке MFA.
-        </Notice>
       )}
       {monitorForm && detail && (
         <MonitorForm

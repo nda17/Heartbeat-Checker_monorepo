@@ -13,21 +13,44 @@ export function SettingsPage() {
     useSession();
   const router = useRouter();
   const [sessions, setSessions] = useState<Session[] | null>(null);
+  const [sessionsError, setSessionsError] = useState("");
+  const [sessionsAttempt, setSessionsAttempt] = useState(0);
   const [error, setError] = useState("");
+  const [errorTarget, setErrorTarget] = useState("profile");
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState("");
-  const loadSessions = useCallback(async () => {
-    setSessions((await api<{ sessions: Session[] }>("/me/sessions")).sessions);
+  const loadSessions = useCallback(async (signal?: AbortSignal) => {
+    const result = await api<{ sessions: Session[] }>("/me/sessions", {
+      signal,
+    });
+    if (!signal?.aborted) setSessions(result.sessions);
   }, []);
   // Bootstrap browser-only session data; state changes after asynchronous API requests.
   useEffect(() => {
+    const controller = new AbortController();
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void loadSessions().catch((e) => setError(errorMessage(e)));
-  }, [loadSessions]);
+    setSessionsError("");
+    const timer = window.setTimeout(() => {
+      controller.abort();
+      setSessionsError(
+        "Загрузка сессий заняла слишком много времени. Повторите попытку.",
+      );
+    }, 10_000);
+    void loadSessions(controller.signal)
+      .catch((cause) => {
+        if (!controller.signal.aborted) setSessionsError(errorMessage(cause));
+      })
+      .finally(() => window.clearTimeout(timer));
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [loadSessions, sessionsAttempt]);
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     setBusy("profile");
+    setErrorTarget("profile");
     setError("");
     setSuccess("");
     try {
@@ -53,6 +76,7 @@ export function SettingsPage() {
     const form = event.currentTarget;
     const data = new FormData(form);
     setBusy("password");
+    setErrorTarget("password");
     setError("");
     setSuccess("");
     beginSessionTransition();
@@ -76,6 +100,7 @@ export function SettingsPage() {
   }
   async function revoke(id?: string, current = false) {
     setBusy(id ?? "all");
+    setErrorTarget(id ?? "sessions");
     setError("");
     setSuccess("");
     const rotatesSession = !id || current;
@@ -112,7 +137,7 @@ export function SettingsPage() {
           <p>Личные данные и контроль доступа к рабочему пространству.</p>
         </div>
       </div>
-      {error && <Notice>{error}</Notice>}
+      {error && errorTarget === "profile" && <Notice>{error}</Notice>}
       {success && <Notice success>{success}</Notice>}
       <div className="settings-grid">
         <section className="panel settings-panel">
@@ -182,6 +207,7 @@ export function SettingsPage() {
                   От 12 символов. После смены понадобится войти снова.
                 </span>
               </label>
+              {error && errorTarget === "password" && <Notice>{error}</Notice>}
               <button className="secondary" disabled={!!busy}>
                 {busy === "password" ? "Обновляем…" : "Изменить пароль"}
               </button>
@@ -218,7 +244,19 @@ export function SettingsPage() {
             Завершить все сессии
           </button>
         </div>
-        {!sessions ? (
+        {error && errorTarget === "sessions" && <Notice>{error}</Notice>}
+        {sessionsError ? (
+          <div className="form-stack">
+            <Notice>{sessionsError}</Notice>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => setSessionsAttempt((value) => value + 1)}
+            >
+              Повторить загрузку сессий
+            </button>
+          </div>
+        ) : !sessions ? (
           <Loading />
         ) : (
           <ul className="session-list">
@@ -242,6 +280,9 @@ export function SettingsPage() {
                     {dateTime(session.lastUsedAt)} · До{" "}
                     {dateTime(session.expiresAt)}
                   </p>
+                  {error && errorTarget === session.id && (
+                    <Notice>{error}</Notice>
+                  )}
                 </div>
                 <button
                   className="quiet"
