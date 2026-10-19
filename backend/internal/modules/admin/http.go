@@ -18,6 +18,8 @@ import (
 
 func (m *Module) Register(mux *http.ServeMux, protect func(http.Handler) http.Handler) {
 	routes := map[string]http.HandlerFunc{
+		"GET /api/v1/admin/billing/pricing":                                           m.getPricing,
+		"PUT /api/v1/admin/billing/pricing":                                           m.putPricing,
 		"GET /api/v1/admin/accounts":                                                  m.listAccounts,
 		"GET /api/v1/admin/accounts/{id}":                                             m.getAccount,
 		"PATCH /api/v1/admin/accounts/{id}":                                           m.patchAccount,

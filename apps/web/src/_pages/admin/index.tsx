@@ -9,6 +9,7 @@ import {
   checkTypeLabel,
   monitorTarget,
 } from "@/entities/monitor";
+import { AdminPricing } from "@/features/admin-pricing";
 import { AdminMfa, MfaState } from "@/features/admin-mfa";
 import { MonitorForm } from "@/features/monitor-form";
 import { api, ApiError, errorMessage } from "@/shared/api";
@@ -70,6 +71,8 @@ export function AdminPage() {
   const [error, setError] = useState("");
   const [refreshError, setRefreshError] = useState("");
   const [mfaBusy, setMfaBusy] = useState(false);
+  const [pricingRevision, setPricingRevision] = useState(0);
+  const [pricingBusy, setPricingBusy] = useState(false);
   const [detailTab, setDetailTab] = useState("profile");
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState("");
@@ -240,6 +243,7 @@ export function AdminPage() {
     }
   }, []);
   const onSessionVerified = useCallback(async () => {
+    setPricingRevision((value) => value + 1);
     setNow(Date.now());
     if (accessError.current) {
       setError("");
@@ -322,7 +326,7 @@ export function AdminPage() {
       setError("Для изменения данных повторно подтвердите вход в блоке MFA.");
       return;
     }
-    if (mutationBusy.current || accessTransition.current) return;
+    if (pricingBusy || mutationBusy.current || accessTransition.current) return;
     mutationBusy.current = true;
     const targetId = detail?.account.id ?? null;
     setBusy(label);
@@ -483,7 +487,14 @@ export function AdminPage() {
         onState={onMfaState}
         onSessionVerified={onSessionVerified}
         onBusyChange={onMfaBusy}
-        disabled={!!busy || !!monitorForm}
+        disabled={!!busy || !!monitorForm || pricingBusy}
+      />
+      <AdminPricing
+        canRead={canRead}
+        canWrite={canWrite}
+        blocked={mfaBusy || !!busy || !!monitorForm}
+        sessionRevision={pricingRevision}
+        onBusyChange={setPricingBusy}
       />
       {error && <Notice>{error}</Notice>}
       {success && <Notice success>{success}</Notice>}
@@ -493,7 +504,7 @@ export function AdminPage() {
           <button
             type="button"
             className="quiet"
-            disabled={mfaBusy || !!busy}
+            disabled={mfaBusy || pricingBusy || !!busy}
             onClick={() => void onSessionVerified().catch(() => undefined)}
           >
             Обновить данные
@@ -523,7 +534,10 @@ export function AdminPage() {
                 maxLength={200}
                 placeholder="Имя или email"
               />
-              <button className="secondary" disabled={!!busy || mfaBusy}>
+              <button
+                className="secondary"
+                disabled={!!busy || pricingBusy || mfaBusy}
+              >
                 Найти
               </button>
             </form>
@@ -542,7 +556,10 @@ export function AdminPage() {
                       }
                       aria-pressed={detail?.account.id === account.id}
                       disabled={
-                        !!busy || mfaBusy || account.status === "deleted"
+                        !!busy ||
+                        pricingBusy ||
+                        mfaBusy ||
+                        account.status === "deleted"
                       }
                       onClick={() => void select(account.id)}
                     >
@@ -568,7 +585,7 @@ export function AdminPage() {
               <button
                 className="quiet"
                 type="button"
-                disabled={mfaBusy || !!busy}
+                disabled={mfaBusy || pricingBusy || !!busy}
                 onClick={() =>
                   void loadAccounts(query, nextCursor, true).catch((cause) =>
                     reportError(cause),
@@ -702,7 +719,7 @@ export function AdminPage() {
                         </label>
                         <button
                           className="secondary"
-                          disabled={!!busy || mfaBusy}
+                          disabled={!!busy || pricingBusy || mfaBusy}
                         >
                           Сохранить профиль и права
                         </button>
@@ -724,7 +741,10 @@ export function AdminPage() {
                         <button
                           className="secondary"
                           disabled={
-                            !!busy || mfaBusy || detail.sessionsCount === 0
+                            !!busy ||
+                            pricingBusy ||
+                            mfaBusy ||
+                            detail.sessionsCount === 0
                           }
                         >
                           Завершить все сессии
@@ -798,7 +818,7 @@ export function AdminPage() {
                         </label>
                         <button
                           className="secondary"
-                          disabled={!!busy || mfaBusy}
+                          disabled={!!busy || pricingBusy || mfaBusy}
                         >
                           Сохранить квоту
                         </button>
@@ -819,7 +839,7 @@ export function AdminPage() {
                           </label>
                           <button
                             className="quiet danger-text"
-                            disabled={!!busy || mfaBusy}
+                            disabled={!!busy || pricingBusy || mfaBusy}
                           >
                             Отозвать квоту
                           </button>
@@ -841,7 +861,7 @@ export function AdminPage() {
                       <button
                         className="secondary"
                         type="button"
-                        disabled={mfaBusy || !!busy}
+                        disabled={mfaBusy || pricingBusy || !!busy}
                         onClick={() => {
                           setSuccess("");
                           setMonitorForm("new");
@@ -872,7 +892,7 @@ export function AdminPage() {
                               <button
                                 className="quiet"
                                 type="button"
-                                disabled={!!busy || mfaBusy}
+                                disabled={!!busy || pricingBusy || mfaBusy}
                                 onClick={() => {
                                   setSuccess("");
                                   setMonitorForm(monitor);
@@ -904,7 +924,7 @@ export function AdminPage() {
                                 </label>
                                 <button
                                   className="quiet danger-text"
-                                  disabled={!!busy || mfaBusy}
+                                  disabled={!!busy || pricingBusy || mfaBusy}
                                 >
                                   Удалить
                                 </button>
@@ -950,7 +970,7 @@ export function AdminPage() {
                     <button
                       className="quiet"
                       type="button"
-                      disabled={mfaBusy || !!busy}
+                      disabled={mfaBusy || pricingBusy || !!busy}
                       onClick={() =>
                         void loadAudit(
                           detail.account.id,

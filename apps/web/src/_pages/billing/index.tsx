@@ -6,6 +6,7 @@ import {
   errorMessage,
   paymentConfirmationUrl,
 } from "@/shared/api";
+import { isPricing } from "@/entities/billing";
 import { Entitlement } from "@/entities/monitor";
 import { useSession } from "@/entities/session";
 import { dateTime, Loading, Notice } from "@/shared/ui";
@@ -35,8 +36,28 @@ type Billing = {
   test?: boolean;
   accessUnchanged?: boolean;
   pricePerMonitorMinor: number;
+  priceVersion: number;
   orders: Order[];
 };
+type OrderIntent = {
+  count: number;
+  key: string;
+  priceVersion?: number;
+  pricePerMonitorMinor?: number;
+};
+type Quote = Pick<Billing, "pricePerMonitorMinor" | "priceVersion">;
+function validQuote(billing: Quote) {
+  return (
+    Number.isSafeInteger(billing.priceVersion) &&
+    billing.priceVersion > 0 &&
+    Number.isSafeInteger(billing.pricePerMonitorMinor) &&
+    billing.pricePerMonitorMinor >= 100 &&
+    billing.pricePerMonitorMinor <= 1_000_000
+  );
+}
+function maxOrderCount(billing: Billing) {
+  return Math.min(1000, Math.floor(35_000_000 / billing.pricePerMonitorMinor));
+}
 function orderStatus(order: Order) {
   if (order.provider === "mock") {
     if (order.status === "succeeded") return "Демонстрация завершена";
@@ -101,7 +122,8 @@ function YooKassaCheckout({
   const [statusNote, setStatusNote] = useState("");
   const [statusAttempt, setStatusAttempt] = useState(0);
   const [uncertain, setUncertain] = useState(false);
-  const request = useRef<{ count: number; key: string } | null>(null);
+  const [intentAmount, setIntentAmount] = useState<number | null>(null);
+  const request = useRef<OrderIntent | null>(null);
   const creating = useRef<AbortController | null>(null);
   const creationTimeout = useRef<number | undefined>(undefined);
   useEffect(() => {
@@ -116,11 +138,23 @@ function YooKassaCheckout({
         uuid.test(saved.key) &&
         Number.isInteger(saved.count) &&
         saved.count >= 1 &&
-        saved.count <= 1000
+        saved.count <= 1000 &&
+        (saved.priceVersion === undefined ||
+          (Number.isSafeInteger(saved.priceVersion) &&
+            saved.priceVersion > 0)) &&
+        (saved.pricePerMonitorMinor === undefined ||
+          (Number.isSafeInteger(saved.pricePerMonitorMinor) &&
+            saved.pricePerMonitorMinor >= 100 &&
+            saved.pricePerMonitorMinor <= 1_000_000))
       ) {
         request.current = saved;
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- Restore the account-bound immutable quote from tab storage.
+        setIntentAmount(
+          saved.pricePerMonitorMinor === undefined
+            ? null
+            : saved.count * saved.pricePerMonitorMinor,
+        );
         // Hydrate the account-bound retry key before allowing a new order.
-        // eslint-disable-next-line react-hooks/set-state-in-effect
         setCount(saved.count);
         setUncertain(true);
       }
@@ -246,7 +280,24 @@ function YooKassaCheckout({
       setError("Укажите количество мониторов от 1 до 1000.");
       return;
     }
-    request.current ??= { count: monitorCount, key: crypto.randomUUID() };
+    if (!request.current && !validQuote(billing)) {
+      setError(
+        "Цена недоступна. Обновите условия оплаты перед оформлением заказа.",
+      );
+      return;
+    }
+    if (!request.current && monitorCount > maxOrderCount(billing)) {
+      setError(
+        "Сумма заказа не должна превышать 350 000 рублей. Уменьшите количество мониторов.",
+      );
+      return;
+    }
+    request.current ??= {
+      count: monitorCount,
+      key: crypto.randomUUID(),
+      priceVersion: billing.priceVersion,
+      pricePerMonitorMinor: billing.pricePerMonitorMinor,
+    };
     try {
       window.sessionStorage.setItem(
         storageKey,
@@ -259,6 +310,11 @@ function YooKassaCheckout({
     creating.current = controller;
     setCount(monitorCount);
     setBusy(true);
+    setIntentAmount(
+      request.current?.pricePerMonitorMinor === undefined
+        ? null
+        : request.current.count * request.current.pricePerMonitorMinor,
+    );
     setUncertain(true);
     setError("");
     setStatusError("");
@@ -287,6 +343,7 @@ function YooKassaCheckout({
         body: {
           monitorCount: request.current.count,
           idempotencyKey: request.current.key,
+          priceVersion: request.current.priceVersion,
         },
       });
       if (creating.current !== controller || controller.signal.aborted) return;
@@ -346,7 +403,11 @@ function YooKassaCheckout({
   const quotedAmount =
     order && pending && !uncertain
       ? order.amountMinor
-      : count * billing.pricePerMonitorMinor;
+      : uncertain
+        ? intentAmount
+        : validQuote(billing)
+          ? count * billing.pricePerMonitorMinor
+          : null;
   const awaitingOrder = !!orderId && order?.id !== orderId;
   const halted =
     order?.reconciliationStatus === "manual_review" ||
@@ -382,7 +443,7 @@ function YooKassaCheckout({
               name="monitorCount"
               type="number"
               min={1}
-              max={1000}
+              max={uncertain ? 1000 : maxOrderCount(billing)}
               step={1}
               required
               value={count}
@@ -391,16 +452,43 @@ function YooKassaCheckout({
             />
           </label>
           <p>
-            Сумма: <strong>{money(quotedAmount)}</strong>
+            Сумма:{" "}
+            <strong>
+              {quotedAmount === null
+                ? "Уточняется по исходному заказу"
+                : money(quotedAmount)}
+            </strong>
           </p>
+          {!validQuote(billing) && !uncertain && (
+            <p>
+              Цена недоступна.{" "}
+              <button
+                type="button"
+                className="quiet"
+                disabled={busy}
+                onClick={() =>
+                  void onRefresh().catch(() =>
+                    setError("Не удалось обновить цену. Повторите попытку."),
+                  )
+                }
+              >
+                Обновить условия оплаты
+              </button>
+            </p>
+          )}
           <p className="field-hint">
-            Окончательная сумма и параметры заказа рассчитываются сервером.
-            Автопродление не подключается.
+            Максимальная сумма заказа — 350 000 рублей. Окончательная сумма и
+            параметры заказа рассчитываются сервером. Автопродление не
+            подключается.
           </p>
           {error && <Notice>{error}</Notice>}
           <button
             className="primary"
-            disabled={busy || ((!!pending || awaitingOrder) && !uncertain)}
+            disabled={
+              busy ||
+              (!uncertain &&
+                (!validQuote(billing) || !!pending || awaitingOrder))
+            }
           >
             {busy
               ? "Создаём заказ…"
@@ -456,10 +544,33 @@ export function BillingPage() {
   const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
   const [count, setCount] = useState(1);
   const [busy, setBusy] = useState(false);
+  const [uncertain, setUncertain] = useState(false);
+  const [intentAmount, setIntentAmount] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [demo, setDemo] = useState<"succeeded" | "canceled" | null>(null);
-  const request = useRef<{ count: number; key: string } | null>(null);
+  const request = useRef<OrderIntent | null>(null);
+  const quote = useRef<Quote>({ priceVersion: 0, pricePerMonitorMinor: 0 });
+  const quoteGeneration = useRef(0);
+  const highestQuoteVersion = useRef(0);
+  const mergeQuote = useCallback((next: Quote, generation: number): Quote => {
+    // Overview and background pricing share one fence. A later request owns
+    // failures, and even a newer request cannot roll an applied version back.
+    if (generation === quoteGeneration.current) {
+      if (validQuote(next)) {
+        if (next.priceVersion >= highestQuoteVersion.current) {
+          highestQuoteVersion.current = next.priceVersion;
+          quote.current = {
+            priceVersion: next.priceVersion,
+            pricePerMonitorMinor: next.pricePerMonitorMinor,
+          };
+        }
+      } else {
+        quote.current = { priceVersion: 0, pricePerMonitorMinor: 0 };
+      }
+    }
+    return quote.current;
+  }, []);
   const rememberOrder = useCallback((order: Order) => {
     setBilling((current) =>
       current
@@ -473,16 +584,102 @@ export function BillingPage() {
         : current,
     );
   }, []);
-  const load = useCallback(async (signal?: AbortSignal) => {
-    const [result, access] = await Promise.all([
-      api<Billing>("/billing", { signal }),
-      api<{ entitlement: Entitlement }>("/entitlement", { signal }),
-    ]);
-    if (signal?.aborted) return;
-    setBilling(result);
-    setEntitlement(access.entitlement);
-    return result;
-  }, []);
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      const generation = ++quoteGeneration.current;
+      try {
+        const [result, access] = await Promise.all([
+          api<Billing>("/billing", { signal }),
+          api<{ entitlement: Entitlement }>("/entitlement", { signal }),
+        ]);
+        if (signal?.aborted) return;
+        const overview = { ...result, ...mergeQuote(result, generation) };
+        setBilling(overview);
+        setEntitlement(access.entitlement);
+        return overview;
+      } catch (cause) {
+        if (!signal?.aborted) {
+          const currentQuote = mergeQuote(
+            { priceVersion: 0, pricePerMonitorMinor: 0 },
+            generation,
+          );
+          setBilling((current) =>
+            current ? { ...current, ...currentQuote } : current,
+          );
+        }
+        throw cause;
+      }
+    },
+    [mergeQuote],
+  );
+  useEffect(() => {
+    let alive = true;
+    let current: AbortController | null = null;
+    let timer: number | undefined;
+    async function refreshPrice() {
+      if (!alive || current || document.visibilityState === "hidden") return;
+      const controller = new AbortController();
+      current = controller;
+      const generation = ++quoteGeneration.current;
+      const invalidate = () => {
+        const currentQuote = mergeQuote(
+          { priceVersion: 0, pricePerMonitorMinor: 0 },
+          generation,
+        );
+        setBilling((value) => (value ? { ...value, ...currentQuote } : value));
+      };
+      timer = window.setTimeout(() => {
+        if (current !== controller) return;
+        current = null;
+        controller.abort();
+        if (alive) invalidate();
+      }, 5_000);
+      const timeout = timer;
+      try {
+        const result = await api<{ pricing: unknown }>("/billing/pricing", {
+          signal: controller.signal,
+        });
+        if (!alive || current !== controller || controller.signal.aborted)
+          return;
+        const pricing = result.pricing;
+        if (!isPricing(pricing)) {
+          invalidate();
+          return;
+        }
+        const currentQuote = mergeQuote(
+          {
+            pricePerMonitorMinor: pricing.pricePerMonitorMinor,
+            priceVersion: pricing.version,
+          },
+          generation,
+        );
+        setBilling((value) => (value ? { ...value, ...currentQuote } : value));
+      } catch {
+        if (alive && current === controller && !controller.signal.aborted)
+          invalidate();
+      } finally {
+        window.clearTimeout(timeout);
+        if (current === controller) current = null;
+      }
+    }
+    const update = () => {
+      void refreshPrice();
+    };
+    window.addEventListener("focus", update);
+    window.addEventListener("pageshow", update);
+    document.addEventListener("visibilitychange", update);
+    const interval = window.setInterval(update, 60_000);
+    return () => {
+      alive = false;
+      current?.abort();
+      current = null;
+      window.clearTimeout(timer);
+      window.clearInterval(interval);
+      window.removeEventListener("focus", update);
+      window.removeEventListener("pageshow", update);
+      document.removeEventListener("visibilitychange", update);
+    };
+  }, [mergeQuote]);
   useEffect(() => {
     const controller = new AbortController();
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -515,15 +712,42 @@ export function BillingPage() {
     setBusy(true);
     setError("");
     setSuccess("");
-    if (!request.current || request.current.count !== count)
-      request.current = { count, key: crypto.randomUUID() };
+    if (!request.current && !validQuote(billing)) {
+      setBusy(false);
+      setError("Цена недоступна. Обновите условия оплаты.");
+      return;
+    }
+    if (!request.current && count > maxOrderCount(billing)) {
+      setBusy(false);
+      setError(
+        "Сумма заказа не должна превышать 350 000 рублей. Уменьшите количество мониторов.",
+      );
+      return;
+    }
+    request.current ??= {
+      count,
+      key: crypto.randomUUID(),
+      priceVersion: billing.priceVersion,
+      pricePerMonitorMinor: billing.pricePerMonitorMinor,
+    };
+    setIntentAmount(
+      request.current?.pricePerMonitorMinor === undefined
+        ? null
+        : request.current.count * request.current.pricePerMonitorMinor,
+    );
+    setUncertain(true);
     try {
       const result = await api<{ order: Order }>("/billing/orders", {
         method: "POST",
         authenticated: true,
-        body: { monitorCount: count, idempotencyKey: request.current.key },
+        body: {
+          monitorCount: request.current.count,
+          idempotencyKey: request.current.key,
+          priceVersion: request.current.priceVersion,
+        },
       });
       request.current = null;
+      setUncertain(false);
       setBilling((current) =>
         current
           ? {
@@ -547,6 +771,17 @@ export function BillingPage() {
       }
     } catch (e) {
       setError(errorMessage(e));
+      if (e instanceof ApiError && [400, 403, 409].includes(e.status)) {
+        request.current = null;
+        setUncertain(false);
+        try {
+          await load();
+        } catch {
+          setError(
+            "Не удалось обновить условия оплаты. Обновите страницу перед новым заказом.",
+          );
+        }
+      }
     } finally {
       setBusy(false);
     }
@@ -605,7 +840,9 @@ export function BillingPage() {
           <h1>Оплата</h1>
           <p>
             {billing
-              ? `${money(billing.pricePerMonitorMinor)} за один монитор в месяц.`
+              ? validQuote(billing)
+                ? `${money(billing.pricePerMonitorMinor)} за один монитор в месяц.`
+                : "Цена временно недоступна. Обновите условия оплаты."
               : "Квота мониторинга и история заказов."}
           </p>
         </div>
@@ -684,28 +921,59 @@ export function BillingPage() {
                   <input
                     type="number"
                     min={1}
-                    max={1000}
+                    max={uncertain ? 1000 : maxOrderCount(billing)}
                     required
-                    value={count}
+                    value={uncertain ? count : (pending?.monitorCount ?? count)}
                     onChange={(event) => setCount(Number(event.target.value))}
-                    disabled={busy || !!pending}
+                    disabled={busy || !!pending || uncertain}
                   />
                   <span className="field-hint">
-                    Пока действует квота, продление доступно с тем же
-                    количеством мониторов. Изменение количества — после её
-                    окончания.
+                    Максимальная сумма заказа — 350 000 рублей. Пока действует
+                    квота, продление доступно с тем же количеством мониторов.
+                    Изменение количества — после её окончания.
                   </span>
                 </label>
                 <p>
                   Условная сумма:{" "}
-                  <strong>{money(count * billing.pricePerMonitorMinor)}</strong>
+                  <strong>
+                    {uncertain
+                      ? intentAmount === null
+                        ? "Сумма исходного заказа уточняется"
+                        : money(intentAmount)
+                      : pending
+                        ? money(pending.amountMinor)
+                        : validQuote(billing)
+                          ? money(count * billing.pricePerMonitorMinor)
+                          : "Цена недоступна"}
+                  </strong>
                 </p>
-                <button className="primary" disabled={busy || !!pending}>
+                {!validQuote(billing) && (
+                  <button
+                    type="button"
+                    className="quiet"
+                    disabled={busy}
+                    onClick={() =>
+                      void load().catch(() =>
+                        setError("Не удалось обновить цену."),
+                      )
+                    }
+                  >
+                    Обновить условия оплаты
+                  </button>
+                )}
+                <button
+                  className="primary"
+                  disabled={
+                    busy || !!pending || (!uncertain && !validQuote(billing))
+                  }
+                >
                   {busy
                     ? "Сохраняем…"
-                    : billing.canSimulate
-                      ? "Создать заказ демонстрации"
-                      : "Показать демо успешного результата"}
+                    : uncertain
+                      ? "Повторить запрос заказа"
+                      : billing.canSimulate
+                        ? "Создать заказ демонстрации"
+                        : "Показать демо успешного результата"}
                 </button>
               </form>
               {!billing.canSimulate && (

@@ -53,6 +53,10 @@ export async function api<T>(
   return response.json() as Promise<T>;
 }
 const messages: Record<string, string> = {
+  order_amount_exceeded:
+    "Сумма заказа не должна превышать 350 000 рублей. Уменьшите количество мониторов.",
+  price_changed:
+    "Цена изменилась. Проверьте обновлённую сумму и подтвердите оформление заказа ещё раз.",
   telegram_private_required:
     "Сначала подключите личный Telegram администратора, который отправит команду в группе или топике. Используйте тот же профиль, без анонимной отправки или отправки от имени группы.",
   email_not_verified:

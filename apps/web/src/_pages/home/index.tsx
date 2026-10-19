@@ -1,10 +1,16 @@
+import { Pricing } from "@/entities/billing";
+import { PublicPricing } from "@/features/public-pricing";
 import Link from "next/link";
 import { PublicAuthLinks } from "@/features/auth";
 import { ThemeToggle } from "@/features/theme-toggle";
 import { Arrow, Brand, PublicFooter, Icon } from "@/shared/ui";
 import { MonitoringDemo } from "./monitoring-demo";
 
-export function HomePage() {
+export function HomePage({
+  initialPricing = null,
+}: {
+  initialPricing?: Pricing | null;
+}) {
   const landingMode = process.env.WEB_MODE === "landing";
   const appMode = (process.env.WEB_MODE ?? "app") === "app";
   return (
@@ -319,53 +325,10 @@ export function HomePage() {
           </div>
         </section>
 
-        <section id="pricing" className="landing-pricing landing-section">
-          <div className="landing-pricing-copy">
-            <p className="eyebrow">ПОНЯТНАЯ ЕДИНИЦА СТОИМОСТИ</p>
-            <h2>
-              Платить за нужные адреса.
-              <br />
-              Менять их по мере роста.
-            </h2>
-            <p>
-              Один монитор регулярно проверяет один выбранный адрес — например,
-              главную страницу, страницу входа или API. Проверки по расписанию
-              входят в стоимость: 29 рублей в месяц за монитор.
-            </p>
-          </div>
-          <div className="landing-price-card">
-            <div className="landing-price">
-              <strong>
-                29<span> рублей</span>
-              </strong>
-              <p>
-                за монитор
-                <br />в месяц
-              </p>
-            </div>
-            <div className="landing-price-examples">
-              <div>
-                <span>Главная + вход + API · 3 монитора</span>
-                <strong>
-                  87 ₽ <small>/ мес.</small>
-                </strong>
-              </div>
-              <div>
-                <span>10 мониторов</span>
-                <strong>
-                  290 ₽ <small>/ мес.</small>
-                </strong>
-              </div>
-            </div>
-            <p className="landing-price-note">
-              Пробного периода нет. Итоговая сумма и условия заказа показываются
-              до оплаты.
-            </p>
-            <Link href={landingMode ? "#how" : "/register"} className="button">
-              {landingMode ? "Как это работает" : "Создать аккаунт"} <Arrow />
-            </Link>
-          </div>
-        </section>
+        <PublicPricing
+          initialPricing={initialPricing}
+          landingMode={landingMode}
+        />
 
         <section id="faq" className="landing-faq landing-section">
           <div className="section-intro">

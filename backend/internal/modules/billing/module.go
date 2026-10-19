@@ -84,3 +84,15 @@ func (m *Module) DeleteAccountTx(ctx context.Context, tx pgx.Tx, accountID strin
 func (m *Module) ProcessOnePayment(ctx context.Context) (bool, error) {
 	return m.service.ProcessOnePayment(ctx)
 }
+
+var ErrPricingConflict = service.ErrPricingConflict
+
+func (m *Module) Pricing(ctx context.Context) (contracts.Pricing, error) {
+	return m.service.Pricing(ctx)
+}
+func (m *Module) PricingTx(ctx context.Context, tx pgx.Tx, lock bool) (contracts.Pricing, error) {
+	return m.service.PricingTx(ctx, tx, lock)
+}
+func (m *Module) UpdatePricingTx(ctx context.Context, tx pgx.Tx, version int64, minor int) (contracts.Pricing, contracts.Pricing, error) {
+	return m.service.UpdatePricingTx(ctx, tx, version, minor)
+}
