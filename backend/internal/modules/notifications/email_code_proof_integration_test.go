@@ -215,6 +215,9 @@ func TestDisconnectSerializesWithPendingEmailCodeResend(t *testing.T) {
 	if err != nil || challenge == nil {
 		t.Fatalf("start alternate-address proof: challenge=%+v err=%v", challenge, err)
 	}
+	if tag, err := f.pool.Exec(ctx, `UPDATE auth.email_code_challenges SET resend_available_at=now()-interval '1 second' WHERE id=$1 AND account_id=$2 AND purpose='notification_email'`, challenge.ID, accountID); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("make this proof immediately resendable: rows=%d err=%v", tag.RowsAffected(), err)
+	}
 	mux := http.NewServeMux()
 	m.RegisterAPI(mux, authModule.Protect)
 
