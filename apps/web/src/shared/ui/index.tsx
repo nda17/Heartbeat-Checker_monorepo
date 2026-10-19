@@ -22,13 +22,13 @@ export function Brand({ compact = false }: { compact?: boolean }) {
     </Link>
   );
 }
-export function RuStoreSoon() {
+export function RuStoreSoon({ label = "RuStore" }: { label?: string }) {
   return (
     <span className="store-soon">
       <button
         type="button"
         aria-disabled="true"
-        aria-label="RuStore — Скоро"
+        aria-label={`${label} — Скоро`}
         title="Скоро"
       >
         {/* Official RuStore media kit: https://www.rustore.ru/media-kit */}
@@ -50,7 +50,7 @@ export function RuStoreSoon() {
             fill="white"
           />
         </svg>
-        RuStore
+        {label}
       </button>
       <span className="store-soon-tooltip" aria-hidden="true">
         Скоро
@@ -66,28 +66,55 @@ export function PublicFooter({ onHome = false }: { onHome?: boolean }) {
         <div className="landing-footer-main">
           <Brand />
           <p>Круглосуточный мониторинг сайтов и сервисов.</p>
-        </div>
-        <nav className="landing-footer-service" aria-label="Сервис">
-          <h2>Сервис</h2>
-          <Link href="/android">Скачать APK для Android</Link>
-          <RuStoreSoon />
-          <a
-            href="https://max.ru/id272385800008_biz"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Канал сервиса в MAX
+          <a href="mailto:info@heartbeat-checker.ru">
+            info@heartbeat-checker.ru
           </a>
           {onHome && (
             <Link href={landingMode ? "#how" : "/login"}>
               {landingMode ? "Как это работает ↗" : "Личный кабинет ↗"}
             </Link>
           )}
+        </div>
+        <nav
+          className="landing-footer-install"
+          aria-label="Установка приложения"
+        >
+          <h2>Установка приложения</h2>
+          <a href="/downloads/android">Скачать .APK с сайта</a>
+          <RuStoreSoon label="Скачать из RuStore" />
         </nav>
-        <nav className="landing-footer-support" aria-label="Поддержка">
-          <h2>Поддержка</h2>
-          <a href="mailto:info@heartbeat-checker.ru">
-            info@heartbeat-checker.ru
+        <nav className="landing-footer-social" aria-label="Соцсети">
+          <h2>Соцсети</h2>
+          <a
+            href="https://max.ru/id272385800008_biz"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Наш канал в MAX
+          </a>
+          <a
+            href="https://vk.ru/heartbeat_ch"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Наш канал в VK
+          </a>
+        </nav>
+        <nav className="landing-footer-support" aria-label="Техподдержка">
+          <h2>Техподдержка</h2>
+          <a
+            href="https://max.ru/id272385800008_1_bot"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Техподдержка в MAX
+          </a>
+          <a
+            href="https://t.me/heartbeat_support_bot"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Техподдержка в Telegram
           </a>
           <Link href="/contacts">Контакты</Link>
         </nav>

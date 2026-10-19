@@ -741,10 +741,12 @@ input:read-only {
   max-width: 1200px;
   margin-inline: auto;
   display: grid;
-  grid-template-columns: minmax(0, 320px) repeat(3, minmax(0, 220px));
+  grid-template-columns:
+    minmax(0, 220px) minmax(0, 190px) minmax(0, 150px) minmax(0, 200px)
+    minmax(0, 190px);
   align-items: start;
   justify-content: center;
-  gap: 36px 48px;
+  gap: 36px 32px;
 }
 .landing-footer-main {
   min-width: 0;
@@ -775,6 +777,7 @@ input:read-only {
   font-weight: 600;
 }
 .landing-footer-main p,
+.landing-footer-main > a:not(.brand),
 .landing-footer nav a,
 .store-soon button {
   font-size: 14px;
@@ -785,20 +788,25 @@ input:read-only {
   max-width: 280px;
   margin: 0;
 }
-.landing-footer nav a:hover {
+.landing-footer nav a:hover,
+.landing-footer nav a:focus-visible,
+.landing-footer-main > a:not(.brand):hover,
+.landing-footer-main > a:not(.brand):focus-visible {
   color: var(--accent);
 }
-.landing-footer-support a[href^="mailto:"] {
-  white-space: nowrap;
+.landing-footer-main a[href^="mailto:"] {
+  overflow-wrap: anywhere;
 }
 .store-soon {
   position: relative;
   display: inline-flex;
+  max-width: 100%;
 }
 .store-soon button {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   min-height: 0;
   padding: 0;
   border: 0;
@@ -806,6 +814,10 @@ input:read-only {
   background: transparent;
   font-weight: 400;
   cursor: default;
+  text-align: left;
+}
+.store-soon button svg {
+  flex-shrink: 0;
 }
 .store-soon-tooltip {
   position: absolute;
@@ -2105,10 +2117,13 @@ input:read-only {
     width: 1%;
   }
 }
-@media (max-width: 1100px) {
+@media (max-width: 1180px) {
   .landing-footer-inner {
     max-width: 760px;
     grid-template-columns: repeat(2, minmax(0, 320px));
+  }
+  .landing-footer-main {
+    grid-column: 1 / -1;
   }
 }
 @media (max-width: 950px) {
@@ -3796,18 +3811,6 @@ button.primary:hover:not(:disabled) {
   }
   .landing-footer-main {
     grid-column: 1 / -1;
-  }
-  .landing-footer-service {
-    grid-column: 1;
-    grid-row: 2;
-  }
-  .landing-footer-support {
-    grid-column: 1 / -1;
-    grid-row: 3;
-  }
-  .landing-footer-documents {
-    grid-column: 2;
-    grid-row: 2;
   }
   .legal-main {
     padding: 48px 0 72px;
