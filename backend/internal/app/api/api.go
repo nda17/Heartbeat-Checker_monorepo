@@ -55,24 +55,6 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		}
 		oauthProviders[provider.ID()] = provider
 	}
-	authModule, err := auth.New(pool, accounts.New(pool), captcha, mailer, auth.Config{
-		Origin:            cfg.AuthOrigin,
-		OAuthProviders:    oauthProviders,
-		OAuthAudit:        admin.AuditOAuth,
-		MailEncryptionKey: cfg.AuthMailEncryptionKey,
-		MFAEncryptionKey:  cfg.AuthMFAEncryptionKey,
-		MFAAudit:          admin.AuditMFA,
-		CookieSecure:      cfg.AuthCookieSecure,
-		SessionTTL:        cfg.AuthSessionTTL,
-		ChallengeTTL:      cfg.AuthChallengeTTL,
-		ResetTTL:          cfg.AuthResetTTL,
-		RateLimitWindow:   cfg.AuthRateWindow,
-	})
-	if err != nil {
-		return fmt.Errorf("configure auth: %w", err)
-	}
-	handler := newHandler(pool.Ping, cfg.ReadinessTimeout)
-	authModule.Register(handler)
 	accountModule := accounts.New(pool)
 	notificationModule, err := notifications.New(pool, cfg.WebhookEncryptionKey, monitors.NewOwnership(), accountModule)
 	if err != nil {
@@ -89,8 +71,27 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("configure messenger notifications: %w", err)
 	}
-	billingModule.Register(handler, authModule.Protect)
 	monitorModule := monitors.New(pool, billingModule, incidents.New(pool, notifications.NewRecorder(messengerModule)), accountModule)
+	authModule, err := auth.New(pool, accountModule, captcha, mailer, auth.Config{
+		Origin:            cfg.AuthOrigin,
+		OAuthProviders:    oauthProviders,
+		OAuthAudit:        admin.AuditOAuth,
+		MailEncryptionKey: cfg.AuthMailEncryptionKey,
+		MFAEncryptionKey:  cfg.AuthMFAEncryptionKey,
+		MFAAudit:          admin.AuditMFA,
+		CookieSecure:      cfg.AuthCookieSecure,
+		SessionTTL:        cfg.AuthSessionTTL,
+		ChallengeTTL:      cfg.AuthChallengeTTL,
+		ResetTTL:          cfg.AuthResetTTL,
+		RateLimitWindow:   cfg.AuthRateWindow,
+		AccountDeletion:   accountDeletion{accounts: accountModule, billing: billingModule, monitors: monitorModule},
+	})
+	if err != nil {
+		return fmt.Errorf("configure auth: %w", err)
+	}
+	handler := newHandler(pool.Ping, cfg.ReadinessTimeout)
+	authModule.Register(handler)
+	billingModule.Register(handler, authModule.Protect)
 	monitorModule.Register(handler, authModule.Protect)
 	admin.New(pool, accountModule, authModule, billingModule, monitorModule).Register(handler, func(next http.Handler) http.Handler {
 		return authModule.RequireRole("admin", next)

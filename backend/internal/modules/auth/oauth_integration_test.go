@@ -60,6 +60,7 @@ func oauthProfilesFixtureWithPoolSize(t *testing.T, profiles map[string]OAuthIde
 	module, err := New(f.pool, accounts.New(f.pool), integrationCaptcha{}, f.mail, Config{
 		Origin: integrationOrigin, ChallengeTTL: time.Hour, ResetTTL: time.Hour, RateLimitWindow: time.Hour,
 		OAuthProviders: map[string]OAuthProvider{"yandex": provider}, OAuthAudit: audit,
+		AccountDeletion: newTestAccountDeletion(f.pool),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -69,3 +69,12 @@ func (m *Module) PatchTx(ctx context.Context, tx pgx.Tx, owner, id string, e bil
 func (m *Module) DeleteTx(ctx context.Context, tx pgx.Tx, owner, id string) error {
 	return m.service.DeleteTx(ctx, tx, owner, id)
 }
+
+// DeleteAccountTx removes the workspace and its cascading check/incident history.
+func (m *Module) DeleteAccountTx(ctx context.Context, tx pgx.Tx, accountID string) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM monitors.monitors WHERE account_id=$1`, accountID); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `DELETE FROM outbox.events WHERE account_id=$1`, accountID)
+	return err
+}

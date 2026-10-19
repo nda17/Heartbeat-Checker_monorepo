@@ -123,6 +123,9 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [oauthError, setOAuthError] = useState("");
+  const [accountResult, setAccountResult] = useState<
+    "deleted" | "unknown" | null
+  >(null);
   const [done, setDone] = useState(false);
   const consumedLink = useRef(false);
   const isLink = mode === "verify" || mode === "reset-confirm";
@@ -143,11 +146,16 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
     if (mode !== "login") return;
     const url = new URL(window.location.href);
     const code = url.searchParams.get("oauthError");
-    if (!code) return;
-    // Capture the one-time callback result before removing it from the browser URL.
+    const account = url.searchParams.get("account");
+    const accountOutcome =
+      account === "deleted" || account === "unknown" ? account : null;
+    if (!code && !accountOutcome) return;
+    // Capture one-time action results before removing them from the browser URL.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setOAuthError(oauthCallbackMessage(code));
+    if (code) setOAuthError(oauthCallbackMessage(code));
+    if (accountOutcome) setAccountResult(accountOutcome);
     url.searchParams.delete("oauthError");
+    url.searchParams.delete("account");
     const returnTo = safeAppReturnTo(url.searchParams.get("returnTo"));
     window.history.replaceState(
       null,
@@ -250,6 +258,13 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
         </div>
       ) : (
         <form onSubmit={submit} className="form-stack">
+          {mode === "login" && accountResult && (
+            <Notice success={accountResult === "deleted"}>
+              {accountResult === "deleted"
+                ? "Аккаунт удалён. Данные пространства обезличены; восстановление недоступно. При новой регистрации вы получите пустой аккаунт без прежней квоты."
+                : "Результат удаления неизвестен. Запрос не повторяется автоматически. Войдите заново, чтобы проверить доступ. Если удаление завершилось, восстановить прежние данные нельзя."}
+            </Notice>
+          )}
           {oauthError && <Notice>{oauthError}</Notice>}
           {error && <Notice>{error}</Notice>}
           {isLink && linkReady && !token && (

@@ -51,3 +51,9 @@ func (m *Module) GrantLocal(ctx context.Context, accountID string, quota int, un
 func (m *Module) GrantLocalTx(ctx context.Context, tx pgx.Tx, accountID string, quota int, until time.Time, reason string) error {
 	return m.service.GrantLocalTx(ctx, tx, accountID, quota, until, reason)
 }
+
+// DeleteAccountTx cancels future billing work without erasing financial amounts.
+// The caller has acquired Lock and the account row lock in the same transaction.
+func (m *Module) DeleteAccountTx(ctx context.Context, tx pgx.Tx, accountID string) error {
+	return m.service.DeleteAccountTx(ctx, tx, accountID)
+}

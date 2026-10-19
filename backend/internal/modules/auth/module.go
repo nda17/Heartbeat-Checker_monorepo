@@ -19,6 +19,7 @@ import (
 
 type OAuthProvider = service.OAuthProvider
 type OAuthIdentityProfile = service.OAuthIdentityProfile
+type AccountDeletion = postgres.AccountDeletion
 
 type Config struct {
 	OAuthProviders    map[string]OAuthProvider
@@ -32,6 +33,7 @@ type Config struct {
 	ChallengeTTL      time.Duration
 	ResetTTL          time.Duration
 	RateLimitWindow   time.Duration
+	AccountDeletion   AccountDeletion
 }
 
 type Module struct {
@@ -122,6 +124,7 @@ func New(pool *pgxpool.Pool, accounts contracts.Service, captcha CaptchaVerifier
 		ChallengeTTL:      cfg.ChallengeTTL,
 		ResetTTL:          cfg.ResetTTL,
 		RateLimitWindow:   cfg.RateLimitWindow,
+		AccountDeletion:   cfg.AccountDeletion,
 	})
 	return &Module{server: authhttp.New(svc, cfg.Origin, cfg.CookieSecure, cfg.SessionTTL), repo: repo}, nil
 }

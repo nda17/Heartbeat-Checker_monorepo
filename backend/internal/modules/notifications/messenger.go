@@ -228,9 +228,6 @@ func messengerKind(provider, kind string) bool {
 }
 
 func (m *Messenger) Cleanup(ctx context.Context, tx pgx.Tx) error {
-	if !m.cfg.Enabled {
-		return nil
-	}
 	_, err := tx.Exec(ctx, `UPDATE notifications.messenger_links SET status='expired',encrypted_observation=NULL,encrypted_candidate=NULL,attempt_token=NULL,lease_until=NULL WHERE (expires_at<=now() AND status IN ('pending','observed','candidate')) OR (status='observed' AND attempts>=8 AND lease_until<=now())`)
 	if err != nil {
 		return err

@@ -206,7 +206,7 @@ jobs:
       - name: Android draft contract tests
         run: node --test scripts/android-draft.test.mjs
       - name: Admin and session component regressions
-        run: node --test scripts/admin-ui.test.mjs
+        run: npm run test:ui
       - run: npm run lint
       - run: npm run typecheck
       - name: Build web

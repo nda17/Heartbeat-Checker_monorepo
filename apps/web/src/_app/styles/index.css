@@ -4760,3 +4760,16 @@ button.primary:hover:not(:disabled) {
     align-self: flex-start;
   }
 }
+
+.account-deletion-panel {
+  margin-top: 24px;
+}
+.account-deletion-email {
+  overflow-wrap: anywhere;
+}
+.account-deletion-consequences {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 22px;
+}

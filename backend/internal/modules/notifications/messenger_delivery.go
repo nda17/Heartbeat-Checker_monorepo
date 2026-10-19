@@ -437,6 +437,13 @@ func (m *Messenger) disconnectIfCurrent(ctx context.Context, a MessengerAttempt)
 		return err
 	}
 	defer tx.Rollback(ctx)
+	active, err := m.accountActive(ctx, tx, a.AccountID)
+	if errors.Is(err, ErrMessengerNotFound) || err == nil && !active {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	var version int64
 	err = tx.QueryRow(ctx, `SELECT version FROM notifications.messenger_destinations WHERE id=$1 AND account_id=$2 FOR NO KEY UPDATE`, a.DestinationID, a.AccountID).Scan(&version)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && version != a.TargetVersion {

@@ -155,6 +155,7 @@ func newAuthFixtureWithPoolSizeAndPrefix(t *testing.T, maxConns int32, dbPrefix 
 		ChallengeTTL:    time.Hour,
 		ResetTTL:        time.Hour,
 		RateLimitWindow: time.Hour,
+		AccountDeletion: newTestAccountDeletion(pool),
 	})
 	if err != nil {
 		t.Fatalf("create auth module: %v", err)

@@ -237,6 +237,13 @@ func (m *Messenger) Disconnect(ctx context.Context, accountID, id string) error 
 		return err
 	}
 	defer tx.Rollback(ctx)
+	active, err := m.accountActive(ctx, tx, accountID)
+	if err != nil {
+		return err
+	}
+	if !active {
+		return ErrMessengerNotFound
+	}
 	var status string
 	err = tx.QueryRow(ctx, `SELECT status FROM notifications.messenger_destinations WHERE account_id=$1 AND id=$2 FOR NO KEY UPDATE`, accountID, id).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
