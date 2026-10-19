@@ -15,11 +15,13 @@ activate_messenger_notifications=${9-false}
 provision_owner=${10-false}
 activate_admin_mfa=${11-false}
 activate_oauth=${12-false}
+firewall_image=${13:?firewall image digest is required}
+firewall_policy_sha=${14:?firewall policy hash is required}
 
-[[ $# -ge 7 && $# -le 12 && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) && ( $activate_messenger_notifications == true || $activate_messenger_notifications == false ) && ( $provision_owner == true || $provision_owner == false ) && ( $activate_admin_mfa == true || $activate_admin_mfa == false ) && ( $activate_oauth == true || $activate_oauth == false ) ]] || {
+[[ $# -eq 14 && $firewall_policy_sha =~ ^[0-9a-f]{64}$ && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) && ( $activate_messenger_notifications == true || $activate_messenger_notifications == false ) && ( $provision_owner == true || $provision_owner == false ) && ( $activate_admin_mfa == true || $activate_admin_mfa == false ) && ( $activate_oauth == true || $activate_oauth == false ) ]] || {
   echo 'Invalid release arguments' >&2; exit 1;
 }
-for spec in "api:$api_image" "worker:$worker_image" "probe:$probe_image" "migrate:$migrate_image" "backup:$backup_image"; do
+for spec in "api:$api_image" "worker:$worker_image" "probe:$probe_image" "migrate:$migrate_image" "backup:$backup_image" "firewall:$firewall_image"; do
   target=${spec%%:*}
   image=${spec#*:}
   [[ $image =~ ^ghcr\.io/[a-z0-9_-]+/[a-z0-9_.-]+/$target@sha256:[0-9a-f]{64}$ ]] || {
@@ -314,6 +316,8 @@ PROBE_IMAGE=$probe_image
 MIGRATE_IMAGE=$migrate_image
 BACKUP_IMAGE=$backup_image
 SOURCE_SHA=$source_sha
+FIREWALL_IMAGE=$firewall_image
+FIREWALL_POLICY_SHA256=$firewall_policy_sha
 EOF
 chmod 600 .release.env.incoming
 bash backup.sh.incoming preflight
@@ -345,13 +349,22 @@ if any(key in c[name]["environment"] for key in oauth_keys for name in ("worker"
 '
 "${compose_new[@]}" pull postgres caddy api worker probe migrate
 docker pull "$backup_image"
+docker pull "$firewall_image"
 
-for spec in "api:$api_image" "worker:$worker_image" "probe:$probe_image" "migrate:$migrate_image" "backup:$backup_image"; do
+for spec in "api:$api_image" "worker:$worker_image" "probe:$probe_image" "migrate:$migrate_image" "backup:$backup_image" "firewall:$firewall_image"; do
   image=${spec#*:}
   [[ $(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image") == "$source_sha" ]] || {
     echo "Image revision mismatch: ${spec%%:*}" >&2; exit 1;
   }
 done
+
+# Install the reviewed network policy before any migration or new process can
+# run. The helper has no Docker socket or general host filesystem access.
+installed_policy_sha=$(docker run --rm --network host --read-only --cap-drop ALL \
+  --cap-add NET_ADMIN --security-opt no-new-privileges:true --user 0:0 \
+  --mount type=bind,source=/usr/local/sbin,target=/host-sbin \
+  --tmpfs /run:rw,noexec,nosuid,size=1m "$firewall_image")
+[[ $installed_policy_sha == "$firewall_policy_sha" ]] || { echo 'Firewall policy receipt mismatch' >&2; exit 1; }
 
 mv .release.env.incoming .release.env
 mv compose.yaml.incoming compose.yaml
@@ -509,11 +522,12 @@ ledger=$("${compose[@]}" exec -T postgres psql -U heartbeat -d heartbeat -Atqc \
 jq -n --arg source_sha "$source_sha" --arg api "$api_image" \
   --arg worker "$worker_image" --arg probe "$probe_image" --arg migrate "$migrate_image" --arg backup_image "$backup_image" \
   --arg backup "$backup" --arg backup_sha256 "$backup_sha" --argjson migrations "$ledger" \
+  --arg firewall_image "$firewall_image" --arg firewall_policy_sha256 "$firewall_policy_sha" \
   --argjson telegram_relay_activated "$activate_telegram_relay" \
   --argjson messenger_notifications_activated "$activate_messenger_notifications" \
   --argjson owner_import_requested "$provision_owner" --argjson admin_mfa_activated "$activate_admin_mfa" \
   --argjson oauth_activated "$activate_oauth" \
-  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image},backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,messenger_notifications_activated:$messenger_notifications_activated,owner_import_requested:$owner_import_requested,admin_mfa_activated:$admin_mfa_activated,oauth_activated:$oauth_activated,completed_at:(now|todate)}' \
+  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image,firewall:$firewall_image},firewall_policy_sha256:$firewall_policy_sha256,backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,messenger_notifications_activated:$messenger_notifications_activated,owner_import_requested:$owner_import_requested,admin_mfa_activated:$admin_mfa_activated,oauth_activated:$oauth_activated,completed_at:(now|todate)}' \
   > "receipts/$source_sha.json.incoming"
 mv compose.backup.yaml.incoming compose.backup.yaml
 mv backup.sh.incoming backup.sh

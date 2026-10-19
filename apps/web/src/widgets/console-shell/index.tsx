@@ -224,7 +224,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
                     : "Мониторы"}
             </span>
             <div className="console-top-actions">
-              <span className="top-label">HTTP MONITORING</span>
+              <span className="top-label">SERVICE MONITORING</span>
               <ThemeToggle />
             </div>
             <button

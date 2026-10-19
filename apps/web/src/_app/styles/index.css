@@ -1673,8 +1673,13 @@ html[data-installed-app="true"] .landing-footer-inner {
   background: none;
   color: var(--ink);
   padding: 0;
+  min-width: 0;
+  max-width: 260px;
   min-height: 0;
   justify-content: flex-start;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
   border: 0;
   gap: 14px;
   font-size: 14px;
@@ -1683,6 +1688,7 @@ html[data-installed-app="true"] .landing-footer-inner {
 .monitor-name span {
   color: #9dacae;
   font-size: 14px;
+  flex-shrink: 0;
 }
 .monitor-name:hover {
   color: var(--accent);
@@ -1714,10 +1720,16 @@ html[data-installed-app="true"] .landing-footer-inner {
   gap: 6px;
 }
 .row-actions .icon-button {
-  width: 26px;
-  height: 26px;
-  min-height: 26px;
-  font-size: 14px;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+}
+.row-actions .icon-button svg,
+.row-actions .icon-button .spinner {
+  display: block;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
 }
 .badge {
   display: inline-flex;
@@ -2069,6 +2081,12 @@ html[data-installed-app="true"] .landing-footer-inner {
 }
 .data-table .badge {
   font-size: 14px;
+}
+.monitor-table td[data-label="Результат и время"],
+.data-table td[data-label="Время проверки"] {
+  min-width: 170px;
+  max-width: 260px;
+  white-space: normal;
 }
 .history-button {
   font-size: 14px;
@@ -4944,6 +4962,7 @@ html[data-installed-app="true"] .android-hero {
   }
   .monitor-table.mobile-card-table .monitor-name {
     width: 100%;
+    max-width: none;
     justify-content: space-between;
     text-align: left;
     white-space: normal;

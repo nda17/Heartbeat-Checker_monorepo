@@ -79,7 +79,7 @@ export function HomePage() {
               </a>
             </div>
             <p className="small muted hero-note">
-              GET и HEAD · История проверок и инцидентов · Управление через сайт
+              HTTP/HTTPS · TCP · ICMP · История проверок и инцидентов
             </p>
           </div>
           <MonitoringDemo />
@@ -122,7 +122,8 @@ export function HomePage() {
             <h2>История проверок</h2>
             <strong>7 дней</strong>
             <p>
-              Храним результат каждой проверки: время ответа, HTTP-код и ошибки.
+              Храним тип, длительность и результат каждой проверки. Для HTTP —
+              также код ответа.
             </p>
           </div>
           <div>
@@ -140,15 +141,15 @@ export function HomePage() {
             <div>
               <p className="eyebrow">ЧТО ВАЖНО ВАШЕМУ ПРОЕКТУ</p>
               <h2>
-                Три простых способа
+                Три типа проверки,
                 <br />
-                держать руку на пульсе.
+                чтобы держать руку на пульсе.
               </h2>
             </div>
             <p>
-              Один монитор регулярно проверяет один выбранный адрес. Настройте
-              GET или HEAD и ожидаемый код; для GET можно дополнительно
-              проверять текст страницы.
+              Один монитор проверяет одну цель: ответ сайта или API, соединение
+              с TCP-портом либо ответ сервера на ICMP ping. Выберите проверку,
+              которая отвечает на ваш вопрос.
             </p>
           </div>
           <div className="landing-use-cases">
@@ -156,11 +157,13 @@ export function HomePage() {
               <div className="landing-case-icon" aria-hidden="true">
                 ↗
               </div>
-              <span className="landing-case-type">САЙТ ИЛИ ЛЕНДИНГ</span>
-              <h3>Страница доступна</h3>
+              <span className="landing-case-type">
+                HTTP/HTTPS · САЙТ ИЛИ API
+              </span>
+              <h3>Сайт возвращает нужный ответ</h3>
               <p>
-                Проверяйте основной сайт, страницу входа или другой публичный
-                адрес. Ожидаемый HTTP-код задаёте вы.
+                Выберите GET или HEAD и ожидаемый HTTP-код. Для GET можно
+                дополнительно проверить наличие нужного текста в ответе.
               </p>
               <div className="landing-case-setting">
                 <code>GET /</code>
@@ -169,32 +172,34 @@ export function HomePage() {
             </article>
             <article>
               <div className="landing-case-icon" aria-hidden="true">
-                {"{ }"}
+                ↔
               </div>
-              <span className="landing-case-type">ПУБЛИЧНЫЙ API</span>
-              <h3>Сервис отвечает</h3>
+              <span className="landing-case-type">TCP · ПОРТ СЕРВИСА</span>
+              <h3>Порт принимает соединение</h3>
               <p>
-                Следите за публичным endpoint. Выберите GET или HEAD, если
-                достаточно проверить код без чтения тела ответа.
+                Проверьте публичный хост и порт, например SSH на порту 22.
+                Успешное соединение подтверждает открытый порт, но не
+                работоспособность приложения за ним.
               </p>
               <div className="landing-case-setting">
-                <code>HEAD /health</code>
-                <span>Ожидаем: HTTP 200</span>
+                <code>server.example.com:22</code>
+                <span>Ожидаем: TCP-соединение</span>
               </div>
             </article>
             <article>
               <div className="landing-case-icon" aria-hidden="true">
-                Aa
+                ◎
               </div>
-              <span className="landing-case-type">СОДЕРЖИМОЕ СТРАНИЦЫ</span>
-              <h3>На месте нужный текст</h3>
+              <span className="landing-case-type">ICMP · ПИНГ СЕРВЕРА</span>
+              <h3>Сервер отвечает на ping</h3>
               <p>
-                Одного кода 200 бывает мало. Для GET добавьте условие: в
-                полученном ответе должен присутствовать указанный текст.
+                Получите ICMP echo-ответ и время его прохождения для публичного
+                IPv4 или домена с IPv4-адресом. Сетевой экран может блокировать
+                ICMP даже на работающем сервере.
               </p>
               <div className="landing-case-setting">
-                <code>GET + текст</code>
-                <span>Например: «Каталог»</span>
+                <code>server.example.com</code>
+                <span>Ожидаем: ответ ICMP</span>
               </div>
             </article>
           </div>
@@ -210,8 +215,8 @@ export function HomePage() {
               <span className="step">01</span>
               <h3>Настройте проверку</h3>
               <p>
-                Добавьте публичный URL, метод, условия успешного ответа и
-                интервал 1–10 минут. Проверки работают при действующей квоте.
+                Выберите HTTP/HTTPS, TCP или ICMP, укажите цель и интервал 1–10
+                минут. Проверки работают при действующей квоте.
               </p>
             </article>
             <article>
@@ -239,7 +244,7 @@ export function HomePage() {
             <h2>История проверок и сбоев.</h2>
             <p>
               Откройте монитор и посмотрите, что произошло: когда прошла
-              проверка, какой код вернул сервер, сколько занял ответ и возникла
+              проверка, какой получен результат, сколько она заняла и возникла
               ли ошибка.
             </p>
             <ul>
@@ -248,8 +253,9 @@ export function HomePage() {
                 <div>
                   <h3>Подробные проверки</h3>
                   <p>
-                    Время, HTTP-код, задержка ответа и причина ошибки — за
-                    последние 7 дней.
+                    Тип, результат, длительность и причина ошибки — за последние
+                    7 дней. Для успешного ICMP отдельно показан ping, для HTTP —
+                    код ответа.
                   </p>
                 </div>
               </li>

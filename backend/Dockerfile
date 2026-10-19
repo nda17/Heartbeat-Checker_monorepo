@@ -10,6 +10,10 @@ RUN mkdir -p /out \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/probe ./cmd/probe \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/migrate ./cmd/migrate
 
+# The CI-only binary exercises the real socket path under the production UID.
+FROM build AS probe-test-build
+RUN CGO_ENABLED=0 go test -c -o /out/probe.test ./internal/probe
+
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS runtime
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.revision=$VCS_REF
@@ -33,3 +37,7 @@ ENTRYPOINT ["/probe"]
 FROM runtime AS migrate
 COPY --from=build --chown=65532:65532 /out/migrate /migrate
 ENTRYPOINT ["/migrate"]
+
+FROM runtime AS probe-test
+COPY --from=probe-test-build --chown=65532:65532 /out/probe.test /probe.test
+ENTRYPOINT ["/probe.test"]

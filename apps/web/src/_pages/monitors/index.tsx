@@ -10,6 +10,10 @@ import {
   Incident,
   Monitor,
   Status,
+  checkTiming,
+  checkTypeLabel,
+  monitorCheckType,
+  monitorTarget,
   resultErrorMessage,
 } from "@/entities/monitor";
 import { api, ApiError, errorMessage, safeAppReturnTo } from "@/shared/api";
@@ -21,7 +25,7 @@ import {
   MonitorDraft,
   readMonitorDraft,
 } from "@/shared/android";
-import { dateTime, Loading, Notice } from "@/shared/ui";
+import { dateTime, Loading, Notice, Spinner } from "@/shared/ui";
 type Detail = {
   monitor: Monitor;
   results: CheckResult[];
@@ -248,7 +252,9 @@ export function MonitorsPage() {
   const down = monitors?.filter((m) => m.state === "DOWN").length ?? 0;
   const visible =
     monitors?.filter((m) =>
-      `${m.name} ${m.url}`.toLowerCase().includes(filter.toLowerCase()),
+      `${m.name} ${monitorTarget(m)}`
+        .toLowerCase()
+        .includes(filter.toLowerCase()),
     ) ?? [];
   const quotaActive =
     entitlement &&
@@ -266,7 +272,7 @@ export function MonitorsPage() {
           <h1>
             Обзор мониторов<span className="heading-dot">.</span>
           </h1>
-          <p>Проверки, состояние и история ваших HTTP-сервисов.</p>
+          <p>Проверки сайтов, портов и серверов, их состояние и история.</p>
         </div>
         <button
           className="primary"
@@ -433,7 +439,7 @@ export function MonitorsPage() {
                 <tr>
                   <th>Монитор / адрес</th>
                   <th>Состояние</th>
-                  <th>HTTP / время проверки</th>
+                  <th>Результат и время</th>
                   <th>Последняя проверка</th>
                   <th>
                     <span className="sr-only">Действия</span>
@@ -452,8 +458,11 @@ export function MonitorsPage() {
                         {m.name}
                         <span aria-hidden="true">↗</span>
                       </button>
-                      <span className="monitor-url" title={m.url}>
-                        {m.method} <span>{m.url}</span>
+                      <span className="monitor-url" title={monitorTarget(m)}>
+                        {monitorCheckType(m.checkType) === "http"
+                          ? m.method
+                          : checkTypeLabel(m.checkType)}{" "}
+                        <span>{monitorTarget(m)}</span>
                       </span>
                       <span className="cell-sub">
                         Интервал: {m.intervalMinutes} мин · Порог:{" "}
@@ -463,12 +472,19 @@ export function MonitorsPage() {
                     <td data-label="Состояние">
                       <Status state={m.state} />
                     </td>
-                    <td data-label="HTTP / время проверки">
-                      <span className="mono">{m.lastHttpStatus ?? "—"}</span>
+                    <td data-label="Результат и время">
+                      <span className="mono">
+                        {monitorCheckType(m.checkType) === "http"
+                          ? `HTTP ${m.lastHttpStatus ?? "—"}`
+                          : checkTypeLabel(m.checkType)}
+                      </span>
                       <span className="cell-sub">
-                        {m.lastLatencyMs === null
-                          ? "Нет данных"
-                          : `${m.lastLatencyMs} мс`}
+                        {checkTiming(
+                          m.checkType,
+                          m.state,
+                          m.lastLatencyMs,
+                          m.lastRoundTripMs,
+                        )}
                       </span>
                     </td>
                     <td data-label="Последняя проверка">
@@ -490,7 +506,43 @@ export function MonitorsPage() {
                           disabled={!!busy}
                           onClick={() => void toggle(m)}
                         >
-                          {busy === m.id ? "…" : m.enabled ? "Ⅱ" : "▷"}
+                          {busy === m.id ? (
+                            <Spinner />
+                          ) : (
+                            <svg
+                              width="20"
+                              height="20"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.8"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              aria-hidden="true"
+                              focusable="false"
+                            >
+                              {m.enabled ? (
+                                <>
+                                  <rect
+                                    x="6"
+                                    y="4"
+                                    width="4"
+                                    height="16"
+                                    rx="1"
+                                  />
+                                  <rect
+                                    x="14"
+                                    y="4"
+                                    width="4"
+                                    height="16"
+                                    rx="1"
+                                  />
+                                </>
+                              ) : (
+                                <path d="m8 4 12 8-12 8V4Z" />
+                              )}
+                            </svg>
+                          )}
                         </button>
                         <button
                           className="icon-button"
@@ -499,7 +551,21 @@ export function MonitorsPage() {
                           disabled={!!busy}
                           onClick={() => setEditor(m)}
                         >
-                          ⚙
+                          <svg
+                            width="20"
+                            height="20"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
+                            focusable="false"
+                          >
+                            <path d="M9.6 2.8h4.8l.4 2.4 1.6.96 2.24-.8 2.4 4.16-1.84 1.52v1.92l1.84 1.52-2.4 4.16-2.24-.8-1.6.96-.4 2.4H9.6l-.4-2.4-1.6-.96-2.24.8-2.4-4.16 1.84-1.52v-1.92L2.96 9.52l2.4-4.16 2.24.8 1.6-.96.4-2.4Z" />
+                            <circle cx="12" cy="12" r="3" />
+                          </svg>
                         </button>
                         <button
                           className="icon-button"
@@ -508,7 +574,20 @@ export function MonitorsPage() {
                           disabled={!!busy}
                           onClick={() => setNotifications(m)}
                         >
-                          ◔
+                          <svg
+                            width="20"
+                            height="20"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
+                            focusable="false"
+                          >
+                            <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />
+                          </svg>
                         </button>
                         <button
                           className="icon-button danger-text"
@@ -520,7 +599,20 @@ export function MonitorsPage() {
                             setDeleting(m);
                           }}
                         >
-                          ×
+                          <svg
+                            width="20"
+                            height="20"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
+                            focusable="false"
+                          >
+                            <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" />
+                          </svg>
                         </button>
                       </div>
                     </td>
@@ -531,7 +623,7 @@ export function MonitorsPage() {
           </div>
         )}
         <div className="table-footnote">
-          <span>GET / HEAD · Интервал 1–10 мин для каждого монитора</span>
+          <span>HTTP/HTTPS · TCP · ICMP · Интервал 1–10 мин</span>
           <span>
             Неизвестное состояние означает отсутствие свежего результата.
           </span>
@@ -639,8 +731,13 @@ export function MonitorsPage() {
         >
           <div className="detail-summary">
             <Status state={detail.monitor.state} />
-            <span className="mono">{detail.monitor.method}</span>
-            <span className="detail-url">{detail.monitor.url}</span>
+            <span className="mono">
+              {checkTypeLabel(detail.monitor.checkType)}
+              {monitorCheckType(detail.monitor.checkType) === "http"
+                ? ` · ${detail.monitor.method}`
+                : ""}
+            </span>
+            <span className="detail-url">{monitorTarget(detail.monitor)}</span>
           </div>
           <p className="small muted">
             Интервал: {detail.monitor.intervalMinutes} мин · Сбоев подряд до
@@ -717,8 +814,8 @@ export function MonitorsPage() {
                     <tr>
                       <th>Время</th>
                       <th>Результат</th>
-                      <th>HTTP</th>
-                      <th>Время HTTP-проверки</th>
+                      <th>Тип проверки</th>
+                      <th>Время проверки</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -735,17 +832,27 @@ export function MonitorsPage() {
                                 ? "Ошибка исполнителя"
                                 : "Ошибка"}
                           </span>
+                          {monitorCheckType(r.checkType) === "http" && (
+                            <span className="cell-sub">
+                              HTTP {r.httpStatus ?? "—"}
+                            </span>
+                          )}
                           {r.errorCode && (
                             <span className="cell-sub">
                               {resultErrorMessage(r.errorCode)}
                             </span>
                           )}
                         </td>
-                        <td className="mono" data-label="HTTP">
-                          {r.httpStatus ?? "—"}
+                        <td className="mono" data-label="Тип проверки">
+                          {checkTypeLabel(r.checkType)}
                         </td>
-                        <td className="mono" data-label="Время HTTP-проверки">
-                          {r.latencyMs} мс
+                        <td data-label="Время проверки">
+                          {checkTiming(
+                            r.checkType,
+                            r.outcome,
+                            r.latencyMs,
+                            r.roundTripMs,
+                          )}
                         </td>
                       </tr>
                     ))}

@@ -1,0 +1,6 @@
+# The firewall helper must never receive deployment credentials or backups.
+*
+!probe-firewall.sh
+!firewall/
+!firewall/Dockerfile
+!firewall/install.sh

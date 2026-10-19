@@ -1,7 +1,7 @@
 "use client";
 import { FormEvent, useRef, useState } from "react";
 import { useSession } from "@/entities/session";
-import { Monitor } from "@/entities/monitor";
+import { Monitor, monitorCheckType } from "@/entities/monitor";
 import { api, ApiError, errorMessage } from "@/shared/api";
 import { Dialog } from "@/shared/dialog";
 import { Notice, Spinner } from "@/shared/ui";
@@ -21,7 +21,26 @@ export function MonitorForm({
   requireReason?: boolean;
 }) {
   const { refresh } = useSession();
-  const [method, setMethod] = useState(monitor?.method ?? "GET");
+  const httpMonitor = monitorCheckType(monitor?.checkType) === "http";
+  const [checkType, setCheckType] = useState(
+    monitorCheckType(monitor?.checkType),
+  );
+  const [httpUrl, setHttpUrl] = useState(
+    httpMonitor ? (monitor?.url ?? draft?.url ?? "") : "",
+  );
+  const [host, setHost] = useState(monitor?.host ?? "");
+  const [port, setPort] = useState(monitor?.port ? String(monitor.port) : "");
+  const [method, setMethod] = useState<"GET" | "HEAD">(
+    httpMonitor && monitor?.method === "HEAD" ? "HEAD" : "GET",
+  );
+  const [expectedStatus, setExpectedStatus] = useState(
+    String(
+      httpMonitor && monitor?.expectedStatus ? monitor.expectedStatus : 200,
+    ),
+  );
+  const [bodyContains, setBodyContains] = useState(
+    httpMonitor ? (monitor?.bodyContains ?? "") : "",
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
@@ -47,15 +66,29 @@ export function MonitorForm({
     if (submitting.current || saved) return;
     const data = new FormData(event.currentTarget);
     setError("");
+    const targetUrl = String(data.get("url") ?? "").trim();
+    const targetHost = String(data.get("host") ?? "").trim();
+    const targetPort = Number(data.get("port"));
+    const targetBody =
+      method === "GET" ? String(data.get("bodyContains") ?? "") : "";
+    const target =
+      checkType === "http"
+        ? {
+            url: targetUrl,
+            method,
+            expectedStatus: Number(data.get("expectedStatus")),
+            bodyContains: targetBody,
+          }
+        : {
+            host: targetHost,
+            ...(checkType === "tcp" ? { port: targetPort } : {}),
+          };
     const body = {
       name: String(data.get("name")).trim(),
-      url: String(data.get("url")).trim(),
-      method,
-      expectedStatus: Number(data.get("expectedStatus")),
+      checkType,
+      ...target,
       intervalMinutes: Number(data.get("intervalMinutes")),
       failureThreshold: Number(data.get("failureThreshold")),
-      bodyContains:
-        method === "HEAD" ? "" : String(data.get("bodyContains") ?? ""),
       enabled: data.get("enabled") === "on",
       ...(requireReason
         ? { reason: String(data.get("reason") ?? "").trim() }
@@ -63,26 +96,53 @@ export function MonitorForm({
       ...(monitor ? { version: monitor.version } : {}),
       ...(draft && !monitor ? { expectedAccountId: draft.accountId } : {}),
     };
-    if (new TextEncoder().encode(body.bodyContains).length > 1000) {
+    if (
+      checkType === "http" &&
+      method === "GET" &&
+      new TextEncoder().encode(targetBody).length > 1000
+    ) {
       setError("Текст условия слишком длинный: максимум 1000 байт.");
       return;
     }
-    try {
-      const url = new URL(body.url);
-      if (
-        !["http:", "https:"].includes(url.protocol) ||
-        url.username ||
-        url.password ||
-        url.hash
-      ) {
+    if (checkType === "http") {
+      try {
+        const url = new URL(targetUrl);
+        if (
+          !["http:", "https:"].includes(url.protocol) ||
+          url.username ||
+          url.password ||
+          url.hash
+        ) {
+          setError(
+            "Укажите HTTP или HTTPS URL без логина, пароля и фрагмента после #.",
+          );
+          return;
+        }
+      } catch {
+        setError("Проверьте адрес монитора.");
+        return;
+      }
+    } else {
+      const address = targetHost;
+      if (address.includes(":") && !address.includes("://")) {
         setError(
-          "Укажите HTTP или HTTPS URL без логина, пароля и фрагмента после #.",
+          "IPv6 пока не поддерживается для TCP и ICMP. Укажите публичный IPv4 или домен с IPv4-адресом.",
         );
         return;
       }
-    } catch {
-      setError("Проверьте адрес монитора.");
-      return;
+      if (!address || /[\s/\\?#@:\[\]]/.test(address)) {
+        setError(
+          "Укажите домен или публичный IPv4 без протокола, пути и порта.",
+        );
+        return;
+      }
+      if (
+        checkType === "tcp" &&
+        (!Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535)
+      ) {
+        setError("Укажите TCP-порт от 1 до 65535.");
+        return;
+      }
     }
     submitting.current = true;
     setBusy(true);
@@ -141,7 +201,8 @@ export function MonitorForm({
       ) : (
         <>
           <p className="dialog-description">
-            Один адрес, один HTTP-запрос. Укажите условия успешной проверки.
+            Один монитор проверяет одну цель выбранным способом. Настройте тип
+            проверки и условия успеха.
           </p>
           <form className="form-stack" onSubmit={submit}>
             <label>
@@ -157,55 +218,125 @@ export function MonitorForm({
               />
             </label>
             <label>
-              URL
-              <input
-                name="url"
-                type="url"
-                defaultValue={monitor?.url ?? draft?.url}
-                required
-                maxLength={2048}
-                placeholder="https://example.com"
-              />
-              <span className="field-hint">
-                Публичный HTTP или HTTPS адрес. Без логина и пароля в URL.
-              </span>
+              Тип проверки
+              <select
+                name="checkType"
+                value={checkType}
+                onChange={(event) =>
+                  setCheckType(monitorCheckType(event.target.value))
+                }
+                aria-describedby="monitor-type-purpose"
+              >
+                <option value="http">Сайт или API · HTTP/HTTPS</option>
+                <option value="tcp">Открытый порт · TCP</option>
+                <option value="icmp">Пинг сервера · ICMP</option>
+              </select>
             </label>
-            <div className="form-row monitor-method-row">
-              <label>
-                Метод
-                <select
-                  value={method}
-                  onChange={(e) => setMethod(e.target.value as "GET" | "HEAD")}
-                >
-                  <option>GET</option>
-                  <option>HEAD</option>
-                </select>
-              </label>
-              <label>
-                Ожидаемый HTTP-код
-                <input
-                  type="number"
-                  name="expectedStatus"
-                  defaultValue={monitor?.expectedStatus ?? 200}
-                  required
-                  min={100}
-                  max={599}
-                />
-              </label>
-            </div>
-            {method === "GET" && (
-              <label>
-                Текст в ответе <span className="optional">необязательно</span>
-                <input
-                  name="bodyContains"
-                  defaultValue={monitor?.bodyContains}
-                  maxLength={1000}
-                  placeholder="Например: Welcome"
-                />
-                <span className="field-hint">
-                  Успех, если в теле ответа присутствует этот текст.
-                </span>
-              </label>
+            <p id="monitor-type-purpose" className="field-hint">
+              {checkType === "http"
+                ? "Проверяет ответ сайта или API: код ответа и, при необходимости, текст страницы. Например: https://example.com/health, ожидаемый код 200."
+                : checkType === "tcp"
+                  ? "Проверяет, принимает ли сервер TCP-соединение на указанном порту. Например: server.example.com, порт 22. Открытый порт не подтверждает, что SSH или другое приложение работает правильно."
+                  : "Проверяет, отвечает ли сервер на пинг, даже если на нём нет сайта. Укажите публичный IPv4 или домен с IPv4-адресом, например server.example.com. Сервер может блокировать ICMP и при этом работать — тогда выберите проверку нужного TCP-порта."}
+            </p>
+            {checkType === "http" ? (
+              <>
+                <label>
+                  URL
+                  <input
+                    name="url"
+                    type="url"
+                    value={httpUrl}
+                    onChange={(event) => setHttpUrl(event.target.value)}
+                    required
+                    maxLength={2048}
+                    placeholder="https://example.com"
+                  />
+                  <span className="field-hint">
+                    Публичный HTTP или HTTPS адрес. Без логина и пароля в URL.
+                  </span>
+                </label>
+                <div className="form-row monitor-method-row">
+                  <label>
+                    Метод
+                    <select
+                      value={method}
+                      onChange={(e) =>
+                        setMethod(e.target.value as "GET" | "HEAD")
+                      }
+                    >
+                      <option>GET</option>
+                      <option>HEAD</option>
+                    </select>
+                  </label>
+                  <label>
+                    Ожидаемый HTTP-код
+                    <input
+                      type="number"
+                      name="expectedStatus"
+                      value={expectedStatus}
+                      onChange={(event) =>
+                        setExpectedStatus(event.target.value)
+                      }
+                      required
+                      min={100}
+                      max={599}
+                    />
+                  </label>
+                </div>
+                {method === "GET" && (
+                  <label>
+                    Текст в ответе{" "}
+                    <span className="optional">необязательно</span>
+                    <input
+                      name="bodyContains"
+                      value={bodyContains}
+                      onChange={(event) => setBodyContains(event.target.value)}
+                      maxLength={1000}
+                      placeholder="Например: Welcome"
+                    />
+                    <span className="field-hint">
+                      Успех, если в теле ответа присутствует этот текст.
+                    </span>
+                  </label>
+                )}
+              </>
+            ) : (
+              <div className={checkType === "tcp" ? "form-row" : undefined}>
+                <label>
+                  Хост
+                  <input
+                    name="host"
+                    value={host}
+                    onChange={(event) => setHost(event.target.value)}
+                    required
+                    maxLength={253}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    placeholder="server.example.com"
+                  />
+                  <span className="field-hint">
+                    Публичный IPv4 или домен. Без https://, пути и порта.
+                  </span>
+                </label>
+                {checkType === "tcp" && (
+                  <label>
+                    TCP-порт
+                    <input
+                      name="port"
+                      type="number"
+                      value={port}
+                      onChange={(event) => setPort(event.target.value)}
+                      required
+                      min={1}
+                      max={65535}
+                      step={1}
+                      placeholder="22"
+                    />
+                  </label>
+                )}
+              </div>
             )}
             <div className="form-row">
               <label>
@@ -244,14 +375,14 @@ export function MonitorForm({
               </label>
             </div>
             <p id="monitor-check-policy" className="field-hint">
-              Первый успешный ответ закрывает инцидент. Неизвестный результат
+              Первая успешная проверка закрывает инцидент. Неизвестный результат
               (UNKNOWN) сбрасывает серию сбоев.
             </p>
             {monitor && (
               <p className="field-hint">
-                При изменении интервала или порога открытый инцидент завершится
-                с причиной «Настройки изменены», серия сбоев сбросится, а
-                следующая проверка будет запланирована сразу.
+                При изменении типа проверки, цели, интервала или порога открытый
+                инцидент завершится с причиной «Настройки изменены», серия сбоев
+                сбросится, а следующая проверка будет запланирована сразу.
               </p>
             )}
             <label className="checkbox-label">

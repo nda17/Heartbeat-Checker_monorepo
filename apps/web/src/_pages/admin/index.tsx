@@ -3,7 +3,12 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "@/entities/session";
-import { Monitor, Status } from "@/entities/monitor";
+import {
+  Monitor,
+  Status,
+  checkTypeLabel,
+  monitorTarget,
+} from "@/entities/monitor";
 import { AdminMfa, MfaState } from "@/features/admin-mfa";
 import { MonitorForm } from "@/features/monitor-form";
 import { api, ApiError, errorMessage } from "@/shared/api";
@@ -869,7 +874,10 @@ export function AdminPage() {
                         <li key={monitor.id}>
                           <div>
                             <strong>{monitor.name}</strong>
-                            <p>{monitor.url}</p>
+                            <p>
+                              {checkTypeLabel(monitor.checkType)} ·{" "}
+                              {monitorTarget(monitor)}
+                            </p>
                             <Status state={monitor.state} />
                           </div>
                           {canWrite && (

@@ -79,12 +79,7 @@ func (c *Client) Check(ctx context.Context, request contracts.Request) (contract
 	if result.RunID != request.RunID || result.AttemptToken != request.AttemptToken || result.ConfigVersion != request.ConfigVersion || (result.Outcome != "UP" && result.Outcome != "DOWN" && result.Outcome != "UNKNOWN") || result.CheckedAt.IsZero() || result.CheckedAt.After(time.Now().Add(time.Minute)) || result.CheckedAt.Before(time.Now().Add(-time.Minute)) || result.LatencyMS < 0 || result.LatencyMS > 12000 || result.HTTPStatus < 0 || result.HTTPStatus > 599 || len(result.ErrorCode) > 64 {
 		return contracts.Result{}, errors.New("invalid probe response")
 	}
-	if (result.HTTPStatus > 0 && result.HTTPStatus < 100) || (result.Outcome == "UP" && (result.HTTPStatus != request.ExpectedStatus || result.ErrorCode != "")) {
-		return contracts.Result{}, errors.New("invalid probe response")
-	}
-	switch result.ErrorCode {
-	case "", "check_cancelled", "probe_unavailable", "request_failed", "request_timeout", "tls_certificate_invalid", "tls_handshake_failed", "redirect_limit", "invalid_redirect", "response_too_large", "unexpected_status", "body_mismatch":
-	default:
+	if !contracts.ValidResult(request, result) {
 		return contracts.Result{}, errors.New("invalid probe response")
 	}
 	return result, nil

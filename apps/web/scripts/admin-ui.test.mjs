@@ -10,6 +10,7 @@ import ts from "typescript";
 
 const requireWeb = createRequire(new URL("../package.json", import.meta.url));
 const qrcode = requireWeb("qrcode.react");
+const monitorHelpers = loadComponent("../src/entities/monitor/index.tsx", {});
 
 function loadComponent(relativePath, aliases, runtime = {}) {
   const source = fs.readFileSync(
@@ -132,6 +133,13 @@ function fill(form, name, value) {
   field.dispatchEvent(new window.Event("change", { bubbles: true }));
 }
 
+function changeSelect(form, name, value) {
+  const field = form.elements.namedItem(name);
+  assert.ok(field, `missing select field ${name}`);
+  field.value = value;
+  field.dispatchEvent(new window.Event("change", { bubbles: true }));
+}
+
 async function submit(form, twice = false) {
   await act(async () => {
     form.dispatchEvent(
@@ -142,6 +150,22 @@ async function submit(form, twice = false) {
         new window.Event("submit", { bubbles: true, cancelable: true }),
       );
   });
+}
+
+function loadMonitorForm(api) {
+  return loadComponent("../src/features/monitor-form/index.tsx", {
+    ...sharedAliases(api),
+    "@/entities/session": { useSession: () => ({ refresh: async () => {} }) },
+    "@/entities/monitor": { ...monitorHelpers, Status: () => null },
+    "@/shared/dialog": {
+      Dialog: ({ title, children }) =>
+        React.createElement(
+          "section",
+          { role: "dialog", "aria-label": title },
+          children,
+        ),
+    },
+  }).MonitorForm;
 }
 
 function sharedAliases(api, extra = {}) {
@@ -237,7 +261,7 @@ function adminPageHarness({
     {
       ...shared,
       "@/entities/session": sessionModule,
-      "@/entities/monitor": { Status: () => null },
+      "@/entities/monitor": { ...monitorHelpers, Status: () => null },
       "@/shared/dialog": {
         Dialog: ({ title, children, onClose, busy }) =>
           React.createElement(
@@ -264,7 +288,7 @@ function adminPageHarness({
       ...shared,
       "next/navigation": { useRouter: () => router },
       "@/entities/session": sessionModule,
-      "@/entities/monitor": { Status: () => null },
+      "@/entities/monitor": { ...monitorHelpers, Status: () => null },
       "@/features/admin-mfa": { AdminMfa },
       "@/features/monitor-form": { MonitorForm },
     },
@@ -628,7 +652,7 @@ test("MonitorForm sends one write and does not replay a committed write when ref
           },
         }),
       },
-      "@/entities/monitor": { Status: () => null },
+      "@/entities/monitor": { ...monitorHelpers, Status: () => null },
       "@/shared/dialog": {
         Dialog: ({ title, children }) =>
           React.createElement(
@@ -689,6 +713,124 @@ test("MonitorForm sends one write and does not replay a committed write when ref
   );
 });
 
+test("MonitorForm creates HTTP, TCP, and ICMP targets with type-specific payloads", async () => {
+  for (const type of ["http", "tcp", "icmp"]) {
+    const harness = createHarness();
+    const calls = [];
+    const api = apiStub(
+      { "/monitors": { monitor: { id: `created-${type}` } } },
+      calls,
+    );
+    const { MonitorForm } = { MonitorForm: loadMonitorForm(api) };
+    await harness.render(
+      React.createElement(MonitorForm, {
+        onClose() {},
+        onSaved: async () => {},
+      }),
+    );
+    const form = harness.host.querySelector("form");
+    assert.ok(form);
+    await act(async () => fill(form, "name", `${type} target`));
+    if (type === "http") {
+      await act(async () => fill(form, "url", "https://status.example/health"));
+    } else {
+      // Leaving a draft HTTP URL behind must not leak it into a TCP/ICMP write.
+      await act(async () => fill(form, "url", "https://stale.example/health"));
+      await act(async () => changeSelect(form, "checkType", type));
+      await act(async () => fill(form, "host", "target.example"));
+      if (type === "tcp") await act(async () => fill(form, "port", "443"));
+    }
+    await submit(form);
+    const write = calls.find((call) => call.method === "POST");
+    assert.ok(write, `${type} should create a monitor`);
+    assert.equal(write.body.checkType, type);
+    if (type === "http") {
+      assert.equal(write.body.url, "https://status.example/health");
+      assert.equal(write.body.method, "GET");
+      assert.equal(write.body.expectedStatus, 200);
+      assert.equal("host" in write.body, false);
+      assert.equal("port" in write.body, false);
+    } else {
+      assert.equal(write.body.host, "target.example");
+      assert.equal("url" in write.body, false);
+      assert.equal("method" in write.body, false);
+      assert.equal("expectedStatus" in write.body, false);
+      assert.equal("bodyContains" in write.body, false);
+      assert.equal(
+        "port" in write.body,
+        type === "tcp",
+        `${type} should only send a port for TCP`,
+      );
+      if (type === "tcp") assert.equal(write.body.port, 443);
+    }
+    await harness.unmount();
+  }
+});
+
+test("legacy monitor edit defaults to HTTP and changing TCP/ICMP to HTTP resets target fields", async () => {
+  for (const type of ["legacy-http", "tcp", "icmp"]) {
+    const harness = createHarness();
+    const calls = [];
+    const api = apiStub(
+      { "/monitors/monitor-1": { monitor: { id: "monitor-1" } } },
+      calls,
+    );
+    const { MonitorForm } = { MonitorForm: loadMonitorForm(api) };
+    const monitor = {
+      id: "monitor-1",
+      name: "Existing monitor",
+      // Legacy fixtures omit checkType and still represent HTTP.
+      ...(type === "legacy-http" ? {} : { checkType: type }),
+      url: type === "legacy-http" ? "https://old.example/health" : "",
+      host: type === "legacy-http" ? undefined : "old.example",
+      port: type === "tcp" ? 22 : 0,
+      method: type === "legacy-http" ? "GET" : "",
+      expectedStatus: type === "legacy-http" ? 200 : 0,
+      bodyContains: "",
+      intervalMinutes: 5,
+      failureThreshold: 2,
+      enabled: true,
+      version: 7,
+      state: "UP",
+      lastCheckedAt: null,
+      lastHttpStatus: null,
+      lastLatencyMs: null,
+      lastRoundTripMs: null,
+      nextCheckAt: null,
+    };
+    await harness.render(
+      React.createElement(MonitorForm, {
+        monitor,
+        onClose() {},
+        onSaved: async () => {},
+      }),
+    );
+    const form = harness.host.querySelector("form");
+    assert.ok(form);
+    assert.equal(
+      form.elements.namedItem("checkType").value,
+      type === "legacy-http" ? "http" : type,
+    );
+    if (type !== "legacy-http") {
+      await act(async () => changeSelect(form, "checkType", "http"));
+    }
+    await act(async () => fill(form, "url", "https://new.example/health"));
+    await submit(form);
+    const write = calls.find((call) => call.method === "PATCH");
+    assert.ok(write);
+    assert.equal(write.path, "/monitors/monitor-1");
+    assert.equal(write.body.checkType, "http");
+    assert.equal(write.body.url, "https://new.example/health");
+    assert.equal(write.body.method, "GET");
+    assert.equal(write.body.expectedStatus, 200);
+    assert.equal(write.body.bodyContains, "");
+    assert.equal(write.body.version, 7);
+    assert.equal("host" in write.body, false);
+    assert.equal("port" in write.body, false);
+    await harness.unmount();
+  }
+});
+
 test("MonitorsPage preserves a committed monitor when its refresh fails", async (t) => {
   const calls = [];
   let listReads = 0;
@@ -728,7 +870,7 @@ test("MonitorsPage preserves a committed monitor when its refresh fails", async 
     {
       ...shared,
       "@/entities/session": { useSession: () => session },
-      "@/entities/monitor": { Status: () => null },
+      "@/entities/monitor": { ...monitorHelpers, Status: () => null },
       "@/shared/dialog": {
         Dialog: ({ title, children }) =>
           React.createElement(
@@ -752,6 +894,7 @@ test("MonitorsPage preserves a committed monitor when its refresh fails", async 
     },
     "@/entities/session": { useSession: () => session },
     "@/entities/monitor": {
+      ...monitorHelpers,
       Status: () => null,
       resultErrorMessage: () => "Ошибка проверки",
     },

@@ -33,6 +33,7 @@ type resolver interface {
 type Executor struct {
 	resolver resolver
 	dial     func(context.Context, string, string) (net.Conn, error)
+	ping     func(context.Context, netip.Addr) (int64, error)
 	global   chan struct{}
 	mu       sync.Mutex
 	active   map[string]bool
@@ -40,15 +41,31 @@ type Executor struct {
 
 func NewExecutor() *Executor {
 	dialer := &net.Dialer{Timeout: 3 * time.Second}
-	return &Executor{resolver: net.DefaultResolver, dial: dialer.DialContext, global: make(chan struct{}, 4), active: make(map[string]bool)}
+	return &Executor{resolver: net.DefaultResolver, dial: dialer.DialContext, ping: pingIPv4, global: make(chan struct{}, 4), active: make(map[string]bool)}
 }
 
 func validateRequest(req contracts.Request) error {
-	if req.RunID == "" || len(req.RunID) > 128 || req.AttemptToken == "" || len(req.AttemptToken) > 256 || req.ConfigVersion < 1 || req.ExpectedStatus < 100 || req.ExpectedStatus > 599 || len(req.BodyContains) > 4096 || (req.Method != http.MethodGet && req.Method != http.MethodHead) || (req.Method == http.MethodHead && req.BodyContains != "") {
+	if req.RunID == "" || len(req.RunID) > 128 || req.AttemptToken == "" || len(req.AttemptToken) > 256 || req.ConfigVersion < 1 {
 		return ErrUnsupportedTarget
 	}
-	_, err := parseTarget(req.URL)
-	return err
+	switch contracts.EffectiveCheckType(req.CheckType) {
+	case "http":
+		if req.Host != "" || req.Port != 0 || req.ExpectedStatus < 100 || req.ExpectedStatus > 599 || len(req.BodyContains) > 4096 || (req.Method != http.MethodGet && req.Method != http.MethodHead) || (req.Method == http.MethodHead && req.BodyContains != "") {
+			return ErrUnsupportedTarget
+		}
+		_, err := parseTarget(req.URL)
+		return err
+	case "tcp", "icmp":
+		if req.URL != "" || req.Method != "" || req.ExpectedStatus != 0 || req.BodyContains != "" || (req.CheckType == "tcp" && (req.Port < 1 || req.Port > 65535)) || (req.CheckType == "icmp" && req.Port != 0) {
+			return ErrUnsupportedTarget
+		}
+		if _, err := contracts.NormalizeHost(req.Host, true); err != nil {
+			return ErrUnsupportedTarget
+		}
+		return nil
+	default:
+		return ErrUnsupportedTarget
+	}
 }
 
 func parseTarget(raw string) (*url.URL, error) {
@@ -66,31 +83,7 @@ func parseTarget(raw string) (*url.URL, error) {
 	return u, nil
 }
 
-// Explicit exclusions supplement IsGlobalUnicast, which includes private and
-// documentation addresses. IPv6 is restricted to current global allocations.
-var excludedNetworks = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"), netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("100.64.0.0/10"),
-	netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("172.16.0.0/12"),
-	netip.MustParsePrefix("192.0.0.0/24"), netip.MustParsePrefix("192.0.2.0/24"), netip.MustParsePrefix("192.31.196.0/24"),
-	netip.MustParsePrefix("192.52.193.0/24"), netip.MustParsePrefix("192.88.99.0/24"), netip.MustParsePrefix("192.168.0.0/16"),
-	netip.MustParsePrefix("192.175.48.0/24"), netip.MustParsePrefix("198.18.0.0/15"), netip.MustParsePrefix("198.51.100.0/24"),
-	netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("224.0.0.0/3"),
-	netip.MustParsePrefix("2001::/23"), netip.MustParsePrefix("2001:db8::/32"), netip.MustParsePrefix("2002::/16"),
-	netip.MustParsePrefix("2620:4f:8000::/48"), netip.MustParsePrefix("3fff::/20"),
-}
-
-func publicIP(ip netip.Addr) bool {
-	ip = ip.Unmap()
-	if !ip.IsValid() || ip.Zone() != "" || !ip.IsGlobalUnicast() || ip.IsPrivate() || (ip.Is6() && !netip.MustParsePrefix("2000::/3").Contains(ip)) {
-		return false
-	}
-	for _, prefix := range excludedNetworks {
-		if prefix.Contains(ip) {
-			return false
-		}
-	}
-	return true
-}
+func publicIP(ip netip.Addr) bool { return contracts.PublicIP(ip) }
 
 func (e *Executor) resolve(ctx context.Context, host string) ([]netip.Addr, error) {
 	if ip, err := netip.ParseAddr(host); err == nil {
@@ -137,7 +130,7 @@ func (e *Executor) acquire(keys ...string) (func(), error) {
 }
 
 func (e *Executor) Check(ctx context.Context, req contracts.Request) (contracts.Result, error) {
-	result := contracts.Result{RunID: req.RunID, AttemptToken: req.AttemptToken, ConfigVersion: req.ConfigVersion, Outcome: "UNKNOWN", CheckedAt: time.Now().UTC()}
+	result := contracts.Result{RunID: req.RunID, AttemptToken: req.AttemptToken, ConfigVersion: req.ConfigVersion, CheckType: contracts.EffectiveCheckType(req.CheckType), Outcome: "UNKNOWN", CheckedAt: time.Now().UTC()}
 	if err := validateRequest(req); err != nil {
 		return result, err
 	}
@@ -150,6 +143,9 @@ func (e *Executor) Check(ctx context.Context, req contracts.Request) (contracts.
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	started := time.Now()
+	if result.CheckType != "http" {
+		return e.checkNetwork(ctx, req, result, started)
+	}
 	u, _ := parseTarget(req.URL)
 	for redirects := 0; ; redirects++ {
 		response, body, err := e.request(ctx, u, req.Method)

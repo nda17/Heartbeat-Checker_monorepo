@@ -12,6 +12,10 @@ import (
 )
 
 type messengerSnapshot struct {
+	CheckType   string     `json:"checkType,omitempty"`
+	Host        string     `json:"host,omitempty"`
+	Port        int        `json:"port,omitempty"`
+	RoundTripMS *int64     `json:"roundTripMs,omitempty"`
 	MonitorID   string     `json:"monitorId"`
 	IncidentID  string     `json:"incidentId"`
 	Number      int64      `json:"number"`
@@ -157,6 +161,7 @@ func (m *Messenger) enqueueRoute(ctx context.Context, tx pgx.Tx, accountID, moni
 	var snapshot messengerSnapshot
 	snapshot.MonitorID, snapshot.IncidentID, snapshot.Kind = monitorID, incident.ID, kind
 	snapshot.Name, snapshot.URL, snapshot.Outcome = o.Name, o.URL, o.Outcome
+	snapshot.CheckType, snapshot.Host, snapshot.Port, snapshot.RoundTripMS = o.CheckType, o.Host, o.Port, o.RoundTripMS
 	snapshot.HTTPStatus, snapshot.ErrorCode, snapshot.LatencyMS = o.HTTPStatus, o.ErrorCode, o.LatencyMS
 	snapshot.CheckedAt, snapshot.Sequence = o.CheckedAt, sequence
 	snapshot.Number, snapshot.OpenedAt, snapshot.ConfirmedAt, snapshot.ClosedAt = incident.Number, incident.OpenedAt, incident.ConfirmedAt, incident.ClosedAt
