@@ -14,6 +14,9 @@ import (
 
 type Module struct{ service *service.Service }
 
+var ErrAdminGrant = service.ErrAdminGrant
+var ErrAdminGrantConflict = service.ErrAdminGrantConflict
+
 func New(pool *pgxpool.Pool, local bool) *Module { return &Module{service: service.New(pool, local)} }
 
 type Config struct {
@@ -35,6 +38,12 @@ func (m *Module) Register(mux *http.ServeMux, protect func(http.Handler) http.Ha
 
 func (m *Module) Lock(ctx context.Context, tx pgx.Tx, accountID string) (contracts.Entitlement, error) {
 	return m.service.Lock(ctx, tx, accountID)
+}
+func (m *Module) GrantAdminTx(ctx context.Context, tx pgx.Tx, accountID string, version int64, quota int, until time.Time, reason string) (contracts.Entitlement, error) {
+	return m.service.GrantAdminTx(ctx, tx, accountID, version, quota, until, reason)
+}
+func (m *Module) ExpireAdminTx(ctx context.Context, tx pgx.Tx, accountID string, version int64, reason string) error {
+	return m.service.ExpireAdminTx(ctx, tx, accountID, version, reason)
 }
 func (m *Module) GrantLocal(ctx context.Context, accountID string, quota int, until time.Time, reason string) error {
 	return m.service.GrantLocal(ctx, accountID, quota, until, reason)

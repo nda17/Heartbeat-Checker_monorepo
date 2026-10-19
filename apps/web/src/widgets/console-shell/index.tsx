@@ -84,6 +84,14 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
             >
               <span aria-hidden="true">⚙</span> Настройки аккаунта
             </Link>
+            {profile.account.role === "admin" && (
+              <Link
+                href="/app/admin"
+                aria-current={path === "/app/admin" ? "page" : undefined}
+              >
+                <span aria-hidden="true">◈</span> Администрирование
+              </Link>
+            )}
           </nav>
           <div className="sidebar-bottom">
             <p className="small muted">
@@ -115,9 +123,11 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
               Heartbeat Checker <span className="slash">/</span>{" "}
               {path.includes("settings")
                 ? "Аккаунт"
-                : path.includes("billing")
-                  ? "Оплата"
-                  : "Мониторы"}
+                : path.includes("admin")
+                  ? "Администрирование"
+                  : path.includes("billing")
+                    ? "Оплата"
+                    : "Мониторы"}
             </span>
             <div className="console-top-actions">
               <span className="top-label">HTTP MONITORING</span>

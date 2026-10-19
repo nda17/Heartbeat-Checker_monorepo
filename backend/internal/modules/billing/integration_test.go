@@ -359,6 +359,95 @@ func TestBillingActiveAccountExpiredOrderAndLocalTestIsolation(t *testing.T) {
 	}
 }
 
+func TestAdminGrantVersionAndPendingMockOrderCannotReplaceGrant(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Administrative Grant Billing Owner")
+	module, err := NewConfigured(f.pool, false, Config{Provider: "mock", MockAccountIDs: []string{owner.id}}, f.accounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	order, err := module.service.CreateOrder(context.Background(), owner.id, 1, "cf8f7971-d583-4f06-9056-5a754de130cf")
+	if err != nil {
+		t.Fatalf("create pending mock order before grant: %v", err)
+	}
+
+	grantUntil := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Second)
+	tx, err := f.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := module.GrantAdminTx(context.Background(), tx, owner.id, 0, 7, grantUntil, "approved administrative entitlement")
+	if err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatalf("grant entitlement at initial version: %v", err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if grant.Source != "admin_grant" || grant.Quota != 7 || grant.Version != 1 {
+		t.Fatalf("grant=%+v, want active admin_grant quota 7 version 1", grant)
+	}
+
+	// A delayed mock completion must not replace an administrative decision
+	// that was made after the order was created.
+	if _, err := module.service.Simulate(context.Background(), owner.id, order.ID, "succeeded"); !errors.Is(err, service.ErrForbidden) {
+		t.Fatalf("stale pending mock payment error=%v, want forbidden", err)
+	}
+	var orderStatus, source string
+	var quota, reportCount int
+	if err := f.pool.QueryRow(context.Background(), `SELECT status FROM billing.orders WHERE id=$1`, order.ID).Scan(&orderStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT source,monitor_limit FROM billing.entitlements WHERE account_id=$1`, owner.id).Scan(&source, &quota); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.payment_reports WHERE order_id=$1`, order.ID).Scan(&reportCount); err != nil {
+		t.Fatal(err)
+	}
+	if orderStatus != "pending" || source != "admin_grant" || quota != 7 || reportCount != 0 {
+		t.Fatalf("stale payment changed state: order=%s source=%s quota=%d report rows=%d", orderStatus, source, quota, reportCount)
+	}
+	if _, err := module.service.CreateOrder(context.Background(), owner.id, 7, "09f96250-84ca-447a-9a67-27db06fb6750"); !errors.Is(err, service.ErrForbidden) {
+		t.Fatalf("mock order while admin grant active error=%v, want forbidden", err)
+	}
+
+	// Optimistic versions prevent a stale admin form from replacing/revoking a
+	// newer grant. The valid current version remains revocable.
+	tx, err = f.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = module.GrantAdminTx(context.Background(), tx, owner.id, 0, 9, grantUntil, "stale replacement")
+	_ = tx.Rollback(context.Background())
+	if !errors.Is(err, service.ErrAdminGrantConflict) {
+		t.Fatalf("stale grant version error=%v, want conflict", err)
+	}
+	tx, err = f.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := module.ExpireAdminTx(context.Background(), tx, owner.id, grant.Version, "grant period ended"); err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatalf("expire current admin grant: %v", err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = f.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = module.ExpireAdminTx(context.Background(), tx, owner.id, grant.Version, "duplicate stale revoke")
+	_ = tx.Rollback(context.Background())
+	if !errors.Is(err, service.ErrAdminGrantConflict) {
+		t.Fatalf("stale revoke version error=%v, want conflict", err)
+	}
+	var expired bool
+	if err := f.pool.QueryRow(context.Background(), `SELECT valid_until<=now() FROM billing.entitlements WHERE account_id=$1`, owner.id).Scan(&expired); err != nil || !expired {
+		t.Fatalf("admin grant expiry state=%t err=%v", expired, err)
+	}
+}
+
 func TestBillingPriceChangeKeepsHistoricalOrderAmountOnIdempotentReplay(t *testing.T) {
 	f := newBillingFixture(t)
 	quoteOwner := f.newActor(t, "Billing Quote Owner")

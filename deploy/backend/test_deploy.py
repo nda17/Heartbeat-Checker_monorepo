@@ -61,7 +61,7 @@ if args[:2] == ["inspect"]:
 if args and args[0] == "compose":
     if "config" in args and "--format" in args:
         print(json.dumps({"services": {
-            "api": {"environment": {"DATABASE_URL": "postgres://heartbeat:testpass@postgres:5432/heartbeat?sslmode=disable"}},
+            "api": {"environment": {"DATABASE_URL": "postgres://heartbeat:testpass@postgres:5432/heartbeat?sslmode=disable", "AUTH_MFA_ENCRYPTION_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}},
             "postgres": {"environment": {"POSTGRES_PASSWORD": "testpass"}},
             "worker": {"environment": {"SMTP_TLS_MODE": "implicit_tls"}},
             "probe": {"environment": {"PROBE_SHARED_SECRET": "test-probe-secret"}},
@@ -69,6 +69,14 @@ if args and args[0] == "compose":
     if "ps" in args and "-q" in args:
         print("container-id"); raise SystemExit(0)
     if "exec" in args:
+        if "psql" in args and "-X" in args and os.environ.get("OWNER_IMPORT_RESULT"):
+            payload = sys.stdin.buffer.read()
+            capture = os.environ.get("OWNER_IMPORT_STDIN")
+            if capture:
+                with open(capture, "wb") as output:
+                    output.write(payload)
+            print(os.environ["OWNER_IMPORT_RESULT"])
+            raise SystemExit(0)
         if "pg_dump" in args:
             sys.stdout.write("isolated-test-database-dump\n"); raise SystemExit(0)
         if "SELECT 1" in args:
@@ -171,7 +179,7 @@ class BackendDeployTests(unittest.TestCase):
         self.write_mock("python3", PYTHON_MOCK)
         self.write_mock("cp", CP_MOCK)
         self.write_mock("flock", "#!/bin/sh\nexit 0\n")
-        self.write_mock("sha256sum", "#!/bin/sh\nprintf '%064d  %s\\n' 0 \"$1\"\n")
+        self.write_mock("sha256sum", "#!/bin/sh\nif [[ \"$1\" == */.owner-import.json ]]; then exec \"$REAL_PYTHON\" -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],\"rb\").read()).hexdigest(), sys.argv[1])' \"$1\"; fi\nprintf '%064d  %s\\n' 0 \"$1\"\n")
         (self.backend / ".env").write_text(BASE_ENV)
         (self.backend / ".env").chmod(0o600)
         (self.backend / "compose.yaml.incoming").write_text("compose candidate\n")
@@ -190,7 +198,8 @@ class BackendDeployTests(unittest.TestCase):
         path.write_text(content)
         path.chmod(0o755)
 
-    def run_deploy(self, activate_next_config=None, activate_messenger_notifications=None, **extra_env):
+    def run_deploy(self, activate_next_config=None, activate_messenger_notifications=None,
+                   provision_owner=None, activate_admin_mfa=None, **extra_env):
         env = os.environ.copy()
         env.update({
             "PATH": f"{self.bin}:{env['PATH']}",
@@ -208,6 +217,14 @@ class BackendDeployTests(unittest.TestCase):
             if activate_next_config is None:
                 args.append("false")
             args.append("true" if activate_messenger_notifications else "false")
+        if provision_owner is not None:
+            while len(args) < 11:
+                args.append("false")
+            args.append("true" if provision_owner else "false")
+        if activate_admin_mfa is not None:
+            while len(args) < 12:
+                args.append("false")
+            args.append("true" if activate_admin_mfa else "false")
         return subprocess.run(
             args,
             input="test-token\n", cwd=self.root, env=env, text=True, capture_output=True,
@@ -218,6 +235,22 @@ class BackendDeployTests(unittest.TestCase):
         path.write_text(contents)
         path.chmod(mode)
         return path
+
+    def write_owner_candidate(self, payload=None, mode=0o600, sql=None):
+        payload = payload or {
+            "accountId": "51ec7d19-80c4-4fb6-8edb-79dc7abe3120",
+            "name": "Synthetic Production Owner",
+            "email": "khv1702@gmail.com",
+            "passwordHash": "$argon2id$v=19$m=19456,t=2,p=1$" + "A" * 22 + "$" + "B" * 43,
+            "quota": 1000,
+            "validUntil": "2027-10-18T00:00:00Z",
+        }
+        path = self.backend / ".owner-import.next.json"
+        path.write_text(json.dumps(payload, separators=(",", ":")) + "\n")
+        path.chmod(mode)
+        sql_path = self.backend / "import-owner.sql.incoming"
+        sql_path.write_text(sql or "-- synthetic test SQL\n__OWNER_PAYLOAD_ROW__\n")
+        return path, sql_path
 
     def informer_candidate(self, relay=False, **overrides):
         values = {
@@ -259,10 +292,123 @@ class BackendDeployTests(unittest.TestCase):
         path.write_text(INFORMER_BASE_ENV)
         path.chmod(0o600)
 
+    def admin_mfa_candidate(self, key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="):
+        return BASE_ENV + f"AUTH_MFA_ENCRYPTION_KEY={key}\n"
+
     def docker_calls(self):
         if not self.log.exists():
             return []
         return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+    def test_owner_provision_is_opt_in_and_ignores_staged_payload_by_default(self):
+        payload_path, sql_path = self.write_owner_candidate()
+        result = self.run_deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(payload_path.exists())
+        self.assertTrue(sql_path.exists())
+        self.assertFalse((self.backend / "receipts" / "owner-import.json").exists())
+        self.assertFalse(any("-X" in call for call in self.docker_calls()))
+
+    def test_owner_payload_validation_fails_before_docker(self):
+        payload, _ = self.write_owner_candidate({
+            "accountId": "51ec7d19-80c4-4fb6-8edb-79dc7abe3120",
+            "name": "Synthetic Production Owner",
+            "email": "wrong@example.test",
+            "passwordHash": "$argon2id$v=19$m=19456,t=2,p=1$" + "A" * 22 + "$" + "B" * 43,
+            "quota": 1000,
+            "validUntil": "2027-10-18T00:00:00Z",
+        })
+        result = self.run_deploy(provision_owner=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Owner import payload validation failed", result.stderr)
+        self.assertEqual(self.docker_calls(), [], "invalid payload reached Docker or caused a partial deploy")
+        self.assertTrue(payload.exists(), "invalid staged candidate must remain available for correction")
+
+    def test_owner_payload_must_be_regular_mode_600(self):
+        payload, _ = self.write_owner_candidate(mode=0o640)
+        result = self.run_deploy(provision_owner=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("regular mode-600 payload", result.stderr)
+        self.assertEqual(self.docker_calls(), [], "insecure payload reached Docker")
+        self.assertTrue(payload.exists())
+
+    def test_owner_import_receipt_and_payload_cleanup_follow_readiness(self):
+        payload, sql = self.write_owner_candidate()
+        original_payload = payload.read_bytes()
+        stdin_capture = self.root / "owner-import.stdin"
+        source_sha = "d" * 40
+        result = self.run_deploy(
+            provision_owner=True,
+            OWNER_IMPORT_RESULT=f"created|{source_sha}",
+            OWNER_IMPORT_STDIN=str(stdin_capture),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt_path = self.backend / "receipts" / "owner-import.json"
+        receipt = json.loads(receipt_path.read_text())
+        self.assertEqual(receipt["operation_id"], "owner-production-2026-10-19-v1")
+        self.assertEqual(receipt["account_id"], "51ec7d19-80c4-4fb6-8edb-79dc7abe3120")
+        self.assertEqual(receipt["payload_sha256"], __import__("hashlib").sha256(original_payload).hexdigest())
+        self.assertEqual(receipt["source_sha"], source_sha)
+        self.assertTrue(receipt["completed_at"])
+        self.assertFalse(payload.exists(), "successful owner input was not consumed")
+        self.assertFalse(sql.exists(), "successful SQL staging file was not consumed")
+        self.assertFalse((self.backend / "pending").exists())
+        encoded_row = stdin_capture.read_bytes().splitlines()[-1].split(b"\t")
+        self.assertEqual(len(encoded_row), 3)
+        self.assertEqual(encoded_row[0], original_payload.hex().encode())
+        self.assertEqual(encoded_row[1], receipt["payload_sha256"].encode())
+        self.assertEqual(encoded_row[2], SOURCE_SHA.encode())
+        self.assertNotIn(b"khv1702@gmail.com", stdin_capture.read_bytes())
+        self.assertNotIn("khv1702@gmail.com", result.stdout + result.stderr)
+        release_receipt = json.loads((self.backend / "receipts" / f"{SOURCE_SHA}.json").read_text())
+        self.assertTrue(release_receipt["owner_import_requested"])
+
+    def test_owner_migration_failure_retains_pending_candidate_and_avoids_receipt(self):
+        payload, sql = self.write_owner_candidate()
+        original_payload = payload.read_bytes()
+        original_sql = sql.read_bytes()
+        result = self.run_deploy(provision_owner=True, FAIL_MIGRATION="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("after migration began", result.stderr)
+        self.assertIn("phase=migration_started", (self.backend / "pending").read_text())
+        self.assertEqual(payload.read_bytes(), original_payload)
+        self.assertEqual(sql.read_bytes(), original_sql)
+        self.assertFalse((self.backend / "receipts" / "owner-import.json").exists())
+        self.assertFalse(any("-X" in call for call in self.docker_calls()))
+
+    def test_admin_mfa_key_activation_is_explicit_scoped_and_consumed_after_success(self):
+        candidate = self.admin_mfa_candidate()
+        staged = self.write_next_config(candidate)
+        result = self.run_deploy(activate_admin_mfa=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.backend / ".env").read_text(), candidate)
+        self.assertFalse(staged.exists())
+        release = json.loads((self.backend / "receipts" / f"{SOURCE_SHA}.json").read_text())
+        self.assertTrue(release["admin_mfa_activated"])
+
+    def test_admin_mfa_activation_rejects_malformed_key_before_docker(self):
+        candidate = self.admin_mfa_candidate("not-base64")
+        staged = self.write_next_config(candidate)
+        original = (self.backend / ".env").read_bytes()
+        result = self.run_deploy(activate_admin_mfa=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Configuration activation rejected", result.stderr)
+        self.assertEqual(self.docker_calls(), [])
+        self.assertEqual((self.backend / ".env").read_bytes(), original)
+        self.assertTrue(staged.exists())
+
+    def test_admin_mfa_active_key_cannot_be_rotated(self):
+        old = BASE_ENV + "AUTH_MFA_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n"
+        (self.backend / ".env").write_text(old)
+        (self.backend / ".env").chmod(0o600)
+        changed = self.set_env_values(old, AUTH_MFA_ENCRYPTION_KEY="BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=")
+        staged = self.write_next_config(changed)
+        result = self.run_deploy(activate_admin_mfa=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("existing admin MFA key cannot be rotated", result.stderr)
+        self.assertEqual(self.docker_calls(), [])
+        self.assertEqual((self.backend / ".env").read_text(), old)
+        self.assertTrue(staged.exists())
 
     def test_missing_provisioned_config_fails_before_any_change(self):
         (self.backend / ".env").unlink()

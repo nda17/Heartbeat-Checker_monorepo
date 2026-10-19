@@ -41,6 +41,12 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/password/reset/confirm", s.resetConfirm)
 	mux.HandleFunc("POST /api/v1/auth/password/change", s.passwordChange)
 	mux.HandleFunc("GET /api/v1/auth/csrf", s.csrf)
+	mux.HandleFunc("GET /api/v1/auth/mfa", s.mfaStatus)
+	mux.HandleFunc("POST /api/v1/auth/mfa/enrollment", s.mfaEnrollment)
+	mux.HandleFunc("POST /api/v1/auth/mfa/enrollment/confirm", s.mfaEnrollmentConfirm)
+	mux.HandleFunc("POST /api/v1/auth/mfa/verify", s.mfaVerify)
+	mux.HandleFunc("POST /api/v1/auth/mfa/recovery", s.mfaRecovery)
+	mux.HandleFunc("POST /api/v1/auth/mfa/recovery-codes", s.mfaRecoveryCodes)
 	mux.HandleFunc("GET /api/v1/me", s.me)
 	mux.HandleFunc("PATCH /api/v1/me", s.editMe)
 	mux.HandleFunc("GET /api/v1/me/sessions", s.sessions)
@@ -81,6 +87,14 @@ func failService(w http.ResponseWriter, err error) {
 		fail(w, 503, "temporarily_unavailable")
 	case errors.Is(err, service.ErrChallenge):
 		fail(w, 403, "challenge_failed")
+	case errors.Is(err, service.ErrConflict):
+		fail(w, 409, "conflict")
+	case errors.Is(err, service.ErrMFAEnrollmentRequired):
+		fail(w, 403, "mfa_enrollment_required")
+	case errors.Is(err, service.ErrMFARequired):
+		fail(w, 403, "mfa_required")
+	case errors.Is(err, service.ErrMFAStepUpRequired):
+		fail(w, 403, "mfa_step_up_required")
 	default:
 		fail(w, 503, "temporarily_unavailable")
 	}
@@ -162,11 +176,25 @@ func (s *Server) RequireRole(role string, next http.Handler) http.Handler {
 		if !ok {
 			return
 		}
-		if role == "admin" || p.Role != role {
+		if p.Role != role {
 			fail(w, 403, "forbidden")
 			return
 		}
-		next.ServeHTTP(w, r)
+		if role == "admin" {
+			if !p.MFAEnabled {
+				fail(w, 403, "mfa_enrollment_required")
+				return
+			}
+			if p.MFAVerifiedUntil == nil || !p.MFAVerifiedUntil.After(time.Now()) {
+				fail(w, 403, "mfa_required")
+				return
+			}
+			if r.Method != http.MethodGet && r.Method != http.MethodHead && (p.MFAStepUpUntil == nil || !p.MFAStepUpUntil.After(time.Now())) {
+				fail(w, 403, "mfa_step_up_required")
+				return
+			}
+		}
+		next.ServeHTTP(w, r.WithContext(authcontracts.WithPrincipal(r.Context(), p)))
 	})
 }
 

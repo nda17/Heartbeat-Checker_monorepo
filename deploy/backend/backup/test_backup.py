@@ -138,7 +138,7 @@ class BackupTests(unittest.TestCase):
 
     def run_success(self, restore=None, download=None):
         state = self.base_state()
-        command_patch, encrypt_patch = self.patch_dump_and_encrypt()
+        _, encrypt_patch = self.patch_dump_and_encrypt()
         with command_patch, encrypt_patch, \
              patch.object(backup, "download", side_effect=download or self.s3.download_fileobj), \
              patch.object(backup, "restore_downloaded", side_effect=restore or (lambda *args: [{"version": 8}])):
@@ -290,6 +290,54 @@ class BackupTests(unittest.TestCase):
         for secret in keys_seen.values():
             self.assertNotIn(secret.encode(), persisted)
         self.assertEqual([path.name for path in self.state_dir.iterdir()], ["2026-10-19.json"])
+
+    def test_legacy_recovery_bundle_is_accepted_only_without_encrypted_mfa_rows(self):
+        responses = iter((b"t|t", b"f"))
+        with patch.object(backup, "command", side_effect=lambda *_args, **_kwargs: next(responses)):
+            self.assertFalse(backup.encrypted_mfa_data(["-d", "restorecheck"], {"PATH": "/usr/bin"}))
+
+        responses = iter((b"t|t", b"t"))
+        with patch.object(backup, "command", side_effect=lambda *_args, **_kwargs: next(responses)):
+            self.assertTrue(backup.encrypted_mfa_data(["-d", "restorecheck"], {"PATH": "/usr/bin"}))
+
+        with patch.dict(os.environ, {backup.MFA_RECOVERY_KEY: ""}, clear=False):
+            calls = []
+
+            def encrypted_mfa_probe(args, *, env=None, output=None, **_kwargs):
+                calls.append(args)
+                if "pg_dump" in args[0]:
+                    raise AssertionError("must reject before dumping when MFA rows lack a recovery key")
+                return b"t|t" if "to_regclass" in args[-1] else b"t"
+
+            state = self.base_state()
+            with patch.object(backup, "command", side_effect=encrypted_mfa_probe):
+                with self.assertRaisesRegex(backup.BackupError, "missing_mfa_recovery_key"):
+                    backup.run_backup(state, self.state_path(), self.s3)
+            self.assertEqual(state["status"], "failed")
+            self.assertEqual(sum("to_regclass" in args[-1] for args in calls), 1)
+            self.assertEqual(len(calls), 2)
+
+        responses = iter((b"t|t", b"t", b"pg_dump (PostgreSQL) 18.6"))
+
+        def command_with_mfa_bundle(args, *, output=None, **_kwargs):
+            if Path(args[0]).name == "pg_dump" and "--version" not in args:
+                output.write(b"synthetic dump")
+                return b""
+            return next(responses)
+
+        command_patch, encrypt_patch = self.patch_dump_and_encrypt()
+        state = self.base_state()
+        with patch.object(backup, "command", side_effect=command_with_mfa_bundle), encrypt_patch, \
+             patch.object(backup, "restore_downloaded", return_value=[{"version": 12}]):
+            backup.run_backup(state, self.state_path(), self.s3)
+        self.assertEqual(state["status"], "success")
+        manifest = json.loads(self.s3.objects[state["manifest_key"]])
+        self.assertEqual(set(manifest["recovery_key_names"]), set(backup.RECOVERY_KEYS))
+
+    def test_mfa_schema_detection_fails_closed_if_only_one_table_exists(self):
+        with patch.object(backup, "command", return_value=b"t|f"):
+            with self.assertRaisesRegex(backup.BackupError, "incomplete_mfa_schema"):
+                backup.encrypted_mfa_data(["-d", "restorecheck"], {"PATH": "/usr/bin"})
 
     def test_report_retries_without_dump_and_does_not_follow_redirect(self):
         state = {"date": "2026-10-19", "status": "failed", "phase": "dump", "error": "command_failed:pg_dump"}

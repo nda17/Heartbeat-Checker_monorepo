@@ -3,14 +3,15 @@ package auth
 import (
 	"context"
 	"errors"
-	"github.com/jackc/pgx/v5"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts/contracts"
+	authcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/repository/postgres"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/service"
 	authhttp "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/transport/http"
@@ -19,6 +20,8 @@ import (
 type Config struct {
 	Origin            string
 	MailEncryptionKey string
+	MFAEncryptionKey  string
+	MFAAudit          postgres.MFAAudit
 	CookieSecure      bool
 	SessionTTL        time.Duration
 	ChallengeTTL      time.Duration
@@ -26,7 +29,10 @@ type Config struct {
 	RateLimitWindow   time.Duration
 }
 
-type Module struct{ server *authhttp.Server }
+type Module struct {
+	server *authhttp.Server
+	repo   *postgres.Repository
+}
 
 type BootstrapInput = service.BootstrapInput
 
@@ -65,6 +71,16 @@ func New(pool *pgxpool.Pool, accounts contracts.Service, captcha CaptchaVerifier
 			return nil, err
 		}
 	}
+	var mfaKey []byte
+	if cfg.MFAEncryptionKey != "" {
+		mfaKey, err = service.DecodeMailKey(cfg.MFAEncryptionKey)
+		if err != nil {
+			return nil, errors.New("AUTH_MFA_ENCRYPTION_KEY must be base64 of 32 bytes")
+		}
+		if cfg.MFAAudit == nil {
+			return nil, errors.New("MFA audit writer is required")
+		}
+	}
 	if cfg.SessionTTL == 0 {
 		cfg.SessionTTL = 30 * 24 * time.Hour
 	}
@@ -80,15 +96,18 @@ func New(pool *pgxpool.Pool, accounts contracts.Service, captcha CaptchaVerifier
 	if cfg.SessionTTL < time.Second || cfg.ChallengeTTL < time.Second || cfg.ResetTTL < time.Second || cfg.RateLimitWindow < time.Second {
 		return nil, errors.New("auth durations must be at least one second")
 	}
-	svc := service.New(postgres.New(pool), accounts, captcha, mailer, service.Config{
+	repo := postgres.New(pool)
+	svc := service.New(repo, accounts, captcha, mailer, service.Config{
 		Origin:            cfg.Origin,
 		MailEncryptionKey: mailKey,
+		MFAEncryptionKey:  mfaKey,
+		MFAAudit:          cfg.MFAAudit,
 		SessionTTL:        cfg.SessionTTL,
 		ChallengeTTL:      cfg.ChallengeTTL,
 		ResetTTL:          cfg.ResetTTL,
 		RateLimitWindow:   cfg.RateLimitWindow,
 	})
-	return &Module{server: authhttp.New(svc, cfg.Origin, cfg.CookieSecure, cfg.SessionTTL)}, nil
+	return &Module{server: authhttp.New(svc, cfg.Origin, cfg.CookieSecure, cfg.SessionTTL), repo: repo}, nil
 }
 
 func (m *Module) Register(mux *http.ServeMux) { m.server.Register(mux) }
@@ -98,5 +117,18 @@ func (m *Module) RequireRole(role string, next http.Handler) http.Handler {
 }
 
 func (m *Module) Protect(next http.Handler) http.Handler { return m.server.Protect(next) }
+
+func (m *Module) VerifyAdminTx(ctx context.Context, tx pgx.Tx, p authcontracts.Principal, mutation bool) error {
+	return m.repo.VerifyAdminTx(ctx, tx, p, mutation)
+}
+func (m *Module) RevokeAccountSessionsTx(ctx context.Context, tx pgx.Tx, accountID string) error {
+	return m.repo.RevokeAccountSessionsTx(ctx, tx, accountID)
+}
+func (m *Module) AdminEmail(ctx context.Context, tx pgx.Tx, accountID string) (string, error) {
+	return m.repo.AdminEmail(ctx, tx, accountID)
+}
+func (m *Module) AdminSessionCount(ctx context.Context, tx pgx.Tx, accountID string) (int, error) {
+	return m.repo.AdminSessionCount(ctx, tx, accountID)
+}
 
 func Cleanup(ctx context.Context, tx pgx.Tx) error { return postgres.Cleanup(ctx, tx) }

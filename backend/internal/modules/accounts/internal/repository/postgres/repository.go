@@ -32,23 +32,23 @@ func (r *Repository) create(ctx context.Context, tx pgx.Tx, name, role string) (
 	}
 	var a contracts.Account
 	err = tx.QueryRow(ctx, `INSERT INTO accounts.accounts (id, name, role, status)
-		VALUES ($1, $2, $3, 'active') RETURNING id, name, role, status, created_at`, id, name, role).
-		Scan(&a.ID, &a.Name, &a.Role, &a.Status, &a.CreatedAt)
+		VALUES ($1, $2, $3, 'active') RETURNING id, name, role, status, version, created_at`, id, name, role).
+		Scan(&a.ID, &a.Name, &a.Role, &a.Status, &a.Version, &a.CreatedAt)
 	return a, err
 }
 
 func (r *Repository) Get(ctx context.Context, id string) (contracts.Account, error) {
 	var a contracts.Account
-	err := r.pool.QueryRow(ctx, `SELECT id, name, role, status, created_at FROM accounts.accounts WHERE id = $1`, id).
-		Scan(&a.ID, &a.Name, &a.Role, &a.Status, &a.CreatedAt)
+	err := r.pool.QueryRow(ctx, `SELECT id, name, role, status, version, created_at FROM accounts.accounts WHERE id = $1`, id).
+		Scan(&a.ID, &a.Name, &a.Role, &a.Status, &a.Version, &a.CreatedAt)
 	return a, err
 }
 
 func (r *Repository) UpdateName(ctx context.Context, id, name string) (contracts.Account, error) {
 	var a contracts.Account
-	err := r.pool.QueryRow(ctx, `UPDATE accounts.accounts SET name = $2, updated_at = now()
-		WHERE id = $1 AND status = 'active' RETURNING id, name, role, status, created_at`, id, name).
-		Scan(&a.ID, &a.Name, &a.Role, &a.Status, &a.CreatedAt)
+	err := r.pool.QueryRow(ctx, `UPDATE accounts.accounts SET name = $2, version=version+1, updated_at = now()
+		WHERE id = $1 AND status = 'active' RETURNING id, name, role, status, version, created_at`, id, name).
+		Scan(&a.ID, &a.Name, &a.Role, &a.Status, &a.Version, &a.CreatedAt)
 	return a, err
 }
 

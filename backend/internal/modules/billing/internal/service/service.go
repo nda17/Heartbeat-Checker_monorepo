@@ -20,6 +20,9 @@ type Service struct {
 	accounts accounts.ActiveGuard
 }
 
+var ErrAdminGrant = errors.New("invalid administrative grant")
+var ErrAdminGrantConflict = errors.New("administrative grant version conflict")
+
 func New(pool *pgxpool.Pool, local bool) *Service {
 	return &Service{pool: pool, local: local, provider: "disabled"}
 }
@@ -30,7 +33,7 @@ func (s *Service) Lock(ctx context.Context, tx pgx.Tx, accountID string) (contra
 	}
 	var e contracts.Entitlement
 	var until time.Time
-	err := tx.QueryRow(ctx, `SELECT monitor_limit,valid_until,source,COALESCE(renewal_anchor_day,0) FROM billing.entitlements WHERE account_id=$1 FOR UPDATE`, accountID).Scan(&e.Quota, &until, &e.Source, &e.RenewalAnchorDay)
+	err := tx.QueryRow(ctx, `SELECT monitor_limit,valid_until,source,COALESCE(renewal_anchor_day,0),version FROM billing.entitlements WHERE account_id=$1 FOR UPDATE`, accountID).Scan(&e.Quota, &until, &e.Source, &e.RenewalAnchorDay, &e.Version)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return e, nil
 	}
@@ -38,7 +41,7 @@ func (s *Service) Lock(ctx context.Context, tx pgx.Tx, accountID string) (contra
 		return e, err
 	}
 	e.ActiveUntil = &until
-	validSource := (s.local && e.Source == "local_test") || (s.provider == "mock" && s.allowed[accountID] && e.Source == "mock_test")
+	validSource := e.Source == "admin_grant" || (s.local && e.Source == "local_test") || (s.provider == "mock" && s.allowed[accountID] && e.Source == "mock_test")
 	if !validSource || !until.After(time.Now()) {
 		e.Quota = 0
 	}
@@ -80,4 +83,45 @@ func (s *Service) validateLocalGrant(quota int, until time.Time, reason string) 
 		return errors.New("invalid local entitlement grant")
 	}
 	return nil
+}
+
+// GrantAdminTx is called only by an MFA-gated administrator transaction. The
+// caller owns its audit record and account lock in the same transaction.
+func (s *Service) GrantAdminTx(ctx context.Context, tx pgx.Tx, accountID string, version int64, quota int, until time.Time, reason string) (contracts.Entitlement, error) {
+	if quota < 1 || quota > 1000 || !until.After(time.Now()) || strings.TrimSpace(reason) == "" || len(reason) > 500 || version < 0 {
+		return contracts.Entitlement{}, ErrAdminGrant
+	}
+	e, err := s.Lock(ctx, tx, accountID)
+	if err != nil {
+		return e, err
+	}
+	if e.Version != version {
+		return e, ErrAdminGrantConflict
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason,renewal_anchor_day)
+		VALUES($1,$2,$3,'admin_grant',$4,NULL)
+		ON CONFLICT(account_id) DO UPDATE SET monitor_limit=excluded.monitor_limit,valid_until=excluded.valid_until,
+			source='admin_grant',reason=excluded.reason,renewal_anchor_day=NULL,version=billing.entitlements.version+1,granted_at=now()`, accountID, quota, until, reason)
+	if err != nil {
+		return e, err
+	}
+	e.Quota, e.ActiveUntil, e.Source, e.Version, e.RenewalAnchorDay = quota, &until, "admin_grant", version+1, 0
+	return e, nil
+}
+
+// ExpireAdminTx revokes only an administrative grant; paid history is untouched.
+func (s *Service) ExpireAdminTx(ctx context.Context, tx pgx.Tx, accountID string, version int64, reason string) error {
+	if version < 1 || strings.TrimSpace(reason) == "" || len(reason) > 500 {
+		return ErrAdminGrant
+	}
+	e, err := s.Lock(ctx, tx, accountID)
+	if err != nil {
+		return err
+	}
+	if e.Version != version || e.Source != "admin_grant" {
+		return ErrAdminGrantConflict
+	}
+	_, err = tx.Exec(ctx, `UPDATE billing.entitlements SET valid_until=now(),version=version+1,
+		granted_at=now(),reason=$2 WHERE account_id=$1`, accountID, reason)
+	return err
 }

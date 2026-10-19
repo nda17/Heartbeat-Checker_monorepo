@@ -17,6 +17,16 @@ on:
         required: false
         default: false
         type: boolean
+      provision_owner:
+        description: Import the reviewed create-only owner payload staged on the backend VPS
+        required: false
+        default: false
+        type: boolean
+      activate_admin_mfa:
+        description: Add the reviewed MFA encryption key from .env.next without rotating an active key
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -36,6 +46,8 @@ jobs:
       SOURCE_SHA: ${{ inputs.source_sha }}
       ACTIVATE_TELEGRAM_RELAY: ${{ inputs.activate_telegram_relay }}
       ACTIVATE_MESSENGER_NOTIFICATIONS: ${{ inputs.activate_messenger_notifications }}
+      PROVISION_OWNER: ${{ inputs.provision_owner }}
+      ACTIVATE_ADMIN_MFA: ${{ inputs.activate_admin_mfa }}
       DEPLOY_HOST: ${{ vars.BACKEND_DEPLOY_HOST }}
       DEPLOY_USER: ${{ vars.BACKEND_DEPLOY_USER }}
     steps:
@@ -50,6 +62,12 @@ jobs:
           }
           [[ "$ACTIVATE_MESSENGER_NOTIFICATIONS" == true || "$ACTIVATE_MESSENGER_NOTIFICATIONS" == false ]] || {
             echo 'Invalid messenger notification activation flag'; exit 1;
+          }
+          [[ "$PROVISION_OWNER" == true || "$PROVISION_OWNER" == false ]] || {
+            echo 'Invalid owner provisioning flag'; exit 1;
+          }
+          [[ "$ACTIVATE_ADMIN_MFA" == true || "$ACTIVATE_ADMIN_MFA" == false ]] || {
+            echo 'Invalid admin MFA activation flag'; exit 1;
           }
           [[ "$DEPLOY_HOST" == 176.12.64.115 && "$DEPLOY_USER" == heartbeat-deploy ]] || {
             echo 'Backend host/user do not match the approved VPS'; exit 1;
@@ -135,8 +153,11 @@ jobs:
           scp "${ssh_opts[@]}" deploy/backend/compose.backup.yaml "$target:/opt/heartbeat-checker/backend/compose.backup.yaml.incoming"
           scp "${ssh_opts[@]}" deploy/backend/backup.sh "$target:/opt/heartbeat-checker/backend/backup.sh.incoming"
           scp "${ssh_opts[@]}" deploy/backend/deploy.sh "$target:/opt/heartbeat-checker/backend/deploy.sh.incoming"
+          if [[ "$PROVISION_OWNER" == true ]]; then
+            scp "${ssh_opts[@]}" deploy/backend/import-owner.sql "$target:/opt/heartbeat-checker/backend/import-owner.sql.incoming"
+          fi
           printf '%s\n' "$GH_TOKEN" | ssh "${ssh_opts[@]}" "$target" \
-            "bash /opt/heartbeat-checker/backend/deploy.sh.incoming '$SOURCE_SHA' '$API_IMAGE' '$WORKER_IMAGE' '$PROBE_IMAGE' '$MIGRATE_IMAGE' '$GITHUB_ACTOR' '$BACKUP_IMAGE' '$ACTIVATE_TELEGRAM_RELAY' '$ACTIVATE_MESSENGER_NOTIFICATIONS'"
+            "bash /opt/heartbeat-checker/backend/deploy.sh.incoming '$SOURCE_SHA' '$API_IMAGE' '$WORKER_IMAGE' '$PROBE_IMAGE' '$MIGRATE_IMAGE' '$GITHUB_ACTOR' '$BACKUP_IMAGE' '$ACTIVATE_TELEGRAM_RELAY' '$ACTIVATE_MESSENGER_NOTIFICATIONS' '$PROVISION_OWNER' '$ACTIVATE_ADMIN_MFA'"
 
       - name: Verify public backend denies runner traffic
         shell: bash

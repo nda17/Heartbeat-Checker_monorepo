@@ -1,6 +1,7 @@
 "use client";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "@/shared/api";
+import { Entitlement } from "@/entities/monitor";
 import { dateTime, Loading, Notice } from "@/shared/ui";
 type Order = {
   id: string;
@@ -33,6 +34,7 @@ function money(amountMinor: number) {
 }
 export function BillingPage() {
   const [billing, setBilling] = useState<Billing | null>(null);
+  const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
   const [count, setCount] = useState(1);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -40,8 +42,12 @@ export function BillingPage() {
   const [demo, setDemo] = useState<"succeeded" | "canceled" | null>(null);
   const request = useRef<{ count: number; key: string } | null>(null);
   const load = useCallback(async () => {
-    const result = await api<Billing>("/billing");
+    const [result, access] = await Promise.all([
+      api<Billing>("/billing"),
+      api<{ entitlement: Entitlement }>("/entitlement"),
+    ]);
     setBilling(result);
+    setEntitlement(access.entitlement);
   }, []);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -101,6 +107,10 @@ export function BillingPage() {
     }
   }
   const pending = billing?.orders.find((order) => order.status === "pending");
+  const adminGrant =
+    entitlement?.source === "admin_grant" &&
+    !!entitlement.activeUntil &&
+    new Date(entitlement.activeUntil) > new Date();
   return (
     <>
       <div className="page-heading">
@@ -116,21 +126,33 @@ export function BillingPage() {
         <Loading text="Загружаем заказы…" />
       ) : (
         <>
-          <div className="local-banner">
-            <span className="badge">TEST</span>
-            <p>
-              {billing.provider === "mock"
-                ? "Оплата работает в тестовом режиме. Все суммы условные: деньги не списываются. Тестовая квота не является оплаченной подпиской."
-                : "Приём платежей пока недоступен. Реальные списания и автопродление не выполняются."}
-            </p>
-          </div>
-          {billing.provider === "mock" && !billing.canSimulate && (
-            <Notice>
-              Тестовая оплата доступна только согласованным тестовым аккаунтам.
-              Для вашего аккаунта выдача тестовой квоты недоступна.
-            </Notice>
+          {adminGrant ? (
+            <div className="local-banner">
+              <span className="badge">Квота</span>
+              <p>
+                Доступ к {entitlement.quota} мониторам выдан администратором до{" "}
+                {dateTime(entitlement.activeUntil)}. Платежей по этой квоте нет.
+              </p>
+            </div>
+          ) : (
+            <div className="local-banner">
+              <span className="badge">TEST</span>
+              <p>
+                {billing.provider === "mock"
+                  ? "Оплата работает в тестовом режиме. Все суммы условные: деньги не списываются. Тестовая квота не является оплаченной подпиской."
+                  : "Приём платежей пока недоступен. Реальные списания и автопродление не выполняются."}
+              </p>
+            </div>
           )}
-          {billing.provider === "mock" && (
+          {billing.provider === "mock" &&
+            !billing.canSimulate &&
+            !adminGrant && (
+              <Notice>
+                Тестовая оплата доступна только согласованным тестовым
+                аккаунтам. Для вашего аккаунта выдача тестовой квоты недоступна.
+              </Notice>
+            )}
+          {billing.provider === "mock" && !adminGrant && (
             <section className="panel settings-panel">
               <div className="panel-heading">
                 <span className="panel-index">01</span>

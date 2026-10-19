@@ -32,6 +32,7 @@ type Config struct {
 	SMTPAddr              string
 	SMTPFrom              string
 	AuthMailEncryptionKey string
+	AuthMFAEncryptionKey  string
 	TrustedProxyCIDRs     string
 	WebhookEncryptionKey  string
 }
@@ -89,6 +90,16 @@ func Load() (Config, error) {
 	if err != nil || len(key) != 32 {
 		return Config{}, fmt.Errorf("WEBHOOK_ENCRYPTION_KEY must be base64 of 32 bytes")
 	}
+	cfg.AuthMFAEncryptionKey = strings.TrimSpace(os.Getenv("AUTH_MFA_ENCRYPTION_KEY"))
+	if cfg.AuthMFAEncryptionKey != "" {
+		mfaKey, err := base64.StdEncoding.Strict().DecodeString(cfg.AuthMFAEncryptionKey)
+		if err != nil || len(mfaKey) != 32 {
+			return Config{}, fmt.Errorf("AUTH_MFA_ENCRYPTION_KEY must be base64 of 32 bytes")
+		}
+		if cfg.AuthMFAEncryptionKey == cfg.WebhookEncryptionKey {
+			return Config{}, fmt.Errorf("AUTH_MFA_ENCRYPTION_KEY must be distinct from WEBHOOK_ENCRYPTION_KEY")
+		}
+	}
 	if cfg.AppEnv == "local" {
 		cfg.SMTPAddr = strings.TrimSpace(os.Getenv("SMTP_ADDR"))
 		cfg.SMTPFrom = strings.TrimSpace(os.Getenv("SMTP_FROM"))
@@ -100,6 +111,9 @@ func Load() (Config, error) {
 		mailKey, err := base64.StdEncoding.Strict().DecodeString(cfg.AuthMailEncryptionKey)
 		if err != nil || len(mailKey) != 32 {
 			return Config{}, fmt.Errorf("AUTH_MAIL_ENCRYPTION_KEY must be base64 of 32 bytes")
+		}
+		if cfg.AuthMFAEncryptionKey != "" && cfg.AuthMFAEncryptionKey == cfg.AuthMailEncryptionKey {
+			return Config{}, fmt.Errorf("AUTH_MFA_ENCRYPTION_KEY must be distinct from AUTH_MAIL_ENCRYPTION_KEY")
 		}
 		cfg.TrustedProxyCIDRs = strings.TrimSpace(os.Getenv("TRUSTED_PROXY_CIDRS"))
 		if cfg.TrustedProxyCIDRs == "" {

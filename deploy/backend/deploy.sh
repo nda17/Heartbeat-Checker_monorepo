@@ -12,8 +12,10 @@ registry_user=${6:?registry user is required}
 backup_image=${7:?backup image digest is required}
 activate_telegram_relay=${8-false}
 activate_messenger_notifications=${9-false}
+provision_owner=${10-false}
+activate_admin_mfa=${11-false}
 
-[[ ( $# -eq 7 || $# -eq 8 || $# -eq 9 ) && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) && ( $activate_messenger_notifications == true || $activate_messenger_notifications == false ) ]] || {
+[[ $# -ge 7 && $# -le 11 && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) && ( $activate_messenger_notifications == true || $activate_messenger_notifications == false ) && ( $provision_owner == true || $provision_owner == false ) && ( $activate_admin_mfa == true || $activate_admin_mfa == false ) ]] || {
   echo 'Invalid release arguments' >&2; exit 1;
 }
 for spec in "api:$api_image" "worker:$worker_image" "probe:$probe_image" "migrate:$migrate_image" "backup:$backup_image"; do
@@ -55,6 +57,7 @@ scratch_created=false
 recovery_dir=
 activation_applied=false
 activation_stage_created=false
+owner_import_result=skipped
 on_exit() {
   local status=$?
   local rollback_failed=false retained_dir
@@ -67,6 +70,7 @@ on_exit() {
   fi
   if ((status != 0)); then
     rm -f -- "receipts/$source_sha.json.incoming"
+    rm -f -- receipts/owner-import.json.incoming
     if $migration_started; then
       printf 'Backend release failed after migration began; keep database, backup and pending journal for forward recovery\n' >&2
     else
@@ -91,6 +95,7 @@ on_exit() {
       # Keep only the protected recovery inputs; the registry token is transient.
       rm -rf -- "$workdir/docker-config"
       rm -f -- "$workdir/.env.next"
+      rm -f -- "$workdir/.owner-import.json"
       mkdir -p recovery
       retained_dir="recovery/${source_sha}-env-rollback-failed-$(date -u +%Y%m%dT%H%M%SZ)-$$"
       if mv -- "$workdir" "$retained_dir"; then workdir=$retained_dir; fi
@@ -112,7 +117,49 @@ on_exit() {
 }
 trap on_exit EXIT
 
-if $activate_telegram_relay || $activate_messenger_notifications; then
+if $provision_owner; then
+  [[ -f .owner-import.next.json && ! -L .owner-import.next.json && $(stat -c %a .owner-import.next.json) == 600 && -f import-owner.sql.incoming && ! -L import-owner.sql.incoming ]] || {
+    echo 'Owner import requires a regular mode-600 payload and tracked SQL' >&2; exit 1;
+  }
+  cp -p .owner-import.next.json "$workdir/.owner-import.json"
+  cp -p import-owner.sql.incoming "$workdir/import-owner.sql"
+  python3 - "$workdir/.owner-import.json" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate field")
+        result[key] = value
+    return result
+
+try:
+    raw = Path(sys.argv[1]).read_bytes()
+    if not 1 <= len(raw) <= 4096:
+        raise ValueError("payload size")
+    data = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
+    if set(data) != {"accountId", "name", "email", "passwordHash", "quota", "validUntil"}:
+        raise ValueError("payload fields")
+    if (data["accountId"] != "51ec7d19-80c4-4fb6-8edb-79dc7abe3120"
+            or data["email"] != "khv1702@gmail.com"
+            or type(data["quota"]) is not int or data["quota"] != 1000
+            or data["validUntil"] != "2027-10-18T00:00:00Z"):
+        raise ValueError("payload identity")
+    name = data["name"]
+    if not isinstance(name, str) or not 2 <= len(name) <= 100 or name != name.strip() or any(ord(c) < 32 or ord(c) == 127 for c in name):
+        raise ValueError("payload name")
+    if not isinstance(data["passwordHash"], str) or not re.fullmatch(r"\$argon2id\$v=19\$m=19456,t=2,p=1\$[A-Za-z0-9+/]{22}\$[A-Za-z0-9+/]{43}", data["passwordHash"]):
+        raise ValueError("payload hash")
+except (OSError, UnicodeError, ValueError, TypeError):
+    raise SystemExit("Owner import payload validation failed")
+PY
+fi
+
+if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa; then
   [[ -f .env.next && ! -L .env.next && $(stat -c %a .env.next) == 600 ]] || {
     if $activate_messenger_notifications; then
       echo 'Configuration activation requires a regular mode-600 .env.next' >&2
@@ -125,7 +172,9 @@ if $activate_telegram_relay || $activate_messenger_notifications; then
     echo 'Resolve the previous configuration activation staging file' >&2; exit 1;
   }
   cp -p .env.next "$workdir/.env.next"
-  python3 - "$workdir/.env.next" "$activate_telegram_relay" "$activate_messenger_notifications" <<'PY'
+  python3 - "$workdir/.env.next" "$activate_telegram_relay" "$activate_messenger_notifications" "$activate_admin_mfa" <<'PY'
+import base64
+import binascii
 from pathlib import Path
 import re
 import sys
@@ -146,7 +195,9 @@ messenger_keys = {
 }
 relay = sys.argv[2] == "true"
 messenger = sys.argv[3] == "true"
-allowed = (set(relay_targets) if relay else set()) | (messenger_keys if messenger else set())
+admin_mfa = sys.argv[4] == "true"
+mfa_key = b"AUTH_MFA_ENCRYPTION_KEY"
+allowed = (set(relay_targets) if relay else set()) | (messenger_keys if messenger else set()) | ({mfa_key} if admin_mfa else set())
 prefix = "Relay activation rejected" if relay and not messenger else "Configuration activation rejected"
 
 def reject(message):
@@ -185,6 +236,15 @@ if old_lines != new_lines:
     reject("changes outside selected keys")
 if relay and any(new_values.get(key) != value for key, value in relay_targets.items()):
     reject("unexpected Telegram endpoint")
+if admin_mfa:
+    if unquote_literal(old_values.get(mfa_key, b"")):
+        reject("existing admin MFA key cannot be rotated")
+    value = new_values.get(mfa_key, b"")
+    try:
+        if len(base64.b64decode(value, validate=True)) != 32 or base64.b64encode(base64.b64decode(value, validate=True)) != value:
+            reject("invalid admin MFA key")
+    except (ValueError, binascii.Error):
+        reject("invalid admin MFA key")
 if messenger:
     if new_values.get(b"MESSENGER_NOTIFICATIONS_ENABLED") != b"true":
         reject("messenger flag must be true")
@@ -236,7 +296,7 @@ bash backup.sh.incoming preflight
 compose_new=(docker compose --env-file .env --env-file .release.env.incoming -f compose.yaml.incoming)
 "${compose_new[@]}" config -q
 "${compose_new[@]}" config --format json | python3 -c '
-import json, sys
+import base64, binascii, json, sys
 from urllib.parse import urlparse, parse_qs
 c = json.load(sys.stdin)["services"]
 u = urlparse(c["api"]["environment"]["DATABASE_URL"])
@@ -247,6 +307,14 @@ if (u.scheme not in ("postgres", "postgresql") or u.hostname != "postgres" or
     raise SystemExit("DATABASE_URL must target this Compose PostgreSQL with matching credentials")
 if c["worker"]["environment"]["SMTP_TLS_MODE"] not in ("implicit_tls", "starttls"):
     raise SystemExit("SMTP_TLS_MODE must use verified TLS")
+try:
+    mfa_key = c["api"]["environment"]["AUTH_MFA_ENCRYPTION_KEY"]
+    if len(base64.b64decode(mfa_key, validate=True)) != 32:
+        raise ValueError()
+except (KeyError, ValueError, binascii.Error):
+    raise SystemExit("Production admin MFA key is required")
+if any("AUTH_MFA_ENCRYPTION_KEY" in c[name]["environment"] for name in ("worker", "probe")):
+    raise SystemExit("Admin MFA key must be scoped to API only")
 '
 "${compose_new[@]}" pull postgres caddy api worker probe migrate
 docker pull "$backup_image"
@@ -314,6 +382,39 @@ migration_started=true
 "${compose[@]}" --profile migration run --rm --no-deps migrate
 printf 'source_sha=%s\nbackup=%s\nbackup_sha256=%s\nrecovery=%s\nphase=migration_succeeded\n' \
   "$source_sha" "$backup" "$backup_sha" "$recovery_dir" > pending
+
+if $provision_owner; then
+  # The JSON remains in a private snapshot. Only hex data travels over stdin;
+  # psql output and diagnostics stay in the protected workdir on failure.
+  if ! python3 - "$workdir/.owner-import.json" "$workdir/import-owner.sql" "$source_sha" <<'PY' \
+      | "${compose[@]}" exec -T postgres psql -X -q -At -v ON_ERROR_STOP=1 -U heartbeat -d heartbeat \
+          > "$workdir/owner-import.stdout" 2> "$workdir/owner-import.stderr"; then
+import hashlib
+from pathlib import Path
+import sys
+
+payload = Path(sys.argv[1]).read_bytes()
+template = Path(sys.argv[2]).read_bytes()
+marker = b"__OWNER_PAYLOAD_ROW__"
+if template.count(marker) != 1:
+    raise SystemExit("Invalid tracked owner import SQL")
+row = payload.hex().encode() + b"\t" + hashlib.sha256(payload).hexdigest().encode() + b"\t" + sys.argv[3].encode()
+sys.stdout.buffer.write(template.replace(marker, row))
+PY
+    echo 'Owner import transaction failed; retain pending and protected payload' >&2; exit 1
+  fi
+  owner_import_result=$(tr -d '\r\n' < "$workdir/owner-import.stdout")
+  [[ $owner_import_result =~ ^(created|noop)\|[0-9a-f]{40}$ ]] || {
+    echo 'Owner import transaction returned an invalid result' >&2; exit 1;
+  }
+  owner_payload_sha=$(sha256sum "$workdir/.owner-import.json" | awk '{print $1}')
+  jq -n --arg operation_id owner-production-2026-10-19-v1 \
+    --arg account_id 51ec7d19-80c4-4fb6-8edb-79dc7abe3120 \
+    --arg payload_sha256 "$owner_payload_sha" --arg source_sha "${owner_import_result#*|}" \
+    '{operation_id:$operation_id,account_id:$account_id,payload_sha256:$payload_sha256,source_sha:$source_sha,completed_at:(now|todate)}' \
+    > receipts/owner-import.json.incoming
+  mv receipts/owner-import.json.incoming receipts/owner-import.json
+fi
 
 "${compose[@]}" up -d --pull never --force-recreate --remove-orphans api probe worker caddy
 for service in api probe worker caddy; do
@@ -383,7 +484,8 @@ jq -n --arg source_sha "$source_sha" --arg api "$api_image" \
   --arg backup "$backup" --arg backup_sha256 "$backup_sha" --argjson migrations "$ledger" \
   --argjson telegram_relay_activated "$activate_telegram_relay" \
   --argjson messenger_notifications_activated "$activate_messenger_notifications" \
-  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image},backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,messenger_notifications_activated:$messenger_notifications_activated,completed_at:(now|todate)}' \
+  --argjson owner_import_requested "$provision_owner" --argjson admin_mfa_activated "$activate_admin_mfa" \
+  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image},backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,messenger_notifications_activated:$messenger_notifications_activated,owner_import_requested:$owner_import_requested,admin_mfa_activated:$admin_mfa_activated,completed_at:(now|todate)}' \
   > "receipts/$source_sha.json.incoming"
 mv compose.backup.yaml.incoming compose.backup.yaml
 mv backup.sh.incoming backup.sh
@@ -393,6 +495,14 @@ if $activation_applied; then
     echo 'Staged activation env changed during deployment; retain pending for review' >&2; exit 1;
   fi
   rm -f .env.next
+fi
+if $provision_owner; then
+  if [[ ! -f .owner-import.next.json || -L .owner-import.next.json || $(stat -c %a .owner-import.next.json) != 600 ]] \
+      || ! cmp -s .owner-import.next.json "$workdir/.owner-import.json" \
+      || ! cmp -s import-owner.sql.incoming "$workdir/import-owner.sql"; then
+    echo 'Staged owner import input changed during deployment; retain pending for review' >&2; exit 1;
+  fi
+  rm -f .owner-import.next.json import-owner.sql.incoming
 fi
 mv "receipts/$source_sha.json.incoming" "receipts/$source_sha.json"
 rm -f pending

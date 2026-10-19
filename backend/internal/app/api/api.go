@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/admin"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/incidents"
@@ -21,6 +22,9 @@ import (
 )
 
 func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+	if cfg.AppEnv == "production" && cfg.AuthMFAEncryptionKey == "" {
+		return errors.New("AUTH_MFA_ENCRYPTION_KEY is required by API")
+	}
 	pool, err := postgres.Open(ctx, cfg.DatabaseURL, cfg.DatabaseTimeout)
 	if err != nil {
 		return err
@@ -40,6 +44,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	authModule, err := auth.New(pool, accounts.New(pool), captcha, mailer, auth.Config{
 		Origin:            cfg.AuthOrigin,
 		MailEncryptionKey: cfg.AuthMailEncryptionKey,
+		MFAEncryptionKey:  cfg.AuthMFAEncryptionKey,
+		MFAAudit:          admin.AuditMFA,
 		CookieSecure:      cfg.AuthCookieSecure,
 		SessionTTL:        cfg.AuthSessionTTL,
 		ChallengeTTL:      cfg.AuthChallengeTTL,
@@ -68,7 +74,11 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		return fmt.Errorf("configure messenger notifications: %w", err)
 	}
 	billingModule.Register(handler, authModule.Protect)
-	monitors.New(pool, billingModule, incidents.New(pool, notifications.NewRecorder(messengerModule)), accountModule).Register(handler, authModule.Protect)
+	monitorModule := monitors.New(pool, billingModule, incidents.New(pool, notifications.NewRecorder(messengerModule)), accountModule)
+	monitorModule.Register(handler, authModule.Protect)
+	admin.New(pool, accountModule, authModule, billingModule, monitorModule).Register(handler, func(next http.Handler) http.Handler {
+		return authModule.RequireRole("admin", next)
+	})
 	if cfg.SupportEnabled {
 		supportModule, err := support.NewWebhook(pool, support.Config{EncryptionKey: cfg.SupportEncryptionKey, TelegramWebhookSecret: cfg.TelegramSupportWebhookSecret, MAXWebhookSecret: cfg.MAXSupportWebhookSecret, InternalChatID: cfg.TelegramInternalChatID, SupportTopicID: cfg.TelegramSupportTopicID, MAXSupportChatID: cfg.MAXSupportChatID})
 		if err != nil {

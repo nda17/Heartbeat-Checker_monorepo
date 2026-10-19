@@ -9,6 +9,9 @@ import (
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts/internal/repository/postgres"
 )
 
+var ErrAdminConflict = postgres.ErrAdminConflict
+var ErrLastAdmin = postgres.ErrLastAdmin
+
 var ErrInvalidName = contracts.ErrInvalidName
 
 type Module struct {
@@ -55,4 +58,11 @@ func (m *Module) Active(ctx context.Context, tx pgx.Tx, id string) (bool, error)
 
 func (m *Module) TryActive(ctx context.Context, tx pgx.Tx, id string) (bool, bool, error) {
 	return m.repo.TryActive(ctx, tx, id)
+}
+
+func (m *Module) LockAdminAccount(ctx context.Context, tx pgx.Tx, id string) (contracts.Account, error) {
+	return m.repo.LockAdminAccount(ctx, tx, id)
+}
+func (m *Module) AdminUpdate(ctx context.Context, tx pgx.Tx, current contracts.Account, version int64, name, role, status *string) (contracts.Account, bool, error) {
+	return m.repo.AdminUpdate(ctx, tx, current, version, name, role, status)
 }
