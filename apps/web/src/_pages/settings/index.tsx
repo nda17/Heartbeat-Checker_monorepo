@@ -7,7 +7,7 @@ import { MessengerLinks } from "@/features/messenger-links";
 import { OAuthIdentities } from "@/features/oauth-identities";
 import { AccountDeletion } from "@/features/account-deletion";
 import { api, errorMessage } from "@/shared/api";
-import { dateTime, Loading, Notice, PasswordInput } from "@/shared/ui";
+import { dateTime, Loading, Notice, PasswordInput, Icon } from "@/shared/ui";
 
 function EmailVerification() {
   const { profile, refresh } = useSession();
@@ -349,7 +349,7 @@ export function SettingsPage() {
               вернитесь в настройки.
               <br />
               <Link href="/forgot-password">
-                Установить пароль через email →
+                Установить пароль через email <Icon name="arrow-right" />
               </Link>
             </p>
           )}
@@ -394,7 +394,7 @@ export function SettingsPage() {
             {sessions.map((session) => (
               <li key={session.id}>
                 <span className="device-icon" aria-hidden="true">
-                  ▣
+                  <Icon name="device" />
                 </span>
                 <div className="session-info">
                   <strong>

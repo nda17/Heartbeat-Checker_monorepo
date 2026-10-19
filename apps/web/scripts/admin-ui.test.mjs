@@ -43,6 +43,7 @@ function loadComponent(relativePath, aliases, runtime = {}) {
     clearTimeout,
     setInterval,
     clearInterval,
+    AbortController,
     DOMException,
     window: globalThis.window,
     document: globalThis.document,
@@ -54,6 +55,7 @@ function loadComponent(relativePath, aliases, runtime = {}) {
 
 function uiMocks(React) {
   return {
+    Icon: () => null,
     Loading: () => React.createElement("span", { role: "status" }, "Загрузка"),
     Notice: ({ children, success }) =>
       React.createElement(
@@ -84,6 +86,8 @@ function createHarness() {
   globalThis.Event = dom.window.Event;
   globalThis.MouseEvent = dom.window.MouseEvent;
   globalThis.FormData = dom.window.FormData;
+  globalThis.requestAnimationFrame = (callback) => setTimeout(callback, 0);
+  globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
   const host = document.createElement("div");
@@ -107,6 +111,8 @@ function createHarness() {
       delete globalThis.Event;
       delete globalThis.MouseEvent;
       delete globalThis.FormData;
+      delete globalThis.requestAnimationFrame;
+      delete globalThis.cancelAnimationFrame;
       delete globalThis.IS_REACT_ACT_ENVIRONMENT;
     },
   };
@@ -836,10 +842,21 @@ test("MonitorsPage preserves a committed monitor when its refresh fails", async 
   let listReads = 0;
   const api = async (path, options = {}) => {
     calls.push({ path, ...options });
-    if (path === "/monitors" && !options.method) {
+    if (path.startsWith("/monitors?") && !options.method) {
       listReads += 1;
       if (listReads === 2) throw new Error("list refresh failed");
-      return { monitors: [] };
+      return {
+        monitors: [],
+        pagination: { page: 1, pageSize: 25, total: 0, totalPages: 1 },
+        summary: {
+          total: 0,
+          up: 0,
+          down: 0,
+          unknown: 0,
+          paused: 0,
+          subscriptionRequired: 0,
+        },
+      };
     }
     if (path === "/entitlement")
       return {
@@ -917,6 +934,7 @@ test("MonitorsPage preserves a committed monitor when its refresh fails", async 
 
   await harness.render(React.createElement(MonitorsPage));
   await act(async () => {
+    await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
   });

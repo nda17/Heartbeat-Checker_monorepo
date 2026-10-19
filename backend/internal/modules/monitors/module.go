@@ -27,8 +27,8 @@ var ErrConflict = service.ErrConflict
 var ErrEntitlement = service.ErrEntitlement
 var ErrQuota = service.ErrQuota
 
-func New(pool *pgxpool.Pool, billing billing.Service, incidents incidents.Service, accounts accounts.ActiveGuard) *Module {
-	s := service.New(postgres.New(pool), billing, incidents, accounts)
+func New(pool *pgxpool.Pool, billing billing.Service, incidents incidents.Service, accounts accounts.ActiveGuard, channels ...contracts.NotificationChannelsReader) *Module {
+	s := service.New(postgres.New(pool), billing, incidents, accounts, channels...)
 	return &Module{s, monitorhttp.New(s)}
 }
 func (m *Module) Register(mux *http.ServeMux, protect func(http.Handler) http.Handler) {
@@ -41,6 +41,9 @@ func (m *Module) Complete(ctx context.Context, a contracts.Attempt, r probe.Resu
 func (m *Module) Cleanup(ctx context.Context, tx pgx.Tx) error { return m.service.Cleanup(ctx, tx) }
 func (m *Module) List(ctx context.Context, owner string) ([]contracts.Monitor, error) {
 	return m.service.List(ctx, owner)
+}
+func (m *Module) ListPage(ctx context.Context, owner string, options contracts.ListOptions) (contracts.MonitorPage, error) {
+	return m.service.ListPage(ctx, owner, options)
 }
 func (m *Module) Entitlement(ctx context.Context, owner string) (billing.Entitlement, error) {
 	return m.service.Entitlement(ctx, owner)

@@ -13,10 +13,16 @@ type Webhook struct {
 }
 
 type PutWebhook struct {
+	ID           string `json:"id,omitempty"`
 	Version      int64  `json:"version"`
 	URL          string `json:"url"`
 	Enabled      bool   `json:"enabled"`
 	RotateSecret bool   `json:"rotateSecret,omitempty"`
+}
+
+type DeleteWebhook struct {
+	ID      string `json:"id"`
+	Version int64  `json:"version"`
 }
 
 type Delivery struct {

@@ -59,11 +59,7 @@ func subject(w http.ResponseWriter, r *http.Request) (string, string, bool) {
 		return "", "", false
 	}
 	id := r.PathValue("id")
-	if len(id) != 36 || id[8] != '-' || id[13] != '-' || id[18] != '-' || id[23] != '-' {
-		fail(w, 404, "not_found")
-		return "", "", false
-	}
-	if _, err := hex.DecodeString(strings.ReplaceAll(id, "-", "")); err != nil {
+	if !validID(id) {
 		fail(w, 404, "not_found")
 		return "", "", false
 	}
@@ -86,21 +82,11 @@ func (s *Server) put(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || media != "application/json" {
-		fail(w, 415, "json_required")
-		return
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 4096)
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
 	var input contracts.PutWebhook
-	if err = decoder.Decode(&input); err != nil {
-		fail(w, 400, "invalid_request")
+	if !decode(w, r, &input) {
 		return
 	}
-	var extra any
-	if err = decoder.Decode(&extra); err != io.EOF {
+	if input.ID != "" && !validID(input.ID) {
 		fail(w, 400, "invalid_request")
 		return
 	}
@@ -120,7 +106,15 @@ func (s *Server) remove(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.service.Delete(r.Context(), owner, id); err != nil {
+	var input contracts.DeleteWebhook
+	if !decode(w, r, &input) {
+		return
+	}
+	if !validID(input.ID) || input.Version < 1 {
+		fail(w, 400, "invalid_request")
+		return
+	}
+	if err := s.service.Delete(r.Context(), owner, id, input); err != nil {
 		failure(w, err)
 		return
 	}
@@ -156,4 +150,33 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, 200, map[string]any{"deliveries": items})
+}
+
+func validID(id string) bool {
+	if len(id) != 36 || id[8] != '-' || id[13] != '-' || id[18] != '-' || id[23] != '-' {
+		return false
+	}
+	decoded, err := hex.DecodeString(strings.ReplaceAll(id, "-", ""))
+	return err == nil && len(decoded) == 16
+}
+
+func decode(w http.ResponseWriter, r *http.Request, input any) bool {
+	media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || media != "application/json" {
+		fail(w, 415, "json_required")
+		return false
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(input); err != nil {
+		fail(w, 400, "invalid_request")
+		return false
+	}
+	var extra any
+	if err = decoder.Decode(&extra); err != io.EOF {
+		fail(w, 400, "invalid_request")
+		return false
+	}
+	return true
 }

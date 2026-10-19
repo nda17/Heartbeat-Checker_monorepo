@@ -12,7 +12,7 @@ import {
 import { AdminMfa, MfaState } from "@/features/admin-mfa";
 import { MonitorForm } from "@/features/monitor-form";
 import { api, ApiError, errorMessage } from "@/shared/api";
-import { dateTime, Loading, Notice } from "@/shared/ui";
+import { dateTime, Loading, Notice, Icon } from "@/shared/ui";
 
 type AdminAccount = {
   id: string;
@@ -613,20 +613,7 @@ export function AdminPage() {
                 aria-labelledby="admin-empty-title"
               >
                 <span className="admin-empty-icon" aria-hidden="true">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                    <circle
-                      cx="12"
-                      cy="8"
-                      r="4"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                    />
-                    <path
-                      d="M4 21v-2a8 8 0 0 1 16 0v2"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                    />
-                  </svg>
+                  <Icon name="user" size={24} />
                 </span>
                 <h2 id="admin-empty-title">Выберите аккаунт</h2>
                 <p>

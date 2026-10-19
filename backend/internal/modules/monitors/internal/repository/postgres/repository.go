@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -18,6 +19,7 @@ type Row struct {
 	AccountID           string
 	TargetKey           string
 	Sequence            int64
+	Rank                int
 	RunID, AttemptToken *string
 	LeaseUntil          *time.Time
 }
@@ -26,8 +28,11 @@ const columns = `id::text,account_id::text,name,COALESCE(url,''),COALESCE(method
 
 func scan(row pgx.Row) (Row, error) {
 	var m Row
-	err := row.Scan(&m.ID, &m.AccountID, &m.Name, &m.URL, &m.Method, &m.ExpectedStatus, &m.BodyContains, &m.IntervalMinutes, &m.FailureThreshold, &m.Enabled, &m.Version, &m.State, &m.LastCheckedAt, &m.LastHTTPStatus, &m.LastLatencyMS, &m.NextCheckAt, &m.TargetKey, &m.Sequence, &m.RunID, &m.AttemptToken, &m.LeaseUntil, &m.CheckType, &m.Host, &m.Port, &m.LastRoundTripMS)
+	err := row.Scan(m.scanFields()...)
 	return m, err
+}
+func (m *Row) scanFields() []any {
+	return []any{&m.ID, &m.AccountID, &m.Name, &m.URL, &m.Method, &m.ExpectedStatus, &m.BodyContains, &m.IntervalMinutes, &m.FailureThreshold, &m.Enabled, &m.Version, &m.State, &m.LastCheckedAt, &m.LastHTTPStatus, &m.LastLatencyMS, &m.NextCheckAt, &m.TargetKey, &m.Sequence, &m.RunID, &m.AttemptToken, &m.LeaseUntil, &m.CheckType, &m.Host, &m.Port, &m.LastRoundTripMS}
 }
 func (r *Repository) List(ctx context.Context, tx pgx.Tx, owner string) ([]Row, error) {
 	rows, err := tx.Query(ctx, `SELECT `+columns+` FROM monitors.monitors WHERE account_id=$1 ORDER BY created_at,id`, owner)
@@ -45,6 +50,59 @@ func (r *Repository) List(ctx context.Context, tx pgx.Tx, owner string) ([]Row, 
 	}
 	return items, rows.Err()
 }
+
+// A literal substring keeps search behavior identical for punctuation, % and _.
+const searchMatch = `($2='' OR position(lower($2) IN lower(name || ' ' ||
+ CASE check_type WHEN 'http' THEN COALESCE(url,'') WHEN 'tcp' THEN COALESCE(host,'') || ':' || COALESCE(port::text,'') ELSE COALESCE(host,'') END))>0)`
+
+// PageSummary ranks the entire account before applying search. Paused monitors
+// consume the same quota position as in List, Get and the worker scheduler.
+func (r *Repository) PageSummary(ctx context.Context, tx pgx.Tx, owner string, options contracts.ListOptions, quota int, asOf time.Time) (contracts.MonitorSummary, int, error) {
+	var summary contracts.MonitorSummary
+	var total int
+	err := tx.QueryRow(ctx, `WITH ranked AS (
+ SELECT *,row_number() OVER (ORDER BY created_at,id) AS quota_rank
+ FROM monitors.monitors WHERE account_id=$1
+ ), states AS (
+ SELECT *,CASE WHEN NOT enabled THEN 'PAUSED'
+ WHEN $3::integer=0 OR quota_rank>$3 THEN 'SUBSCRIPTION_REQUIRED'
+ WHEN last_checked_at IS NULL OR $4::timestamptz-last_checked_at > (2*interval_minutes*interval '1 minute'+interval '30 seconds') THEN 'UNKNOWN'
+ ELSE outcome END AS effective_state FROM ranked WHERE account_id=$1
+ ) SELECT count(*),count(*) FILTER (WHERE effective_state='UP'),count(*) FILTER (WHERE effective_state='DOWN'),
+ count(*) FILTER (WHERE effective_state='UNKNOWN'),count(*) FILTER (WHERE effective_state='PAUSED'),
+ count(*) FILTER (WHERE effective_state='SUBSCRIPTION_REQUIRED'),count(*) FILTER (WHERE `+searchMatch+`)
+ FROM states WHERE account_id=$1`, owner, options.Query, quota, asOf).Scan(&summary.Total, &summary.Up, &summary.Down, &summary.Unknown, &summary.Paused, &summary.SubscriptionRequired, &total)
+	return summary, total, err
+}
+
+func (r *Repository) ListPage(ctx context.Context, tx pgx.Tx, owner string, options contracts.ListOptions) ([]Row, error) {
+	// Only reviewed SQL fragments can reach ORDER BY; client text stays in values.
+	order := map[string]string{
+		"created_desc": "created_at DESC,id DESC", "created_asc": "created_at,id",
+		"name_asc": "lower(name),id", "name_desc": "lower(name) DESC,id DESC",
+	}[options.Sort]
+	if order == "" {
+		return nil, errors.New("invalid monitor ordering")
+	}
+	rows, err := tx.Query(ctx, `WITH ranked AS (
+ SELECT *,row_number() OVER (ORDER BY created_at,id) AS quota_rank FROM monitors.monitors WHERE account_id=$1
+ ) SELECT `+columns+`,quota_rank FROM ranked WHERE account_id=$1 AND `+searchMatch+`
+ ORDER BY `+order+` LIMIT $3 OFFSET $4`, owner, options.Query, options.PageSize, (options.Page-1)*options.PageSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Row{}
+	for rows.Next() {
+		var m Row
+		if err := rows.Scan(append(m.scanFields(), &m.Rank)...); err != nil {
+			return nil, err
+		}
+		items = append(items, m)
+	}
+	return items, rows.Err()
+}
+
 func (r *Repository) Get(ctx context.Context, tx pgx.Tx, owner, id string, skip bool) (Row, error) {
 	query := `SELECT ` + columns + ` FROM monitors.monitors WHERE account_id=$1 AND id=$2 FOR UPDATE`
 	if skip {

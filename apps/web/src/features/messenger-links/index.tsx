@@ -10,7 +10,7 @@ import {
 } from "@/entities/messenger";
 import { api, errorMessage } from "@/shared/api";
 import { Dialog } from "@/shared/dialog";
-import { dateTime, Loading, Notice } from "@/shared/ui";
+import { dateTime, Loading, Notice, Icon } from "@/shared/ui";
 
 type LinkStart = {
   link: MessengerLink;
@@ -330,7 +330,7 @@ export function MessengerLinks({ email }: { email?: string }) {
                     disabled={busy}
                     onClick={() => void begin(option.provider, option.kind)}
                   >
-                    ＋ {option.title}
+                    <Icon name="plus" /> {option.title}
                   </button>
                 ))}
               </div>
@@ -388,7 +388,8 @@ export function MessengerLinks({ email }: { email?: string }) {
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  Открыть Informer в {providerName[link.provider]} ↗
+                  Открыть Informer в {providerName[link.provider]}{" "}
+                  <Icon name="arrow-up-right" />
                 </a>
               ) : started.command ? (
                 <div className="messenger-command">

@@ -11,7 +11,7 @@ import {
   safeAppReturnTo,
 } from "@/shared/api";
 import { Turnstile } from "@/shared/turnstile";
-import { Loading, Notice, PasswordInput, Spinner } from "@/shared/ui";
+import { Loading, Notice, PasswordInput, Spinner, Icon } from "@/shared/ui";
 export { PublicAuthLinks } from "./public-auth-links";
 export type AuthMode =
   "login" | "register" | "verify" | "reset-request" | "reset-confirm";
@@ -289,7 +289,7 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
       {done ? (
         <div className="auth-done">
           <span className="success-icon" aria-hidden="true">
-            ✓
+            <Icon name="check" size={24} />
           </span>
           <h2>
             {mode === "register" || mode === "reset-request"
@@ -306,7 +306,7 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
                   : "Пароль обновлён. Войдите с новым паролем."}
           </p>
           <Link href="/login" className="button full">
-            Перейти ко входу <span aria-hidden="true">→</span>
+            Перейти ко входу <Icon name="arrow-right" />
           </Link>
           {(mode === "register" || mode === "reset-request") && (
             <button
@@ -420,7 +420,7 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
             ) : (
               <>
                 {cfg.button}
-                <span aria-hidden="true">→</span>
+                <Icon name="arrow-right" />
               </>
             )}
           </button>
@@ -446,7 +446,9 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
               Уже есть аккаунт? <Link href="/login">Войти</Link>
             </>
           ) : (
-            <Link href="/login">← Вернуться ко входу</Link>
+            <Link href="/login">
+              <Icon name="arrow-left" /> Вернуться ко входу
+            </Link>
           )}
         </p>
       )}
@@ -556,7 +558,9 @@ export function OAuthRegistration() {
         </p>
       )}
       <p className="auth-switch">
-        <Link href="/login">← Вернуться ко входу</Link>
+        <Link href="/login">
+          <Icon name="arrow-left" /> Вернуться ко входу
+        </Link>
       </p>
     </>
   );

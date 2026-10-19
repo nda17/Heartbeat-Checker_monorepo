@@ -2,6 +2,46 @@ package contracts
 
 import "time"
 
+// ListOptions contains the validated server-side monitor list controls.
+type ListOptions struct {
+	Page     int
+	PageSize int
+	Sort     string
+	Query    string
+}
+
+// Pagination describes the selected page of a filtered monitor list.
+type Pagination struct {
+	Page       int `json:"page"`
+	PageSize   int `json:"pageSize"`
+	Total      int `json:"total"`
+	TotalPages int `json:"totalPages"`
+}
+
+// MonitorSummary contains account-wide status counts for the monitor list.
+type MonitorSummary struct {
+	Total                int `json:"total"`
+	Up                   int `json:"up"`
+	Down                 int `json:"down"`
+	Unknown              int `json:"unknown"`
+	Paused               int `json:"paused"`
+	SubscriptionRequired int `json:"subscriptionRequired"`
+}
+
+// MonitorPage is the paged list response returned when list controls are used.
+type MonitorPage struct {
+	Monitors   []ListedMonitor `json:"monitors"`
+	Pagination Pagination      `json:"pagination"`
+	Summary    MonitorSummary  `json:"summary"`
+}
+
+// ListedMonitor adds active notification channels without changing the legacy
+// Monitor response shape.
+type ListedMonitor struct {
+	Monitor
+	NotificationChannels []string `json:"notificationChannels"`
+}
+
 // MonitorInput contains fields accepted when creating a monitor.
 type MonitorInput struct {
 	CheckType        string `json:"checkType"`

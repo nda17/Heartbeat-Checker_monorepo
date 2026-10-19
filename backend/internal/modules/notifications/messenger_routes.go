@@ -2,9 +2,11 @@ package notifications
 
 import (
 	"context"
+	"crypto/hmac"
 	"errors"
 
 	"github.com/jackc/pgx/v5"
+	authcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/outbox"
 )
 
@@ -171,4 +173,75 @@ func (m *Messenger) PutRoute(ctx context.Context, accountID, monitorID, provider
 		return MessengerRoute{}, err
 	}
 	return MessengerRoute{Provider: provider, DestinationID: in.DestinationID, Enabled: in.Enabled, ReminderMinutes: in.ReminderMinutes, Version: version}, nil
+}
+
+// EnabledChannelsTx is one account-scoped batch for the visible monitor page.
+// It reports configured ready routes, without contacting providers or returning
+// addresses, URLs, chat IDs or secrets. Webhooks do not depend on messenger flags.
+func (m *Messenger) EnabledChannelsTx(ctx context.Context, tx pgx.Tx, accountID string, monitorIDs []string) (map[string][]string, error) {
+	result := make(map[string][]string, len(monitorIDs))
+	for _, id := range monitorIDs {
+		if !messengerValidID(id) {
+			return nil, ErrMessengerInvalid
+		}
+		result[id] = []string{}
+	}
+	if len(monitorIDs) == 0 {
+		return result, nil
+	}
+	active, err := m.accountActive(ctx, tx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if !active {
+		return result, nil
+	}
+	var email string
+	if m.cfg.EmailEnabled {
+		email, err = m.cfg.EmailAddressReader(ctx, tx, accountID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) && !errors.Is(err, authcontracts.ErrEmailUnverified) {
+			return nil, err
+		}
+		if err != nil {
+			email = ""
+		}
+	}
+	rows, err := tx.Query(ctx, `SELECT monitor_id,provider,destination_id,encrypted_target,recipient_fingerprint FROM (
+ SELECT w.monitor_id::text AS monitor_id,'webhook'::text AS provider,NULL::text AS destination_id,NULL::bytea AS encrypted_target,NULL::bytea AS recipient_fingerprint
+ FROM notifications.webhooks w JOIN monitors.monitors mon ON mon.id=w.monitor_id AND mon.account_id=$1
+ WHERE w.account_id=$1 AND w.monitor_id=ANY($2::uuid[]) AND w.enabled
+ UNION ALL
+ SELECT r.monitor_id::text,r.provider,d.id::text,d.encrypted_target,d.recipient_fingerprint
+ FROM notifications.messenger_routes r
+ JOIN notifications.messenger_destinations d ON d.id=r.destination_id AND d.account_id=$1 AND d.provider=r.provider AND d.status='ready'
+ JOIN monitors.monitors mon ON mon.id=r.monitor_id AND mon.account_id=$1
+ WHERE r.account_id=$1 AND r.monitor_id=ANY($2::uuid[]) AND r.enabled
+ AND (($3::boolean AND r.provider IN ('telegram','max')) OR ($4::boolean AND r.provider='email'))
+ ) channels ORDER BY monitor_id,CASE provider WHEN 'telegram' THEN 1 WHEN 'max' THEN 2 WHEN 'email' THEN 3 ELSE 4 END`, accountID, monitorIDs, m.cfg.Enabled, m.cfg.EmailEnabled)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, provider string
+		var destinationID *string
+		var encrypted, fingerprint []byte
+		if err = rows.Scan(&id, &provider, &destinationID, &encrypted, &fingerprint); err != nil {
+			return nil, err
+		}
+		if provider == "email" {
+			if email == "" || destinationID == nil {
+				continue
+			}
+			recipient, err := m.readRecipient(accountID, *destinationID, "target", encrypted)
+			if err != nil {
+				return nil, err
+			}
+			if recipient.Target.Provider != "email" || recipient.Target.Email != email || !hmac.Equal(fingerprint, m.recipientFingerprint(recipient.Target)) {
+				continue
+			}
+		}
+		result[id] = append(result[id], provider)
+	}
+	return result, rows.Err()
 }

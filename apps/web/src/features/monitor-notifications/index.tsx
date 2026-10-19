@@ -1,4 +1,5 @@
 "use client";
+import { WebhookNotifications } from "./webhook";
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import { Monitor } from "@/entities/monitor";
@@ -11,7 +12,7 @@ import {
 } from "@/entities/messenger";
 import { api, errorMessage } from "@/shared/api";
 import { Dialog } from "@/shared/dialog";
-import { Loading, Notice } from "@/shared/ui";
+import { Loading, Notice, Icon } from "@/shared/ui";
 
 const reminderOptions = [
   [0, "Без напоминаний"],
@@ -157,7 +158,9 @@ function RouteEditor({
             : route
               ? "Выбранный чат отключён или недоступен. "
               : "Сначала подключите чат. "}
-          <Link href="/app/settings">Перейти к настройкам аккаунта →</Link>
+          <Link href="/app/settings">
+            Перейти к настройкам аккаунта <Icon name="arrow-right" />
+          </Link>
         </p>
       )}
     </form>
@@ -251,7 +254,7 @@ export function MonitorNotifications({
           <Loading text="Загружаем настройки…" />
         )
       ) : !enabled && !emailEnabled ? (
-        <Notice>Уведомления сейчас недоступны.</Notice>
+        <Notice>Email, Telegram и MAX сейчас недоступны.</Notice>
       ) : (
         <div className="messenger-routes">
           {providers.map((provider) => (
@@ -266,6 +269,7 @@ export function MonitorNotifications({
           ))}
         </div>
       )}
+      <WebhookNotifications monitorId={monitor.id} />
     </Dialog>
   );
 }

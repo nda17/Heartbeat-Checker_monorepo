@@ -10,7 +10,7 @@ import {
   clearMonitorDraft,
   readMonitorDraft,
 } from "@/shared/android";
-import { Brand, Loading, Notice } from "@/shared/ui";
+import { Brand, Loading, Notice, Icon } from "@/shared/ui";
 export function ConsoleShell({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [error, setError] = useState("");
@@ -161,21 +161,21 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
               onClick={() => setMenuOpen(false)}
               aria-current={path === "/app" ? "page" : undefined}
             >
-              <span aria-hidden="true">◉</span> Обзор мониторов
+              <Icon name="activity" /> Обзор мониторов
             </Link>
             <Link
               href="/app/billing"
               onClick={() => setMenuOpen(false)}
               aria-current={path === "/app/billing" ? "page" : undefined}
             >
-              <span aria-hidden="true">₽</span> Оплата
+              <Icon name="payment" /> Оплата
             </Link>
             <Link
               href="/app/settings"
               onClick={() => setMenuOpen(false)}
               aria-current={path === "/app/settings" ? "page" : undefined}
             >
-              <span aria-hidden="true">⚙</span> Настройки аккаунта
+              <Icon name="settings" /> Настройки аккаунта
             </Link>
             {profile.account.role === "admin" && (
               <Link
@@ -183,7 +183,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
                 onClick={() => setMenuOpen(false)}
                 aria-current={path === "/app/admin" ? "page" : undefined}
               >
-                <span aria-hidden="true">◈</span> Администрирование
+                <Icon name="shield" /> Администрирование
               </Link>
             )}
           </nav>
@@ -207,7 +207,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
               onClick={() => void logout()}
             >
               {leaving ? "Выходим…" : "Выйти из аккаунта"}
-              <span aria-hidden="true">↗</span>
+              <Icon name="logout" />
             </button>
           </div>
         </aside>
@@ -232,7 +232,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
               disabled={leaving}
               onClick={() => void logout()}
             >
-              Выйти ↗
+              Выйти <Icon name="logout" />
             </button>
           </header>
           <main id="main" className="workspace">

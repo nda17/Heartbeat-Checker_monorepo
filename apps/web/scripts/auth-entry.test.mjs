@@ -145,6 +145,7 @@ function authEntry(api, routes, options = {}) {
         React.createElement("div", { "data-testid": "turnstile" }),
     },
     "@/shared/ui": {
+      Icon: () => null,
       Loading: ({ text }) =>
         React.createElement("span", { role: "status" }, text),
       Notice: ({ children, success }) =>
@@ -179,6 +180,7 @@ function publicAuthLinks(api, timers = { setTimeout, clearTimeout }) {
         React.createElement("a", { href, className }, children),
       "@/shared/api": { api, ApiError },
       "@/shared/ui": {
+        Icon: () => null,
         Arrow: () =>
           React.createElement("span", { "aria-hidden": "true" }, "→"),
       },
@@ -364,6 +366,7 @@ test("frontend preview auth page renders the form without checking a session", a
       "@/features/auth": { AuthEntry, AuthForm, OAuthRegistration: () => null },
       "@/features/theme-toggle": { ThemeToggle: () => null },
       "@/shared/ui": {
+        Icon: () => null,
         Brand: () => null,
         FooterLegalNotice: () => null,
       },
@@ -534,6 +537,7 @@ test("installation offers are tagged in the home navigation, footer, and Android
       "next/link": link,
       "./legal-notice": { FooterLegalNotice: () => null },
       "./password-input": { PasswordInput: () => null },
+      "./icon": { Icon: () => null },
     },
     { process: { env: { WEB_MODE: "app" } } },
   );
@@ -732,6 +736,7 @@ test("public home mode checks a session only in app mode", async () => {
         "next/link": link,
         "./legal-notice": { FooterLegalNotice: () => null },
         "./password-input": { PasswordInput: () => null },
+        "./icon": { Icon: () => null },
       },
       { process: { env: { WEB_MODE: mode } } },
     );
@@ -819,6 +824,7 @@ function settingsPage(api) {
   const link = ({ href, children, ...props }) =>
     React.createElement("a", { href, ...props }, children);
   const ui = {
+    Icon: () => null,
     dateTime: (value) => value ?? "—",
     Loading: ({ text }) => React.createElement("div", { role: "status" }, text),
     Notice: ({ children }) =>
@@ -869,6 +875,7 @@ function retryableFeatureAliases(api) {
       oauthAuthorizationUrl: (_provider, value) => value,
     },
     "@/shared/ui": {
+      Icon: () => null,
       dateTime: (value) => value ?? "—",
       Loading: ({ text }) =>
         React.createElement("div", { role: "status" }, text),
@@ -976,6 +983,7 @@ test("billing recovers its initial data load and retries both required GETs", as
     },
     "@/entities/monitor": {},
     "@/shared/ui": {
+      Icon: () => null,
       dateTime: (value) => value ?? "—",
       Loading: ({ text }) =>
         React.createElement("div", { role: "status" }, text),
@@ -1079,6 +1087,7 @@ test("YooKassa checkout retries an ambiguous create with the same key and never 
       },
       "@/entities/monitor": {},
       "@/shared/ui": {
+        Icon: () => null,
         dateTime: (value) => value ?? "—",
         Loading: ({ text }) =>
           React.createElement("div", { role: "status" }, text),
@@ -1202,6 +1211,7 @@ test("YooKassa return only looks up the owner order and hides payment for manual
     },
     "@/entities/monitor": {},
     "@/shared/ui": {
+      Icon: () => null,
       dateTime: (value) => value ?? "—",
       Loading: ({ text }) =>
         React.createElement("div", { role: "status" }, text),
@@ -1277,6 +1287,7 @@ test("YooKassa return hydrates pending count and amount from the owner order", a
     },
     "@/entities/monitor": {},
     "@/shared/ui": {
+      Icon: () => null,
       dateTime: (value) => value ?? "—",
       Loading: ({ text }) =>
         React.createElement("div", { role: "status" }, text),
@@ -1369,6 +1380,7 @@ test("definitive YooKassa create rejections clear retry intent and refresh the c
         },
         "@/entities/monitor": {},
         "@/shared/ui": {
+          Icon: () => null,
           dateTime: (value) => value ?? "—",
           Loading: ({ text }) =>
             React.createElement("div", { role: "status" }, text),
@@ -1646,6 +1658,7 @@ test("ConsoleShell menu is keyboard operable, closes on Escape, restores focus, 
       readMonitorDraft() {},
     },
     "@/shared/ui": {
+      Icon: () => null,
       Brand: () => React.createElement("span", null, "Heartbeat Checker"),
       Loading: ({ text }) =>
         React.createElement("span", { role: "status" }, text),

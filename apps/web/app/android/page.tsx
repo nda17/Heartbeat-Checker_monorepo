@@ -1,6 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
-import { AppStoreSoon, Brand, PublicFooter } from "@/shared/ui";
+import { AppStoreSoon, Brand, PublicFooter, Icon } from "@/shared/ui";
 import { ThemeToggle } from "@/features/theme-toggle";
 import { publicPageMetadata, PublicPageStructuredData } from "@/shared/seo";
 import { androidRelease } from "@/shared/android";
@@ -166,9 +166,15 @@ export default function AndroidPage() {
             </p>
           </div>
           <nav aria-label="Об аккаунте и приложении">
-            <Link href="/privacy">Персональные данные ↗</Link>
-            <Link href="/terms">Условия сервиса ↗</Link>
-            <Link href="/contacts">Поддержка ↗</Link>
+            <Link href="/privacy">
+              Персональные данные <Icon name="arrow-up-right" />
+            </Link>
+            <Link href="/terms">
+              Условия сервиса <Icon name="arrow-up-right" />
+            </Link>
+            <Link href="/contacts">
+              Поддержка <Icon name="arrow-up-right" />
+            </Link>
           </nav>
         </section>
         {release && (

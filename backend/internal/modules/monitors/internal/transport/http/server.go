@@ -6,8 +6,11 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -88,6 +91,20 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	options, paged, err := listOptions(r.URL.RawQuery)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	if paged {
+		result, err := s.service.ListPage(r.Context(), id, options)
+		if err != nil {
+			failure(w, err)
+			return
+		}
+		write(w, 200, result)
+		return
+	}
 	items, err := s.service.List(r.Context(), id)
 	if err != nil {
 		failure(w, err)
@@ -95,6 +112,55 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, 200, map[string]any{"monitors": items})
 }
+
+// No list parameters preserves the legacy response and oldest-first order.
+func listOptions(raw string) (contracts.ListOptions, bool, error) {
+	options := contracts.ListOptions{Page: 1, PageSize: 25, Sort: "created_desc"}
+	values, err := url.ParseQuery(raw)
+	if err != nil {
+		return options, false, service.ErrInvalid
+	}
+	if len(values) == 0 {
+		return options, false, nil
+	}
+	for key, items := range values {
+		if len(items) != 1 {
+			return options, true, service.ErrInvalid
+		}
+		switch key {
+		case "page", "pageSize":
+			value := items[0]
+			if value == "" || strings.IndexFunc(value, func(r rune) bool { return r < '0' || r > '9' }) != -1 {
+				return options, true, service.ErrInvalid
+			}
+			number, err := strconv.Atoi(value)
+			if err != nil || number < 1 || (key == "pageSize" && number > 100) {
+				return options, true, service.ErrInvalid
+			}
+			if key == "page" {
+				options.Page = number
+			} else {
+				options.PageSize = number
+			}
+		case "sort":
+			switch items[0] {
+			case "created_desc", "created_asc", "name_asc", "name_desc":
+				options.Sort = items[0]
+			default:
+				return options, true, service.ErrInvalid
+			}
+		case "q":
+			options.Query = strings.TrimSpace(items[0])
+			if !utf8.ValidString(options.Query) || utf8.RuneCountInString(options.Query) > 200 {
+				return options, true, service.ErrInvalid
+			}
+		default:
+			return options, true, service.ErrInvalid
+		}
+	}
+	return options, true, nil
+}
+
 func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	id, ok := owner(w, r)
 	if !ok {

@@ -106,6 +106,7 @@ function loadAccountDeletion({ api, session, router, clearedDrafts }) {
         ),
     },
     "@/shared/ui": {
+      Icon: () => null,
       Notice: ({ children }) =>
         React.createElement("div", { role: "alert" }, children),
       PasswordInput: (props) =>

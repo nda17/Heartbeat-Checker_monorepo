@@ -1,4 +1,5 @@
 export type CheckType = "http" | "tcp" | "icmp";
+export type NotificationChannel = "telegram" | "max" | "email" | "webhook";
 export type Monitor = {
   id: string;
   checkType?: CheckType;
@@ -19,6 +20,28 @@ export type Monitor = {
   lastLatencyMs: number | null;
   lastRoundTripMs?: number | null;
   nextCheckAt: string | null;
+  notificationChannels?: NotificationChannel[];
+};
+export type MonitorSort =
+  "created_desc" | "created_asc" | "name_asc" | "name_desc";
+export type MonitorPagination = {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+};
+export type MonitorSummary = {
+  total: number;
+  up: number;
+  down: number;
+  unknown: number;
+  paused: number;
+  subscriptionRequired: number;
+};
+export type MonitorPage = {
+  monitors: Monitor[];
+  pagination: MonitorPagination;
+  summary: MonitorSummary;
 };
 export type Entitlement = {
   quota: number;
