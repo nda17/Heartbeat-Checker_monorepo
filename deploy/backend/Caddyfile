@@ -19,6 +19,23 @@
 api.heartbeat-checker.ru {
     @oauth_callbacks path /api/v1/auth/oauth/yandex/callback /api/v1/auth/oauth/vk/callback
     log_skip @oauth_callbacks
+    # Official YooKassa notification networks; GET verification remains the
+    # authority for every payment outcome. No other public API route is opened.
+    @yookassa_webhook {
+        method POST
+        path /webhooks/billing/yookassa
+        remote_ip 185.71.76.0/27 185.71.77.0/27 77.75.153.0/25 77.75.156.11/32 77.75.156.35/32 77.75.154.128/25 2a02:5180::/32
+    }
+    handle @yookassa_webhook {
+        request_body {
+            max_size 64KB
+        }
+        reverse_proxy api:8080
+    }
+    @billing_webhook_path path /webhooks/billing/yookassa
+    handle @billing_webhook_path {
+        respond "Forbidden" 403
+    }
     @messenger_webhook {
         method POST
         path /webhooks/support/telegram /webhooks/support/max /webhooks/notifications/telegram /webhooks/notifications/max

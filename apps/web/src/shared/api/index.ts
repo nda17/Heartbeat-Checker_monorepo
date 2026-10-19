@@ -51,9 +51,9 @@ export async function api<T>(
   return response.json() as Promise<T>;
 }
 const messages: Record<string, string> = {
-  mock_billing_forbidden: "Тестовая оплата недоступна для вашего аккаунта.",
+  mock_billing_forbidden: "Оплата недоступна для вашего аккаунта.",
   billing_conflict:
-    "Завершите текущий тестовый заказ. Для действующей квоты выберите прежнее количество мониторов.",
+    "Заказ конфликтует с текущей квотой или уже начатым заказом. Обновите статус текущего заказа.",
   invalid_credentials: "Неверный email или пароль.",
   unauthorized: "Сессия завершена. Войдите снова.",
   account_changed: "Аккаунт изменился. Черновик не сохранён.",
@@ -168,6 +168,30 @@ export function oauthAuthorizationUrl(provider: "yandex" | "vk", raw: string) {
   )
     throw new Error("Invalid OAuth authorization URL");
   return url.href;
+}
+export function paymentConfirmationUrl(value: string | undefined) {
+  if (
+    !value ||
+    value.length > 2048 ||
+    value.includes("#") ||
+    /[\\\u0000-\u0020\u007f]/.test(value) ||
+    !/^https:\/\/(?:yoomoney\.ru|yookassa\.ru)(?:[/?]|$)/.test(value)
+  )
+    return null;
+  try {
+    const url = new URL(value);
+    if (
+      !["https://yoomoney.ru", "https://yookassa.ru"].includes(url.origin) ||
+      url.username ||
+      url.password ||
+      url.port ||
+      url.hash
+    )
+      return null;
+    return url.href;
+  } catch {
+    return null;
+  }
 }
 // Preserve only reviewed authenticated destinations after login.
 export function safeAppReturnTo(value: string | null) {

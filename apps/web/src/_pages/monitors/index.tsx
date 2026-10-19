@@ -335,9 +335,9 @@ export function MonitorsPage() {
       )}
       {entitlement?.source === "mock_test" && (
         <div className="local-banner">
-          <span className="badge">TEST</span>
+          <span className="badge">Квота</span>
           <p>
-            Тестовая квота после имитации оплаты. Деньги не списывались. Срок
+            Квота после демонстрации оплаты. Деньги не списывались. Срок
             действия: {dateTime(entitlement.activeUntil)}.
           </p>
         </div>

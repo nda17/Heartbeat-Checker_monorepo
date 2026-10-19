@@ -1913,6 +1913,16 @@ html[data-installed-app="true"] .landing-footer-inner {
 .sessions-panel {
   padding: 26px;
 }
+.billing-checkout {
+  margin-bottom: 24px;
+}
+.billing-order-status {
+  margin: 24px 0 20px;
+}
+.billing-history td[data-label="Результат"] {
+  max-width: 320px;
+  white-space: normal;
+}
 .sessions-panel > .panel-heading {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;

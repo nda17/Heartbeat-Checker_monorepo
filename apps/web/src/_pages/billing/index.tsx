@@ -1,36 +1,453 @@
 "use client";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import { api, errorMessage } from "@/shared/api";
+import {
+  api,
+  ApiError,
+  errorMessage,
+  paymentConfirmationUrl,
+} from "@/shared/api";
 import { Entitlement } from "@/entities/monitor";
+import { useSession } from "@/entities/session";
 import { dateTime, Loading, Notice } from "@/shared/ui";
 type Order = {
   id: string;
-  provider: "mock";
-  status: "pending" | "succeeded" | "canceled";
+  provider: "mock" | "yookassa";
+  status: string;
+  reconciliationStatus?: "pending" | "complete" | "manual_review" | "stopped";
+  fulfillmentStatus?: "pending" | "fulfilled" | "blocked" | "not_required";
+  fulfillmentReason?:
+    "admin_grant" | "account_deleted" | "account_inactive" | "capacity_changed";
   monitorCount: number;
   amountMinor: number;
   currency: "RUB";
+  confirmationUrl?: string;
+  test?: boolean;
+  lastErrorCode?: string;
   createdAt: string;
-  expiresAt: string;
+  expiresAt: string | null;
   completedAt: string | null;
   activeUntil: string | null;
 };
 type Billing = {
-  provider: "disabled" | "mock";
+  provider: "disabled" | "mock" | "yookassa";
   canSimulate: boolean;
+  canPay?: boolean;
+  test?: boolean;
+  accessUnchanged?: boolean;
   pricePerMonitorMinor: number;
   orders: Order[];
 };
-const statuses = {
-  pending: "Ожидает тестового результата",
-  succeeded: "Тест успешно завершён",
-  canceled: "Тест отменён",
-};
+function orderStatus(order: Order) {
+  if (order.provider === "mock") {
+    if (order.status === "succeeded") return "Демонстрация завершена";
+    if (order.status === "canceled") return "Демонстрация отменена";
+    return "Ожидает результата демонстрации";
+  }
+  if (order.status === "succeeded") return "Платёж подтверждён ЮKassa";
+  if (order.status === "canceled") return "Платёж отменён";
+  return "Ожидает подтверждения ЮKassa";
+}
+function fulfillmentMessage(order: Order) {
+  if (order.fulfillmentStatus === "blocked") {
+    switch (order.fulfillmentReason) {
+      case "admin_grant":
+        return "Квота и её срок не изменены: действует административная квота.";
+      case "account_deleted":
+        return "Аккаунт удалён. Квота по заказу не применяется.";
+      case "account_inactive":
+        return "Аккаунт неактивен. Квота по заказу не применяется.";
+      case "capacity_changed":
+        return "Параметры квоты изменились. Для применения заказа обратитесь в поддержку.";
+      default:
+        return "Квота не изменена. Для проверки заказа обратитесь в поддержку.";
+    }
+  }
+  if (order.fulfillmentStatus === "fulfilled") return "Квота применена.";
+  if (order.status === "canceled") return "Квота по этому заказу не выдана.";
+  if (order.status === "succeeded" && order.fulfillmentStatus === "pending")
+    return "Применение квоты ещё не завершено. Обновите статус заказа позже.";
+  return "";
+}
+function unfinishedOrder(order: Order) {
+  return (
+    order.status === "pending" ||
+    (order.status === "succeeded" && order.fulfillmentStatus === "pending")
+  );
+}
 function money(amountMinor: number) {
   return new Intl.NumberFormat("ru-RU", {
     style: "currency",
     currency: "RUB",
   }).format(amountMinor / 100);
+}
+function YooKassaCheckout({
+  billing,
+  onOrder,
+  onRefresh,
+}: {
+  billing: Billing;
+  onOrder: (order: Order) => void;
+  onRefresh: (signal?: AbortSignal) => Promise<Billing | undefined>;
+}) {
+  const { profile } = useSession();
+  const storageKey = `heartbeat-billing-request:${profile.account.id}`;
+  const [count, setCount] = useState(1);
+  const [order, setOrder] = useState<Order | null>(null);
+  const [orderId, setOrderId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [statusBusy, setStatusBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [statusError, setStatusError] = useState("");
+  const [statusNote, setStatusNote] = useState("");
+  const [statusAttempt, setStatusAttempt] = useState(0);
+  const [uncertain, setUncertain] = useState(false);
+  const request = useRef<{ count: number; key: string } | null>(null);
+  const creating = useRef<AbortController | null>(null);
+  const creationTimeout = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    const uuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    try {
+      const saved = JSON.parse(
+        window.sessionStorage.getItem(storageKey) ?? "null",
+      );
+      if (
+        saved &&
+        uuid.test(saved.key) &&
+        Number.isInteger(saved.count) &&
+        saved.count >= 1 &&
+        saved.count <= 1000
+      ) {
+        request.current = saved;
+        // Hydrate the account-bound retry key before allowing a new order.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setCount(saved.count);
+        setUncertain(true);
+      }
+    } catch {
+      // In-memory retries remain available when tab storage is blocked.
+    }
+    const returnedId = new URLSearchParams(window.location.search).get("order");
+    const pending = billing.orders.find(
+      (item) => item.provider === "yookassa" && unfinishedOrder(item),
+    );
+    if (pending && !request.current) setCount(pending.monitorCount);
+    if (returnedId !== null && !uuid.test(returnedId)) {
+      setStatusError("Неверный номер заказа в ссылке.");
+      setOrderId(pending?.id ?? null);
+    } else setOrderId(returnedId ?? pending?.id ?? null);
+    const resume = () => setStatusAttempt((value) => value + 1);
+    const visible = () => {
+      if (document.visibilityState === "visible") resume();
+    };
+    const restored = (event: PageTransitionEvent) => {
+      if (event.persisted) resume();
+    };
+    window.addEventListener("focus", resume);
+    document.addEventListener("visibilitychange", visible);
+    window.addEventListener("pageshow", restored);
+    return () => {
+      creating.current?.abort();
+      creating.current = null;
+      window.clearTimeout(creationTimeout.current);
+      window.removeEventListener("focus", resume);
+      document.removeEventListener("visibilitychange", visible);
+      window.removeEventListener("pageshow", restored);
+    };
+    // The overview supplies a starting order; later updates come from the order endpoint.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageKey]);
+  useEffect(() => {
+    if (!orderId) return;
+    let active = true;
+    let controller: AbortController | null = null;
+    let timer: number | undefined;
+    let timeout: number | undefined;
+    let attempts = 0;
+    const poll = async () => {
+      if (!active || document.visibilityState === "hidden") return;
+      const current = new AbortController();
+      controller = current;
+      setStatusBusy(true);
+      setStatusError("");
+      setStatusNote("");
+      timeout = window.setTimeout(() => {
+        current.abort();
+        if (active) {
+          setStatusBusy(false);
+          setStatusError(
+            "Не удалось дождаться статуса заказа. Повторите проверку; новый заказ не создаётся.",
+          );
+        }
+      }, 10_000);
+      try {
+        const result = await api<{ order: Order }>(
+          `/billing/orders/${encodeURIComponent(orderId)}`,
+          { signal: current.signal },
+        );
+        if (!active || current.signal.aborted) return;
+        if (result.order.id !== orderId) throw new Error("Unexpected order");
+        setOrder(result.order);
+        if (unfinishedOrder(result.order) && !request.current)
+          setCount(result.order.monitorCount);
+        onOrder(result.order);
+        if (
+          result.order.reconciliationStatus === "manual_review" ||
+          result.order.reconciliationStatus === "stopped"
+        ) {
+          setStatusNote(
+            "Нужна проверка результата. Новый платёж не создаётся автоматически; обратитесь в поддержку.",
+          );
+        } else if (unfinishedOrder(result.order)) {
+          if (++attempts < 10)
+            timer = window.setTimeout(() => void poll(), 3000);
+          else
+            setStatusNote(
+              "Заказ ещё обрабатывается. Статус можно проверить позже без создания нового заказа.",
+            );
+        } else {
+          await onRefresh(current.signal);
+        }
+      } catch (cause) {
+        if (active && !current.signal.aborted)
+          setStatusError(errorMessage(cause));
+      } finally {
+        window.clearTimeout(timeout);
+        if (active && !current.signal.aborted) setStatusBusy(false);
+      }
+    };
+    void poll();
+    return () => {
+      active = false;
+      controller?.abort();
+      window.clearTimeout(timer);
+      window.clearTimeout(timeout);
+    };
+  }, [orderId, statusAttempt, onOrder, onRefresh]);
+  async function create(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (
+      creating.current ||
+      billing.canPay !== true ||
+      billing.test !== true ||
+      (!request.current &&
+        ((!!orderId && order?.id !== orderId) ||
+          (order && unfinishedOrder(order))))
+    )
+      return;
+    const monitorCount =
+      request.current?.count ??
+      Number(new FormData(event.currentTarget).get("monitorCount"));
+    if (
+      !Number.isInteger(monitorCount) ||
+      monitorCount < 1 ||
+      monitorCount > 1000
+    ) {
+      setError("Укажите количество мониторов от 1 до 1000.");
+      return;
+    }
+    request.current ??= { count: monitorCount, key: crypto.randomUUID() };
+    try {
+      window.sessionStorage.setItem(
+        storageKey,
+        JSON.stringify(request.current),
+      );
+    } catch {
+      /* Retry the same request in this tab. */
+    }
+    const controller = new AbortController();
+    creating.current = controller;
+    setCount(monitorCount);
+    setBusy(true);
+    setUncertain(true);
+    setError("");
+    setStatusError("");
+    let definitiveRejection = false;
+    const timer = window.setTimeout(() => {
+      controller.abort();
+      if (creating.current === controller) {
+        creating.current = null;
+        setBusy(false);
+        if (definitiveRejection)
+          setStatusError(
+            "Не удалось обновить условия оплаты. Обновите страницу перед новым заказом.",
+          );
+        else
+          setError(
+            "Ответ на создание заказа не получен. Повторите запрос на этой странице с теми же параметрами и ключом заказа.",
+          );
+      }
+    }, 10_000);
+    creationTimeout.current = timer;
+    try {
+      const result = await api<{ order: Order }>("/billing/orders", {
+        method: "POST",
+        authenticated: true,
+        signal: controller.signal,
+        body: {
+          monitorCount: request.current.count,
+          idempotencyKey: request.current.key,
+        },
+      });
+      if (creating.current !== controller || controller.signal.aborted) return;
+      setOrder(result.order);
+      setOrderId(result.order.id);
+      setStatusAttempt((value) => value + 1);
+      onOrder(result.order);
+      request.current = null;
+      setUncertain(false);
+      try {
+        window.sessionStorage.removeItem(storageKey);
+      } catch {
+        /* The accepted order remains visible. */
+      }
+    } catch (cause) {
+      if (creating.current !== controller || controller.signal.aborted) return;
+      setError(errorMessage(cause));
+      if (cause instanceof ApiError && [400, 403, 409].includes(cause.status)) {
+        definitiveRejection = true;
+        request.current = null;
+        setUncertain(false);
+        try {
+          window.sessionStorage.removeItem(storageKey);
+        } catch {
+          /* The current form is unlocked even when storage is unavailable. */
+        }
+        try {
+          const latest = await onRefresh(controller.signal);
+          if (creating.current !== controller || controller.signal.aborted)
+            return;
+          const current = latest?.orders.find(
+            (item) => item.provider === "yookassa" && unfinishedOrder(item),
+          );
+          setOrder(current ?? null);
+          setOrderId(current?.id ?? null);
+          if (current) {
+            setCount(current.monitorCount);
+            setStatusAttempt((value) => value + 1);
+          }
+        } catch (refreshFailure) {
+          if (creating.current === controller && !controller.signal.aborted)
+            setStatusError(
+              `Не удалось обновить заказы: ${errorMessage(refreshFailure)} Обновите страницу перед новым заказом.`,
+            );
+        }
+      }
+    } finally {
+      window.clearTimeout(timer);
+      if (creating.current === controller) {
+        creating.current = null;
+        setBusy(false);
+      }
+    }
+  }
+  const canPay = billing.canPay === true && billing.test === true;
+  const pending = order && unfinishedOrder(order);
+  const quotedAmount =
+    order && pending && !uncertain
+      ? order.amountMinor
+      : count * billing.pricePerMonitorMinor;
+  const awaitingOrder = !!orderId && order?.id !== orderId;
+  const halted =
+    order?.reconciliationStatus === "manual_review" ||
+    order?.reconciliationStatus === "stopped";
+  const confirmationUrl =
+    order?.provider === "yookassa" && order.status === "pending" && !halted
+      ? paymentConfirmationUrl(order.confirmationUrl)
+      : null;
+  return (
+    <section
+      className="panel settings-panel billing-checkout"
+      aria-labelledby="checkout-title"
+    >
+      <div className="panel-heading">
+        <div>
+          <h2 id="checkout-title">Оформление заказа</h2>
+          <p>Подтверждение на странице ЮKassa. Деньги не списываются.</p>
+        </div>
+      </div>
+      {billing.accessUnchanged && (
+        <p className="small">
+          У вас действует административная квота. Этот заказ не изменит её
+          размер и срок.
+        </p>
+      )}
+      {!canPay ? (
+        <p>Оплата пока недоступна для вашего аккаунта.</p>
+      ) : (
+        <form className="form-stack" onSubmit={create}>
+          <label>
+            Количество мониторов
+            <input
+              name="monitorCount"
+              type="number"
+              min={1}
+              max={1000}
+              step={1}
+              required
+              value={count}
+              onChange={(event) => setCount(Number(event.target.value))}
+              disabled={busy || !!pending || uncertain || awaitingOrder}
+            />
+          </label>
+          <p>
+            Сумма: <strong>{money(quotedAmount)}</strong>
+          </p>
+          <p className="field-hint">
+            Окончательная сумма и параметры заказа рассчитываются сервером.
+            Автопродление не подключается.
+          </p>
+          {error && <Notice>{error}</Notice>}
+          <button
+            className="primary"
+            disabled={busy || ((!!pending || awaitingOrder) && !uncertain)}
+          >
+            {busy
+              ? "Создаём заказ…"
+              : uncertain
+                ? "Повторить запрос заказа"
+                : "Оформить заказ"}
+          </button>
+        </form>
+      )}
+      {order && (
+        <div className="form-stack billing-order-status" aria-live="polite">
+          <h3>{orderStatus(order)}</h3>
+          <p>
+            Мониторы: {order.monitorCount} · {money(order.amountMinor)}.
+          </p>
+          {fulfillmentMessage(order) && <p>{fulfillmentMessage(order)}</p>}
+          {confirmationUrl && canPay && (
+            <a className="button" href={confirmationUrl}>
+              Перейти к оплате в ЮKassa
+            </a>
+          )}
+          {order.status === "pending" && !confirmationUrl && !halted && (
+            <p>
+              Ссылка на оплату готовится. Возврат на эту страницу сам по себе не
+              подтверждает платёж.
+            </p>
+          )}
+        </div>
+      )}
+      {statusError && <Notice>{statusError}</Notice>}
+      {statusNote && (
+        <p className="small" role="status">
+          {statusNote}
+        </p>
+      )}
+      {orderId && (
+        <button
+          type="button"
+          className="secondary"
+          disabled={statusBusy}
+          onClick={() => setStatusAttempt((value) => value + 1)}
+        >
+          {statusBusy ? "Проверяем статус…" : "Обновить статус заказа"}
+        </button>
+      )}
+    </section>
+  );
 }
 export function BillingPage() {
   const [billing, setBilling] = useState<Billing | null>(null);
@@ -43,6 +460,19 @@ export function BillingPage() {
   const [success, setSuccess] = useState("");
   const [demo, setDemo] = useState<"succeeded" | "canceled" | null>(null);
   const request = useRef<{ count: number; key: string } | null>(null);
+  const rememberOrder = useCallback((order: Order) => {
+    setBilling((current) =>
+      current
+        ? {
+            ...current,
+            orders: [
+              order,
+              ...current.orders.filter((item) => item.id !== order.id),
+            ],
+          }
+        : current,
+    );
+  }, []);
   const load = useCallback(async (signal?: AbortSignal) => {
     const [result, access] = await Promise.all([
       api<Billing>("/billing", { signal }),
@@ -51,6 +481,7 @@ export function BillingPage() {
     if (signal?.aborted) return;
     setBilling(result);
     setEntitlement(access.entitlement);
+    return result;
   }, []);
   useEffect(() => {
     const controller = new AbortController();
@@ -172,7 +603,11 @@ export function BillingPage() {
         <div>
           <p className="eyebrow">ПОДПИСКА И ЗАКАЗЫ</p>
           <h1>Оплата</h1>
-          <p>29 рублей за один монитор в месяц.</p>
+          <p>
+            {billing
+              ? `${money(billing.pricePerMonitorMinor)} за один монитор в месяц.`
+              : "Квота мониторинга и история заказов."}
+          </p>
         </div>
       </div>
       {error && <Notice>{error}</Notice>}
@@ -200,22 +635,29 @@ export function BillingPage() {
                 {dateTime(entitlement.activeUntil)}. Платежей по этой квоте нет.
               </p>
             </div>
-          ) : (
+          ) : billing.provider !== "yookassa" ? (
             <div className="local-banner">
-              <span className="badge">TEST</span>
+              <span className="badge">Оплата</span>
               <p>
                 {billing.provider === "mock"
-                  ? "Оплата работает в тестовом режиме. Все суммы условные: деньги не списываются. Тестовая квота не является оплаченной подпиской."
+                  ? "Доступна демонстрация оформления заказа. Она не является оплаченной подпиской."
                   : "Приём платежей пока недоступен. Реальные списания и автопродление не выполняются."}
               </p>
             </div>
+          ) : null}
+          {billing.provider === "yookassa" && (
+            <YooKassaCheckout
+              billing={billing}
+              onOrder={rememberOrder}
+              onRefresh={load}
+            />
           )}
           {billing.provider === "mock" &&
             !billing.canSimulate &&
             !adminGrant && (
               <Notice>
-                Тестовая оплата доступна только согласованным тестовым
-                аккаунтам. Для вашего аккаунта выдача тестовой квоты недоступна.
+                Для вашего аккаунта применение квоты через демонстрацию
+                недоступно.
               </Notice>
             )}
           {billing.provider === "mock" && !adminGrant && (
@@ -225,12 +667,12 @@ export function BillingPage() {
                 <div>
                   <h2>
                     {billing.canSimulate
-                      ? "Тестовый заказ"
+                      ? "Оформление заказа"
                       : "Демонстрация оплаты"}
                   </h2>
                   <p>
                     {billing.canSimulate
-                      ? "Тестовая квота на один месяц. Автопродление отключено."
+                      ? "Деньги не списываются. Автопродление отключено."
                       : "Рассчитайте стоимость и посмотрите результат. Демонстрация не выдаёт квоту."}
                   </p>
                 </div>
@@ -255,15 +697,13 @@ export function BillingPage() {
                 </label>
                 <p>
                   Условная сумма:{" "}
-                  <strong>
-                    {money(count * billing.pricePerMonitorMinor)} · TEST
-                  </strong>
+                  <strong>{money(count * billing.pricePerMonitorMinor)}</strong>
                 </p>
                 <button className="primary" disabled={busy || !!pending}>
                   {busy
                     ? "Сохраняем…"
                     : billing.canSimulate
-                      ? "Создать тестовый заказ"
+                      ? "Создать заказ демонстрации"
                       : "Показать демо успешного результата"}
                 </button>
               </form>
@@ -289,8 +729,8 @@ export function BillingPage() {
               {billing.canSimulate && pending && (
                 <div className="form-stack">
                   <p>
-                    Заказ на {pending.monitorCount} мониторов ·{" "}
-                    {money(pending.amountMinor)} · TEST. Срок подтверждения:{" "}
+                    Мониторы: {pending.monitorCount} ·{" "}
+                    {money(pending.amountMinor)}. Срок подтверждения:{" "}
                     {dateTime(pending.expiresAt)}. Просроченный заказ можно
                     отменить и создать заново.
                   </p>
@@ -306,7 +746,7 @@ export function BillingPage() {
                     disabled={busy}
                     onClick={() => void simulate(pending, "canceled")}
                   >
-                    Отменить тестовый заказ
+                    Отменить заказ демонстрации
                   </button>
                 </div>
               )}
@@ -317,8 +757,8 @@ export function BillingPage() {
               <div>
                 <h2>История заказов</h2>
                 <p className="small muted">
-                  Последние 100 заказов. Пометка TEST означает, что деньги не
-                  списывались.
+                  Последние 100 заказов. Статус платежа и применение квоты
+                  отображаются отдельно.
                 </p>
               </div>
             </div>
@@ -329,12 +769,15 @@ export function BillingPage() {
               </div>
             ) : (
               <div className="table-scroll">
-                <table className="monitor-table mobile-card-table" role="table">
+                <table
+                  className="monitor-table mobile-card-table billing-history"
+                  role="table"
+                >
                   <thead>
                     <tr>
                       <th>Заказ</th>
                       <th>Мониторы</th>
-                      <th>Условная сумма</th>
+                      <th>Сумма</th>
                       <th>Результат</th>
                       <th>Квота до</th>
                     </tr>
@@ -343,18 +786,26 @@ export function BillingPage() {
                     {billing.orders.map((order) => (
                       <tr key={order.id}>
                         <td data-label="Заказ">
-                          <strong>TEST</strong>
+                          <strong>
+                            {order.provider === "yookassa"
+                              ? "ЮKassa"
+                              : "Демонстрация"}
+                          </strong>
                           <span className="cell-sub">
                             {dateTime(order.createdAt)}
                           </span>
                           <span className="cell-sub mono">{order.id}</span>
                         </td>
                         <td data-label="Мониторы">{order.monitorCount}</td>
-                        <td data-label="Условная сумма">
-                          {money(order.amountMinor)}
-                          <span className="cell-sub">Деньги не списаны</span>
+                        <td data-label="Сумма">{money(order.amountMinor)}</td>
+                        <td data-label="Результат">
+                          {orderStatus(order)}
+                          {fulfillmentMessage(order) && (
+                            <span className="cell-sub">
+                              {fulfillmentMessage(order)}
+                            </span>
+                          )}
                         </td>
-                        <td data-label="Результат">{statuses[order.status]}</td>
                         <td data-label="Квота до">
                           {order.activeUntil
                             ? dateTime(order.activeUntil)

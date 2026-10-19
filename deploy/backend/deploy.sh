@@ -17,8 +17,9 @@ activate_admin_mfa=${11-false}
 activate_oauth=${12-false}
 firewall_image=${13:?firewall image digest is required}
 firewall_policy_sha=${14:?firewall policy hash is required}
+activate_yookassa_test=${15-false}
 
-[[ $# -eq 14 && $firewall_policy_sha =~ ^[0-9a-f]{64}$ && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) && ( $activate_messenger_notifications == true || $activate_messenger_notifications == false ) && ( $provision_owner == true || $provision_owner == false ) && ( $activate_admin_mfa == true || $activate_admin_mfa == false ) && ( $activate_oauth == true || $activate_oauth == false ) ]] || {
+[[ ( $# -eq 14 || $# -eq 15 ) && ( $activate_yookassa_test == true || $activate_yookassa_test == false ) && $firewall_policy_sha =~ ^[0-9a-f]{64}$ && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) && ( $activate_messenger_notifications == true || $activate_messenger_notifications == false ) && ( $provision_owner == true || $provision_owner == false ) && ( $activate_admin_mfa == true || $activate_admin_mfa == false ) && ( $activate_oauth == true || $activate_oauth == false ) ]] || {
   echo 'Invalid release arguments' >&2; exit 1;
 }
 for spec in "api:$api_image" "worker:$worker_image" "probe:$probe_image" "migrate:$migrate_image" "backup:$backup_image" "firewall:$firewall_image"; do
@@ -28,6 +29,9 @@ for spec in "api:$api_image" "worker:$worker_image" "probe:$probe_image" "migrat
     echo "Expected immutable GHCR $target image" >&2; exit 1;
   }
 done
+exec 9>.deploy.lock
+flock -n 9 || { echo 'Another backend deployment is in progress' >&2; exit 1; }
+
 [[ -f .env && ! -L .env && $(stat -c %a .env) == 600 ]] || {
   echo 'Provision a regular mode-600 .env first' >&2; exit 1;
 }
@@ -35,9 +39,6 @@ done
   echo 'Missing staged deployment files' >&2; exit 1;
 }
 [[ ! -e pending ]] || { echo 'Resolve the previous pending deployment before retrying' >&2; exit 1; }
-
-exec 9>.deploy.lock
-flock -n 9 || { echo 'Another backend deployment is in progress' >&2; exit 1; }
 
 workdir=$(mktemp -d)
 export DOCKER_CONFIG=$workdir/docker-config
@@ -59,6 +60,7 @@ migration_started=false
 scratch_created=false
 recovery_dir=
 activation_applied=false
+activation_generated=false
 activation_stage_created=false
 owner_import_result=skipped
 on_exit() {
@@ -120,6 +122,28 @@ on_exit() {
 }
 trap on_exit EXIT
 
+# Framed stdin: one registry-token line, followed only by an optional bounded
+# YooKassa JSON payload. The token is never exported or passed as an argument.
+unset registry_token
+if ! IFS= read -r -n 4097 registry_token || [[ -z $registry_token || ${#registry_token} -gt 4096 || ! $registry_token =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+  echo 'Invalid registry credential framing' >&2; exit 1
+fi
+if $activate_yookassa_test; then
+  if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $provision_owner; then
+    echo 'YooKassa activation must be a separate configuration operation' >&2; exit 1
+  fi
+  [[ ! -e .env.next && ! -L .env.next ]] || { echo 'Resolve the existing staged configuration before YooKassa activation' >&2; exit 1; }
+  [[ -f stage-yookassa.py.incoming && ! -L stage-yookassa.py.incoming ]] || { echo 'Missing tracked YooKassa staging helper' >&2; exit 1; }
+  cp -p stage-yookassa.py.incoming "$workdir/stage-yookassa.py"
+  python3 "$workdir/stage-yookassa.py" "$workdir"
+  activation_generated=true
+else
+  # Legacy deployment accepts only the original registry token, never a payload.
+  if ! python3 -c 'import sys; sys.exit(1 if sys.stdin.buffer.read(1) else 0)'; then
+    echo 'Unexpected deployment input' >&2; exit 1
+  fi
+fi
+
 if $provision_owner; then
   [[ -f .owner-import.next.json && ! -L .owner-import.next.json && $(stat -c %a .owner-import.next.json) == 600 && -f import-owner.sql.incoming && ! -L import-owner.sql.incoming ]] || {
     echo 'Owner import requires a regular mode-600 payload and tracked SQL' >&2; exit 1;
@@ -162,20 +186,22 @@ except (OSError, UnicodeError, ValueError, TypeError):
 PY
 fi
 
-if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth; then
-  [[ -f .env.next && ! -L .env.next && $(stat -c %a .env.next) == 600 ]] || {
-    if $activate_messenger_notifications; then
-      echo 'Configuration activation requires a regular mode-600 .env.next' >&2
-    else
-      echo 'Relay activation requires a regular mode-600 .env.next' >&2
-    fi
-    exit 1
-  }
+if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $activate_yookassa_test; then
+  if ! $activation_generated; then
+    [[ -f .env.next && ! -L .env.next && $(stat -c %a .env.next) == 600 ]] || {
+      if $activate_messenger_notifications; then
+        echo 'Configuration activation requires a regular mode-600 .env.next' >&2
+      else
+        echo 'Relay activation requires a regular mode-600 .env.next' >&2
+      fi
+      exit 1
+    }
+    cp -p .env.next "$workdir/.env.next"
+  fi
   [[ ! -e .env.activate.incoming && ! -L .env.activate.incoming && ! -e .env.rollback.incoming && ! -L .env.rollback.incoming ]] || {
     echo 'Resolve the previous configuration activation staging file' >&2; exit 1;
   }
-  cp -p .env.next "$workdir/.env.next"
-  python3 - "$workdir/.env.next" "$activate_telegram_relay" "$activate_messenger_notifications" "$activate_admin_mfa" "$activate_oauth" <<'PY'
+  python3 - "$workdir/.env.next" "$activate_telegram_relay" "$activate_messenger_notifications" "$activate_admin_mfa" "$activate_oauth" "$activate_yookassa_test" <<'PY'
 import base64
 import binascii
 from pathlib import Path
@@ -205,7 +231,9 @@ oauth_keys = {
     b"YANDEX_SCOPES", b"VK_CLIENT_ID", b"VK_CALLBACK_URL",
 }
 oauth = sys.argv[5] == "true"
-allowed = (set(relay_targets) if relay else set()) | (messenger_keys if messenger else set()) | ({mfa_key} if admin_mfa else set()) | (oauth_keys if oauth else set())
+yookassa_test = sys.argv[6] == "true"
+yookassa_keys = {b"BILLING_PROVIDER", b"BILLING_TEST_ACCOUNT_IDS", b"YOOKASSA_MODE", b"YOOKASSA_TEST_SHOP_ID", b"YOOKASSA_TEST_SECRET_KEY"}
+allowed = (set(relay_targets) if relay else set()) | (messenger_keys if messenger else set()) | ({mfa_key} if admin_mfa else set()) | (oauth_keys if oauth else set()) | (yookassa_keys if yookassa_test else set())
 prefix = "Relay activation rejected" if relay and not messenger else "Configuration activation rejected"
 
 def reject(message):
@@ -242,6 +270,19 @@ old_lines, old_values = parse(".env")
 new_lines, new_values = parse(sys.argv[1])
 if old_lines != new_lines:
     reject("changes outside selected keys")
+if yookassa_test:
+    target = {b"BILLING_PROVIDER": b"yookassa", b"YOOKASSA_MODE": b"test", b"BILLING_TEST_ACCOUNT_IDS": b"51ec7d19-80c4-4fb6-8edb-79dc7abe3120"}
+    for key, expected in target.items():
+        if unquote_literal(new_values.get(key, b"")) != expected:
+            reject("YooKassa activation must use the reviewed test mode and owner account")
+    shop = unquote_literal(new_values.get(b"YOOKASSA_TEST_SHOP_ID", b""))
+    secret = unquote_literal(new_values.get(b"YOOKASSA_TEST_SECRET_KEY", b""))
+    if not re.fullmatch(rb"[0-9]{1,32}", shop) or not re.fullmatch(rb"test_[^\s]{11,507}", secret):
+        reject("complete YooKassa test credentials are required")
+    for key in (b"YOOKASSA_TEST_SHOP_ID", b"YOOKASSA_TEST_SECRET_KEY"):
+        previous = unquote_literal(old_values.get(key, b""))
+        if previous and previous != unquote_literal(new_values.get(key, b"")):
+            reject("YooKassa activation cannot rotate existing credentials")
 if oauth:
     for key in oauth_keys:
         previous = old_values.get(key, b"")
@@ -306,8 +347,9 @@ PY
   mv -f .env.activate.incoming .env
 fi
 
-# The workflow passes its short-lived package token on stdin.
-docker login ghcr.io -u "$registry_user" --password-stdin >/dev/null
+# Only the first stdin frame belongs to the registry client.
+printf '%s\n' "$registry_token" | docker login ghcr.io -u "$registry_user" --password-stdin >/dev/null
+unset registry_token
 
 cat > .release.env.incoming <<EOF
 API_IMAGE=$api_image
@@ -346,6 +388,15 @@ if any("AUTH_MFA_ENCRYPTION_KEY" in c[name]["environment"] for name in ("worker"
 oauth_keys = ("YANDEX_CLIENT_ID", "YANDEX_CLIENT_SECRET", "YANDEX_REDIRECT_URI", "YANDEX_SCOPES", "VK_CLIENT_ID", "VK_CALLBACK_URL")
 if any(key in c[name]["environment"] for key in oauth_keys for name in ("worker", "probe")):
     raise SystemExit("OAuth configuration must be scoped to API only")
+yookassa_keys = ("BILLING_TEST_ACCOUNT_IDS", "YOOKASSA_MODE", "YOOKASSA_TEST_SHOP_ID", "YOOKASSA_TEST_SECRET_KEY")
+if any(c["api"]["environment"].get(key, "") != c["worker"]["environment"].get(key, "") for key in yookassa_keys):
+    raise SystemExit("API and worker must share the same YooKassa policy")
+if any(key in c.get(name, {}).get("environment", {}) for key in yookassa_keys for name in ("probe", "postgres", "caddy", "migrate")):
+    raise SystemExit("YooKassa configuration must be scoped to API and worker only")
+if c["api"]["environment"].get("BILLING_PROVIDER") == "yookassa":
+    e = c["api"]["environment"]
+    if e.get("YOOKASSA_MODE") != "test" or e.get("BILLING_TEST_ACCOUNT_IDS") != "51ec7d19-80c4-4fb6-8edb-79dc7abe3120" or not e.get("YOOKASSA_TEST_SHOP_ID", "").isdigit() or not e.get("YOOKASSA_TEST_SECRET_KEY", "").startswith("test_"):
+        raise SystemExit("YooKassa production activation must use owner-only sandbox configuration")
 '
 "${compose_new[@]}" pull postgres caddy api worker probe migrate
 docker pull "$backup_image"
@@ -526,17 +577,23 @@ jq -n --arg source_sha "$source_sha" --arg api "$api_image" \
   --argjson telegram_relay_activated "$activate_telegram_relay" \
   --argjson messenger_notifications_activated "$activate_messenger_notifications" \
   --argjson owner_import_requested "$provision_owner" --argjson admin_mfa_activated "$activate_admin_mfa" \
-  --argjson oauth_activated "$activate_oauth" \
-  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image,firewall:$firewall_image},firewall_policy_sha256:$firewall_policy_sha256,backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,messenger_notifications_activated:$messenger_notifications_activated,owner_import_requested:$owner_import_requested,admin_mfa_activated:$admin_mfa_activated,oauth_activated:$oauth_activated,completed_at:(now|todate)}' \
+  --argjson oauth_activated "$activate_oauth" --argjson yookassa_test_activated "$activate_yookassa_test" \
+  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image,firewall:$firewall_image},firewall_policy_sha256:$firewall_policy_sha256,backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,messenger_notifications_activated:$messenger_notifications_activated,owner_import_requested:$owner_import_requested,admin_mfa_activated:$admin_mfa_activated,oauth_activated:$oauth_activated,yookassa_test_activated:$yookassa_test_activated,completed_at:(now|todate)}' \
   > "receipts/$source_sha.json.incoming"
 mv compose.backup.yaml.incoming compose.backup.yaml
 mv backup.sh.incoming backup.sh
 chmod 700 backup.sh
 if $activation_applied; then
-  if [[ ! -f .env.next || -L .env.next || $(stat -c %a .env.next) != 600 ]] || ! cmp -s .env.next "$workdir/.env.next"; then
-    echo 'Staged activation env changed during deployment; retain pending for review' >&2; exit 1;
+  if $activation_generated; then
+    if [[ ! -f .env || -L .env || $(stat -c %a .env) != 600 ]] || ! cmp -s .env "$workdir/.env.next"; then
+      echo 'Activated private candidate changed during deployment; retain pending for review' >&2; exit 1
+    fi
+  else
+    if [[ ! -f .env.next || -L .env.next || $(stat -c %a .env.next) != 600 ]] || ! cmp -s .env.next "$workdir/.env.next"; then
+      echo 'Staged activation env changed during deployment; retain pending for review' >&2; exit 1;
+    fi
+    rm -f .env.next
   fi
-  rm -f .env.next
 fi
 if $provision_owner; then
   if [[ ! -f .owner-import.next.json || -L .owner-import.next.json || $(stat -c %a .owner-import.next.json) != 600 ]] \

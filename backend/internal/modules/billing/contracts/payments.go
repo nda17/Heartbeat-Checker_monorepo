@@ -6,35 +6,76 @@ import (
 )
 
 type Order struct {
-	ID           string     `json:"id"`
-	Provider     string     `json:"provider"`
-	Status       string     `json:"status"`
-	MonitorCount int        `json:"monitorCount"`
-	AmountMinor  int        `json:"amountMinor"`
-	Currency     string     `json:"currency"`
-	CreatedAt    time.Time  `json:"createdAt"`
-	ExpiresAt    time.Time  `json:"expiresAt"`
-	CompletedAt  *time.Time `json:"completedAt"`
-	ActiveUntil  *time.Time `json:"activeUntil"`
+	ID                   string     `json:"id"`
+	Provider             string     `json:"provider"`
+	Status               string     `json:"status"`
+	FulfillmentStatus    string     `json:"fulfillmentStatus"`
+	ReconciliationStatus string     `json:"reconciliationStatus"`
+	FulfillmentReason    string     `json:"fulfillmentReason,omitempty"`
+	MonitorCount         int        `json:"monitorCount"`
+	AmountMinor          int        `json:"amountMinor"`
+	Currency             string     `json:"currency"`
+	ConfirmationURL      string     `json:"confirmationUrl,omitempty"`
+	Test                 bool       `json:"test"`
+	LastErrorCode        string     `json:"lastErrorCode,omitempty"`
+	CreatedAt            time.Time  `json:"createdAt"`
+	ExpiresAt            *time.Time `json:"expiresAt"`
+	CompletedAt          *time.Time `json:"completedAt"`
+	ActiveUntil          *time.Time `json:"activeUntil"`
 }
 
 type Billing struct {
 	Provider             string  `json:"provider"`
 	CanSimulate          bool    `json:"canSimulate"`
+	CanPay               bool    `json:"canPay"`
+	Test                 bool    `json:"test"`
+	AccessUnchanged      bool    `json:"accessUnchanged"`
 	PricePerMonitorMinor int     `json:"pricePerMonitorMinor"`
 	Orders               []Order `json:"orders"`
+}
+
+type ProviderPayment struct {
+	ID              string
+	Status          string
+	AmountValue     string
+	Currency        string
+	OrderID         string
+	ShopID          string
+	ConfirmationURL string
+	Test            *bool
+	Paid            bool
+}
+
+type Provider interface {
+	CreatePayment(context.Context, string, []byte) (ProviderPayment, error)
+	GetPayment(context.Context, string) (ProviderPayment, error)
+}
+
+// ProviderNotification deliberately keeps only routing and reconciliation data.
+// Extra provider fields, including payment-card details, are ignored by JSON decoding.
+type ProviderNotification struct {
+	Type   string `json:"type"`
+	Event  string `json:"event"`
+	Object struct {
+		ID       string `json:"id"`
+		Metadata struct {
+			OrderID string `json:"order_id"`
+		} `json:"metadata"`
+	} `json:"object"`
 }
 
 // PaymentReport is always TEST money: it contains no customer contact data.
 // OrderID is stable across retries. A sender may receive it again after losing an acknowledgement.
 type PaymentReport struct {
-	OrderID      string
-	AccountID    string
-	MonitorCount int
-	AmountMinor  int
-	Currency     string
-	Test         bool
-	CompletedAt  time.Time
+	OrderID           string
+	AccountID         string
+	Provider          string
+	FulfillmentStatus string
+	MonitorCount      int
+	AmountMinor       int
+	Currency          string
+	Test              bool
+	CompletedAt       time.Time
 }
 
 type ReportSender interface {
