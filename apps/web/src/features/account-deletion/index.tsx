@@ -1,4 +1,5 @@
 "use client";
+import { notify } from "@/shared/notifications";
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -103,7 +104,7 @@ export function AccountDeletion() {
         leaving = true;
         finish("unknown");
       } else {
-        setError(errorMessage(cause));
+        notify.error(errorMessage(cause));
       }
     } finally {
       if (!leaving && transition.current) {

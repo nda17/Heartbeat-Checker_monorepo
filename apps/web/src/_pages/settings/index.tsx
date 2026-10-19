@@ -1,4 +1,5 @@
 "use client";
+import { notify } from "@/shared/notifications";
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -14,11 +15,11 @@ function EmailVerification() {
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   const storageKey = `heartbeat-email-verification:${profile.account.id}`;
   const [resendAt, setResendAt] = useState(0);
   const [sent, setSent] = useState(false);
+  const [mailRequested, setMailRequested] = useState(false);
   const [now, setNow] = useState(0);
   const [cooldownReady, setCooldownReady] = useState(false);
   useEffect(() => {
@@ -114,7 +115,8 @@ function EmailVerification() {
     request.current = controller;
     setBusy(true);
     setError("");
-    setSuccess("");
+    setMailRequested(false);
+
     const timeout = window.setTimeout(() => {
       controller.abort();
       if (request.current === controller) request.current = null;
@@ -138,6 +140,7 @@ function EmailVerification() {
       window.clearTimeout(timeout);
       setBusy(false);
       if (!confirm) {
+        setMailRequested(true);
         startCooldown();
         setToken("");
       }
@@ -152,7 +155,7 @@ function EmailVerification() {
         setToken("");
         setConfirmed(true);
       }
-      setSuccess(
+      notify.success(
         confirm
           ? "Email аккаунта подтверждён. Его можно подключить для уведомлений без нового кода."
           : "Письмо с подтверждением запрошено. Используйте последнее письмо и откройте ссылку в этом аккаунте; она действует 30 минут.",
@@ -181,7 +184,7 @@ function EmailVerification() {
           setError(
             "Ответ на запрос письма не получен. Оно могло быть отправлено. Проверьте почту перед повтором; запрос не повторяется автоматически.",
           );
-        } else setError(errorMessage(cause));
+        } else notify.error(errorMessage(cause));
       }
     } finally {
       window.clearTimeout(timeout);
@@ -192,7 +195,7 @@ function EmailVerification() {
   return (
     <div className="form-stack" style={{ marginTop: 20 }}>
       {error && <Notice>{error}</Notice>}
-      {success && <Notice success>{success}</Notice>}
+
       {profile.emailVerified || confirmed ? (
         <p className="small muted">Email подтверждён.</p>
       ) : (
@@ -203,6 +206,12 @@ function EmailVerification() {
             ниже. Пароль и текущие сеансы не изменятся. Если ссылка предложила
             войти, после входа откройте её ещё раз.
           </p>
+          {mailRequested && (
+            <p className="small">
+              Письмо с подтверждением запрошено. Используйте последнее письмо и
+              откройте ссылку в этом аккаунте; она действует 30 минут.
+            </p>
+          )}
           {token && (
             <button
               className="primary"
@@ -238,7 +247,6 @@ export function SettingsPage() {
   const [sessionsAttempt, setSessionsAttempt] = useState(0);
   const [error, setError] = useState("");
   const [errorTarget, setErrorTarget] = useState("profile");
-  const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState("");
   const loadSessions = useCallback(async (signal?: AbortSignal) => {
     const result = await api<{ sessions: Session[] }>("/me/sessions", {
@@ -273,21 +281,21 @@ export function SettingsPage() {
     setBusy("profile");
     setErrorTarget("profile");
     setError("");
-    setSuccess("");
+
     try {
       await api("/me", {
         method: "PATCH",
         authenticated: true,
         body: { name: data.get("name") },
       });
-      setSuccess("Имя сохранено.");
+      notify.success("Имя сохранено.");
       try {
         await refresh();
       } catch (e) {
         setError(`Имя сохранено, но профиль не обновился: ${errorMessage(e)}`);
       }
     } catch (e) {
-      setError(errorMessage(e));
+      notify.error(errorMessage(e));
     } finally {
       setBusy("");
     }
@@ -299,7 +307,7 @@ export function SettingsPage() {
     setBusy("password");
     setErrorTarget("password");
     setError("");
-    setSuccess("");
+
     beginSessionTransition();
     try {
       await api("/auth/password/change", {
@@ -313,7 +321,7 @@ export function SettingsPage() {
       form.reset();
       router.replace("/login");
     } catch (e) {
-      setError(errorMessage(e));
+      notify.error(errorMessage(e));
     } finally {
       endSessionTransition();
       setBusy("");
@@ -323,7 +331,7 @@ export function SettingsPage() {
     setBusy(id ?? "all");
     setErrorTarget(id ?? "sessions");
     setError("");
-    setSuccess("");
+
     const rotatesSession = !id || current;
     if (rotatesSession) beginSessionTransition();
     try {
@@ -333,7 +341,7 @@ export function SettingsPage() {
       });
       if (!id || current) router.replace("/login");
       else {
-        setSuccess("Сессия завершена.");
+        notify.success("Сессия завершена.");
         try {
           await loadSessions();
         } catch (e) {
@@ -343,7 +351,7 @@ export function SettingsPage() {
         }
       }
     } catch (e) {
-      setError(errorMessage(e));
+      notify.error(errorMessage(e));
     } finally {
       if (rotatesSession) endSessionTransition();
       setBusy("");
@@ -359,7 +367,7 @@ export function SettingsPage() {
         </div>
       </div>
       {error && errorTarget === "profile" && <Notice>{error}</Notice>}
-      {success && <Notice success>{success}</Notice>}
+
       <div className="settings-grid">
         <section className="panel settings-panel">
           <div className="panel-heading">

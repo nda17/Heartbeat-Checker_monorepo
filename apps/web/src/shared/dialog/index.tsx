@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef } from "react";
 import { Icon } from "@/shared/ui";
+import { registerNotificationDialog } from "@/shared/notifications";
 export function Dialog({
   title,
   children,
@@ -18,7 +19,9 @@ export function Dialog({
   useEffect(() => {
     const dialog = ref.current;
     dialog?.showModal();
+    const unregister = dialog ? registerNotificationDialog(dialog) : undefined;
     return () => {
+      unregister?.();
       dialog?.close();
     };
   }, []);

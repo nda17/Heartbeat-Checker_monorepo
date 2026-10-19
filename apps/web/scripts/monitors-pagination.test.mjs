@@ -9,6 +9,17 @@ import { createRoot } from "react-dom/client";
 import ts from "typescript";
 
 const requireWeb = createRequire(new URL("../package.json", import.meta.url));
+const toastCalls = [];
+const toastMock = {
+  notify: {
+    success(message, id) {
+      toastCalls.push({ kind: "success", message, id });
+    },
+    error(message, id) {
+      toastCalls.push({ kind: "error", message, id });
+    },
+  },
+};
 const monitorHelpers = loadComponent("../src/entities/monitor/index.tsx", {});
 const safeAppReturnTo = loadComponent(
   "../src/shared/api/index.ts",
@@ -41,6 +52,7 @@ function loadComponent(relativePath, aliases, runtime = {}) {
     exports: fixtureModule.exports,
     require(id) {
       if (Object.hasOwn(aliases, id)) return aliases[id];
+      if (id === "@/shared/notifications") return toastMock;
       return requireWeb(id);
     },
     console,
@@ -64,6 +76,7 @@ function loadComponent(relativePath, aliases, runtime = {}) {
 }
 
 function createHarness() {
+  toastCalls.length = 0;
   const dom = new JSDOM("<!doctype html><html><body></body></html>", {
     url: "http://localhost/app",
   });

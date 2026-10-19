@@ -1,7 +1,7 @@
 Third-party icon notices
 
-VK logo_vk_24.svg
-Source: https://github.com/VKCOM/icons/blob/master/packages/icons/src/svg/24/logo_vk_24.svg
+VK logo_vk_color_24.svg
+Source: https://github.com/VKCOM/icons/blob/master/packages/icons/src/svg/24/logo_vk_color_24.svg
 License: https://github.com/VKCOM/icons/blob/master/LICENSE
 
 MIT License
@@ -28,9 +28,9 @@ SOFTWARE.
 
 Other icon sources
 
-MAX: monochrome silhouette path from the official brandbook asset.
+MAX: original colored SVG from the official brandbook asset; unmodified.
 https://go.max.ru/brandbook
-https://st.max.ru/brandbook/max-dark.zip
+https://st.max.ru/brandbook/max-colored.zip
 
 Telegram: Logo.svg from the official Telegram press assets.
 https://telegram.org/tour/screenshots
@@ -39,8 +39,26 @@ RuStore: icon from the official RuStore media kit.
 https://www.rustore.ru/media-kit
 https://static.rustore.ru/rustore-strapi/6/Ru_Store_Icon_e51d8c68ef.svg
 
-Android, Google Play and AppGallery: Simple Icons, CC0 1.0 Universal.
-https://github.com/simple-icons/simple-icons/blob/develop/LICENSE.md
-https://github.com/simple-icons/simple-icons/blob/develop/icons/android.svg
-https://github.com/simple-icons/simple-icons/blob/develop/icons/googleplay.svg
-https://github.com/simple-icons/simple-icons/blob/develop/icons/appgallery.svg
+Google Play: original four-color SVG from the official Google Play store header.
+https://play.google.com/store/apps
+
+Android: full robot geometry from Google Material Icons 3.0.1 (Apache-2.0),
+colored #3DDC84 according to the official Android brand guidelines.
+https://github.com/google/material-design-icons/blob/3.0.1/action/svg/production/ic_android_24px.svg
+https://github.com/google/material-design-icons/blob/3.0.1/LICENSE
+https://developer.android.com/distribute/marketing-tools/brand-guidelines
+The Android robot is reproduced or modified from work created and shared by Google
+and used according to terms described in the Creative Commons 3.0 Attribution License.
+https://creativecommons.org/licenses/by/3.0/
+Android is a trademark of Google LLC.
+
+AppGallery: original ic_ag SVG extracted without alteration from the official
+AppGallery runtime bundle (data:image/svg+xml;base64 asset).
+https://appgallery.huawei.com/
+https://appportal-drru.dbankcdn.ru/static/agweb/202609041551/js/7.eaee8b103895b2bba41d.js
+
+Yandex: original Russian Я logo SVG from the official Yandex ID SDK 1.92.0,
+decoded from its data URI without altering paths or colors. The circular display
+uses the same border-radius:50% as the SDK's .yaPersonalButtonLogo style.
+https://yastatic.net/s3/passport-static/autofill/1.92.0/client/suggest.js
+https://yastatic.net/s3/passport-sdk/autofill/v1/sdk-suggest-with-polyfills-latest.js

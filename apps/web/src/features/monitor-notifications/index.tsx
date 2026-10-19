@@ -1,4 +1,5 @@
 "use client";
+import { notify } from "@/shared/notifications";
 import { WebhookNotifications } from "./webhook";
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
@@ -55,7 +56,6 @@ function RouteEditor({
     current?.id ?? (provider === "email" ? available[0]?.id : "") ?? "";
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
   const saveRequest = useRef<AbortController | null>(null);
   useEffect(
     () => () => {
@@ -87,7 +87,7 @@ function RouteEditor({
     saveRequest.current = controller;
     setBusy(true);
     setError("");
-    setSuccess("");
+
     try {
       const response = await boundedRequest(controller, (signal) =>
         api<{ route: MessengerRoute }>(
@@ -108,14 +108,15 @@ function RouteEditor({
       if (saveRequest.current !== controller || controller.signal.aborted)
         return;
       onSaved(response.route);
-      setSuccess("Настройки уведомлений сохранены.");
+      notify.success("Настройки уведомлений сохранены.");
     } catch (e) {
-      if (saveRequest.current === controller)
-        setError(
-          controller.signal.aborted
-            ? "Ответ на сохранение не получен. Обновите настройки перед повтором; запрос не повторяется автоматически."
-            : errorMessage(e),
-        );
+      if (saveRequest.current === controller) {
+        if (controller.signal.aborted)
+          setError(
+            "Ответ на сохранение не получен. Обновите настройки перед повтором; запрос не повторяется автоматически.",
+          );
+        else notify.error(errorMessage(e));
+      }
     } finally {
       if (saveRequest.current === controller) {
         saveRequest.current = null;
@@ -130,7 +131,7 @@ function RouteEditor({
     >
       {!embedded && <h3>{providerName[provider]}</h3>}
       {error && <Notice>{error}</Notice>}
-      {success && <Notice success>{success}</Notice>}
+
       {options.length ? (
         <>
           <label>

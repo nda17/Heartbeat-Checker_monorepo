@@ -1,4 +1,5 @@
 "use client";
+import { notify } from "@/shared/notifications";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
@@ -360,7 +361,13 @@ function YooKassaCheckout({
       }
     } catch (cause) {
       if (creating.current !== controller || controller.signal.aborted) return;
-      setError(errorMessage(cause));
+      if (
+        cause instanceof ApiError &&
+        cause.status >= 400 &&
+        cause.status < 500
+      )
+        notify.error(errorMessage(cause));
+      else setError(errorMessage(cause));
       if (cause instanceof ApiError && [400, 403, 409].includes(cause.status)) {
         definitiveRejection = true;
         request.current = null;
@@ -468,7 +475,9 @@ function YooKassaCheckout({
                 disabled={busy}
                 onClick={() =>
                   void onRefresh().catch(() =>
-                    setError("Не удалось обновить цену. Повторите попытку."),
+                    notify.error(
+                      "Не удалось обновить цену. Повторите попытку.",
+                    ),
                   )
                 }
               >
@@ -547,7 +556,6 @@ export function BillingPage() {
   const [uncertain, setUncertain] = useState(false);
   const [intentAmount, setIntentAmount] = useState<number | null>(null);
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
   const [demo, setDemo] = useState<"succeeded" | "canceled" | null>(null);
   const request = useRef<OrderIntent | null>(null);
   const quote = useRef<Quote>({ priceVersion: 0, pricePerMonitorMinor: 0 });
@@ -711,7 +719,7 @@ export function BillingPage() {
     }
     setBusy(true);
     setError("");
-    setSuccess("");
+
     if (!request.current && !validQuote(billing)) {
       setBusy(false);
       setError("Цена недоступна. Обновите условия оплаты.");
@@ -761,7 +769,7 @@ export function BillingPage() {
             }
           : current,
       );
-      setSuccess(
+      notify.success(
         "Тестовый заказ создан. Выберите результат ниже. Деньги не списываются.",
       );
       try {
@@ -770,7 +778,9 @@ export function BillingPage() {
         setError(`Заказ создан, но список не обновился: ${errorMessage(e)}`);
       }
     } catch (e) {
-      setError(errorMessage(e));
+      if (e instanceof ApiError && e.status >= 400 && e.status < 500)
+        notify.error(errorMessage(e));
+      else setError(errorMessage(e));
       if (e instanceof ApiError && [400, 403, 409].includes(e.status)) {
         request.current = null;
         setUncertain(false);
@@ -789,7 +799,7 @@ export function BillingPage() {
   async function simulate(order: Order, outcome: "succeeded" | "canceled") {
     setBusy(true);
     setError("");
-    setSuccess("");
+
     try {
       const result = await api<{ order: Order }>(
         `/billing/orders/${encodeURIComponent(order.id)}/simulate`,
@@ -809,7 +819,7 @@ export function BillingPage() {
             }
           : current,
       );
-      setSuccess(
+      notify.success(
         result.order.status === "succeeded"
           ? "Тестовая квота активирована. Деньги не списаны."
           : "Тестовый заказ отменён. Деньги не списаны.",
@@ -822,7 +832,9 @@ export function BillingPage() {
         );
       }
     } catch (e) {
-      setError(errorMessage(e));
+      if (e instanceof ApiError && e.status >= 400 && e.status < 500)
+        notify.error(errorMessage(e));
+      else setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -848,7 +860,7 @@ export function BillingPage() {
         </div>
       </div>
       {error && <Notice>{error}</Notice>}
-      {success && <Notice success>{success}</Notice>}
+
       {loadError ? (
         <div className="form-stack">
           <Notice>{loadError}</Notice>
@@ -954,7 +966,7 @@ export function BillingPage() {
                     disabled={busy}
                     onClick={() =>
                       void load().catch(() =>
-                        setError("Не удалось обновить цену."),
+                        notify.error("Не удалось обновить цену."),
                       )
                     }
                   >

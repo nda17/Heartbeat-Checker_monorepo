@@ -3102,8 +3102,8 @@ button.primary:hover:not(:disabled) {
   min-height: 100vh;
 }
 .legal-main {
-  max-width: 900px;
   width: 100%;
+  min-width: 0;
   flex: 1;
   margin: 0 auto;
   padding: 72px 0 100px;
@@ -3116,7 +3116,9 @@ button.primary:hover:not(:disabled) {
   font-size: clamp(32px, 4vw, 46px);
 }
 .legal-lead {
-  max-width: 700px;
+  width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
   margin-top: 20px;
   color: var(--muted);
   font-size: 14px;
@@ -3141,7 +3143,9 @@ button.primary:hover:not(:disabled) {
   color: var(--accent);
 }
 .legal-content {
-  max-width: 780px;
+  width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 14px;
   line-height: 1.8;
 }
@@ -5187,6 +5191,7 @@ html[data-installed-app="true"] .android-hero {
 }
 .monitor-list-channel svg {
   width: 20px;
+  min-width: 20px;
   height: 20px;
 }
 .monitor-list-pagination,
@@ -5237,4 +5242,258 @@ html[data-installed-app="true"] .android-hero {
 .email-destination-editor .loading {
   padding: 12px 0;
   justify-content: flex-start;
+}
+
+/* One viewport-level renderer also lives inside the active native modal. */
+.notification-toaster {
+  position: fixed;
+  pointer-events: none;
+  top: max(16px, env(safe-area-inset-top)) !important;
+  left: max(16px, env(safe-area-inset-left)) !important;
+  right: max(16px, env(safe-area-inset-right)) !important;
+  bottom: max(16px, env(safe-area-inset-bottom)) !important;
+}
+.notification-toast {
+  max-width: min(440px, calc(100vw - 32px)) !important;
+  padding: 12px 14px !important;
+  border: 1px solid var(--line);
+  border-radius: 12px !important;
+  background: var(--surface) !important;
+  color: var(--ink) !important;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.notification-close {
+  display: grid;
+  place-items: center;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.notification-close:hover {
+  background: var(--soft);
+  color: var(--ink);
+}
+.notification-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.notification-layer {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: visible;
+  background: transparent;
+  color: inherit;
+  pointer-events: none;
+  z-index: 2147483647;
+}
+.dialog.notification-fallback-host {
+  animation: none !important;
+  transform: none !important;
+}
+
+.notification-item {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  transition: transform 230ms cubic-bezier(0.21, 1.02, 0.73, 1);
+}
+
+/* Shared surfaces stay opaque when backdrop filters are unavailable. */
+:root {
+  --glass-panel: var(--surface);
+  --glass-heavy: var(--surface);
+  --glass-input: var(--surface);
+  --glass-border: var(--line);
+  --glass-accent: var(--soft);
+  --glass-shadow:
+    0 4px 12px rgba(30, 65, 73, 0.065), 0 18px 42px rgba(30, 65, 73, 0.115),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+:root[data-theme="dark"] {
+  --glass-shadow:
+    0 6px 18px rgba(0, 0, 0, 0.2), 0 22px 48px rgba(0, 0, 0, 0.23),
+    inset 0 1px 0 rgba(210, 250, 246, 0.055);
+}
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  :root {
+    --glass-panel: rgba(255, 255, 255, 0.72);
+    --glass-heavy: rgba(255, 255, 255, 0.91);
+    --glass-input: rgba(255, 255, 255, 0.8);
+    --glass-border: rgba(255, 255, 255, 0.88);
+    --glass-accent: rgba(115, 171, 155, 0.1);
+  }
+  :root[data-theme="dark"] {
+    --glass-panel: rgba(25, 42, 50, 0.73);
+    --glass-heavy: rgba(23, 38, 47, 0.94);
+    --glass-input: rgba(12, 26, 34, 0.68);
+    --glass-border: rgba(154, 214, 209, 0.18);
+    --glass-accent: rgba(54, 103, 95, 0.13);
+  }
+}
+:root body {
+  background:
+    radial-gradient(
+      ellipse at 7% 7%,
+      rgba(118, 210, 195, 0.19),
+      transparent 45%
+    ),
+    radial-gradient(
+      ellipse at 88% 32%,
+      rgba(155, 187, 228, 0.16),
+      transparent 48%
+    ),
+    radial-gradient(
+      ellipse at 38% 92%,
+      rgba(213, 215, 175, 0.16),
+      transparent 46%
+    ),
+    var(--bg);
+  background-attachment: fixed;
+}
+:root[data-theme="dark"] body {
+  background:
+    radial-gradient(
+      ellipse at 8% 10%,
+      rgba(32, 126, 117, 0.22),
+      transparent 46%
+    ),
+    radial-gradient(
+      ellipse at 91% 36%,
+      rgba(43, 82, 138, 0.2),
+      transparent 49%
+    ),
+    radial-gradient(
+      ellipse at 34% 93%,
+      rgba(71, 100, 87, 0.13),
+      transparent 45%
+    ),
+    var(--bg);
+  background-attachment: fixed;
+}
+:root
+  :is(
+    .landing,
+    .auth-page,
+    .auth-main,
+    .console,
+    .console-content,
+    .workspace
+  ) {
+  background: transparent;
+}
+:root
+  :is(
+    .panel,
+    .stat,
+    .sidebar,
+    .console-top,
+    .landing-use-cases article,
+    .how-grid article,
+    .landing-states,
+    .landing-faq-list details,
+    .landing-price-card,
+    .landing-demo,
+    .android-download-card
+  ) {
+  background: var(--glass-panel) !important;
+  border-color: var(--glass-border) !important;
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: blur(18px) saturate(125%);
+  backdrop-filter: blur(18px) saturate(125%);
+}
+:root :is(.dialog, .notification-toast, .cookie-notice) {
+  background: var(--glass-heavy) !important;
+  border-color: var(--glass-border) !important;
+  box-shadow:
+    var(--glass-shadow),
+    0 24px 80px rgba(12, 44, 41, 0.12);
+  -webkit-backdrop-filter: blur(22px) saturate(130%);
+  backdrop-filter: blur(22px) saturate(130%);
+}
+:root .dialog::backdrop {
+  background: rgba(11, 30, 38, 0.3);
+  -webkit-backdrop-filter: blur(5px);
+  backdrop-filter: blur(5px);
+}
+:root
+  :is(
+    input:not(:disabled):not([readonly]),
+    select:not(:disabled),
+    textarea:not(:disabled):not([readonly])
+  ) {
+  background-color: var(--glass-input) !important;
+}
+:root :is(button.secondary, .button.secondary, .icon-button):not(:hover) {
+  background: var(--glass-input);
+  border-color: var(--glass-border);
+}
+:root :is(.landing-cta, .auth-aside, .landing-awareness) {
+  background: var(--glass-accent) !important;
+  border-color: var(--glass-border);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+/* Older browsers keep fixed toast descendants relative to the viewport. */
+:root .dialog.notification-fallback-host {
+  background: var(--surface) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root,
+  :root[data-theme="dark"] {
+    --glass-panel: var(--surface);
+    --glass-heavy: var(--surface);
+    --glass-input: var(--surface);
+    --glass-border: var(--line);
+    --glass-accent: var(--soft);
+  }
+  :root
+    :is(
+      .panel,
+      .stat,
+      .sidebar,
+      .console-top,
+      .cookie-notice,
+      .notification-toast,
+      .landing-use-cases article,
+      .how-grid article,
+      .landing-states,
+      .landing-faq-list details,
+      .landing-price-card,
+      .landing-demo,
+      .android-download-card,
+      .dialog,
+      .landing-cta,
+      .auth-aside,
+      .landing-awareness
+    ),
+  :root .dialog::backdrop {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+@media (max-width: 640px) {
+  :root body,
+  :root[data-theme="dark"] body {
+    background-attachment: scroll;
+  }
 }

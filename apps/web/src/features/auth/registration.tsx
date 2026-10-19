@@ -1,4 +1,5 @@
 "use client";
+import { notify } from "@/shared/notifications";
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -292,7 +293,7 @@ export function RegistrationForm({ oauth }: { oauth?: ReactNode }) {
         checkSession = kind === "confirm";
         uncertainConfirm.current = checkSession;
       } else {
-        setError(errorMessage(cause));
+        notify.error(errorMessage(cause));
         if (cause.status === 429)
           setRateUntil(
             Date.now() + Math.max(60, cause.retryAfterSeconds ?? 60) * 1000,

@@ -1,4 +1,5 @@
 "use client";
+import { notify } from "@/shared/notifications";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { isPricing, priceMoney, Pricing } from "@/entities/billing";
@@ -30,7 +31,6 @@ export function AdminPricing({
   const [value, setValue] = useState("");
   const [reason, setReason] = useState("");
   const [error, setError] = useState("");
-  const [note, setNote] = useState("");
   const [outcome, setOutcome] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -38,58 +38,68 @@ export function AdminPricing({
   const read = useRef<AbortController | null>(null);
   const write = useRef<AbortController | null>(null);
   const mounted = useRef(false);
-  const accept = useCallback((next: unknown) => {
+  const dirty = useRef(false);
+  const accept = useCallback((next: unknown, resetDraft = false) => {
     if (!isPricing(next)) throw new Error("Invalid pricing response");
+    // A background read must not replace an edit or silently rebase its CAS version.
+    if (dirty.current && !resetDraft) return false;
+    dirty.current = false;
     setPricing(next);
     setValue(
       `${Math.floor(next.pricePerMonitorMinor / 100)}.${String(next.pricePerMonitorMinor % 100).padStart(2, "0")}`,
     );
+    return true;
   }, []);
-  const load = useCallback(async () => {
-    read.current?.abort();
-    const controller = new AbortController();
-    read.current = controller;
-    setLoading(true);
-    setError("");
-    const timer = window.setTimeout(() => {
-      if (read.current !== controller) return;
-      read.current = null;
-      controller.abort();
-      if (mounted.current) {
-        setLoading(false);
-        setPricing(null);
-        setError("Не удалось загрузить цену вовремя. Повторите обновление.");
-      }
-    }, 10_000);
-    try {
-      const result = await api<{ pricing: unknown }>("/admin/billing/pricing", {
-        signal: controller.signal,
-      });
-      if (
-        !mounted.current ||
-        read.current !== controller ||
-        controller.signal.aborted
-      )
-        return;
-      accept(result.pricing);
-      setUncertain(false);
-    } catch (cause) {
-      if (
-        mounted.current &&
-        read.current === controller &&
-        !controller.signal.aborted
-      ) {
-        setPricing(null);
-        setError(errorMessage(cause, "admin"));
-      }
-    } finally {
-      window.clearTimeout(timer);
-      if (read.current === controller) {
+  const load = useCallback(
+    async (resetDraft = false) => {
+      read.current?.abort();
+      const controller = new AbortController();
+      read.current = controller;
+      setLoading(true);
+      setError("");
+      const timer = window.setTimeout(() => {
+        if (read.current !== controller) return;
         read.current = null;
-        if (mounted.current) setLoading(false);
+        controller.abort();
+        if (mounted.current) {
+          setLoading(false);
+          setPricing(null);
+          setError("Не удалось загрузить цену вовремя. Повторите обновление.");
+        }
+      }, 10_000);
+      try {
+        const result = await api<{ pricing: unknown }>(
+          "/admin/billing/pricing",
+          {
+            signal: controller.signal,
+          },
+        );
+        if (
+          !mounted.current ||
+          read.current !== controller ||
+          controller.signal.aborted
+        )
+          return;
+        if (accept(result.pricing, resetDraft)) setUncertain(false);
+      } catch (cause) {
+        if (
+          mounted.current &&
+          read.current === controller &&
+          !controller.signal.aborted
+        ) {
+          setPricing(null);
+          setError(errorMessage(cause, "admin"));
+        }
+      } finally {
+        window.clearTimeout(timer);
+        if (read.current === controller) {
+          read.current = null;
+          if (mounted.current) setLoading(false);
+        }
       }
-    }
-  }, [accept]);
+    },
+    [accept],
+  );
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -110,8 +120,17 @@ export function AdminPricing({
   }, [canRead, blocked, sessionRevision, load]);
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canWrite || blocked || write.current || !pricing || uncertain) return;
+    if (
+      !canWrite ||
+      blocked ||
+      loading ||
+      write.current ||
+      !pricing ||
+      uncertain
+    )
+      return;
     const minor = parsePrice(value);
+    if (minor === pricing.pricePerMonitorMinor) return;
     if (minor === null || !reason.trim()) {
       setError(
         "Укажите цену от 1 до 10 000 рублей, не более двух знаков после запятой, и причину изменения.",
@@ -124,7 +143,6 @@ export function AdminPricing({
     write.current = controller;
     setSaving(true);
     setError("");
-    setNote("");
     setOutcome("");
     onBusyChange(true);
     const timer = window.setTimeout(() => {
@@ -137,7 +155,7 @@ export function AdminPricing({
       setOutcome(
         "Ответ на изменение цены не получен. Сверьте текущую цену перед повторным сохранением. Запрос не повторяется автоматически.",
       );
-      void load();
+      void load(true);
     }, 10_000);
     try {
       const result = await api<{ pricing: unknown }>("/admin/billing/pricing", {
@@ -156,28 +174,29 @@ export function AdminPricing({
         controller.signal.aborted
       )
         return;
-      accept(result.pricing);
+      accept(result.pricing, true);
       setReason("");
       setUncertain(false);
-      setNote(
+      notify.success(
         "Цена сохранена. Новые заказы используют её; суммы ранее созданных заказов не меняются.",
       );
     } catch (cause) {
       if (!mounted.current || write.current !== controller) return;
-      if (
+      const uncertainResult =
         !(cause instanceof ApiError) ||
         cause.status === 0 ||
-        cause.status >= 500
-      ) {
+        cause.status >= 500;
+      if (uncertainResult) {
         setUncertain(true);
         setOutcome(
           "Ответ на изменение цены не получен. Обновите текущую цену перед повторным сохранением. Запрос не повторяется автоматически.",
         );
       } else {
-        setOutcome(errorMessage(cause, "admin"));
+        notify.error(errorMessage(cause, "admin"));
       }
       // Only reconcile by reading. Never retry a potentially committed PUT.
-      void load();
+      // A known rejection preserves the draft until an explicit refresh.
+      void load(uncertainResult);
     } finally {
       window.clearTimeout(timer);
       if (write.current === controller) {
@@ -187,6 +206,8 @@ export function AdminPricing({
       }
     }
   }
+  const unchanged =
+    !!pricing && parsePrice(value) === pricing.pricePerMonitorMinor;
   if (!canRead) return null;
   return (
     <section
@@ -215,10 +236,13 @@ export function AdminPricing({
               name="price"
               inputMode="decimal"
               value={value}
-              onChange={(event) => setValue(event.target.value)}
+              onChange={(event) => {
+                dirty.current = true;
+                setValue(event.target.value);
+              }}
               required
               maxLength={8}
-              disabled={saving || blocked}
+              disabled={saving || blocked || loading || !pricing}
             />
           </label>
           <label>
@@ -226,10 +250,13 @@ export function AdminPricing({
             <input
               name="reason"
               value={reason}
-              onChange={(event) => setReason(event.target.value)}
+              onChange={(event) => {
+                dirty.current = true;
+                setReason(event.target.value);
+              }}
               required
               maxLength={500}
-              disabled={saving || blocked}
+              disabled={saving || blocked || loading || !pricing}
             />
           </label>
         </div>
@@ -237,6 +264,7 @@ export function AdminPricing({
           Новая цена применяется к новым заказам. Уже созданные заказы и
           оплаченные периоды сохраняют свои суммы.
         </p>
+        {unchanged && <p className="small muted">Цена не изменилась.</p>}
         {!canWrite && (
           <p className="small">
             Для сохранения повторно подтвердите вход в блоке защиты выше.
@@ -244,12 +272,18 @@ export function AdminPricing({
         )}
         {error && <Notice>{error}</Notice>}
         {outcome && <Notice>{outcome}</Notice>}
-        {note && <Notice success>{note}</Notice>}
-        <div className="button-row">
+        <div className="admin-form-actions">
           <button
+            type="submit"
             className="secondary"
             disabled={
-              !canWrite || blocked || saving || loading || !pricing || uncertain
+              !canWrite ||
+              blocked ||
+              saving ||
+              loading ||
+              !pricing ||
+              uncertain ||
+              unchanged
             }
           >
             {saving ? "Сохраняем цену…" : "Сохранить цену"}
@@ -258,7 +292,7 @@ export function AdminPricing({
             type="button"
             className="quiet"
             disabled={blocked || saving || loading}
-            onClick={() => void load()}
+            onClick={() => void load(true)}
           >
             Обновить текущую цену
           </button>

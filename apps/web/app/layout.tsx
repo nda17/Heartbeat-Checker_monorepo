@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "@/_app/styles";
 import { publicOrigin } from "@/shared/seo";
 import { CookieNotice } from "@/features/cookie-notice";
+import { NotificationToaster } from "@/shared/notifications";
 export const metadata: Metadata = {
   metadataBase: new URL(publicOrigin),
   title: {
@@ -28,6 +29,7 @@ export default function RootLayout({
         </a>
         {children}
         <CookieNotice />
+        <NotificationToaster />
       </body>
     </html>
   );

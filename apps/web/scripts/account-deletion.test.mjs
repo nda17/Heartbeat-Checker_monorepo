@@ -9,6 +9,17 @@ import { createRoot } from "react-dom/client";
 import ts from "typescript";
 
 const requireWeb = createRequire(new URL("../package.json", import.meta.url));
+const toastCalls = [];
+const toastMock = {
+  notify: {
+    success(message, id) {
+      toastCalls.push({ kind: "success", message, id });
+    },
+    error(message, id) {
+      toastCalls.push({ kind: "error", message, id });
+    },
+  },
+};
 
 function deferred() {
   let resolve;
@@ -21,6 +32,7 @@ function deferred() {
 }
 
 function createHarness() {
+  toastCalls.length = 0;
   const dom = new JSDOM("<!doctype html><html><body></body></html>", {
     url: "http://localhost/app/settings",
   });
@@ -119,6 +131,7 @@ function loadAccountDeletion({ api, session, router, clearedDrafts }) {
     exports,
     require(id) {
       if (Object.hasOwn(aliases, id)) return aliases[id];
+      if (id === "@/shared/notifications") return toastMock;
       return requireWeb(id);
     },
     console,

@@ -1,4 +1,5 @@
 "use client";
+import { notify } from "@/shared/notifications";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
@@ -108,7 +109,7 @@ export function AdminMfa({
       await action();
     } catch (cause) {
       if (mounted.current)
-        setError(
+        notify.error(
           errorMessage(cause, kind === "confirm" ? "mfa-confirm" : "mfa"),
         );
     } finally {
