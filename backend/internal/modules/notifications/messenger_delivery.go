@@ -103,6 +103,9 @@ func (m *Messenger) claimDelivery(ctx context.Context, tx pgx.Tx, c struct{ id, 
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) && !errors.Is(err, authcontracts.ErrEmailUnverified) {
 			return nil, err
 		}
+		if err != nil {
+			currentEmail = ""
+		}
 	}
 	var monitorEnabled bool
 	var outcome string
@@ -123,8 +126,10 @@ func (m *Messenger) claimDelivery(ctx context.Context, tx pgx.Tx, c struct{ id, 
 	}
 	var recipientFingerprint, encryptedTarget []byte
 	var destinationStatus, destinationProvider string
+	var proofKind *string
+	var verifiedAt *time.Time
 	var targetVersion int64
-	err = tx.QueryRow(ctx, `SELECT status,provider,recipient_fingerprint,encrypted_target,version FROM notifications.messenger_destinations WHERE id=$1 AND account_id=$2 FOR SHARE SKIP LOCKED`, c.destination, c.account).Scan(&destinationStatus, &destinationProvider, &recipientFingerprint, &encryptedTarget, &targetVersion)
+	err = tx.QueryRow(ctx, `SELECT status,provider,recipient_fingerprint,encrypted_target,version,email_proof_kind,email_verified_at FROM notifications.messenger_destinations WHERE id=$1 AND account_id=$2 FOR SHARE SKIP LOCKED`, c.destination, c.account).Scan(&destinationStatus, &destinationProvider, &recipientFingerprint, &encryptedTarget, &targetVersion, &proofKind, &verifiedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -163,7 +168,7 @@ func (m *Messenger) claimDelivery(ctx context.Context, tx pgx.Tx, c struct{ id, 
 	if status == "pending" && next.After(now) || status == "leased" && (lease == nil || lease.After(now)) || status != "pending" && status != "leased" {
 		return nil, nil
 	}
-	valid := m.providerEnabled(c.provider) && (c.provider != "email" || currentEmail != "") && accountStatus == "active" && monitorEnabled && entitlement.Quota >= rank && rank > 0 && routeEnabled && generation == storedGeneration && routeDestination == a.DestinationID && c.destination == a.DestinationID && destinationStatus == "ready" && sequence >= storedSequence
+	valid := m.providerEnabled(c.provider) && (c.provider != "email" || proofKind != nil && (*proofKind == "code" && verifiedAt != nil || *proofKind == "account_email" && currentEmail != "")) && accountStatus == "active" && monitorEnabled && entitlement.Quota >= rank && rank > 0 && routeEnabled && generation == storedGeneration && routeDestination == a.DestinationID && c.destination == a.DestinationID && destinationStatus == "ready" && sequence >= storedSequence
 	if a.Kind == "reminder" {
 		var open bool
 		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM incidents.incidents WHERE id=$1 AND monitor_id=$2 AND closed_at IS NULL)`, a.IncidentID, c.monitor).Scan(&open)
@@ -195,7 +200,7 @@ func (m *Messenger) claimDelivery(ctx context.Context, tx pgx.Tx, c struct{ id, 
 	if err = a.Target.decodeMust(); err != nil || a.Target.Provider != destinationProvider || !bytes.Equal(recipientFingerprint, m.recipientFingerprint(a.Target)) {
 		return nil, ErrMessengerInvalid
 	}
-	if a.Target.Provider == "email" && a.Target.Email != currentEmail {
+	if a.Target.Provider == "email" && (proofKind == nil || !emailProofReady(*proofKind, verifiedAt, a.Target.Email, currentEmail)) {
 		_, err = tx.Exec(ctx, `UPDATE notifications.messenger_deliveries SET status='cancelled',attempt_token=NULL,lease_until=NULL,completed_at=now(),error_code='destination_changed' WHERE id=$1`, a.ID)
 		return nil, err
 	}
@@ -400,10 +405,12 @@ func (m *Messenger) deliveryStillEligible(ctx context.Context, a MessengerAttemp
 		return false, err
 	}
 	var currentEmail string
+	var proofKind *string
+	var verifiedAt *time.Time
 	if a.Target.Provider == "email" && active {
 		currentEmail, err = m.cfg.EmailAddressReader(ctx, tx, a.AccountID)
 		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, authcontracts.ErrEmailUnverified) {
-			return false, nil
+			currentEmail, err = "", nil
 		}
 		if err != nil {
 			return false, err
@@ -420,7 +427,7 @@ func (m *Messenger) deliveryStillEligible(ctx context.Context, a MessengerAttemp
 	if err != nil {
 		return false, err
 	}
-	err = tx.QueryRow(ctx, `SELECT status='ready',version FROM notifications.messenger_destinations WHERE id=$1 AND account_id=$2 FOR SHARE`, a.DestinationID, a.AccountID).Scan(&ready, &targetVersion)
+	err = tx.QueryRow(ctx, `SELECT status='ready',version,email_proof_kind,email_verified_at FROM notifications.messenger_destinations WHERE id=$1 AND account_id=$2 FOR SHARE`, a.DestinationID, a.AccountID).Scan(&ready, &targetVersion, &proofKind, &verifiedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -441,7 +448,7 @@ func (m *Messenger) deliveryStillEligible(ctx context.Context, a MessengerAttemp
 	if err != nil {
 		return false, err
 	}
-	valid := m.providerEnabled(a.Target.Provider) && (a.Target.Provider != "email" || currentEmail == a.Target.Email && currentEmail != "") && active && monitorEnabled && entitlement.Quota >= rank && rank > 0 && ready && targetVersion == a.TargetVersion && routeEnabled && generation == a.Generation && routeDestination != nil && *routeDestination == a.DestinationID && status == "leased" && token != nil && *token == a.Token && lease != nil && lease.After(time.Now()) && sequence >= a.Snapshot.Sequence
+	valid := m.providerEnabled(a.Target.Provider) && (a.Target.Provider != "email" || proofKind != nil && emailProofReady(*proofKind, verifiedAt, a.Target.Email, currentEmail)) && active && monitorEnabled && entitlement.Quota >= rank && rank > 0 && ready && targetVersion == a.TargetVersion && routeEnabled && generation == a.Generation && routeDestination != nil && *routeDestination == a.DestinationID && status == "leased" && token != nil && *token == a.Token && lease != nil && lease.After(time.Now()) && sequence >= a.Snapshot.Sequence
 	if a.Kind == "reminder" {
 		var open bool
 		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM incidents.incidents WHERE id=$1 AND monitor_id=$2 AND closed_at IS NULL)`, a.IncidentID, a.MonitorID).Scan(&open)

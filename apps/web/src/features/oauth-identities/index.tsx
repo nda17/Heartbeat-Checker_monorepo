@@ -9,7 +9,13 @@ import {
   oauthAuthorizationUrl,
   oauthCallbackMessage,
 } from "@/shared/api";
-import { dateTime, Loading, Notice, PasswordInput } from "@/shared/ui";
+import {
+  dateTime,
+  Loading,
+  Notice,
+  PasswordInput,
+  OAuthIcon,
+} from "@/shared/ui";
 
 type ProviderId = "yandex" | "vk";
 type Provider = { id: ProviderId; name: string; enabled: boolean };
@@ -203,7 +209,10 @@ export function OAuthIdentities({
               return (
                 <div className="oauth-identity" key={provider.id}>
                   <div>
-                    <strong>{provider.name}</strong>
+                    <strong className="oauth-provider-name">
+                      <OAuthIcon provider={provider.id} />
+                      {provider.name}
+                    </strong>
                     <p className="small muted">
                       {identity
                         ? `Подключён ${dateTime(identity.connectedAt)}`
@@ -232,6 +241,7 @@ export function OAuthIdentities({
                         className={identity ? "quiet danger-text" : "secondary"}
                         disabled={!!busy}
                       >
+                        <OAuthIcon provider={provider.id} />
                         {busy === (identity?.id ?? provider.id)
                           ? "Подождите…"
                           : identity
@@ -254,7 +264,10 @@ export function OAuthIdentities({
             .map((identity) => (
               <div className="oauth-identity" key={identity.id}>
                 <div>
-                  <strong>{names[identity.provider]}</strong>
+                  <strong className="oauth-provider-name">
+                    <OAuthIcon provider={identity.provider} />
+                    {names[identity.provider]}
+                  </strong>
                   <p className="small muted">
                     Подключён {dateTime(identity.connectedAt)} · Вход временно
                     недоступен
@@ -275,6 +288,7 @@ export function OAuthIdentities({
                       />
                     </label>
                     <button className="quiet danger-text" disabled={!!busy}>
+                      <OAuthIcon provider={identity.provider} />
                       {busy === identity.id ? "Подождите…" : "Отключить"}
                     </button>
                   </form>

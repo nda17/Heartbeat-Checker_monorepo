@@ -90,6 +90,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("configure auth: %w", err)
 	}
+	messengerModule.SetEmailCodes(authModule)
 	handler := newHandler(pool.Ping, cfg.ReadinessTimeout)
 	authModule.Register(handler)
 	billingModule.Register(handler, authModule.Protect)

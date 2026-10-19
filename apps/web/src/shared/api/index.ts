@@ -2,6 +2,7 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     public code: string,
+    public retryAfterSeconds?: number,
   ) {
     super(code);
   }
@@ -43,16 +44,53 @@ export async function api<T>(
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
     const code = data && typeof data.error === "string" ? data.error : null;
+    const retryAfter = response.headers.get("Retry-After");
+    const retrySeconds =
+      retryAfter && /^\d+$/.test(retryAfter) ? Number(retryAfter) : NaN;
     throw new ApiError(
       response.status,
       code ??
         (response.status >= 500 ? "temporarily_unavailable" : "unknown_error"),
+      Number.isSafeInteger(retrySeconds) &&
+        retrySeconds >= 0 &&
+        retrySeconds <= 3600
+        ? retrySeconds
+        : undefined,
     );
   }
-  if (response.status === 204 || response.status === 202) return undefined as T;
+  if (response.status === 204) return undefined as T;
+  if (response.status === 202) {
+    const body = await response.text();
+    return body.trim() ? (JSON.parse(body) as T) : (undefined as T);
+  }
   return response.json() as Promise<T>;
 }
+// A bounded operation also settles when a mocked/stalled fetch ignores abort.
+export async function boundedRequest<T>(
+  controller: AbortController,
+  request: (signal: AbortSignal) => Promise<T>,
+) {
+  let onAbort: () => void = () => {};
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(new DOMException("Request aborted", "AbortError"));
+    controller.signal.addEventListener("abort", onAbort, { once: true });
+    if (controller.signal.aborted) onAbort();
+  });
+  const timer = window.setTimeout(() => controller.abort(), 10_000);
+  try {
+    return await Promise.race([request(controller.signal), aborted]);
+  } finally {
+    window.clearTimeout(timer);
+    controller.signal.removeEventListener("abort", onAbort);
+  }
+}
 const messages: Record<string, string> = {
+  registration_requires_logout:
+    "Вы уже вошли в аккаунт. Выйдите из него перед новой регистрацией.",
+  email_code_invalid:
+    "Код неверен или больше недоступен. Используйте последнее письмо и проверьте состояние попытки.",
+  email_code_rate_limited:
+    "Слишком много попыток. Подождите перед повторной отправкой или подтверждением кода.",
   order_amount_exceeded:
     "Сумма заказа не должна превышать 350 000 рублей. Уменьшите количество мониторов.",
   price_changed:

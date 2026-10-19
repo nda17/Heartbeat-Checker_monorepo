@@ -82,9 +82,18 @@ func (r *Repository) VerifyDeletionTx(ctx context.Context, tx pgx.Tx, c Credenti
 // DeleteAccountTx removes all authentication secrets and pending mail payloads.
 // The credential row remains with a synthetic unique email for FK/ledger use.
 func (r *Repository) DeleteAccountTx(ctx context.Context, tx pgx.Tx, c Credential) error {
+	// Registration resends lock proof before mail. Take the same order before
+	// scrubbing an owner's proofs, including sibling pending registrations for
+	// its current email, so deletion cannot invert that lock order.
+	if _, err := tx.Exec(ctx, `SELECT id FROM auth.email_code_challenges
+        WHERE account_id=$1 OR (purpose='registration' AND email=(SELECT email FROM auth.credentials WHERE account_id=$1))
+        ORDER BY id FOR UPDATE`, c.AccountID); err != nil {
+		return err
+	}
 	queries := []string{
 		`DELETE FROM auth.mail_jobs WHERE token_hash IN (
-			SELECT token_hash FROM auth.email_verification_tokens WHERE account_id=$1
+			SELECT code_hash FROM auth.email_code_challenges WHERE account_id=$1 OR (purpose='registration' AND email=(SELECT email FROM auth.credentials WHERE account_id=$1))
+            UNION SELECT token_hash FROM auth.email_verification_tokens WHERE account_id=$1
 			UNION SELECT token_hash FROM auth.password_reset_tokens WHERE account_id=$1
 			UNION SELECT token_hash FROM auth.registration_challenges
 			WHERE email=(SELECT email FROM auth.credentials WHERE account_id=$1)
@@ -96,6 +105,7 @@ func (r *Repository) DeleteAccountTx(ctx context.Context, tx pgx.Tx, c Credentia
 			OR EXISTS (SELECT 1 FROM auth.oauth_identities i WHERE i.account_id=$1
 				AND i.provider=auth.registration_challenges.oauth_provider
 				AND i.subject=auth.registration_challenges.oauth_subject)`,
+		`DELETE FROM auth.email_code_challenges WHERE account_id=$1 OR (purpose='registration' AND email=(SELECT email FROM auth.credentials WHERE account_id=$1))`,
 		`DELETE FROM auth.email_verification_tokens WHERE account_id=$1`,
 		`DELETE FROM auth.password_reset_tokens WHERE account_id=$1`,
 		`DELETE FROM auth.oauth_attempts WHERE account_id=$1`,

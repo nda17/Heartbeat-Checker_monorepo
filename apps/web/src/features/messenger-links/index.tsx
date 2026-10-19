@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Destination,
+  EmailDestinationEditor,
   DestinationKind,
   MessengerLink,
   Provider,
@@ -10,7 +11,7 @@ import {
 } from "@/entities/messenger";
 import { api, errorMessage } from "@/shared/api";
 import { Dialog } from "@/shared/dialog";
-import { dateTime, Loading, Notice, Icon } from "@/shared/ui";
+import { dateTime, Loading, Notice, Icon, Spinner } from "@/shared/ui";
 
 type LinkStart = {
   link: MessengerLink;
@@ -92,7 +93,13 @@ async function linkRequest<T>(
   }
 }
 
-export function MessengerLinks({ email }: { email?: string }) {
+export function MessengerLinks({
+  email,
+  emailVerified = false,
+}: {
+  email?: string;
+  emailVerified?: boolean;
+}) {
   const [enabled, setEnabled] = useState(true);
   const [emailEnabled, setEmailEnabled] = useState(false);
   const [destinations, setDestinations] = useState<Destination[] | null>(null);
@@ -105,6 +112,10 @@ export function MessengerLinks({ email }: { email?: string }) {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [pollError, setPollError] = useState("");
+  const [copyState, setCopyState] = useState<
+    "idle" | "copying" | "copied" | "failed"
+  >("idle");
+  const copyRevision = useRef(0);
   const alive = useRef(true);
   const generation = useRef(0);
   const linkID = useRef<string | null>(null);
@@ -131,6 +142,8 @@ export function MessengerLinks({ email }: { email?: string }) {
     controller?.abort();
   }
   function pauseLinkRequests() {
+    ++copyRevision.current;
+    setCopyState("idle");
     ++generation.current;
     pollRequest.current?.abort();
     cancelDestinationRefresh();
@@ -151,6 +164,8 @@ export function MessengerLinks({ email }: { email?: string }) {
   }, []);
   useEffect(() => {
     const controller = new AbortController();
+    destinationRefresh.current?.abort();
+    destinationRefresh.current = controller;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoadError("");
     const timer = window.setTimeout(() => {
@@ -163,12 +178,18 @@ export function MessengerLinks({ email }: { email?: string }) {
       .catch((cause) => {
         if (!controller.signal.aborted) setLoadError(errorMessage(cause));
       })
-      .finally(() => window.clearTimeout(timer));
+      .finally(() => {
+        window.clearTimeout(timer);
+        if (destinationRefresh.current === controller)
+          destinationRefresh.current = null;
+      });
     return () => {
       controller.abort();
+      if (destinationRefresh.current === controller)
+        destinationRefresh.current = null;
       window.clearTimeout(timer);
     };
-  }, [loadDestinations, loadAttempt]);
+  }, [loadDestinations, loadAttempt, emailVerified]);
   useEffect(() => {
     if (
       !link ||
@@ -224,6 +245,40 @@ export function MessengerLinks({ email }: { email?: string }) {
       if (pollRequest.current === controller) pollRequest.current = null;
     };
   }, [link, busy]);
+  async function copyCommand() {
+    if (!started?.command || busy || copyState === "copying") return;
+    const command = started.command;
+    const revision = ++copyRevision.current;
+    const view = generation.current;
+    setCopyState("copying");
+    let timer: number | undefined;
+    try {
+      await Promise.race([
+        navigator.clipboard.writeText(command),
+        new Promise<never>((_, reject) => {
+          timer = window.setTimeout(
+            () => reject(new Error("Clipboard timeout")),
+            5_000,
+          );
+        }),
+      ]);
+      if (
+        alive.current &&
+        view === generation.current &&
+        revision === copyRevision.current
+      )
+        setCopyState("copied");
+    } catch {
+      if (
+        alive.current &&
+        view === generation.current &&
+        revision === copyRevision.current
+      )
+        setCopyState("failed");
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
   async function begin(provider: Provider, kind: DestinationKind) {
     if (linkAction.current || busy) return;
     const view = pauseLinkRequests();
@@ -383,35 +438,8 @@ export function MessengerLinks({ email }: { email?: string }) {
       setBusy(false);
     }
   }
-  async function connectEmail() {
-    cancelDestinationRefresh();
-    setBusy(true);
-    setError("");
-    setSuccess("");
-    try {
-      const { destination } = await api<{ destination: Destination }>(
-        "/messenger-destinations/email",
-        {
-          method: "POST",
-          authenticated: true,
-          body: {},
-        },
-      );
-      setDestinations((current) => [
-        ...(current ?? []).filter((item) => item.provider !== "email"),
-        destination,
-      ]);
-      setSuccess(
-        "Email подключён. Включите его в настройках уведомлений нужных мониторов.",
-      );
-    } catch (cause) {
-      setError(errorMessage(cause));
-    } finally {
-      setBusy(false);
-    }
-  }
   const emailDestination = destinations?.find(
-    (item) => item.provider === "email" && item.ready,
+    (item) => item.provider === "email",
   );
   const chats = destinations?.filter((item) => item.provider !== "email") ?? [];
   const botUrl = safeBotUrl(started?.startUrl ?? null);
@@ -425,8 +453,8 @@ export function MessengerLinks({ email }: { email?: string }) {
         <div>
           <h2 id="messenger-heading">Каналы уведомлений</h2>
           <p>
-            Подключите email аккаунта или подтвердите чат через Informer, затем
-            включите канал в настройках нужного монитора.
+            Выберите email для уведомлений или подключите чат через Informer,
+            затем включите канал в настройках нужного монитора.
           </p>
         </div>
       </div>
@@ -452,32 +480,38 @@ export function MessengerLinks({ email }: { email?: string }) {
           {emailEnabled && (
             <div className="messenger-route">
               <h3>Email</h3>
-              <strong>
-                {emailDestination?.email ??
-                  emailDestination?.label ??
-                  email ??
-                  "Email аккаунта"}
-              </strong>
-              <p className="small muted">
-                {emailDestination
-                  ? "Подтверждённый email. Уведомления включаются отдельно для каждого монитора."
-                  : "Используется только подтверждённый email аккаунта. Другой адрес указать нельзя."}
-              </p>
-              {emailDestination ? (
+              <EmailDestinationEditor
+                current={emailDestination}
+                accountEmail={email}
+                accountEmailVerified={emailVerified}
+                disabled={busy}
+                onBusyChange={(value) => {
+                  if (value) cancelDestinationRefresh();
+                  else setLoadAttempt((attempt) => attempt + 1);
+                  setBusy(value);
+                }}
+                onConnected={(destination, resetRoutes) => {
+                  setSuccess(
+                    resetRoutes
+                      ? "Email уведомлений подключён. После смены или повторного подключения адреса включите нужные мониторы заново."
+                      : "Email уведомлений подключён.",
+                  );
+                  setDestinations((current) => [
+                    ...(current ?? []).filter(
+                      (item) => item.provider !== "email",
+                    ),
+                    destination,
+                  ]);
+                }}
+              />
+              {emailDestination?.ready && (
                 <button
+                  type="button"
                   className="quiet danger-text"
                   disabled={busy}
                   onClick={() => setRemoving(emailDestination)}
                 >
                   Отключить email
-                </button>
-              ) : (
-                <button
-                  className="secondary"
-                  disabled={busy}
-                  onClick={() => void connectEmail()}
-                >
-                  {busy ? "Подключаем…" : "Подключить email аккаунта"}
                 </button>
               )}
             </div>
@@ -571,18 +605,51 @@ export function MessengerLinks({ email }: { email?: string }) {
                       ? "Для группы с темами откройте нужный топик, кроме «Общие», и отправьте команду в нём. Для каждого топика нужна отдельная привязка:"
                       : "Для обычной группы без тем добавьте Informer и отправьте команду прямо в группе:"}
                   </p>
-                  <code>{started.command}</code>
+                  <div className="messenger-command-action">
+                    <code>{started.command}</code>
+                    <button
+                      type="button"
+                      className="quiet"
+                      aria-label="Скопировать команду целиком"
+                      disabled={busy || copyState === "copying"}
+                      onClick={() => void copyCommand()}
+                    >
+                      <Icon name="copy" />{" "}
+                      {copyState === "copying" ? "Копируем…" : "Копировать"}
+                    </button>
+                  </div>
+                  {copyState === "copied" && (
+                    <p className="small" role="status">
+                      Команда скопирована целиком.
+                    </p>
+                  )}
+                  {copyState === "failed" && (
+                    <p className="small" role="alert">
+                      Не удалось скопировать. Выделите команду целиком и
+                      скопируйте вручную.
+                    </p>
+                  )}
                 </div>
               ) : (
                 <Notice>
                   Ссылка бота пока не настроена. Подключение недоступно.
                 </Notice>
               )}
-              <p className="small muted" role="status">
-                {link.status === "observed"
-                  ? "Сообщение получено. Бот проверяет доступ к чату; подтверждение появится после проверки."
-                  : "Ожидаем сообщение боту. После проверки вы увидите найденный чат."}
-              </p>
+              <div className="messenger-link-wait" role="status">
+                <Spinner />
+                <p className="small muted">
+                  {link.status === "observed"
+                    ? `${providerName[link.provider]} передал сообщение. Informer проверяет доступ к чату.`
+                    : link.provider === "telegram"
+                      ? "Ожидаем сообщение в Telegram. Откройте Informer и запустите бота либо отправьте указанную команду в выбранный чат."
+                      : "Ожидаем сообщение в MAX. Откройте Informer по ссылке и запустите подключение в чате."}
+                  <br />
+                  Можно переключиться в {providerName[link.provider]}. Вернитесь
+                  сюда и подтвердите найденный чат кнопкой «Подтвердить этот
+                  чат». Не закрывайте это окно до подтверждения: если закрыть
+                  его, подключение придётся начать заново.
+                </p>
+              </div>
             </>
           )}
           {link.status === "candidate" && link.candidate && (

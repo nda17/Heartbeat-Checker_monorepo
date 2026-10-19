@@ -412,10 +412,16 @@ jobs:
           for (const path of ['/android', '/manifest.webmanifest', '/.well-known/assetlinks.json', '/terms']) {
             assert.equal((await fetch(base + path)).status, 200, path);
           }
-          const download = await fetch(base + '/downloads/android', {redirect: 'manual'});
-          assert.equal(download.status, process.env.EXPECTED_APK_URL ? 302 : 404);
-          if (process.env.EXPECTED_APK_URL) assert.equal(download.headers.get('location'), process.env.EXPECTED_APK_URL);
-          assert.equal(download.headers.get('cache-control'), 'no-store');
+          const legacy = await fetch(base + '/downloads/android', {redirect: 'manual'});
+          assert.equal(legacy.status, 307);
+          assert.equal(legacy.headers.get('location'), '/apps/android/download');
+          assert.equal(legacy.headers.get('cache-control'), 'no-store');
+          for (const method of ['GET', 'HEAD']) {
+            const download = await fetch(base + '/apps/android/download', {method, redirect: 'manual'});
+            assert.ok(process.env.EXPECTED_APK_URL ? [502, 504].includes(download.status) : download.status === 404);
+            assert.equal(download.headers.get('location'), null);
+            assert.equal(download.headers.get('cache-control'), 'no-store');
+          }
           JS
           docker network disconnect none "$container"
           docker network connect bridge "$container"

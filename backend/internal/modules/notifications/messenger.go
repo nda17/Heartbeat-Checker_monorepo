@@ -34,6 +34,7 @@ var (
 type MessengerConfig struct {
 	Enabled            bool
 	EmailEnabled       bool
+	EmailCodes         authcontracts.NotificationEmailCodes
 	EmailAddressReader func(context.Context, pgx.Tx, string) (string, error)
 	EmailSender        interface {
 		SendWithID(context.Context, string, string, authcontracts.MailContent, string) error
@@ -149,6 +150,12 @@ func NewMessenger(pool *pgxpool.Pool, encodedKey string, cfg MessengerConfig, ou
 		return nil, errors.New("messenger webhook secrets are required in API")
 	}
 	return m, nil
+}
+
+// SetEmailCodes completes API wiring after auth and its account deletion
+// dependencies have been constructed. It is called before serving requests.
+func (m *Messenger) SetEmailCodes(codes authcontracts.NotificationEmailCodes) {
+	m.cfg.EmailCodes = codes
 }
 
 func (m *Messenger) enabled() error {

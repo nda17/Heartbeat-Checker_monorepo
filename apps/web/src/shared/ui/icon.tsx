@@ -38,6 +38,12 @@ const shapes = {
       <path d="M6 6a8 8 0 0 1 13 2l1 4M4 12l1 4a8 8 0 0 0 13 2" />
     </>
   ),
+  copy: (
+    <>
+      <rect x="8" y="8" width="12" height="12" rx="2" />
+      <path d="M16 8V4H4v12h4" />
+    </>
+  ),
   close: <path d="m6 6 12 12M6 18 18 6" />,
   info: (
     <>

@@ -35,6 +35,7 @@ class FakeS3:
         self.uploads = []
         self.puts = []
         self.pages = []
+        self.presigned = []
         self.url = "https://s3.twcstorage.ru/signed"
 
     def upload_file(self, path, bucket, key, ExtraArgs):
@@ -60,6 +61,7 @@ class FakeS3:
         return self.pages
 
     def generate_presigned_url(self, *args, **kwargs):
+        self.presigned.append((args, kwargs))
         return self.url
 
 
@@ -357,6 +359,102 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(state["report_error"], "telegram_delivery_failed")
         self.assertEqual(self_request[0].full_url, "https://api.telegram.org/bottest-token/sendMessage")
         self.assertNotIn("test-token", path.read_text())
+
+    def test_success_report_uses_readable_size_seven_day_link_and_sends_once(self):
+        state = {
+            "date": "2026-10-19",
+            "status": "success",
+            "object_key": backup.PREFIX + "2026-10-19/bundle.tar.age",
+            "bytes": 1_572_864,
+            "ciphertext_sha256": "a" * 64,
+            "retention_warning": True,
+        }
+        path = self.state_path()
+        requests = []
+
+        class SuccessfulOpener:
+            def open(self, request, timeout):
+                requests.append((request, timeout))
+                return io.BytesIO(b'{"ok": true}')
+
+        with patch.object(backup, "ZoneInfo", return_value=backup.timezone(backup.timedelta(hours=3))), \
+             patch.object(backup.urllib.request, "build_opener", return_value=SuccessfulOpener()):
+            self.assertTrue(backup.report(state, path, self.s3))
+            self.assertTrue(state["report_sent"])
+            self.assertTrue(backup.report(state, path, self.s3))
+
+        self.assertEqual(len(requests), 1, "completed report must not be sent again")
+        self.assertEqual(len(self.s3.presigned), 1)
+        self.assertEqual(self.s3.presigned[0][1]["ExpiresIn"], 604800)
+        request, timeout = requests[0]
+        self.assertEqual(timeout, 20)
+        message = json.loads(request.data)["text"]
+        self.assertIn("Размер: 1,5 МБ.", message)
+        self.assertIn("a" * 64, message)
+        self.assertIn("Ссылка действует 7 дней", message)
+        self.assertIn("Срок хранения копии — 14 дней", message)
+        self.assertIn("очистка копий старше 14 дней не выполнена", message)
+
+    def test_report_size_uses_kilobytes_below_one_megabyte(self):
+        self.assertEqual(backup.format_size(0), "0,0 КБ")
+        self.assertEqual(backup.format_size(1024), "1,0 КБ")
+        self.assertEqual(backup.format_size(1024 * 1024 - 1), "1024,0 КБ")
+
+    def test_delayed_success_report_caps_link_lifetime_at_retention_boundary(self):
+        state = {
+            "date": "2026-10-19",
+            "status": "success",
+            "object_key": backup.PREFIX + "2026-10-19/bundle.tar.age",
+            "bytes": 1024,
+            "ciphertext_sha256": "b" * 64,
+        }
+        path = self.state_path()
+        requests = []
+
+        class SuccessfulOpener:
+            def open(self, request, timeout):
+                requests.append(request)
+                return io.BytesIO(b'{"ok": true}')
+
+        # Nov 1 21:00 MSK leaves only three hours before the archive's
+        # conservative 14-day expiry (Nov 2 00:00 MSK).
+        now = backup.datetime(2026, 11, 1, 18, tzinfo=backup.UTC)
+        with patch.object(backup, "utcnow", return_value=now), \
+             patch.object(backup, "ZoneInfo", return_value=backup.timezone(backup.timedelta(hours=3))), \
+             patch.object(backup.urllib.request, "build_opener", return_value=SuccessfulOpener()):
+            self.assertTrue(backup.report(state, path, self.s3))
+
+        self.assertEqual(self.s3.presigned[0][1]["ExpiresIn"], 3 * 60 * 60)
+        message = json.loads(requests[0].data)["text"]
+        self.assertIn("Ссылка действует оставшийся срок хранения", message)
+        self.assertIn("до 02.11.2026 00:00 МСК", message)
+
+    def test_report_after_retention_expiry_does_not_presign_or_claim_availability(self):
+        state = {
+            "date": "2026-10-19",
+            "status": "success",
+            "object_key": backup.PREFIX + "2026-10-19/bundle.tar.age",
+            "bytes": 1024,
+            "ciphertext_sha256": "c" * 64,
+        }
+        requests = []
+
+        class SuccessfulOpener:
+            def open(self, request, timeout):
+                requests.append(request)
+                return io.BytesIO(b'{"ok": true}')
+
+        now = backup.datetime(2026, 11, 2, 1, tzinfo=backup.timezone(backup.timedelta(hours=3)))
+        with patch.object(backup, "utcnow", return_value=now), \
+             patch.object(backup, "ZoneInfo", return_value=backup.timezone(backup.timedelta(hours=3))), \
+             patch.object(backup.urllib.request, "build_opener", return_value=SuccessfulOpener()):
+            self.assertTrue(backup.report(state, self.state_path(), self.s3))
+
+        self.assertEqual(self.s3.presigned, [])
+        message = json.loads(requests[0].data)["text"]
+        self.assertIn("Срок хранения 14 дней истёк", message)
+        self.assertIn("Ссылка на архив не формируется", message)
+        self.assertIn("доступность не подтверждена", message)
 
     def test_retention_deletes_only_old_exact_keys_under_owned_prefix(self):
         today = backup.datetime(2026, 10, 19, tzinfo=backup.UTC)

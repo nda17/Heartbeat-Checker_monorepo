@@ -101,8 +101,15 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 	if cfg.MessengerNotificationsEnabled || cfg.EmailNotificationsEnabled {
 		startDeliveryLoop(ctx, &wg, logger, "incident notification", messengerModule.ProcessDelivery)
 	}
-	if cfg.AppEnv == "production" {
-		mailer, err := auth.NewProductionMailer(cfg.SMTPAddr, cfg.SMTPFrom, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPTLSMode)
+	if cfg.AppEnv == "production" || cfg.AuthMailEncryptionKey != "" {
+		var mailer interface {
+			SendWithID(context.Context, string, string, authcontracts.MailContent, string) error
+		}
+		if cfg.AppEnv == "production" {
+			mailer, err = auth.NewProductionMailer(cfg.SMTPAddr, cfg.SMTPFrom, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPTLSMode)
+		} else {
+			mailer, err = auth.NewLocalMailer(cfg.SMTPAddr, cfg.SMTPFrom)
+		}
 		if err != nil {
 			return err
 		}

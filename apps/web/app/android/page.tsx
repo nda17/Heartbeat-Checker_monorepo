@@ -61,7 +61,7 @@ export default function AndroidPage() {
               <>
                 <a
                   className="button android-apk-button"
-                  href="/downloads/android"
+                  href="/apps/android/download"
                 >
                   Скачать APK
                 </a>

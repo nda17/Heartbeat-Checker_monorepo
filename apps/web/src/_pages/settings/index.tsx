@@ -6,7 +6,7 @@ import { Session, useSession } from "@/entities/session";
 import { MessengerLinks } from "@/features/messenger-links";
 import { OAuthIdentities } from "@/features/oauth-identities";
 import { AccountDeletion } from "@/features/account-deletion";
-import { api, errorMessage } from "@/shared/api";
+import { api, ApiError, errorMessage } from "@/shared/api";
 import { dateTime, Loading, Notice, PasswordInput, Icon } from "@/shared/ui";
 
 function EmailVerification() {
@@ -16,6 +16,66 @@ function EmailVerification() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [confirmed, setConfirmed] = useState(false);
+  const storageKey = `heartbeat-email-verification:${profile.account.id}`;
+  const [resendAt, setResendAt] = useState(0);
+  const [sent, setSent] = useState(false);
+  const [now, setNow] = useState(0);
+  const [cooldownReady, setCooldownReady] = useState(false);
+  useEffect(() => {
+    const sync = () => {
+      const time = Date.now();
+      try {
+        const saved = JSON.parse(
+          window.sessionStorage.getItem(storageKey) ?? "null",
+        );
+        if (
+          saved?.sent === true &&
+          Number.isSafeInteger(saved.nextSendAt) &&
+          saved.nextSendAt >= 0 &&
+          saved.nextSendAt <= time + 3600_000
+        ) {
+          setSent(true);
+          setResendAt(saved.nextSendAt);
+        }
+      } catch {
+        /* In-memory cooldown remains when tab storage is blocked. */
+      }
+      setNow(time);
+      setCooldownReady(true);
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === storageKey) sync();
+    };
+    sync();
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    window.addEventListener("focus", sync);
+    window.addEventListener("pageshow", sync);
+    window.addEventListener("storage", onStorage);
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", sync);
+      window.removeEventListener("pageshow", sync);
+      window.removeEventListener("storage", onStorage);
+      document.removeEventListener("visibilitychange", sync);
+    };
+  }, [storageKey]);
+  function startCooldown(seconds = 60) {
+    const deadline = Date.now() + Math.max(60, Math.min(3600, seconds)) * 1000;
+    setSent(true);
+    setResendAt(deadline);
+    setNow(Date.now());
+    try {
+      window.sessionStorage.setItem(
+        storageKey,
+        JSON.stringify({ sent: true, nextSendAt: deadline }),
+      );
+    } catch {
+      /* The server also enforces the cooldown. */
+    }
+  }
+  const remaining = Math.max(0, Math.ceil((resendAt - now) / 1000));
+
   const request = useRef<AbortController | null>(null);
   const requestTimeout = useRef<number | undefined>(undefined);
   useEffect(() => {
@@ -41,7 +101,11 @@ function EmailVerification() {
     };
   }, []);
   async function submit(confirm: boolean) {
-    if (request.current) return;
+    if (
+      request.current ||
+      (!confirm && (!cooldownReady || Date.now() < resendAt))
+    )
+      return;
     if (confirm && !/^[A-Za-z0-9_-]{43}$/.test(token)) {
       setError("Ссылка некорректна. Запросите новое письмо.");
       return;
@@ -55,6 +119,7 @@ function EmailVerification() {
       controller.abort();
       if (request.current === controller) request.current = null;
       setBusy(false);
+      if (!confirm) startCooldown();
       setError(
         "Ответ занял слишком много времени. Обновите страницу и проверьте состояние email перед повтором.",
       );
@@ -72,14 +137,25 @@ function EmailVerification() {
       // committed confirmation look like an ambiguous write.
       window.clearTimeout(timeout);
       setBusy(false);
+      if (!confirm) {
+        startCooldown();
+        setToken("");
+      }
       if (confirm) {
+        setSent(false);
+        setResendAt(0);
+        try {
+          window.sessionStorage.removeItem(storageKey);
+        } catch {
+          /* UI remains confirmed. */
+        }
         setToken("");
         setConfirmed(true);
       }
       setSuccess(
         confirm
-          ? "Email подтверждён. Теперь можно подключить email-уведомления."
-          : "Письмо с подтверждением запрошено. Откройте ссылку в этом аккаунте; она действует 30 минут.",
+          ? "Email аккаунта подтверждён. Его можно подключить для уведомлений без нового кода."
+          : "Письмо с подтверждением запрошено. Используйте последнее письмо и откройте ссылку в этом аккаунте; она действует 30 минут.",
       );
       if (confirm) {
         try {
@@ -92,7 +168,21 @@ function EmailVerification() {
         }
       }
     } catch (cause) {
-      if (!controller.signal.aborted) setError(errorMessage(cause));
+      if (!controller.signal.aborted) {
+        if (!confirm && cause instanceof ApiError && cause.status === 429)
+          startCooldown(cause.retryAfterSeconds ?? 60);
+        if (
+          !confirm &&
+          (!(cause instanceof ApiError) ||
+            cause.status === 0 ||
+            cause.status >= 500)
+        ) {
+          startCooldown();
+          setError(
+            "Ответ на запрос письма не получен. Оно могло быть отправлено. Проверьте почту перед повтором; запрос не повторяется автоматически.",
+          );
+        } else setError(errorMessage(cause));
+      }
     } finally {
       window.clearTimeout(timeout);
       if (request.current === controller) request.current = null;
@@ -108,9 +198,10 @@ function EmailVerification() {
       ) : (
         <>
           <p className="small muted">
-            Для email-уведомлений подтвердите адрес аккаунта. Пароль и текущие
-            сеансы не изменятся. Если ссылка предложила войти, после входа
-            откройте её ещё раз.
+            Подтвердите email аккаунта, чтобы подключать его для уведомлений без
+            нового кода. Другой адрес можно подтвердить кодом в разделе каналов
+            ниже. Пароль и текущие сеансы не изменятся. Если ссылка предложила
+            войти, после входа откройте её ещё раз.
           </p>
           {token && (
             <button
@@ -123,10 +214,14 @@ function EmailVerification() {
           )}
           <button
             className="secondary"
-            disabled={busy}
+            disabled={busy || !cooldownReady || remaining > 0}
             onClick={() => void submit(false)}
           >
-            {busy ? "Отправляем…" : "Отправить письмо для подтверждения email"}
+            {busy
+              ? "Отправляем…"
+              : sent
+                ? `Отправить повторно${remaining > 0 ? ` (${remaining} с)` : ""}`
+                : "Отправить письмо для подтверждения email"}
           </button>
         </>
       )}
@@ -427,7 +522,10 @@ export function SettingsPage() {
           </ul>
         )}
       </section>
-      <MessengerLinks email={profile.email} />
+      <MessengerLinks
+        email={profile.email}
+        emailVerified={profile.emailVerified}
+      />
       <AccountDeletion />
     </>
   );

@@ -19,6 +19,11 @@ type Enrollment = {
 };
 type Verification = { verifiedUntil: string; stepUpUntil: string };
 
+function normalizeTotp(value: FormDataEntryValue | null) {
+  const code = String(value ?? "").replace(/\s/g, "");
+  return /^[0-9]{6}$/.test(code) ? code : null;
+}
+
 export function AdminMfa({
   onState,
   onSessionVerified,
@@ -154,10 +159,14 @@ export function AdminMfa({
     event.preventDefault();
     if (!enrollment) return;
     const form = event.currentTarget;
-    const body = {
-      enrollmentId: enrollment.enrollmentId,
-      code: new FormData(form).get("code"),
-    };
+    const code = normalizeTotp(new FormData(form).get("code"));
+    if (!code) {
+      setError(
+        "Введите ровно шесть цифр из приложения-аутентификатора. Пробелы между цифрами допустимы.",
+      );
+      return;
+    }
+    const body = { enrollmentId: enrollment.enrollmentId, code };
     void run("confirm", async () => {
       const result = await api<Verification & { recoveryCodes: string[] }>(
         "/auth/mfa/enrollment/confirm",
@@ -180,6 +189,13 @@ export function AdminMfa({
     const form = event.currentTarget;
     const data = new FormData(form);
     const recovery = useRecovery;
+    const code = recovery ? data.get("code") : normalizeTotp(data.get("code"));
+    if (!recovery && !code) {
+      setError(
+        "Введите ровно шесть цифр из приложения-аутентификатора. Пробелы между цифрами допустимы.",
+      );
+      return;
+    }
     void run("verify", async () => {
       const result = await api<Verification>(
         `/auth/mfa/${recovery ? "recovery" : "verify"}`,
@@ -188,7 +204,7 @@ export function AdminMfa({
           authenticated: true,
           body: recovery
             ? { password: data.get("password"), recoveryCode: data.get("code") }
-            : { password: data.get("password"), code: data.get("code") },
+            : { password: data.get("password"), code },
         },
       );
       if (!mounted.current) return;
@@ -204,13 +220,20 @@ export function AdminMfa({
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
+    const code = normalizeTotp(data.get("code"));
+    if (!code) {
+      setError(
+        "Введите ровно шесть цифр из приложения-аутентификатора. Пробелы между цифрами допустимы.",
+      );
+      return;
+    }
     void run("codes", async () => {
       const result = await api<{ recoveryCodes: string[] }>(
         "/auth/mfa/recovery-codes",
         {
           method: "POST",
           authenticated: true,
-          body: { password: data.get("password"), code: data.get("code") },
+          body: { password: data.get("password"), code },
         },
       );
       if (!mounted.current) return;

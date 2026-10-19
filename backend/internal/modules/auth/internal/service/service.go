@@ -167,7 +167,7 @@ func (s *Service) Register(ctx context.Context, email, name, password, captchaTo
 		return ErrInvalid
 	}
 	name = cleanName
-	if err := s.allow(ctx, "register", email, client.IP, 20, 5, s.cfg.RateLimitWindow); err != nil {
+	if err := s.registrationBudget(ctx, email, client.IP); err != nil {
 		return err
 	}
 	if err := s.captchaCheck(ctx, captchaToken, client.IP, "register"); err != nil {

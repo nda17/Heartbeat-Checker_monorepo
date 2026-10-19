@@ -1,14 +1,16 @@
-import { androidRelease } from "@/shared/android";
-// A redirect only: no S3 DNS resolution, proxy, fetch, or readiness dependency.
-export function GET() {
-  const release = androidRelease();
-  if (!release)
-    return new Response("Подписанный APK пока не опубликован.", {
-      status: 404,
-      headers: { "Cache-Control": "no-store" },
-    });
+// Keep old links on the same origin; object-store URLs are never exposed here.
+function redirect() {
   return new Response(null, {
-    status: 302,
-    headers: { Location: release.downloadUrl, "Cache-Control": "no-store" },
+    status: 307,
+    headers: {
+      Location: "/apps/android/download",
+      "Cache-Control": "no-store",
+    },
   });
+}
+export function GET() {
+  return redirect();
+}
+export function HEAD() {
+  return redirect();
 }

@@ -24,6 +24,7 @@ export function androidRelease(): AndroidRelease | null {
     !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value.releasedAt) ||
     !Number.isSafeInteger(value.sizeBytes) ||
     value.sizeBytes < 1 ||
+    value.sizeBytes >= 100 * 1024 * 1024 ||
     !/^[0-9a-f]{64}$/.test(value.sha256) ||
     !/^([0-9A-F]{2}:){31}[0-9A-F]{2}$/.test(value.signingCertificateSha256)
   )
