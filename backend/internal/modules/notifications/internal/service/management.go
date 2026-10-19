@@ -148,7 +148,7 @@ func (s *Service) Put(ctx context.Context, owner, monitorID string, in contracts
 	defer tx.Rollback(ctx)
 	current, err := s.read(ctx, tx, owner, monitorID, true)
 	if errors.Is(err, ErrNotFound) {
-		if in.Version != 0 {
+		if in.Version != 0 || in.ID != "" {
 			return contracts.Webhook{}, "", ErrConflict
 		}
 		id, err := outbox.ID()
@@ -180,7 +180,7 @@ func (s *Service) Put(ctx context.Context, owner, monitorID string, in contracts
 	if err != nil {
 		return contracts.Webhook{}, "", err
 	}
-	if in.Version != current.Version {
+	if in.Version != current.Version || in.ID != "" && in.ID != current.ID {
 		return contracts.Webhook{}, "", ErrConflict
 	}
 	if urlValue == current.URL && in.Enabled == current.Enabled && !in.RotateSecret {
@@ -217,15 +217,21 @@ func (s *Service) Put(ctx context.Context, owner, monitorID string, in contracts
 	return current, secret, tx.Commit(ctx)
 }
 
-func (s *Service) Delete(ctx context.Context, owner, monitorID string) error {
+func (s *Service) Delete(ctx context.Context, owner, monitorID string, in contracts.DeleteWebhook) error {
+	if in.ID == "" || in.Version < 1 {
+		return ErrInvalid
+	}
 	tx, err := s.begin(ctx, owner, monitorID)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	_, err = s.read(ctx, tx, owner, monitorID, true)
+	current, err := s.read(ctx, tx, owner, monitorID, true)
 	if err != nil {
 		return err
+	}
+	if in.ID != current.ID || in.Version != current.Version {
+		return ErrConflict
 	}
 	_, err = tx.Exec(ctx, `DELETE FROM notifications.webhooks WHERE account_id=$1 AND monitor_id=$2`, owner, monitorID)
 	if err != nil {

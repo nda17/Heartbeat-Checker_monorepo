@@ -119,9 +119,18 @@ func (f *webhookFixture) request(t *testing.T, accountID, method, monitorID stri
 			t.Fatal(err)
 		}
 	}
-	req := httptest.NewRequest(method, "/api/v1/monitors/"+monitorID+"/webhook", bytes.NewReader(raw))
+	contentType := ""
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		contentType = "application/json"
+	}
+	return f.requestRaw(t, accountID, method, monitorID, raw, contentType, authenticate)
+}
+
+func (f *webhookFixture) requestRaw(t *testing.T, accountID, method, monitorID string, body []byte, contentType string, authenticate bool) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, "/api/v1/monitors/"+monitorID+"/webhook", bytes.NewReader(body))
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	if authenticate {
 		principal := authcontracts.Principal{AccountID: accountID, SessionID: "test-session", Role: "user"}
@@ -197,6 +206,82 @@ func TestWebhookAPIAuthOwnershipAndVersionedSecretLifecycle(t *testing.T) {
 	}
 	if code, rotated := f.put(t, owner, monitorID, webhookcontracts.PutWebhook{Version: 1, URL: "https://hooks.example.test/first", Enabled: true, RotateSecret: true}); code != http.StatusOK || rotated == "" || rotated == secret {
 		t.Fatalf("secret rotation = (status %d, new secret present %t, changed %t)", code, rotated != "", rotated != secret)
+	}
+}
+
+func TestWebhookAPIDeleteAndPutFenceEndpointIdentity(t *testing.T) {
+	f := newWebhookFixture(t)
+	owner, monitorID := f.addMonitor(t, "identity-guard")
+	other, _ := f.addMonitor(t, "identity-guard-foreign")
+	get := func() webhookcontracts.Webhook {
+		t.Helper()
+		recorder := f.request(t, owner, http.MethodGet, monitorID, nil, true)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("GET webhook status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+		}
+		var response struct {
+			Webhook webhookcontracts.Webhook `json:"webhook"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode webhook: %v (%s)", err, recorder.Body.String())
+		}
+		return response.Webhook
+	}
+
+	if code, _ := f.put(t, owner, monitorID, webhookcontracts.PutWebhook{URL: "https://hooks.example.test/first", Enabled: true}); code != http.StatusOK {
+		t.Fatalf("create webhook status = %d, want 200", code)
+	}
+	first := get()
+	if first.ID == "" || first.Version != 1 {
+		t.Fatalf("first webhook = (id %q, version %d), want a generated id at version 1", first.ID, first.Version)
+	}
+
+	if code, _ := f.put(t, owner, monitorID, webhookcontracts.PutWebhook{ID: "10000000-0000-4000-8000-000000000001", Version: first.Version, URL: "https://hooks.example.test/stale", Enabled: true}); code != http.StatusConflict {
+		t.Fatalf("PUT with stale endpoint id status = %d, want 409", code)
+	}
+	if code, _ := f.put(t, owner, monitorID, webhookcontracts.PutWebhook{Version: first.Version, URL: "https://hooks.example.test/legacy-update", Enabled: true}); code != http.StatusOK {
+		t.Fatalf("legacy PUT without id status = %d, want 200", code)
+	}
+	updated := get()
+	if updated.ID != first.ID || updated.Version != first.Version+1 || updated.URL != "https://hooks.example.test:443/legacy-update" {
+		t.Fatalf("legacy PUT changed unexpected endpoint state: %+v", updated)
+	}
+
+	remove := func(accountID, id string, version int64) int {
+		t.Helper()
+		body, err := json.Marshal(webhookcontracts.DeleteWebhook{ID: id, Version: version})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f.requestRaw(t, accountID, http.MethodDelete, monitorID, body, "application/json", true).Code
+	}
+	if got := remove(other, first.ID, updated.Version); got != http.StatusNotFound {
+		t.Fatalf("foreign DELETE status = %d, want 404", got)
+	}
+	if got := remove(owner, first.ID, first.Version); got != http.StatusConflict {
+		t.Fatalf("stale-version DELETE status = %d, want 409", got)
+	}
+	if got := remove(owner, first.ID, updated.Version); got != http.StatusNoContent {
+		t.Fatalf("DELETE current webhook status = %d, want 204", got)
+	}
+	if code, _ := f.put(t, owner, monitorID, webhookcontracts.PutWebhook{URL: "https://hooks.example.test/recreated", Enabled: true}); code != http.StatusOK {
+		t.Fatalf("recreate webhook status = %d, want 200", code)
+	}
+	recreated := get()
+	if recreated.ID == first.ID || recreated.Version != 1 {
+		t.Fatalf("recreated webhook = (id %q, version %d), want a new id at version 1", recreated.ID, recreated.Version)
+	}
+	if got := remove(owner, first.ID, updated.Version); got != http.StatusConflict {
+		t.Fatalf("stale DELETE after recreation status = %d, want 409", got)
+	}
+	if code, _ := f.put(t, owner, monitorID, webhookcontracts.PutWebhook{ID: first.ID, Version: recreated.Version, URL: "https://hooks.example.test/aba", Enabled: true}); code != http.StatusConflict {
+		t.Fatalf("stale PUT after recreation status = %d, want 409", code)
+	}
+	if afterStale := get(); afterStale.ID != recreated.ID || afterStale.URL != recreated.URL || afterStale.Version != recreated.Version {
+		t.Fatalf("stale requests changed recreated webhook: %+v", afterStale)
+	}
+	if code, _ := f.put(t, owner, monitorID, webhookcontracts.PutWebhook{Version: recreated.Version, URL: "https://hooks.example.test/legacy-after-recreate", Enabled: true}); code != http.StatusOK {
+		t.Fatalf("legacy PUT after recreation status = %d, want 200", code)
 	}
 }
 

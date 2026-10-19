@@ -1,4 +1,5 @@
 "use client";
+import { WebhookNotifications } from "./webhook";
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import { Monitor } from "@/entities/monitor";
@@ -253,7 +254,7 @@ export function MonitorNotifications({
           <Loading text="Загружаем настройки…" />
         )
       ) : !enabled && !emailEnabled ? (
-        <Notice>Уведомления сейчас недоступны.</Notice>
+        <Notice>Email, Telegram и MAX сейчас недоступны.</Notice>
       ) : (
         <div className="messenger-routes">
           {providers.map((provider) => (
@@ -268,6 +269,7 @@ export function MonitorNotifications({
           ))}
         </div>
       )}
+      <WebhookNotifications monitorId={monitor.id} />
     </Dialog>
   );
 }

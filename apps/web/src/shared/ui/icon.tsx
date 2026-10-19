@@ -115,7 +115,7 @@ export function Icon({
 }) {
   return (
     <svg
-      className={`ui-icon ${className}`}
+      className={`ui-icon${name.startsWith("arrow-") ? " ui-icon-arrow" : ""} ${className}`}
       width={size}
       height={size}
       viewBox="0 0 24 24"

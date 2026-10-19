@@ -10,6 +10,14 @@ import ts from "typescript";
 
 const requireWeb = createRequire(new URL("../package.json", import.meta.url));
 
+class ApiError extends Error {
+  constructor(status, code) {
+    super(code);
+    this.status = status;
+    this.code = code;
+  }
+}
+
 function loadComponent(relativePath, aliases, runtime = {}) {
   const source = fs.readFileSync(
     new URL(relativePath, import.meta.url),
@@ -37,6 +45,8 @@ function loadComponent(relativePath, aliases, runtime = {}) {
     URLSearchParams,
     AbortController,
     DOMException,
+    setTimeout,
+    clearTimeout,
     window: globalThis.window,
     document: globalThis.document,
     FormData: globalThis.FormData,
@@ -105,6 +115,7 @@ function apiAliases(api) {
   return {
     "@/shared/api": {
       api,
+      ApiError,
       errorMessage: (error) => String(error?.message ?? "Ошибка"),
     },
     "@/shared/ui": uiMocks(),
@@ -117,6 +128,89 @@ function apiAliases(api) {
         ),
     },
   };
+}
+
+function loadWebhookNotifications(api) {
+  return loadComponent(
+    "../src/features/monitor-notifications/webhook.tsx",
+    apiAliases(api),
+    { navigator: globalThis.navigator },
+  ).WebhookNotifications;
+}
+
+function webhookApi(api) {
+  const aliases = {
+    ...apiAliases(api),
+    "next/link": ({ href, children }) =>
+      React.createElement("a", { href }, children),
+    "@/entities/monitor": {},
+    "@/entities/messenger": {
+      destinationKindName: {
+        private: "личный чат",
+        group: "группа",
+        topic: "топик группы",
+        email: "email",
+      },
+      providerName: { telegram: "Telegram", max: "MAX", email: "Email" },
+    },
+    "@/shared/dialog": {
+      Dialog: ({ title, children }) =>
+        React.createElement(
+          "section",
+          { role: "dialog", "aria-label": title },
+          children,
+        ),
+    },
+    "./webhook": { WebhookNotifications: loadWebhookNotifications(api) },
+  };
+  return loadComponent(
+    "../src/features/monitor-notifications/index.tsx",
+    aliases,
+  ).MonitorNotifications;
+}
+
+async function settle() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+async function fillWebhookURL(input, value) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    ).set.call(input, value);
+    const key = Object.keys(input).find((name) =>
+      name.startsWith("__reactProps"),
+    );
+    input[key].onChange({ target: { value } });
+  });
+}
+
+async function submitWebhook(input) {
+  const form = input.closest("form");
+  const propsKey = Object.keys(form).find((key) =>
+    key.startsWith("__reactProps"),
+  );
+  assert.equal(typeof form[propsKey]?.onSubmit, "function");
+  await act(async () => {
+    form[propsKey].onSubmit({ preventDefault() {} });
+  });
+  await settle();
+}
+
+async function clickButton(harness, label) {
+  const button = [...harness.host.querySelectorAll("button")].find((item) =>
+    item.textContent.includes(label),
+  );
+  assert.ok(button, `missing button ${label}`);
+  await act(async () => {
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await settle();
 }
 
 test("email connection uses only the account address and sends an empty request", async () => {
@@ -240,6 +334,7 @@ test("email monitor route is off by default and saves the selected destination",
       "../src/entities/messenger/index.ts",
       {},
     ),
+    "./webhook": { WebhookNotifications: () => null },
   };
   const { MonitorNotifications } = loadComponent(
     "../src/features/monitor-notifications/index.tsx",
@@ -402,6 +497,396 @@ test("settings clears the verification fragment and requires explicit confirmati
     );
     releaseRefresh();
     await act(async () => pendingRefresh);
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("webhook settings stay available when messenger settings fail to load", async () => {
+  const harness = createHarness();
+  const calls = [];
+  const api = async (path) => {
+    calls.push(path);
+    if (
+      path === "/messenger-destinations" ||
+      path.endsWith("/messenger-routes")
+    )
+      throw new ApiError(503, "temporarily_unavailable");
+    if (path.endsWith("/webhook/deliveries?limit=50"))
+      return { deliveries: [] };
+    if (path.endsWith("/webhook")) throw new ApiError(404, "not_found");
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const MonitorNotifications = webhookApi(api);
+
+  try {
+    await harness.render(
+      React.createElement(MonitorNotifications, {
+        monitor: { id: "monitor-1", name: "Checkout" },
+        onClose() {},
+      }),
+    );
+    await settle();
+    assert.match(harness.host.textContent, /temporarily_unavailable/);
+    assert.ok(harness.host.querySelector('section[aria-label="Webhook"]'));
+    assert.match(harness.host.textContent, /История webhook/);
+    assert.ok(calls.some((path) => path === "/monitors/monitor-1/webhook"));
+    assert.ok(
+      calls.some(
+        (path) => path === "/monitors/monitor-1/webhook/deliveries?limit=50",
+      ),
+    );
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("webhook create reveals a one-time secret, keeps a committed success through history failure, and enables only on request", async () => {
+  const harness = createHarness();
+  const calls = [];
+  let historyReads = 0;
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/monitors/monitor-1/webhook" && !options.method)
+      throw new ApiError(404, "not_found");
+    if (path.endsWith("/webhook/deliveries?limit=50")) {
+      historyReads += 1;
+      if (historyReads === 1) return { deliveries: [] };
+      throw new ApiError(503, "temporarily_unavailable");
+    }
+    if (path === "/monitors/monitor-1/webhook" && options.method === "PUT") {
+      const input = JSON.parse(JSON.stringify(options.body));
+      if (input.version === 0)
+        return {
+          webhook: {
+            id: "webhook-1",
+            monitorId: "monitor-1",
+            url: input.url,
+            enabled: false,
+            version: 1,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+          },
+          secret: "one-time-signing-secret",
+        };
+      return {
+        webhook: {
+          id: "webhook-1",
+          monitorId: "monitor-1",
+          url: "https://receiver.example.test/hooks",
+          enabled: input.enabled,
+          version: 2,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      };
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const WebhookNotifications = loadWebhookNotifications(api);
+
+  try {
+    await harness.render(
+      React.createElement(WebhookNotifications, { monitorId: "monitor-1" }),
+    );
+    await settle();
+    const input = harness.host.querySelector('input[name="webhookUrl"]');
+    assert.ok(input, harness.host.textContent);
+    await fillWebhookURL(input, "https://receiver.example.test/hooks");
+    assert.equal(input.value, "https://receiver.example.test/hooks");
+    await submitWebhook(input);
+
+    const create = calls.find((call) => call.options.method === "PUT");
+    assert.ok(
+      create,
+      JSON.stringify(
+        calls.map(({ path, options }) => ({
+          path,
+          method: options.method,
+          body: options.body,
+        })),
+      ),
+    );
+    assert.deepEqual(JSON.parse(JSON.stringify(create.options.body)), {
+      version: 0,
+      url: "https://receiver.example.test/hooks",
+      enabled: false,
+    });
+    assert.match(harness.host.textContent, /one-time-signing-secret/);
+    assert.match(harness.host.textContent, /Webhook сохранён и выключен/);
+    assert.match(harness.host.textContent, /temporarily_unavailable/);
+    assert.equal(
+      calls.filter((call) => call.options.method === "PUT").length,
+      1,
+      "a failed history refresh must not replay the committed write",
+    );
+
+    await clickButton(harness, "Включить webhook");
+    const writes = calls.filter((call) => call.options.method === "PUT");
+    assert.equal(writes.length, 2);
+    assert.equal(writes[1].options.body.enabled, true);
+    assert.equal(writes[1].options.body.id, "webhook-1");
+    assert.equal(writes[1].options.body.version, 1);
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("an ambiguous webhook create reconciles with GET without replaying PUT or exposing a lost secret", async () => {
+  const harness = createHarness();
+  const calls = [];
+  let configReads = 0;
+  const serverWebhook = {
+    id: "webhook-created-on-server",
+    monitorId: "monitor-1",
+    url: "https://receiver.example.test/hooks",
+    enabled: false,
+    version: 1,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  };
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/monitors/monitor-1/webhook" && !options.method) {
+      configReads += 1;
+      if (configReads === 1) throw new ApiError(404, "not_found");
+      return { webhook: serverWebhook };
+    }
+    if (path.endsWith("/webhook/deliveries?limit=50"))
+      return { deliveries: [] };
+    if (path === "/monitors/monitor-1/webhook" && options.method === "PUT") {
+      throw new ApiError(0, "network_error");
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const WebhookNotifications = loadWebhookNotifications(api);
+
+  try {
+    await harness.render(
+      React.createElement(WebhookNotifications, { monitorId: "monitor-1" }),
+    );
+    await settle();
+    const input = harness.host.querySelector('input[name="webhookUrl"]');
+    await fillWebhookURL(input, serverWebhook.url);
+    await submitWebhook(input);
+
+    assert.equal(
+      calls.filter((call) => call.options.method === "PUT").length,
+      1,
+    );
+    assert.equal(
+      configReads,
+      2,
+      "the uncertain write must be reconciled with GET",
+    );
+    assert.match(harness.host.textContent, /ответ с новым секретом потерян/);
+    assert.doesNotMatch(harness.host.textContent, /lost-signing-secret/);
+    assert.doesNotMatch(harness.host.textContent, /Скопировать секрет/);
+    assert.equal(
+      harness.host.querySelector('input[name="webhookUrl"]').value,
+      serverWebhook.url,
+    );
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("a clipboard write started for an old secret cannot mark a rotated secret copied", async () => {
+  const harness = createHarness();
+  const calls = [];
+  let resolveClipboard;
+  let copiedValue = "";
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: {
+      writeText(value) {
+        copiedValue = value;
+        return new Promise((resolve) => {
+          resolveClipboard = resolve;
+        });
+      },
+    },
+  });
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/monitors/monitor-1/webhook" && !options.method)
+      throw new ApiError(404, "not_found");
+    if (path.endsWith("/webhook/deliveries?limit=50"))
+      return { deliveries: [] };
+    if (path === "/monitors/monitor-1/webhook" && options.method === "PUT") {
+      const input = options.body;
+      const rotating = input.rotateSecret === true;
+      return {
+        webhook: {
+          id: "webhook-1",
+          monitorId: "monitor-1",
+          url: "https://receiver.example.test/hooks",
+          enabled: false,
+          version: rotating ? 2 : 1,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+        secret: rotating ? "secret-B" : "secret-A",
+      };
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const WebhookNotifications = loadWebhookNotifications(api);
+
+  try {
+    await harness.render(
+      React.createElement(WebhookNotifications, { monitorId: "monitor-1" }),
+    );
+    await settle();
+    const input = harness.host.querySelector('input[name="webhookUrl"]');
+    await fillWebhookURL(input, "https://receiver.example.test/hooks");
+    await submitWebhook(input);
+    assert.match(harness.host.textContent, /secret-A/);
+
+    await clickButton(harness, "Скопировать секрет");
+    assert.equal(copiedValue, "secret-A");
+    await clickButton(harness, "Обновить секрет");
+    await clickButton(harness, "Подтвердить обновление секрета");
+    assert.match(harness.host.textContent, /secret-B/);
+    assert.doesNotMatch(harness.host.textContent, /secret-A/);
+
+    await act(async () => resolveClipboard());
+    await settle();
+    assert.match(
+      [...harness.host.querySelectorAll("button")].find((button) =>
+        button.textContent.includes("секрет"),
+      )?.textContent ?? "",
+      /Скопировать секрет/,
+    );
+    assert.doesNotMatch(harness.host.textContent, /Секрет скопирован/);
+    assert.equal(
+      calls.filter((call) => call.options.method === "PUT").length,
+      2,
+    );
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("stale webhook writes reload the current endpoint without retaining a secret", async () => {
+  const harness = createHarness();
+  const calls = [];
+  let configReads = 0;
+  const current = {
+    id: "webhook-new-id",
+    monitorId: "monitor-1",
+    url: "https://receiver.example.test/current",
+    enabled: false,
+    version: 1,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  };
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/monitors/monitor-1/webhook" && !options.method) {
+      configReads += 1;
+      return {
+        webhook:
+          configReads === 1
+            ? {
+                ...current,
+                id: "webhook-old-id",
+                url: "https://receiver.example.test/old",
+              }
+            : current,
+      };
+    }
+    if (path.endsWith("/webhook/deliveries?limit=50"))
+      return { deliveries: [] };
+    if (path === "/monitors/monitor-1/webhook" && options.method === "PUT")
+      throw new ApiError(409, "version_conflict");
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const WebhookNotifications = loadWebhookNotifications(api);
+
+  try {
+    await harness.render(
+      React.createElement(WebhookNotifications, { monitorId: "monitor-1" }),
+    );
+    await settle();
+    await clickButton(harness, "Обновить секрет");
+    await clickButton(harness, "Подтвердить обновление секрета");
+
+    const write = calls.find((call) => call.options.method === "PUT");
+    assert.equal(write.options.body.id, "webhook-old-id");
+    assert.equal(write.options.body.version, 1);
+    assert.equal(
+      calls.filter((call) => call.options.method === "PUT").length,
+      1,
+    );
+    assert.equal(
+      harness.host.querySelector('input[name="webhookUrl"]').value,
+      current.url,
+    );
+    assert.doesNotMatch(
+      harness.host.textContent,
+      /Секрет подписи — показывается один раз/,
+    );
+    assert.equal(configReads, 2);
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("changing monitors discards a pending webhook secret response", async () => {
+  const harness = createHarness();
+  const calls = [];
+  let finishWrite;
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path.endsWith("/webhook/deliveries?limit=50"))
+      return { deliveries: [] };
+    if (path.endsWith("/webhook") && !options.method)
+      throw new ApiError(404, "not_found");
+    if (path.endsWith("/webhook") && options.method === "PUT")
+      return new Promise((resolve) => {
+        finishWrite = resolve;
+      });
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const WebhookNotifications = loadWebhookNotifications(api);
+
+  try {
+    await harness.render(
+      React.createElement(WebhookNotifications, { monitorId: "monitor-1" }),
+    );
+    await settle();
+    const input = harness.host.querySelector('input[name="webhookUrl"]');
+    await fillWebhookURL(input, "https://receiver.example.test/old-monitor");
+    await submitWebhook(input);
+    assert.equal(typeof finishWrite, "function");
+
+    await harness.render(
+      React.createElement(WebhookNotifications, { monitorId: "monitor-2" }),
+    );
+    await settle();
+    finishWrite({
+      webhook: {
+        id: "webhook-old",
+        monitorId: "monitor-1",
+        url: "https://receiver.example.test/old-monitor",
+        enabled: false,
+        version: 1,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+      secret: "late-secret-for-old-monitor",
+    });
+    await settle();
+
+    assert.ok(
+      calls.some((call) => call.path === "/monitors/monitor-2/webhook"),
+    );
+    assert.doesNotMatch(
+      harness.host.textContent,
+      /late-secret-for-old-monitor/,
+    );
+    assert.doesNotMatch(harness.host.textContent, /old-monitor/);
   } finally {
     await harness.unmount();
   }
