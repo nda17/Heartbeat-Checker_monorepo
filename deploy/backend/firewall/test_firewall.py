@@ -117,7 +117,12 @@ class FirewallImageTests(unittest.TestCase):
         self.assertEqual(sum("-s 172.30.80.2/32 -j HEARTBEAT_PROBE_V2" in line for line in rules), 1)
         self.assertFalse(any(line.endswith("-j HEARTBEAT_PROBE") for line in rules))
         forward = self.run_in_container("iptables", "-S", "HEARTBEAT_PROBE_V2").stdout.splitlines()
-        self.assertTrue(forward[-1].endswith("-j REJECT"))
+        terminal = shlex.split(forward[-1])
+        self.assertEqual(terminal[:2], ["-A", "HEARTBEAT_PROBE_V2"])
+        jump = terminal.index("-j")
+        self.assertEqual(terminal[:jump], ["-A", "HEARTBEAT_PROBE_V2"], "terminal reject must be unconditional")
+        self.assertEqual(terminal[jump : jump + 2], ["-j", "REJECT"])
+        self.assertIn(terminal[jump + 2 :], ([], ["--reject-with", "icmp-port-unreachable"]))
 
         snapshot = rules
         repeated = self.install()
