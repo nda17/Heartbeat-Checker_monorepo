@@ -1,5 +1,6 @@
 "use client";
 import Link from "next/link";
+import { RegistrationForm } from "./registration";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import {
@@ -11,7 +12,14 @@ import {
   safeAppReturnTo,
 } from "@/shared/api";
 import { Turnstile } from "@/shared/turnstile";
-import { Loading, Notice, PasswordInput, Spinner, Icon } from "@/shared/ui";
+import {
+  Loading,
+  Notice,
+  PasswordInput,
+  Spinner,
+  Icon,
+  OAuthIcon,
+} from "@/shared/ui";
 export { PublicAuthLinks } from "./public-auth-links";
 export type AuthMode =
   "login" | "register" | "verify" | "reset-request" | "reset-confirm";
@@ -105,6 +113,7 @@ function OAuthButtons() {
                 disabled={busy}
                 onClick={() => void start(provider.id)}
               >
+                <OAuthIcon provider={provider.id} />
                 {provider.name}
               </button>
             ))}
@@ -177,6 +186,13 @@ export function AuthEntry({ mode }: { mode: "login" | "register" }) {
   );
 }
 export function AuthForm({ mode }: { mode: AuthMode }) {
+  return mode === "register" ? (
+    <RegistrationForm oauth={<OAuthButtons />} />
+  ) : (
+    <LegacyAuthForm mode={mode} />
+  );
+}
+function LegacyAuthForm({ mode }: { mode: AuthMode }) {
   const cfg = config[mode];
   const router = useRouter();
   const [token, setToken] = useState("");

@@ -50,6 +50,13 @@ func LoadWorker() (WorkerConfig, error) {
 	if err != nil || len(key) != 32 {
 		return cfg, errors.New("WEBHOOK_ENCRYPTION_KEY must be base64 of 32 bytes")
 	}
+	cfg.AuthMailEncryptionKey = strings.TrimSpace(os.Getenv("AUTH_MAIL_ENCRYPTION_KEY"))
+	if cfg.AuthMailEncryptionKey != "" {
+		mailKey, err := base64.StdEncoding.Strict().DecodeString(cfg.AuthMailEncryptionKey)
+		if err != nil || len(mailKey) != 32 {
+			return cfg, errors.New("AUTH_MAIL_ENCRYPTION_KEY must be base64 of 32 bytes")
+		}
+	}
 	if cfg.AppEnv == "production" {
 		cfg.AuthMailEncryptionKey = strings.TrimSpace(os.Getenv("AUTH_MAIL_ENCRYPTION_KEY"))
 		mailKey, err := base64.StdEncoding.Strict().DecodeString(cfg.AuthMailEncryptionKey)
@@ -73,7 +80,7 @@ func LoadWorker() (WorkerConfig, error) {
 		return cfg, err
 	}
 	cfg.IntegrationConfig = integrations
-	if cfg.AppEnv == "local" && cfg.EmailNotificationsEnabled {
+	if cfg.AppEnv == "local" && (cfg.EmailNotificationsEnabled || cfg.AuthMailEncryptionKey != "") {
 		cfg.SMTPAddr = strings.TrimSpace(os.Getenv("SMTP_ADDR"))
 		cfg.SMTPFrom = strings.TrimSpace(os.Getenv("SMTP_FROM"))
 		if cfg.SMTPAddr == "" || cfg.SMTPFrom == "" {

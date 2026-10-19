@@ -118,6 +118,16 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("AUTH_MFA_ENCRYPTION_KEY must be distinct from WEBHOOK_ENCRYPTION_KEY")
 		}
 	}
+	cfg.AuthMailEncryptionKey = strings.TrimSpace(os.Getenv("AUTH_MAIL_ENCRYPTION_KEY"))
+	if cfg.AuthMailEncryptionKey != "" {
+		mailKey, err := base64.StdEncoding.Strict().DecodeString(cfg.AuthMailEncryptionKey)
+		if err != nil || len(mailKey) != 32 {
+			return Config{}, fmt.Errorf("AUTH_MAIL_ENCRYPTION_KEY must be base64 of 32 bytes")
+		}
+		if cfg.AuthMFAEncryptionKey != "" && cfg.AuthMFAEncryptionKey == cfg.AuthMailEncryptionKey {
+			return Config{}, fmt.Errorf("AUTH_MFA_ENCRYPTION_KEY must be distinct from AUTH_MAIL_ENCRYPTION_KEY")
+		}
+	}
 	if cfg.AppEnv == "local" {
 		cfg.SMTPAddr = strings.TrimSpace(os.Getenv("SMTP_ADDR"))
 		cfg.SMTPFrom = strings.TrimSpace(os.Getenv("SMTP_FROM"))

@@ -18,6 +18,8 @@ init-local:
 	@chmod 600 .local/probe-secret
 	@test -s .local/webhook-key || (umask 077 && openssl rand -base64 32 > .local/webhook-key)
 	@chmod 600 .local/webhook-key
+	@test -s .local/auth-mail-key || (umask 077 && openssl rand -base64 32 > .local/auth-mail-key)
+	@chmod 600 .local/auth-mail-key
 
 build-backend:
 	cd backend && go build -o bin/api ./cmd/api
@@ -40,6 +42,7 @@ run: init-local
 		TURNSTILE_HOSTNAME="$${TURNSTILE_HOSTNAME:-localhost}" \
 		SMTP_ADDR="$${SMTP_ADDR:-127.0.0.1:51025}" \
 		SMTP_FROM="$${SMTP_FROM:-no-reply@heartbeat.local}" \
+		AUTH_MAIL_ENCRYPTION_KEY="$${AUTH_MAIL_ENCRYPTION_KEY:-$$(cat ../.local/auth-mail-key)}" \
 		WEBHOOK_ENCRYPTION_KEY="$${WEBHOOK_ENCRYPTION_KEY:-$$(cat ../.local/webhook-key)}" \
 		go run ./cmd/api
 
@@ -49,6 +52,9 @@ web-dev:
 worker: init-local
 	cd backend && APP_ENV="$${APP_ENV:-local}" \
 		PROBE_URL="$${PROBE_URL:-http://127.0.0.1:8090}" \
+		SMTP_ADDR="$${SMTP_ADDR:-127.0.0.1:51025}" \
+		SMTP_FROM="$${SMTP_FROM:-no-reply@heartbeat.local}" \
+		AUTH_MAIL_ENCRYPTION_KEY="$${AUTH_MAIL_ENCRYPTION_KEY:-$$(cat ../.local/auth-mail-key)}" \
 		WEBHOOK_ENCRYPTION_KEY="$${WEBHOOK_ENCRYPTION_KEY:-$$(cat ../.local/webhook-key)}" \
 		PROBE_SHARED_SECRET="$$(cat ../.local/probe-secret)" go run ./cmd/worker
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	authcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
@@ -71,8 +72,8 @@ func (m *Messenger) PutRoute(ctx context.Context, accountID, monitorID, provider
 	var currentEmail string
 	if provider == "email" && in.Enabled {
 		currentEmail, err = m.cfg.EmailAddressReader(ctx, tx, accountID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return MessengerRoute{}, ErrMessengerNotFound
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, authcontracts.ErrEmailUnverified) {
+			currentEmail, err = "", nil
 		}
 		if err != nil {
 			return MessengerRoute{}, err
@@ -88,7 +89,9 @@ func (m *Messenger) PutRoute(ctx context.Context, accountID, monitorID, provider
 	}
 	var ready bool
 	var encryptedTarget []byte
-	err = tx.QueryRow(ctx, `SELECT status='ready',encrypted_target FROM notifications.messenger_destinations WHERE id=$1 AND account_id=$2 AND provider=$3 FOR SHARE`, in.DestinationID, accountID, provider).Scan(&ready, &encryptedTarget)
+	var proofKind *string
+	var verifiedAt *time.Time
+	err = tx.QueryRow(ctx, `SELECT status='ready',encrypted_target,email_proof_kind,email_verified_at FROM notifications.messenger_destinations WHERE id=$1 AND account_id=$2 AND provider=$3 FOR SHARE`, in.DestinationID, accountID, provider).Scan(&ready, &encryptedTarget, &proofKind, &verifiedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MessengerRoute{}, ErrMessengerNotFound
 	}
@@ -103,7 +106,7 @@ func (m *Messenger) PutRoute(ctx context.Context, accountID, monitorID, provider
 		if err != nil {
 			return MessengerRoute{}, err
 		}
-		if currentEmail == "" || recipient.Target.Email != currentEmail {
+		if proofKind == nil || !emailProofReady(*proofKind, verifiedAt, recipient.Target.Email, currentEmail) {
 			return MessengerRoute{}, ErrMessengerNotReady
 		}
 	}
@@ -206,12 +209,12 @@ func (m *Messenger) EnabledChannelsTx(ctx context.Context, tx pgx.Tx, accountID 
 			email = ""
 		}
 	}
-	rows, err := tx.Query(ctx, `SELECT monitor_id,provider,destination_id,encrypted_target,recipient_fingerprint FROM (
- SELECT w.monitor_id::text AS monitor_id,'webhook'::text AS provider,NULL::text AS destination_id,NULL::bytea AS encrypted_target,NULL::bytea AS recipient_fingerprint
+	rows, err := tx.Query(ctx, `SELECT monitor_id,provider,destination_id,encrypted_target,recipient_fingerprint,email_proof_kind,email_verified_at FROM (
+ SELECT w.monitor_id::text AS monitor_id,'webhook'::text AS provider,NULL::text AS destination_id,NULL::bytea AS encrypted_target,NULL::bytea AS recipient_fingerprint,NULL::text AS email_proof_kind,NULL::timestamptz AS email_verified_at
  FROM notifications.webhooks w JOIN monitors.monitors mon ON mon.id=w.monitor_id AND mon.account_id=$1
  WHERE w.account_id=$1 AND w.monitor_id=ANY($2::uuid[]) AND w.enabled
  UNION ALL
- SELECT r.monitor_id::text,r.provider,d.id::text,d.encrypted_target,d.recipient_fingerprint
+ SELECT r.monitor_id::text,r.provider,d.id::text,d.encrypted_target,d.recipient_fingerprint,d.email_proof_kind,d.email_verified_at
  FROM notifications.messenger_routes r
  JOIN notifications.messenger_destinations d ON d.id=r.destination_id AND d.account_id=$1 AND d.provider=r.provider AND d.status='ready'
  JOIN monitors.monitors mon ON mon.id=r.monitor_id AND mon.account_id=$1
@@ -226,18 +229,20 @@ func (m *Messenger) EnabledChannelsTx(ctx context.Context, tx pgx.Tx, accountID 
 		var id, provider string
 		var destinationID *string
 		var encrypted, fingerprint []byte
-		if err = rows.Scan(&id, &provider, &destinationID, &encrypted, &fingerprint); err != nil {
+		var proofKind *string
+		var verifiedAt *time.Time
+		if err = rows.Scan(&id, &provider, &destinationID, &encrypted, &fingerprint, &proofKind, &verifiedAt); err != nil {
 			return nil, err
 		}
 		if provider == "email" {
-			if email == "" || destinationID == nil {
+			if destinationID == nil || proofKind == nil {
 				continue
 			}
 			recipient, err := m.readRecipient(accountID, *destinationID, "target", encrypted)
 			if err != nil {
 				return nil, err
 			}
-			if recipient.Target.Provider != "email" || recipient.Target.Email != email || !hmac.Equal(fingerprint, m.recipientFingerprint(recipient.Target)) {
+			if recipient.Target.Provider != "email" || !emailProofReady(*proofKind, verifiedAt, recipient.Target.Email, email) || !hmac.Equal(fingerprint, m.recipientFingerprint(recipient.Target)) {
 				continue
 			}
 		}

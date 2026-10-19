@@ -144,6 +144,7 @@ function authEntry(api, routes, options = {}) {
   }
   const aliases = {
     "./public-auth-links": { PublicAuthLinks: () => null },
+    "./registration": { RegistrationForm: () => null },
     "next/link": ({ href, className, children }) =>
       React.createElement("a", { href, className }, children),
     "next/navigation": { useRouter: () => routes },
@@ -186,6 +187,95 @@ function authEntry(api, routes, options = {}) {
     ...compile("../src/features/auth/index.tsx", aliases, options),
     ApiError,
   };
+}
+
+function registrationComponent(api, router) {
+  class RegistrationApiError extends Error {
+    constructor(status, code) {
+      super(code);
+      this.status = status;
+      this.code = code;
+    }
+  }
+  const challengeTools = {
+    captureEmailCode(value) {
+      return { challenge: value, receivedAt: Date.now() };
+    },
+    normalizeEmailCode(value) {
+      const code = value.replace(/\s/g, "");
+      return /^[0-9]{6}$/.test(code) ? code : null;
+    },
+    useEmailCodeClock() {
+      return { now: Date.now(), resendSeconds: 0 };
+    },
+  };
+  const routes = {
+    "next/link": ({ href, children, ...props }) =>
+      React.createElement("a", { href, ...props }, children),
+    "next/navigation": { useRouter: () => router },
+    "@/shared/api": {
+      api,
+      ApiError: RegistrationApiError,
+      boundedRequest: (controller, request) => request(controller.signal),
+      errorMessage: (error) =>
+        String(error?.code ?? error?.message ?? "Ошибка"),
+      safeAppReturnTo: (path) => (path?.startsWith("/app/") ? path : null),
+    },
+    "@/shared/email-code": challengeTools,
+    "@/shared/turnstile": {
+      Turnstile: ({ action, onToken }) =>
+        React.createElement(
+          "button",
+          {
+            type: "button",
+            "data-captcha-action": action,
+            onClick: () => onToken(`synthetic-${action}`),
+          },
+          `captcha:${action}`,
+        ),
+    },
+    "@/shared/ui": {
+      dateTime: (value) => value,
+      Loading: ({ text }) =>
+        React.createElement("span", { role: "status" }, text),
+      Notice: ({ children }) =>
+        React.createElement("div", { role: "alert" }, children),
+      PasswordInput: (props) =>
+        React.createElement("input", { ...props, type: "password" }),
+      Spinner: () => React.createElement("span", null, "…"),
+    },
+  };
+  return compile("../src/features/auth/registration.tsx", routes, {
+    process: { env: { WEB_MODE: "app" } },
+  }).RegistrationForm;
+}
+
+async function setReactInputValue(input, value) {
+  await act(async () => {
+    const propsKey = Object.keys(input).find((key) =>
+      key.startsWith("__reactProps"),
+    );
+    if (typeof input[propsKey]?.onChange === "function") {
+      input[propsKey].onChange({ target: { value } });
+    } else {
+      Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      ).set.call(input, value);
+      input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    }
+  });
+}
+
+async function submitReactForm(form) {
+  const propsKey = Object.keys(form).find((key) =>
+    key.startsWith("__reactProps"),
+  );
+  assert.equal(typeof form[propsKey]?.onSubmit, "function");
+  await act(async () =>
+    form[propsKey].onSubmit({ preventDefault() {}, currentTarget: form }),
+  );
+  await settle();
 }
 
 function publicAuthLinks(api, timers = { setTimeout, clearTimeout }) {
@@ -864,7 +954,7 @@ function billingPricingApi(api, fallbackPrice = 2900) {
   };
 }
 
-function settingsPage(api) {
+function settingsPage(api, options = {}) {
   const link = ({ href, children, ...props }) =>
     React.createElement("a", { href, ...props }, children);
   const ui = {
@@ -876,36 +966,53 @@ function settingsPage(api) {
     PasswordInput: (props) =>
       React.createElement("input", { ...props, type: "password" }),
   };
-  return compile("../src/_pages/settings/index.tsx", {
-    "next/link": link,
-    "next/navigation": { useRouter: () => ({ replace() {} }) },
-    "@/entities/session": {
-      useSession: () => ({
-        profile: {
-          account: {
-            id: "user-1",
-            name: "Тестовый пользователь",
-            role: "user",
-            status: "active",
-            createdAt: "2026-01-01T00:00:00Z",
-          },
-          email: "user@example.test",
-          hasPassword: true,
-        },
-        refresh: async () => {},
-        beginSessionTransition() {},
-        endSessionTransition() {},
-      }),
+  const profile = options.profile ?? {
+    account: {
+      id: "user-1",
+      name: "Тестовый пользователь",
+      role: "user",
+      status: "active",
+      createdAt: "2026-01-01T00:00:00Z",
     },
-    "@/features/messenger-links": { MessengerLinks: () => null },
-    "@/features/oauth-identities": { OAuthIdentities: () => null },
-    "@/features/account-deletion": { AccountDeletion: () => null },
-    "@/shared/api": {
-      api,
-      errorMessage: (error) => String(error?.message ?? error),
+    email: "user@example.test",
+    emailVerified: true,
+    hasPassword: true,
+  };
+  class SettingsApiError extends Error {
+    constructor(status, code, retryAfterSeconds) {
+      super(code);
+      this.status = status;
+      this.code = code;
+      this.retryAfterSeconds = retryAfterSeconds;
+    }
+  }
+  const component = compile(
+    "../src/_pages/settings/index.tsx",
+    {
+      "next/link": link,
+      "next/navigation": { useRouter: () => ({ replace() {} }) },
+      "@/entities/session": {
+        useSession: () => ({
+          profile:
+            typeof options.profile === "function" ? options.profile() : profile,
+          refresh: async () => {},
+          beginSessionTransition() {},
+          endSessionTransition() {},
+        }),
+      },
+      "@/features/messenger-links": { MessengerLinks: () => null },
+      "@/features/oauth-identities": { OAuthIdentities: () => null },
+      "@/features/account-deletion": { AccountDeletion: () => null },
+      "@/shared/api": {
+        api,
+        ApiError: SettingsApiError,
+        errorMessage: (error) => String(error?.message ?? error),
+      },
+      "@/shared/ui": ui,
     },
-    "@/shared/ui": ui,
-  });
+    options.runtime,
+  );
+  return { ...component, SettingsApiError };
 }
 
 function retryableFeatureAliases(api) {
@@ -927,6 +1034,7 @@ function retryableFeatureAliases(api) {
         React.createElement("div", { role: "alert" }, children),
       PasswordInput: (props) =>
         React.createElement("input", { ...props, type: "password" }),
+      OAuthIcon: () => null,
     },
     "@/entities/session": {
       useSession: () => ({
@@ -987,6 +1095,263 @@ test("settings sessions recover from an initial GET failure with the retry contr
     calls.every(({ options }) => options.signal instanceof AbortSignal),
   );
   await harness.unmount();
+});
+
+test("email verification prevents duplicate sends and restores an account-scoped countdown", async () => {
+  const harness = createHarness("http://localhost/app/settings");
+  const pending = deferred();
+  const calls = [];
+  let browserNow = Date.now();
+  class BrowserDate extends Date {
+    static now() {
+      return browserNow;
+    }
+  }
+  const profile = {
+    account: {
+      id: "email-account-one",
+      name: "Synthetic account",
+      role: "user",
+      status: "active",
+      createdAt: "2026-01-01T00:00:00Z",
+    },
+    email: "qa@example.test",
+    emailVerified: false,
+    hasPassword: true,
+  };
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/me/sessions") return { sessions: [] };
+    if (path === "/me/email-verification") return pending.promise;
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const component = settingsPage(api, {
+    profile: () => profile,
+    runtime: { Date: BrowserDate },
+  });
+  await harness.render(React.createElement(component.SettingsPage));
+  await settle();
+  const resend = () =>
+    [...harness.host.querySelectorAll("button")].find(
+      (button) =>
+        button.textContent.includes(
+          "Отправить письмо для подтверждения email",
+        ) || button.textContent.includes("Отправить повторно"),
+    );
+  const first = resend();
+  assert.ok(first);
+  await act(async () => {
+    first.click();
+    first.click();
+  });
+  assert.equal(
+    calls.filter((call) => call.path === "/me/email-verification").length,
+    1,
+    "double activation while a send is pending must issue one POST",
+  );
+  await act(async () => pending.resolve({ sent: true }));
+  await settle();
+  assert.match(resend().textContent, /Отправить повторно \(60 с\)/);
+  assert.equal(resend().disabled, true);
+  assert.ok(
+    harness.dom.window.sessionStorage.getItem(
+      "heartbeat-email-verification:email-account-one",
+    ),
+  );
+
+  browserNow += 1_000;
+  await act(async () => window.dispatchEvent(new Event("focus")));
+  await settle();
+  assert.match(resend().textContent, /Отправить повторно \(59 с\)/);
+
+  await harness.render(null);
+  await harness.render(React.createElement(component.SettingsPage));
+  await settle();
+  assert.match(resend().textContent, /Отправить повторно \(59 с\)/);
+  assert.equal(
+    resend().disabled,
+    true,
+    "same-account remount restores the stored deadline",
+  );
+
+  profile.account.id = "email-account-two";
+  await harness.render(React.createElement(component.SettingsPage));
+  await settle();
+  assert.match(
+    resend().textContent,
+    /Отправить письмо для подтверждения email/,
+  );
+  assert.equal(resend().disabled, false);
+  await harness.unmount();
+});
+
+test("email confirmation is independent of the resend deadline", async () => {
+  const harness = createHarness(
+    "http://localhost/app/settings#verify-email=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  );
+  const calls = [];
+  const profile = {
+    account: {
+      id: "email-confirm-account",
+      name: "Synthetic account",
+      role: "user",
+      status: "active",
+      createdAt: "2026-01-01T00:00:00Z",
+    },
+    email: "qa@example.test",
+    emailVerified: false,
+    hasPassword: true,
+  };
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/me/sessions") return { sessions: [] };
+    if (path === "/me/email-verification/confirm") return undefined;
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const { SettingsPage } = settingsPage(api, { profile });
+  await harness.render(React.createElement(SettingsPage));
+  await settle();
+  assert.equal(harness.dom.window.location.hash, "");
+  const confirm = [...harness.host.querySelectorAll("button")].find((button) =>
+    button.textContent.includes("Подтвердить email"),
+  );
+  assert.ok(confirm);
+  await act(async () => confirm.click());
+  await settle();
+  assert.equal(
+    calls.filter((call) => call.path === "/me/email-verification/confirm")
+      .length,
+    1,
+  );
+  assert.match(harness.host.textContent, /Email подтверждён/);
+  assert.equal(
+    harness.dom.window.sessionStorage.getItem(
+      "heartbeat-email-verification:email-confirm-account",
+    ),
+    null,
+  );
+  await harness.unmount();
+});
+
+test("email verification 429 respects Retry-After and timeout ignores a late success", async (t) => {
+  await t.test("429 deadline", async () => {
+    const harness = createHarness("http://localhost/app/settings");
+    const calls = [];
+    const profile = {
+      account: {
+        id: "email-429-account",
+        name: "Synthetic account",
+        role: "user",
+        status: "active",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      email: "qa@example.test",
+      emailVerified: false,
+      hasPassword: true,
+    };
+    const { SettingsPage, SettingsApiError } = settingsPage(
+      async (path, options = {}) => {
+        calls.push({ path, options });
+        if (path === "/me/sessions") return { sessions: [] };
+        if (path === "/me/email-verification")
+          throw new SettingsApiError(429, "rate_limited", 127);
+        throw new Error(`Unexpected request: ${path}`);
+      },
+      { profile },
+    );
+    await harness.render(React.createElement(SettingsPage));
+    await settle();
+    const button = [...harness.host.querySelectorAll("button")].find((item) =>
+      item.textContent.includes("Отправить письмо для подтверждения email"),
+    );
+    await act(async () => button.click());
+    await settle();
+    const cooldown = [...harness.host.querySelectorAll("button")].find((item) =>
+      item.textContent.includes("Отправить повторно"),
+    );
+    assert.match(cooldown.textContent, /127 с/);
+    assert.equal(cooldown.disabled, true);
+    assert.equal(
+      calls.filter((call) => call.path === "/me/email-verification").length,
+      1,
+    );
+    await harness.unmount();
+  });
+
+  await t.test(
+    "request timeout keeps a conservative deadline and ignores late success",
+    async () => {
+      const harness = createHarness("http://localhost/app/settings");
+      const pending = deferred();
+      const timers = [];
+      const originalSetTimeout = harness.dom.window.setTimeout.bind(
+        harness.dom.window,
+      );
+      harness.dom.window.setTimeout = (callback, delay, ...args) => {
+        if (delay === 10_000) {
+          const entry = { callback: () => callback(...args), delay };
+          timers.push(entry);
+          return timers.length;
+        }
+        return originalSetTimeout(callback, delay, ...args);
+      };
+      harness.dom.window.clearTimeout = (id) => {
+        const entry = timers[id - 1];
+        if (entry) entry.cleared = true;
+      };
+      const calls = [];
+      const profile = {
+        account: {
+          id: "email-timeout-account",
+          name: "Synthetic account",
+          role: "user",
+          status: "active",
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        email: "qa@example.test",
+        emailVerified: false,
+        hasPassword: true,
+      };
+      const { SettingsPage } = settingsPage(
+        async (path, options = {}) => {
+          calls.push({ path, options });
+          if (path === "/me/sessions") return { sessions: [] };
+          if (path === "/me/email-verification") return pending.promise;
+          throw new Error(`Unexpected request: ${path}`);
+        },
+        { profile },
+      );
+      await harness.render(React.createElement(SettingsPage));
+      await settle();
+      const button = [...harness.host.querySelectorAll("button")].find((item) =>
+        item.textContent.includes("Отправить письмо для подтверждения email"),
+      );
+      await act(async () => button.click());
+      const requestTimer = timers.filter((entry) => !entry.cleared).at(-1);
+      assert.ok(requestTimer);
+      await act(async () => requestTimer.callback());
+      await settle();
+      assert.match(
+        harness.host.textContent,
+        /Ответ занял слишком много времени/,
+      );
+      const cooldown = [...harness.host.querySelectorAll("button")].find(
+        (item) => item.textContent.includes("Отправить повторно"),
+      );
+      assert.match(cooldown.textContent, /60 с/);
+      await act(async () => pending.resolve({ sent: true }));
+      await settle();
+      assert.doesNotMatch(
+        harness.host.textContent,
+        /Письмо с подтверждением запрошено/,
+      );
+      assert.equal(
+        calls.filter((call) => call.path === "/me/email-verification").length,
+        1,
+      );
+      await harness.unmount();
+    },
+  );
 });
 
 test("billing recovers its initial data load and retries both required GETs", async () => {
@@ -2122,4 +2487,119 @@ test("ConsoleShell menu is keyboard operable, closes on Escape, restores focus, 
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
   assert.equal(nav.dataset.open, "false");
   await harness.unmount();
+});
+
+test("registration challenge sends distinct captcha actions, normalizes code, and creates a session once", async () => {
+  const harness = createHarness(
+    "http://localhost/register?returnTo=%2Fapp%2Fsettings",
+  );
+  const calls = [];
+  const actions = [];
+  const challenge = {
+    id: "10000000-0000-4000-8000-000000000001",
+    email: "new-owner@example.test",
+    expiresAt: "2026-10-20T12:00:00.000Z",
+    resendAvailableAt: "2026-10-20T10:00:00.000Z",
+    serverNow: "2026-10-20T10:01:00.000Z",
+  };
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/auth/registration" && !options.method)
+      return { challenge: null };
+    if (path === "/auth/registration" && options.method === "POST")
+      return { challenge };
+    if (path === `/auth/registration/${challenge.id}/resend`)
+      return { challenge };
+    if (path === `/auth/registration/${challenge.id}/confirm`)
+      return { account: { id: "account-1" }, csrfToken: "synthetic-csrf" };
+    throw new Error(`Unexpected registration API request: ${path}`);
+  };
+  const router = {
+    replacements: [],
+    replace(path) {
+      this.replacements.push(path);
+    },
+    refresh() {},
+  };
+  const RegistrationForm = registrationComponent(async (path, options) => {
+    if (options?.body?.turnstileToken)
+      actions.push(options.body.turnstileToken.replace("synthetic-", ""));
+    return api(path, options);
+  }, router);
+
+  try {
+    await harness.render(React.createElement(RegistrationForm));
+    await settle();
+    assert.ok(harness.host.querySelector('input[name="name"]'));
+    await setReactInputValue(
+      harness.host.querySelector('input[name="name"]'),
+      "New Owner",
+    );
+    await setReactInputValue(
+      harness.host.querySelector('input[name="email"]'),
+      "new-owner@example.test",
+    );
+    await setReactInputValue(
+      harness.host.querySelector('input[name="password"]'),
+      "long synthetic passphrase",
+    );
+    await act(async () =>
+      harness.host.querySelector('[data-captcha-action="register"]').click(),
+    );
+    await submitReactForm(harness.host.querySelector("form"));
+
+    const start = calls.find(
+      (call) =>
+        call.path === "/auth/registration" && call.options.method === "POST",
+    );
+    assert.ok(start);
+    assert.deepEqual(JSON.parse(JSON.stringify(start.options.body)), {
+      name: "New Owner",
+      email: "new-owner@example.test",
+      password: "long synthetic passphrase",
+      turnstileToken: "synthetic-register",
+    });
+    assert.ok(harness.host.querySelector('input[name="code"]'));
+    assert.equal(harness.host.querySelector('input[name="password"]'), null);
+    assert.match(harness.host.textContent, /Проверьте почту/);
+    assert.equal(window.localStorage.length, 0);
+    assert.equal(window.sessionStorage.length, 0);
+
+    const resendButton = [...harness.host.querySelectorAll("button")].find(
+      (button) => button.textContent.includes("Отправить повторно"),
+    );
+    assert.ok(resendButton);
+    await act(async () => resendButton.click());
+    await act(async () =>
+      harness.host
+        .querySelector('[data-captcha-action="registration_resend"]')
+        .click(),
+    );
+    await submitReactForm(harness.host.querySelector("form"));
+    assert.ok(calls.some((call) => call.path.endsWith("/resend")));
+
+    await setReactInputValue(
+      harness.host.querySelector('input[name="code"]'),
+      "123 456",
+    );
+    await act(async () =>
+      harness.host
+        .querySelector('[data-captcha-action="registration_confirm"]')
+        .click(),
+    );
+    await submitReactForm(harness.host.querySelector("form"));
+    const confirm = calls.find((call) => call.path.endsWith("/confirm"));
+    assert.deepEqual(JSON.parse(JSON.stringify(confirm.options.body)), {
+      code: "123456",
+      turnstileToken: "synthetic-registration_confirm",
+    });
+    assert.deepEqual(actions, [
+      "register",
+      "registration_resend",
+      "registration_confirm",
+    ]);
+    assert.deepEqual(router.replacements, ["/app/settings"]);
+  } finally {
+    await harness.unmount();
+  }
 });

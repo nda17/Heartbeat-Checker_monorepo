@@ -127,11 +127,14 @@ func (m *Messenger) ListDestinations(ctx context.Context, accountID string) ([]M
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) && !errors.Is(err, authcontracts.ErrEmailUnverified) {
 			return nil, err
 		}
+		if err != nil {
+			currentEmail = ""
+		}
 		if err = tx.Commit(ctx); err != nil {
 			return nil, err
 		}
 	}
-	rows, err := m.pool.Query(ctx, `SELECT id::text,provider,kind,encrypted_target,status='ready',version FROM notifications.messenger_destinations WHERE account_id=$1 AND (provider='email' AND $2 OR provider IN ('telegram','max') AND $3) ORDER BY created_at,id`, accountID, m.cfg.EmailEnabled, m.cfg.Enabled)
+	rows, err := m.pool.Query(ctx, `SELECT id::text,provider,kind,encrypted_target,status='ready',version,email_proof_kind,email_verified_at FROM notifications.messenger_destinations WHERE account_id=$1 AND (provider='email' AND $2 OR provider IN ('telegram','max') AND $3) ORDER BY created_at,id`, accountID, m.cfg.EmailEnabled, m.cfg.Enabled)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +143,9 @@ func (m *Messenger) ListDestinations(ctx context.Context, accountID string) ([]M
 	for rows.Next() {
 		var d MessengerDestination
 		var encrypted []byte
-		if err = rows.Scan(&d.ID, &d.Provider, &d.Kind, &encrypted, &d.Ready, &d.Version); err != nil {
+		var proofKind *string
+		var verifiedAt *time.Time
+		if err = rows.Scan(&d.ID, &d.Provider, &d.Kind, &encrypted, &d.Ready, &d.Version, &proofKind, &verifiedAt); err != nil {
 			return nil, err
 		}
 		recipient, err := m.readRecipient(accountID, d.ID, "target", encrypted)
@@ -150,7 +155,7 @@ func (m *Messenger) ListDestinations(ctx context.Context, accountID string) ([]M
 		d.Label, d.ChatID, d.UserID = recipient.Label, recipient.Target.ChatID, recipient.Target.UserID
 		d.Email = recipient.Target.Email
 		if d.Provider == "email" {
-			d.Ready = d.Ready && currentEmail != "" && d.Email == currentEmail
+			d.Ready = d.Ready && proofKind != nil && emailProofReady(*proofKind, verifiedAt, d.Email, currentEmail)
 		}
 		if recipient.Target.ThreadID != "" {
 			d.ThreadID = &recipient.Target.ThreadID
@@ -280,13 +285,18 @@ func (m *Messenger) Disconnect(ctx context.Context, accountID, id string) error 
 	if !active {
 		return ErrMessengerNotFound
 	}
-	var status string
-	err = tx.QueryRow(ctx, `SELECT status FROM notifications.messenger_destinations WHERE account_id=$1 AND id=$2 FOR NO KEY UPDATE`, accountID, id).Scan(&status)
+	var status, provider string
+	err = tx.QueryRow(ctx, `SELECT status,provider FROM notifications.messenger_destinations WHERE account_id=$1 AND id=$2 FOR NO KEY UPDATE`, accountID, id).Scan(&status, &provider)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrMessengerNotFound
 	}
 	if err != nil {
 		return err
+	}
+	if provider == "email" && m.cfg.EmailCodes != nil {
+		if err = m.cfg.EmailCodes.CancelNotificationEmailTx(ctx, tx, accountID); err != nil {
+			return err
+		}
 	}
 	_, err = tx.Exec(ctx, `UPDATE notifications.messenger_destinations SET status='disconnected',version=version+1,updated_at=now() WHERE id=$1`, id)
 	if err != nil {

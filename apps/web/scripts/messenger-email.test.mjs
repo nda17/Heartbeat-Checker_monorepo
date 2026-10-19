@@ -105,6 +105,7 @@ function uiMocks() {
         { role: "alert", "data-success": success ? "true" : undefined },
         children,
       ),
+    Spinner: () => React.createElement("span", { className: "spinner" }),
     PasswordInput: (props) =>
       React.createElement("input", { ...props, type: "password" }),
     dateTime: (value) => String(value ?? ""),
@@ -116,7 +117,20 @@ function apiAliases(api) {
     "@/shared/api": {
       api,
       ApiError,
+      boundedRequest: (controller, request) => request(controller.signal),
       errorMessage: (error) => String(error?.message ?? "Ошибка"),
+    },
+    "@/shared/email-code": {
+      captureEmailCode(value) {
+        return { challenge: value, receivedAt: Date.now() };
+      },
+      normalizeEmailCode(value) {
+        const code = value.replace(/\s/g, "");
+        return /^[0-9]{6}$/.test(code) ? code : null;
+      },
+      useEmailCodeClock() {
+        return { now: Date.now(), resendSeconds: 0 };
+      },
     },
     "@/shared/ui": uiMocks(),
     "@/shared/dialog": {
@@ -128,6 +142,29 @@ function apiAliases(api) {
         ),
     },
   };
+}
+
+function loadEmailDestinationEditor(api) {
+  const emailAPI = async (path, options = {}) => {
+    if (
+      path === "/messenger-destinations/email/verification" &&
+      !options.method
+    )
+      return { challenge: null };
+    return api(path, options);
+  };
+  return loadComponent(
+    "../src/entities/messenger/email-editor.tsx",
+    apiAliases(emailAPI),
+  ).EmailDestinationEditor;
+}
+
+function loadMessengerEntity(api) {
+  return loadComponent("../src/entities/messenger/index.ts", {
+    "./email-editor": {
+      EmailDestinationEditor: loadEmailDestinationEditor(api),
+    },
+  });
 }
 
 function loadWebhookNotifications(api) {
@@ -146,10 +183,10 @@ function loadMessengerLinks(api, browserNow = Date.now()) {
   };
   const aliases = {
     ...apiAliases(api),
-    "@/entities/messenger": loadComponent(
-      "../src/entities/messenger/index.ts",
-      {},
-    ),
+    "@/entities/session": {
+      useSession: () => ({ profile: { emailVerified: true } }),
+    },
+    "@/entities/messenger": loadMessengerEntity(api),
     "@/shared/dialog": {
       Dialog: ({ title, children, onClose, busy }) =>
         React.createElement(
@@ -202,13 +239,122 @@ async function clickMessengerButton(harness, label) {
   await settle();
 }
 
+function pendingCommandApi(command, status = "pending") {
+  const link = messengerLink(
+    "copy-command-link",
+    "group",
+    status,
+    undefined,
+    new Date(Date.now() + 60 * 60_000).toISOString(),
+  );
+  const calls = [];
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/messenger-destinations")
+      return { enabled: true, emailEnabled: false, destinations: [] };
+    if (path === "/messenger-links" && options.method === "POST")
+      return { link, startUrl: null, command };
+    if (path === `/messenger-links/${link.id}`) return { link };
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  return { api, calls, link };
+}
+
+test("pending and observed messenger links keep waiting guidance visible and copy the complete command", async (t) => {
+  for (const status of ["pending", "observed"]) {
+    await t.test(status, async (nested) => {
+      for (const outcome of ["success", "failure", "late"]) {
+        await nested.test(outcome, async () => {
+          const harness = createHarness();
+          const command =
+            "/connect@heartbeat_test_bot 0123456789abcdef0123456789abcdef";
+          const { api } = pendingCommandApi(command, status);
+          let resolveCopy;
+          const writeText =
+            outcome === "success"
+              ? async (text) => assert.equal(text, command)
+              : outcome === "failure"
+                ? async () => {
+                    throw new Error("clipboard denied");
+                  }
+                : () => new Promise((resolve) => (resolveCopy = resolve));
+          Object.defineProperty(globalThis.navigator, "clipboard", {
+            configurable: true,
+            value: { writeText },
+          });
+          const MessengerLinks = loadMessengerLinks(api);
+          try {
+            await harness.render(React.createElement(MessengerLinks));
+            await clickMessengerButton(harness, "Telegram · группа");
+            assert.match(
+              harness.host.textContent,
+              status === "pending"
+                ? /Ожидаем сообщение в Telegram/
+                : /Telegram передал сообщение/,
+            );
+            assert.match(
+              harness.host.textContent,
+              /Не закрывайте это окно.*подключение придётся начать заново/s,
+            );
+            assert.ok(
+              harness.host.querySelector(".messenger-link-wait .spinner"),
+            );
+            assert.equal(
+              harness.host
+                .querySelector('[aria-label="Подключить чат"]')
+                .querySelector("code")?.textContent,
+              command,
+            );
+
+            const copyButton = harness.host.querySelector(
+              '[aria-label="Скопировать команду целиком"]',
+            );
+            assert.ok(copyButton);
+            assert.match(copyButton.textContent, /Копировать/);
+            await act(async () =>
+              copyButton.dispatchEvent(
+                new MouseEvent("click", { bubbles: true }),
+              ),
+            );
+            await settle();
+            if (outcome === "success") {
+              assert.match(
+                harness.host.textContent,
+                /Команда скопирована целиком/,
+              );
+            } else if (outcome === "failure") {
+              assert.match(harness.host.textContent, /Не удалось скопировать/);
+            } else {
+              assert.match(harness.host.textContent, /Копируем/);
+              await clickMessengerButton(harness, "Закрыть окно");
+              await act(async () => resolveCopy());
+              await settle();
+              assert.doesNotMatch(
+                harness.host.textContent,
+                /Команда скопирована целиком/,
+              );
+              assert.equal(harness.host.querySelector('[role="dialog"]'), null);
+            }
+          } finally {
+            await harness.unmount();
+          }
+        });
+      }
+    });
+  }
+});
+
 function webhookApi(api) {
   const aliases = {
     ...apiAliases(api),
+    "@/entities/session": {
+      useSession: () => ({ profile: { emailVerified: true } }),
+    },
     "next/link": ({ href, children }) =>
       React.createElement("a", { href }, children),
     "@/entities/monitor": {},
     "@/entities/messenger": {
+      EmailDestinationEditor: loadEmailDestinationEditor(api),
       destinationKindName: {
         private: "личный чат",
         group: "группа",
@@ -276,6 +422,17 @@ async function submitWebhook(input) {
   await settle();
 }
 
+async function submitRenderedForm(input) {
+  const form = input.closest("form");
+  await act(async () => {
+    form.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+    await Promise.resolve();
+  });
+  await settle();
+}
+
 async function clickButton(harness, label) {
   const button = [...harness.host.querySelectorAll("button")].find((item) =>
     item.textContent.includes(label),
@@ -287,7 +444,7 @@ async function clickButton(harness, label) {
   await settle();
 }
 
-test("email connection uses only the account address and sends an empty request", async () => {
+test("email account connection posts the explicit verified account address", async () => {
   const harness = createHarness();
   const calls = [];
   const destination = {
@@ -307,15 +464,13 @@ test("email connection uses only the account address and sends an empty request"
     if (path === "/messenger-destinations" && !options.method) {
       return { enabled: false, emailEnabled: true, destinations: [] };
     }
-    if (path === "/messenger-destinations/email") return { destination };
+    if (path === "/messenger-destinations/email" && options.method === "POST")
+      return { destination };
     throw new Error(`Unexpected request: ${path}`);
   };
   const aliases = {
     ...apiAliases(api),
-    "@/entities/messenger": loadComponent(
-      "../src/entities/messenger/index.ts",
-      {},
-    ),
+    "@/entities/messenger": loadMessengerEntity(api),
     "@/shared/dialog": {
       Dialog: ({ children }) => React.createElement("section", null, children),
     },
@@ -327,11 +482,20 @@ test("email connection uses only the account address and sends an empty request"
 
   try {
     await harness.render(
-      React.createElement(MessengerLinks, { email: "owner@example.test" }),
+      React.createElement(MessengerLinks, {
+        email: "owner@example.test",
+        emailVerified: true,
+      }),
     );
-    assert.match(harness.host.textContent, /owner@example\.test/);
+    assert.equal(
+      harness.host.querySelector('input[name="notificationEmail"]')?.value,
+      "owner@example.test",
+    );
     assert.match(harness.host.textContent, /Подключить email аккаунта/);
-    assert.equal(harness.host.querySelector('input[type="email"]'), null);
+    assert.equal(
+      harness.host.querySelector('input[type="email"]')?.value,
+      "owner@example.test",
+    );
     assert.equal(
       harness.host.querySelectorAll(".messenger-options button").length,
       0,
@@ -347,13 +511,19 @@ test("email connection uses only the account address and sends an empty request"
     });
 
     const connect = calls.find(
-      (call) => call.path === "/messenger-destinations/email",
+      (call) =>
+        call.path === "/messenger-destinations/email" &&
+        call.options.method === "POST",
     );
-    assert.equal(JSON.stringify(connect?.options.body), "{}");
+    assert.deepEqual(JSON.parse(JSON.stringify(connect?.options.body)), {
+      email: "owner@example.test",
+      destinationId: null,
+      version: 0,
+    });
     assert.equal(connect?.options.method, "POST");
     assert.equal(connect?.options.authenticated, true);
     assert.match(harness.host.textContent, /Подтверждённый email/);
-    assert.match(harness.host.textContent, /Отключить email/);
+    assert.match(harness.host.textContent, /Email уведомлений подключён/);
   } finally {
     await harness.unmount();
   }
@@ -383,6 +553,7 @@ test("email monitor route is off by default and saves the selected destination",
         destinations: [destination],
       };
     }
+    if (path === "/me") return { emailVerified: true };
     if (path === "/monitors/monitor-1/messenger-routes") {
       return { enabled: false, emailEnabled: true, routes: [] };
     }
@@ -401,13 +572,13 @@ test("email monitor route is off by default and saves the selected destination",
   };
   const aliases = {
     ...apiAliases(api),
+    "@/entities/session": {
+      useSession: () => ({ profile: { emailVerified: true } }),
+    },
     "next/link": ({ href, children }) =>
       React.createElement("a", { href }, children),
     "@/entities/monitor": {},
-    "@/entities/messenger": loadComponent(
-      "../src/entities/messenger/index.ts",
-      {},
-    ),
+    "@/entities/messenger": loadMessengerEntity(api),
     "./webhook": { WebhookNotifications: () => null },
   };
   const { MonitorNotifications } = loadComponent(
@@ -426,7 +597,9 @@ test("email monitor route is off by default and saves the selected destination",
       (heading) => heading.textContent === "Email",
     );
     assert.ok(emailHeading);
-    const form = emailHeading.closest("form");
+    const form = emailHeading.parentElement.querySelector(
+      'form:has(select[name="destinationId"])',
+    );
     const checkbox = form.querySelector('input[name="enabled"]');
     assert.equal(checkbox.checked, false, "a new email route must be opt-in");
     assert.equal(
@@ -452,6 +625,325 @@ test("email monitor route is off by default and saves the selected destination",
       version: 0,
     });
     assert.match(harness.host.textContent, /Настройки уведомлений сохранены/);
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("a late route save cannot restore the old route after email replacement", async () => {
+  const harness = createHarness();
+  const oldDestination = {
+    id: "email-old",
+    provider: "email",
+    kind: "email",
+    label: "old@example.test",
+    email: "old@example.test",
+    chatId: "",
+    userId: "",
+    threadId: null,
+    ready: true,
+    version: 4,
+  };
+  const newDestination = {
+    ...oldDestination,
+    id: "email-new",
+    label: "new@example.test",
+    email: "new@example.test",
+    version: 5,
+  };
+  let replaced = false;
+  let releaseSave;
+  const pendingSave = new Promise((resolve) => {
+    releaseSave = resolve;
+  });
+  const calls = [];
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/me")
+      return { email: "old@example.test", emailVerified: true };
+    if (path === "/messenger-destinations")
+      return {
+        enabled: true,
+        emailEnabled: true,
+        destinations: [replaced ? newDestination : oldDestination],
+      };
+    if (path === "/monitors/monitor-1/messenger-routes")
+      return {
+        enabled: true,
+        emailEnabled: true,
+        routes: [
+          {
+            provider: "email",
+            destinationId: replaced ? newDestination.id : oldDestination.id,
+            enabled: !replaced,
+            reminderMinutes: 0,
+            version: replaced ? 8 : 7,
+          },
+        ],
+      };
+    if (path.endsWith("/messenger-routes/email") && options.method === "PUT")
+      return pendingSave;
+    if (path === "/messenger-destinations/email" && options.method === "POST")
+      return {
+        challenge: {
+          id: "challenge-new-email",
+          email: "new@example.test",
+          expiresAt: "2030-01-01T00:00:00Z",
+        },
+      };
+    if (
+      path ===
+        "/messenger-destinations/email/verification/challenge-new-email/confirm" &&
+      options.method === "POST"
+    ) {
+      replaced = true;
+      return { destination: newDestination };
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const aliases = {
+    ...apiAliases(api),
+    "@/entities/session": {
+      useSession: () => ({
+        profile: { email: "old@example.test", emailVerified: true },
+      }),
+    },
+    "next/link": ({ href, children }) =>
+      React.createElement("a", { href }, children),
+    "@/entities/monitor": {},
+    "@/entities/messenger": loadMessengerEntity(api),
+    "./webhook": { WebhookNotifications: () => null },
+  };
+  const { MonitorNotifications } = loadComponent(
+    "../src/features/monitor-notifications/index.tsx",
+    aliases,
+  );
+  try {
+    await harness.render(
+      React.createElement(MonitorNotifications, {
+        monitor: { id: "monitor-1", name: "Checkout" },
+        onClose() {},
+      }),
+    );
+    const routeForm = () =>
+      [...harness.host.querySelectorAll("form")].find((form) =>
+        form.querySelector('select[name="destinationId"]'),
+      );
+    const route = routeForm();
+    assert.equal(route.querySelector('input[name="enabled"]').checked, true);
+    const checkbox = route.querySelector('input[name="enabled"]');
+    checkbox.checked = true;
+    await act(async () => {
+      route.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
+      await Promise.resolve();
+    });
+    await settle();
+    assert.ok(
+      calls.some((call) => call.path.endsWith("/messenger-routes/email")),
+    );
+
+    await clickButton(harness, "Изменить email уведомлений");
+    const address = harness.host.querySelector(
+      'input[name="notificationEmail"]',
+    );
+    await fillWebhookURL(address, "new@example.test");
+    await submitRenderedForm(address);
+    const code = harness.host.querySelector('input[name="emailCode"]');
+    assert.ok(code, "replacement begins an email-code challenge");
+    await fillWebhookURL(code, "123 456");
+    await submitRenderedForm(code);
+    await settle();
+    assert.equal(
+      routeForm().querySelector('input[name="enabled"]').checked,
+      false,
+    );
+    assert.equal(
+      routeForm().querySelector('select[name="destinationId"]').value,
+      newDestination.id,
+    );
+
+    await act(async () => {
+      releaseSave({
+        route: {
+          provider: "email",
+          destinationId: oldDestination.id,
+          enabled: true,
+          reminderMinutes: 0,
+          version: 8,
+        },
+      });
+      await Promise.resolve();
+    });
+    await settle();
+    assert.equal(
+      routeForm().querySelector('input[name="enabled"]').checked,
+      false,
+    );
+    assert.equal(
+      routeForm().querySelector('select[name="destinationId"]').value,
+      newDestination.id,
+    );
+    assert.equal(
+      harness.host.textContent.includes("Настройки уведомлений сохранены"),
+      false,
+    );
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("verified email refresh enables explicit connection without enabling or resetting the monitor route", async () => {
+  const harness = createHarness();
+  const calls = [];
+  let accountVerified = false;
+  const telegramDestination = {
+    id: "telegram-private-destination",
+    provider: "telegram",
+    kind: "private",
+    label: "Owner Telegram",
+    chatId: "123",
+    userId: "123",
+    threadId: null,
+    ready: true,
+    version: 1,
+  };
+  const destination = {
+    id: "verified-email-destination",
+    provider: "email",
+    kind: "email",
+    label: "owner@example.test",
+    email: "owner@example.test",
+    chatId: "",
+    userId: "",
+    threadId: null,
+    ready: true,
+    version: 1,
+  };
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/me")
+      return { email: "owner@example.test", emailVerified: accountVerified };
+    if (path === "/messenger-destinations")
+      return {
+        enabled: true,
+        emailEnabled: true,
+        destinations: [
+          telegramDestination,
+          ...(calls.some(
+            (call) => call.path === "/messenger-destinations/email",
+          )
+            ? [destination]
+            : []),
+        ],
+      };
+    if (path === "/monitors/monitor-1/messenger-routes")
+      return { enabled: true, emailEnabled: true, routes: [] };
+    if (path === "/messenger-destinations/email") return { destination };
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const aliases = {
+    ...apiAliases(api),
+    "next/link": ({ href, children }) =>
+      React.createElement("a", { href }, children),
+    "@/entities/session": {
+      useSession: () => ({
+        profile: { email: "owner@example.test", emailVerified: false },
+      }),
+    },
+    "@/entities/monitor": {},
+    "@/entities/messenger": loadMessengerEntity(api),
+    "./webhook": { WebhookNotifications: () => null },
+  };
+  const { MonitorNotifications } = loadComponent(
+    "../src/features/monitor-notifications/index.tsx",
+    aliases,
+  );
+  try {
+    await harness.render(
+      React.createElement(MonitorNotifications, {
+        monitor: { id: "monitor-1", name: "Checkout" },
+        onClose() {},
+      }),
+    );
+    await settle();
+    assert.match(
+      harness.host.textContent,
+      /Адрес уведомлений подтвердите кодом из письма/,
+    );
+    const initialConnect = [...harness.host.querySelectorAll("button")].find(
+      (button) => button.textContent.includes("Подключить email аккаунта"),
+    );
+    assert.ok(
+      initialConnect,
+      "the account address has an explicit connect action",
+    );
+    assert.equal(
+      calls.some(
+        (call) =>
+          call.path === "/messenger-destinations/email" &&
+          call.options.method === "POST",
+      ),
+      false,
+      "an unverified account must not connect before the owner acts",
+    );
+
+    accountVerified = true;
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    const telegramForm = [...harness.host.querySelectorAll("form")].find(
+      (item) => item.querySelector("h3")?.textContent === "Telegram",
+    );
+    assert.ok(telegramForm);
+    const reminder = telegramForm.querySelector(
+      'select[name="reminderMinutes"]',
+    );
+    reminder.value = "30";
+    reminder.dispatchEvent(new Event("change", { bubbles: true }));
+
+    const emailSection = [...harness.host.querySelectorAll("h3")].find(
+      (item) => item.textContent === "Email",
+    )?.parentElement;
+    const connect = [...emailSection.querySelectorAll("button")].find(
+      (button) => button.textContent.includes("Подключить email аккаунта"),
+    );
+    assert.ok(connect);
+    assert.equal(
+      connect.disabled,
+      false,
+      "verification refresh enables connection",
+    );
+    await act(async () => connect.click());
+    await settle();
+    const connectedForm = [...emailSection.querySelectorAll("form")].find(
+      (item) => item.querySelector('select[name="destinationId"]'),
+    );
+    const checkbox = connectedForm.querySelector('input[name="enabled"]');
+    assert.ok(checkbox);
+    assert.equal(
+      checkbox.checked,
+      false,
+      "connection must leave notifications opt-in",
+    );
+    assert.ok(
+      calls.some(
+        (call) =>
+          call.path === "/messenger-destinations/email" &&
+          call.options.method === "POST",
+      ),
+    );
+    assert.equal(
+      reminder.value,
+      "30",
+      "refresh must preserve unsaved route fields",
+    );
+    assert.equal(
+      calls.some((call) => call.path.endsWith("/messenger-routes/email")),
+      false,
+      "connecting an address must not save or enable the monitor route",
+    );
+    assert.match(harness.host.textContent, /Email уведомлений подключён/);
   } finally {
     await harness.unmount();
   }
@@ -1044,7 +1536,7 @@ test("Telegram group and topic permission failures stay explicit before TTL and 
             { provider: "telegram", kind },
           ]),
         );
-        assert.match(harness.host.textContent, /Ожидаем сообщение боту/);
+        assert.match(harness.host.textContent, /Ожидаем сообщение в Telegram/);
       } finally {
         await harness.unmount();
       }
@@ -1277,7 +1769,7 @@ test("closing a link invalidates its pending poll before a new group link starts
     await settle();
     assert.match(harness.host.textContent, /token-2/);
     assert.doesNotMatch(harness.host.textContent, /Operations/);
-    assert.match(harness.host.textContent, /Ожидаем сообщение боту/);
+    assert.match(harness.host.textContent, /Ожидаем сообщение в Telegram/);
   } finally {
     await harness.unmount();
   }

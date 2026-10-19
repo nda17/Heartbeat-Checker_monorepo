@@ -39,8 +39,9 @@ type Config struct {
 }
 
 type Module struct {
-	server *authhttp.Server
-	repo   *postgres.Repository
+	server  *authhttp.Server
+	repo    *postgres.Repository
+	service *service.Service
 }
 
 // EmailForNotificationsTx reads the confirmed account address after the caller
@@ -134,7 +135,7 @@ func New(pool *pgxpool.Pool, accounts contracts.Service, captcha CaptchaVerifier
 		RateLimitWindow:   cfg.RateLimitWindow,
 		AccountDeletion:   cfg.AccountDeletion,
 	})
-	return &Module{server: authhttp.New(svc, cfg.Origin, cfg.CookieSecure, cfg.SessionTTL), repo: repo}, nil
+	return &Module{server: authhttp.New(svc, cfg.Origin, cfg.CookieSecure, cfg.SessionTTL), repo: repo, service: svc}, nil
 }
 
 func (m *Module) Register(mux *http.ServeMux) { m.server.Register(mux) }
@@ -163,3 +164,30 @@ func (m *Module) AdminSessionCount(ctx context.Context, tx pgx.Tx, accountID str
 }
 
 func Cleanup(ctx context.Context, tx pgx.Tx) error { return postgres.Cleanup(ctx, tx) }
+
+func (m *Module) StartNotificationEmailTx(ctx context.Context, tx pgx.Tx, input authcontracts.NotificationEmailInput, ip string) (authcontracts.EmailCodeChallenge, error) {
+	return m.service.StartNotificationEmailTx(ctx, tx, input, ip)
+}
+func (m *Module) CurrentNotificationEmail(ctx context.Context, accountID string) (authcontracts.EmailCodeChallenge, error) {
+	return m.service.CurrentNotificationEmail(ctx, accountID)
+}
+func (m *Module) ResendNotificationEmailTx(ctx context.Context, tx pgx.Tx, accountID, id, ip string) (authcontracts.EmailCodeChallenge, error) {
+	return m.service.ResendNotificationEmailTx(ctx, tx, accountID, id, ip)
+}
+func (m *Module) ConfirmNotificationEmailTx(ctx context.Context, tx pgx.Tx, accountID, id, code, ip string) (authcontracts.NotificationEmailProof, bool, error) {
+	return m.service.ConfirmNotificationEmailTx(ctx, tx, accountID, id, code, ip)
+}
+
+func (m *Module) CancelNotificationEmailTx(ctx context.Context, tx pgx.Tx, accountID string) error {
+	return m.service.CancelNotificationEmailTx(ctx, tx, accountID)
+}
+
+func (m *Module) PreflightNotificationEmailStart(ctx context.Context, in authcontracts.NotificationEmailInput, ip string) error {
+	return m.service.PreflightNotificationEmailStart(ctx, in, ip)
+}
+func (m *Module) PreflightNotificationEmailResend(ctx context.Context, accountID, id, ip string) error {
+	return m.service.PreflightNotificationEmailResend(ctx, accountID, id, ip)
+}
+func (m *Module) PreflightNotificationEmailConfirm(ctx context.Context, accountID, id, code, ip string) error {
+	return m.service.PreflightNotificationEmailConfirm(ctx, accountID, id, code, ip)
+}

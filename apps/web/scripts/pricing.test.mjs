@@ -95,6 +95,131 @@ const pricing = (pricePerMonitorMinor, version) => ({
   updatedAt: `2026-10-${String(version).padStart(2, "0")}T10:00:00.000Z`,
 });
 
+test("SSR public pricing forwards only the edge-overwritten single client IP", async (t) => {
+  for (const clientIP of ["192.0.2.41", "2001:db8::41"]) {
+    await t.test(clientIP, async () => {
+      const calls = [];
+      const reader = publicPricingReader(
+        async () => ({
+          get(name) {
+            assert.equal(name, "X-Heartbeat-Client-IP");
+            return clientIP;
+          },
+        }),
+        async (url, options) => {
+          calls.push({ url, options });
+          return {
+            ok: true,
+            json: async () => ({ pricing: pricing(2400, 4) }),
+          };
+        },
+      );
+      assert.deepEqual(await reader(), pricing(2400, 4));
+      assert.equal(calls.length, 1);
+      assert.equal(
+        calls[0].url,
+        "http://go-api.internal/api/v1/billing/pricing",
+      );
+      assert.deepEqual(
+        Object.fromEntries(Object.entries(calls[0].options.headers)),
+        {
+          "X-Heartbeat-Client-IP": clientIP,
+        },
+      );
+      assert.equal(calls[0].options.cache, "no-store");
+    });
+  }
+});
+
+test("SSR pricing fails closed for missing, malformed, duplicate, and unspecified client IPs", async (t) => {
+  for (const clientIP of [
+    null,
+    "",
+    "192.0.2.1, 198.51.100.2",
+    "192.0.2.1,192.0.2.1",
+    "for=192.0.2.1",
+    "[2001:db8::1]",
+    "fe80::1%en0",
+    " 192.0.2.1",
+    "192.0.2.1 ",
+    "0.0.0.0",
+    "::",
+  ]) {
+    await t.test(String(clientIP), async () => {
+      let fetches = 0;
+      const reader = publicPricingReader(
+        async () => ({ get: () => clientIP }),
+        async () => {
+          fetches += 1;
+          return {
+            ok: true,
+            json: async () => ({ pricing: pricing(2400, 4) }),
+          };
+        },
+      );
+      assert.equal(await reader(), null);
+      assert.equal(fetches, 0, "invalid identity must not reach the API");
+    });
+  }
+});
+
+test("SSR pricing ignores cookies and all unrelated forwarding headers", async () => {
+  let fetchOptions;
+  const reader = publicPricingReader(
+    async () => ({
+      get(name) {
+        assert.equal(name, "X-Heartbeat-Client-IP");
+        return "198.51.100.77";
+      },
+      // These values are deliberately exposed by the incoming request object.
+      // The reader may consult and forward only the dedicated edge header.
+      entries() {
+        return [
+          ["cookie", "hc_session=synthetic"],
+          ["authorization", "Bearer synthetic"],
+          ["x-forwarded-for", "203.0.113.8"],
+          ["forwarded", "for=203.0.113.9"],
+        ];
+      },
+    }),
+    async (_url, options) => {
+      fetchOptions = options;
+      return { ok: true, json: async () => ({ pricing: pricing(2400, 4) }) };
+    },
+  );
+  assert.deepEqual(await reader(), pricing(2400, 4));
+  assert.deepEqual(Object.fromEntries(Object.entries(fetchOptions.headers)), {
+    "X-Heartbeat-Client-IP": "198.51.100.77",
+  });
+  assert.equal("credentials" in fetchOptions, false);
+});
+
+test("SSR pricing returns null when Next headers or the fixed API read fails", async (t) => {
+  await t.test("headers() throws outside a request context", async () => {
+    let fetches = 0;
+    const reader = publicPricingReader(
+      async () => {
+        throw new Error("request context unavailable");
+      },
+      async () => {
+        fetches += 1;
+        return { ok: true, json: async () => ({ pricing: pricing(2400, 4) }) };
+      },
+    );
+    assert.equal(await reader(), null);
+    assert.equal(fetches, 0);
+  });
+  await t.test("API fetch rejects", async () => {
+    const reader = publicPricingReader(
+      async () => ({ get: () => "192.0.2.41" }),
+      async () => {
+        throw new Error("API unavailable");
+      },
+    );
+    assert.equal(await reader(), null);
+  });
+});
+
 function uiMocks() {
   return {
     Arrow: () => React.createElement("span", null, "→"),
@@ -136,6 +261,21 @@ function adminPricingComponent(api) {
     },
     "@/shared/ui": uiMocks(),
   }).AdminPricing;
+}
+
+function publicPricingReader(headers, fetchImpl) {
+  return loadComponent(
+    "../src/entities/billing/server.ts",
+    {
+      "server-only": {},
+      "next/headers": { headers },
+      "./index": pricingEntity,
+    },
+    {
+      process: { env: { GO_API_ORIGIN: "http://go-api.internal" } },
+      fetch: fetchImpl,
+    },
+  ).readPublicPricing;
 }
 
 async function fill(input, value) {

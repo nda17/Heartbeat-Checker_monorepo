@@ -355,17 +355,38 @@ def run_backup(state, path, client):
         raise BackupError(code) from exc
 
 
+def format_size(size):
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f}".replace(".", ",") + " МБ"
+    return f"{size / 1024:.1f}".replace(".", ",") + " КБ"
+
+
 def report(state, path, client):
     if state.get("report_sent"):
         return True
     if state.get("status") == "success":
-        link = client.generate_presigned_url("get_object", Params={"Bucket": os.environ["BACKUP_S3_BUCKET"],
-                                              "Key": state["object_key"]}, ExpiresIn=3600)
-        text = ("Резервная копия Heartbeat Checker за " + state["date"] + " готова.\n"
+        now = utcnow()
+        moscow = ZoneInfo("Europe/Moscow")
+        # A delayed unsent report must not outlive the archive's retention.
+        # Use the conservative 14-day boundary; prune itself is unchanged.
+        retained_until = datetime.fromisoformat(state["date"]).replace(tzinfo=moscow) + timedelta(days=14)
+        lifetime = min(604800, int((retained_until - now).total_seconds()))
+        text = ("Резервная копия Heartbeat Checker за " + state["date"] + " была создана.\n"
                 "База: heartbeat (все таблицы и ledger).\n"
                 "S3: загружена, SHA256 проверен, скачанный архив восстановлен в отдельном PostgreSQL.\n"
-                "Размер: " + str(state["bytes"]) + " байт.\nSHA256: " + state["ciphertext_sha256"]
-                + "\nЗашифрованный архив (ссылка на 1 час):\n" + link)
+                "Размер: " + format_size(state["bytes"]) + ".\nSHA256: " + state["ciphertext_sha256"])
+        retention_date = retained_until.strftime("%d.%m.%Y %H:%M МСК")
+        if lifetime > 0:
+            link = client.generate_presigned_url("get_object", Params={"Bucket": os.environ["BACKUP_S3_BUCKET"],
+                                                  "Key": state["object_key"]}, ExpiresIn=lifetime)
+            expires = (now + timedelta(seconds=lifetime)).astimezone(moscow).strftime("%d.%m.%Y %H:%M МСК")
+            duration = "7 дней" if lifetime == 604800 else "оставшийся срок хранения"
+            text += ("\nСсылка действует " + duration + ", до " + expires + "."
+                     + "\nСрок хранения копии — 14 дней; граница выдачи ссылки: " + retention_date + "."
+                     + "\nЗашифрованный архив:\n" + link)
+        else:
+            text += ("\nСрок хранения 14 дней истёк " + retention_date
+                     + ". Ссылка на архив не формируется; его доступность не подтверждена.")
         if state.get("retention_warning"):
             text += "\nВнимание: очистка копий старше 14 дней не выполнена."
     else:

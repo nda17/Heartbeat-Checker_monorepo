@@ -131,6 +131,42 @@ function AndroidIcon() {
     </svg>
   );
 }
+// Brand silhouettes match aeroCRM's shared BrandIcons; keep them separate from action glyphs.
+const vkLogoPath =
+  "m4.2653 4.2653c-1.2653 1.2653-1.2653 3.30177-1.2653 7.3747v.72c0 4.0729 0 6.1094 1.2653 7.3747s3.30176 1.2653 7.3747 1.2653h.72c4.0729 0 6.1094 0 7.3747-1.2653s1.2653-3.3018 1.2653-7.3747v-.72c0-4.07293 0-6.1094-1.2653-7.3747s-3.3018-1.2653-7.3747-1.2653h-.72c-4.07294 0-6.1094 0-7.3747 1.2653zm1.7347 4.2347c.09636 4.6823 2.55576 7.5 6.6095 7.5h.2351v-2.6787c1.4764.1499 2.5773 1.2536 3.0268 2.6787h2.1286c-.5775-2.1318-2.0747-3.3105-3.0052-3.7608.9298-.5569 2.2458-1.9071 2.5557-3.7392h-1.9365c-.4064 1.48991-1.6152 2.8401-2.7701 2.9683v-2.9683h-1.9675v5.1967c-1.19737-.2997-2.75931-1.7572-2.82331-5.1967z";
+export function OAuthIcon({ provider }: { provider: "yandex" | "vk" }) {
+  return (
+    <svg
+      className="oauth-provider-icon"
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {provider === "vk" ? (
+        <path
+          fill="currentColor"
+          fillRule="evenodd"
+          clipRule="evenodd"
+          d={vkLogoPath}
+        />
+      ) : (
+        <>
+          <path
+            fill="#FC3F1D"
+            d="M2.04 12c0-5.523 4.476-10 10-10 5.522 0 10 4.477 10 10s-4.478 10-10 10c-5.524 0-10-4.477-10-10z"
+          />
+          <path
+            fill="#fff"
+            d="M13.32 7.666h-.924c-1.694 0-2.585.858-2.585 2.123 0 1.43.616 2.1 1.881 2.959l1.045.704-3.003 4.487H7.49l2.695-4.014c-1.55-1.111-2.42-2.19-2.42-4.015 0-2.288 1.595-3.85 4.62-3.85h3.003v11.868H13.32V7.666z"
+          />
+        </>
+      )}
+    </svg>
+  );
+}
+
 export function MessengerIcon({ brand }: { brand: "vk" | "max" | "telegram" }) {
   const gradientId = `telegram-${useId().replace(/:/g, "")}`;
   // Official Telegram press assets: https://telegram.org/tour/screenshots
@@ -179,7 +215,7 @@ export function MessengerIcon({ brand }: { brand: "vk" | "max" | "telegram" }) {
       {brand === "vk" ? (
         <path
           clipRule="evenodd"
-          d="m4.2653 4.2653c-1.2653 1.2653-1.2653 3.30177-1.2653 7.3747v.72c0 4.0729 0 6.1094 1.2653 7.3747s3.30176 1.2653 7.3747 1.2653h.72c4.0729 0 6.1094 0 7.3747-1.2653s1.2653-3.3018 1.2653-7.3747v-.72c0-4.07293 0-6.1094-1.2653-7.3747s-3.3018-1.2653-7.3747-1.2653h-.72c-4.07294 0-6.1094 0-7.3747 1.2653zm1.7347 4.2347c.09636 4.6823 2.55576 7.5 6.6095 7.5h.2351v-2.6787c1.4764.1499 2.5773 1.2536 3.0268 2.6787h2.1286c-.5775-2.1318-2.0747-3.3105-3.0052-3.7608.9298-.5569 2.2458-1.9071 2.5557-3.7392h-1.9365c-.4064 1.48991-1.6152 2.8401-2.7701 2.9683v-2.9683h-1.9675v5.1967c-1.19737-.2997-2.75931-1.7572-2.82331-5.1967z"
+          d={vkLogoPath}
           fill="currentColor"
           fillRule="evenodd"
         />
@@ -210,7 +246,7 @@ export function PublicFooter({
         >
           <h2>Установка приложения</h2>
           {androidAvailable ? (
-            <a href="/downloads/android">
+            <a href="/apps/android/download">
               <AndroidIcon />
               <span>Скачать .APK по прямой ссылке</span>
             </a>

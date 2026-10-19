@@ -33,6 +33,10 @@ type webhookFixture struct {
 }
 
 func newWebhookFixture(t *testing.T) *webhookFixture {
+	return newWebhookFixtureWithPoolSize(t, 12)
+}
+
+func newWebhookFixtureWithPoolSize(t *testing.T, maxConns int32) *webhookFixture {
 	t.Helper()
 	baseURL := os.Getenv("HEARTBEAT_TEST_DATABASE_URL")
 	if baseURL == "" {
@@ -69,7 +73,7 @@ func newWebhookFixture(t *testing.T) *webhookFixture {
 	if err != nil {
 		t.Fatalf("parse isolated webhook test database URL: %v", err)
 	}
-	poolConfig.MaxConns = 12
+	poolConfig.MaxConns = maxConns
 	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
 	if err != nil {
 		t.Fatal("connect to isolated webhook test database")

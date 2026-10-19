@@ -40,6 +40,10 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/oauth/registration/confirm", s.oauthConfirm)
 	mux.HandleFunc("GET /api/v1/me/identities", s.oauthIdentities)
 	mux.HandleFunc("DELETE /api/v1/me/identities/{provider}", s.oauthUnlink)
+	mux.HandleFunc("POST /api/v1/auth/registration", s.startRegistration)
+	mux.HandleFunc("GET /api/v1/auth/registration", s.getRegistration)
+	mux.HandleFunc("POST /api/v1/auth/registration/{id}/resend", s.resendRegistration)
+	mux.HandleFunc("POST /api/v1/auth/registration/{id}/confirm", s.confirmRegistration)
 	mux.HandleFunc("POST /api/v1/auth/register", s.register)
 	mux.HandleFunc("POST /api/v1/auth/verify", s.verify)
 	mux.HandleFunc("POST /api/v1/auth/login", s.login)
@@ -81,6 +85,11 @@ func fail(w http.ResponseWriter, status int, code string) {
 }
 func failService(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, authcontracts.ErrEmailCodeInvalid):
+		fail(w, 400, "email_code_invalid")
+	case errors.Is(err, authcontracts.ErrEmailCodeRateLimited):
+		w.Header().Set("Retry-After", "60")
+		fail(w, 429, "email_code_rate_limited")
 	case errors.Is(err, service.ErrOAuthEmailConflict):
 		fail(w, 409, "oauth_email_conflict")
 	case errors.Is(err, service.ErrOAuthEmailRequired):

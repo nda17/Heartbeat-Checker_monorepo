@@ -19,6 +19,11 @@ func messengerWrite(w http.ResponseWriter, status int, value any) {
 func messengerFailure(w http.ResponseWriter, err error) {
 	status, code := http.StatusServiceUnavailable, "temporarily_unavailable"
 	switch {
+	case errors.Is(err, auth.ErrEmailCodeInvalid):
+		status, code = 400, "email_code_invalid"
+	case errors.Is(err, auth.ErrEmailCodeRateLimited):
+		status, code = 429, "email_code_rate_limited"
+		w.Header().Set("Retry-After", "60")
 	case errors.Is(err, auth.ErrEmailUnverified):
 		status, code = 409, "email_not_verified"
 	case errors.Is(err, ErrTelegramPrivateRequired):
@@ -65,14 +70,17 @@ func messengerDecode(w http.ResponseWriter, r *http.Request, value any) bool {
 
 func (m *Messenger) RegisterAPI(mux *http.ServeMux, protect func(http.Handler) http.Handler) {
 	for pattern, handler := range map[string]http.HandlerFunc{
-		"POST /api/v1/messenger-destinations/email":             m.connectEmail,
-		"POST /api/v1/messenger-links":                          m.createLink,
-		"GET /api/v1/messenger-links/{id}":                      m.getLink,
-		"POST /api/v1/messenger-links/{id}/confirm":             m.confirmLink,
-		"GET /api/v1/messenger-destinations":                    m.destinations,
-		"DELETE /api/v1/messenger-destinations/{id}":            m.disconnect,
-		"GET /api/v1/monitors/{id}/messenger-routes":            m.routes,
-		"PUT /api/v1/monitors/{id}/messenger-routes/{provider}": m.putRoute,
+		"GET /api/v1/messenger-destinations/email/verification":               m.emailVerification,
+		"POST /api/v1/messenger-destinations/email/verification/{id}/resend":  m.resendEmailVerification,
+		"POST /api/v1/messenger-destinations/email/verification/{id}/confirm": m.confirmEmailVerification,
+		"POST /api/v1/messenger-destinations/email":                           m.connectEmail,
+		"POST /api/v1/messenger-links":                                        m.createLink,
+		"GET /api/v1/messenger-links/{id}":                                    m.getLink,
+		"POST /api/v1/messenger-links/{id}/confirm":                           m.confirmLink,
+		"GET /api/v1/messenger-destinations":                                  m.destinations,
+		"DELETE /api/v1/messenger-destinations/{id}":                          m.disconnect,
+		"GET /api/v1/monitors/{id}/messenger-routes":                          m.routes,
+		"PUT /api/v1/monitors/{id}/messenger-routes/{provider}":               m.putRoute,
 	} {
 		mux.Handle(pattern, protect(handler))
 	}

@@ -404,6 +404,229 @@ test("MFA enrollment renders a local SVG QR from the server otpauth URI", async 
   );
 });
 
+test("MFA TOTP fields normalize ASCII whitespace but preserve recovery codes", async (t) => {
+  const future = "2099-01-20T00:00:00Z";
+  for (const whitespace of [" ", "\u00a0"]) {
+    await t.test(
+      `verify accepts ${whitespace === " " ? "space" : "NBSP"}`,
+      async (nested) => {
+        const calls = [];
+        const api = apiStub(
+          {
+            "/auth/mfa": {
+              enabled: true,
+              verifiedUntil: null,
+              stepUpUntil: null,
+              recoveryCodesRemaining: 4,
+            },
+            "/auth/mfa/verify": {
+              verifiedUntil: future,
+              stepUpUntil: future,
+            },
+          },
+          calls,
+        );
+        const harness = createHarness();
+        nested.after(() => harness.unmount());
+        const { AdminMfa } = loadComponent(
+          "../src/features/admin-mfa/index.tsx",
+          sharedAliases(api),
+        );
+        await harness.render(
+          React.createElement(AdminMfa, {
+            onState() {},
+            onSessionVerified: async () => {},
+            onBusyChange() {},
+          }),
+        );
+        await act(async () => Promise.resolve());
+        const form = harness.host.querySelector(".admin-mfa-verify");
+        fill(form, "password", "synthetic-password");
+        fill(form, "code", `123${whitespace}456`);
+        await submit(form);
+        const request = calls.find((call) => call.path === "/auth/mfa/verify");
+        assert.equal(request?.body.code, "123456");
+        assert.match(request?.body.code ?? "", /^\d{6}$/);
+      },
+    );
+  }
+
+  await t.test("non-digit TOTP input is not submitted", async (nested) => {
+    const calls = [];
+    const api = apiStub(
+      {
+        "/auth/mfa": {
+          enabled: true,
+          verifiedUntil: null,
+          stepUpUntil: null,
+          recoveryCodesRemaining: 4,
+        },
+        "/auth/mfa/verify": {
+          verifiedUntil: future,
+          stepUpUntil: future,
+        },
+      },
+      calls,
+    );
+    const harness = createHarness();
+    nested.after(() => harness.unmount());
+    const { AdminMfa } = loadComponent(
+      "../src/features/admin-mfa/index.tsx",
+      sharedAliases(api),
+    );
+    await harness.render(
+      React.createElement(AdminMfa, {
+        onState() {},
+        onSessionVerified: async () => {},
+        onBusyChange() {},
+      }),
+    );
+    await act(async () => Promise.resolve());
+    const form = harness.host.querySelector(".admin-mfa-verify");
+    fill(form, "password", "synthetic-password");
+    fill(form, "code", "123x456");
+    await submit(form);
+    assert.equal(
+      calls.some((call) => call.path === "/auth/mfa/verify"),
+      false,
+    );
+  });
+
+  await t.test(
+    "enrollment confirmation and recovery-code replacement normalize TOTP",
+    async (nested) => {
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+      const calls = [];
+      const api = apiStub(
+        {
+          "/auth/mfa": (() => {
+            let reads = 0;
+            return () =>
+              ++reads === 1
+                ? {
+                    enabled: false,
+                    verifiedUntil: null,
+                    stepUpUntil: null,
+                    recoveryCodesRemaining: 0,
+                  }
+                : {
+                    enabled: true,
+                    verifiedUntil: future,
+                    stepUpUntil: future,
+                    recoveryCodesRemaining: 4,
+                  };
+          })(),
+          "/auth/mfa/enrollment": {
+            enrollmentId: "synthetic-enrollment",
+            secret: "SYNTHETICSECRET",
+            otpauthUri: "otpauth://totp/test?secret=SYNTHETICSECRET",
+            expiresAt,
+          },
+          "/auth/mfa/enrollment/confirm": {
+            recoveryCodes: ["synthetic-recovery"],
+            verifiedUntil: future,
+            stepUpUntil: future,
+          },
+          "/auth/mfa/recovery-codes": { recoveryCodes: ["synthetic-new-code"] },
+        },
+        calls,
+      );
+      const harness = createHarness();
+      nested.after(() => harness.unmount());
+      const { AdminMfa } = loadComponent(
+        "../src/features/admin-mfa/index.tsx",
+        sharedAliases(api),
+      );
+      await harness.render(
+        React.createElement(AdminMfa, {
+          onState() {},
+          onSessionVerified: async () => {},
+          onBusyChange() {},
+        }),
+      );
+      await act(async () => Promise.resolve());
+      let form = harness.host.querySelector("form");
+      fill(form, "password", "synthetic-password");
+      await submit(form);
+      form = [...harness.host.querySelectorAll("form")].find((item) =>
+        item.elements.namedItem("code"),
+      );
+      fill(form, "code", "123 456");
+      await submit(form);
+      assert.equal(
+        calls.find((call) => call.path === "/auth/mfa/enrollment/confirm")?.body
+          .code,
+        "123456",
+      );
+      const settings = harness.host.querySelector(
+        ".admin-mfa-settings summary",
+      );
+      await act(async () => settings.click());
+      const replaceForm = [
+        ...harness.host.querySelectorAll(".admin-security-forms form"),
+      ].find((item) => item.textContent.includes("Новые резервные коды"));
+      fill(replaceForm, "password", "synthetic-password");
+      fill(replaceForm, "code", "654\u00a0321");
+      await submit(replaceForm);
+      assert.equal(
+        calls.find((call) => call.path === "/auth/mfa/recovery-codes")?.body
+          .code,
+        "654321",
+      );
+    },
+  );
+
+  await t.test(
+    "recovery-code verification preserves the supplied token",
+    async (nested) => {
+      const calls = [];
+      const api = apiStub(
+        {
+          "/auth/mfa": {
+            enabled: true,
+            verifiedUntil: null,
+            stepUpUntil: null,
+            recoveryCodesRemaining: 4,
+          },
+          "/auth/mfa/recovery": {
+            verifiedUntil: future,
+            stepUpUntil: future,
+          },
+        },
+        calls,
+      );
+      const harness = createHarness();
+      nested.after(() => harness.unmount());
+      const { AdminMfa } = loadComponent(
+        "../src/features/admin-mfa/index.tsx",
+        sharedAliases(api),
+      );
+      await harness.render(
+        React.createElement(AdminMfa, {
+          onState() {},
+          onSessionVerified: async () => {},
+          onBusyChange() {},
+        }),
+      );
+      await act(async () => Promise.resolve());
+      await act(async () =>
+        [...harness.host.querySelectorAll("button")]
+          .find((button) =>
+            button.textContent.includes("Использовать резервный код"),
+          )
+          .click(),
+      );
+      const form = harness.host.querySelector(".admin-mfa-verify");
+      fill(form, "password", "synthetic-password");
+      fill(form, "code", "AB12 CD34");
+      await submit(form);
+      const request = calls.find((call) => call.path === "/auth/mfa/recovery");
+      assert.equal(request?.body.recoveryCode, "AB12 CD34");
+      assert.equal(request?.body.code, undefined);
+    },
+  );
+});
+
 test("MFA rotation ignores repeated confirmation and adopts the server's new access window", async (t) => {
   const calls = [];
   const enrollmentExpiresAt = new Date(
@@ -974,6 +1197,7 @@ test("API errors hide proxy error bodies and preserve structured server codes", 
     {
       ok: false,
       status: 500,
+      headers: new Headers(),
       async json() {
         throw new SyntaxError("not JSON");
       },
@@ -981,6 +1205,7 @@ test("API errors hide proxy error bodies and preserve structured server codes", 
     {
       ok: false,
       status: 502,
+      headers: new Headers(),
       async json() {
         return null;
       },
@@ -988,6 +1213,7 @@ test("API errors hide proxy error bodies and preserve structured server codes", 
     {
       ok: false,
       status: 503,
+      headers: new Headers(),
       async json() {
         return { error: "request_timeout" };
       },

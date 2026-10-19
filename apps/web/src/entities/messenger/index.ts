@@ -43,3 +43,5 @@ export const destinationKindName = {
   topic: "топик группы",
   email: "подтверждённый email",
 } as const;
+
+export { EmailDestinationEditor } from "./email-editor";

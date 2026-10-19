@@ -401,11 +401,15 @@ func Cleanup(ctx context.Context, tx pgx.Tx) error {
 			WHERE id IN (SELECT id FROM auth.mail_jobs WHERE status IN ('pending','sending') AND (expires_at<=now()
 			OR (purpose='registration' AND NOT EXISTS (SELECT 1 FROM auth.registration_challenges c WHERE c.token_hash=auth.mail_jobs.token_hash AND c.consumed_at IS NULL AND c.expires_at>now()))
 			OR (purpose='email_verification' AND NOT EXISTS (SELECT 1 FROM auth.email_verification_tokens t JOIN auth.credentials c ON c.account_id=t.account_id JOIN accounts.accounts a ON a.id=t.account_id WHERE t.token_hash=auth.mail_jobs.token_hash AND t.consumed_at IS NULL AND t.expires_at>now() AND c.email=t.email AND c.email_verified_at IS NULL AND a.status='active'))
-			OR (purpose='reset' AND NOT EXISTS (SELECT 1 FROM auth.password_reset_tokens t JOIN auth.credentials c ON c.account_id=t.account_id WHERE t.token_hash=auth.mail_jobs.token_hash AND t.consumed_at IS NULL AND t.expires_at>now() AND t.credential_version=c.version)))
+			OR (purpose='email_code' AND NOT EXISTS (SELECT 1 FROM auth.email_code_challenges c WHERE c.code_hash=auth.mail_jobs.token_hash AND c.consumed_at IS NULL AND c.expires_at>now() AND c.failed_attempts<5 AND c.deliverable
+              AND ((c.purpose='registration' AND NOT EXISTS (SELECT 1 FROM auth.credentials a WHERE a.email=c.email))
+              OR (c.purpose='notification_email' AND EXISTS (SELECT 1 FROM accounts.accounts a WHERE a.id=c.account_id AND a.status='active')))))
+            OR (purpose='reset' AND NOT EXISTS (SELECT 1 FROM auth.password_reset_tokens t JOIN auth.credentials c ON c.account_id=t.account_id WHERE t.token_hash=auth.mail_jobs.token_hash AND t.consumed_at IS NULL AND t.expires_at>now() AND t.credential_version=c.version)))
 			ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.mail_jobs WHERE id IN (SELECT id FROM auth.mail_jobs WHERE status IN ('sent','failed','expired') AND finished_at<now()-interval '30 days' ORDER BY finished_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.sessions WHERE id IN (SELECT id FROM auth.sessions WHERE expires_at<=now() OR revoked_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.registration_challenges WHERE id IN (SELECT id FROM auth.registration_challenges WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
+		`DELETE FROM auth.email_code_challenges WHERE id IN (SELECT id FROM auth.email_code_challenges WHERE expires_at<now()-interval '1 day' OR consumed_at<now()-interval '1 day' ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.email_verification_tokens WHERE token_hash IN (SELECT token_hash FROM auth.email_verification_tokens WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.password_reset_tokens WHERE token_hash IN (SELECT token_hash FROM auth.password_reset_tokens WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.oauth_attempts WHERE state_hash IN (SELECT state_hash FROM auth.oauth_attempts WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,

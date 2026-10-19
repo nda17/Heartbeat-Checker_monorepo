@@ -17,7 +17,12 @@ export function Turnstile({
   resetKey,
   onToken,
 }: {
-  action: "register" | "login" | "reset";
+  action:
+    | "register"
+    | "login"
+    | "reset"
+    | "registration_confirm"
+    | "registration_resend";
   resetKey: number;
   onToken: (token: string) => void;
 }) {
