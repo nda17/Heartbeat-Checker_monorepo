@@ -27,9 +27,11 @@ RUN test -n "$WEB_PUBLIC_ORIGIN" \
 FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS runtime
 WORKDIR /app
 ARG VCS_REF=unknown
+ARG ANDROID_MANIFEST_SHA256=none
 ARG WEB_MODE=app
 LABEL org.opencontainers.image.revision=$VCS_REF \
-      org.heartbeat-checker.web-mode=$WEB_MODE
+      org.heartbeat-checker.web-mode=$WEB_MODE \
+      org.heartbeat-checker.android-manifest-sha256=$ANDROID_MANIFEST_SHA256
 ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0 WEB_MODE=$WEB_MODE
 COPY --from=build --chown=node:node /app/.next/standalone ./
 COPY --from=build --chown=node:node /app/.next/static ./.next/static

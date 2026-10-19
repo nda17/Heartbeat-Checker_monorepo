@@ -1,22 +1,26 @@
 "use client";
 import { FormEvent, useState } from "react";
+import { useSession } from "@/entities/session";
 import { Monitor } from "@/entities/monitor";
-import { api, errorMessage } from "@/shared/api";
+import { api, ApiError, errorMessage } from "@/shared/api";
 import { Dialog } from "@/shared/dialog";
 import { Notice, Spinner } from "@/shared/ui";
 export function MonitorForm({
   monitor,
+  draft,
   onClose,
   onSaved,
   basePath = "/monitors",
   requireReason = false,
 }: {
   monitor?: Monitor;
+  draft?: { name?: string; url: string; accountId: string };
   onClose: () => void;
   onSaved: () => Promise<void>;
   basePath?: string;
   requireReason?: boolean;
 }) {
+  const { refresh } = useSession();
   const [method, setMethod] = useState(monitor?.method ?? "GET");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -38,6 +42,7 @@ export function MonitorForm({
         ? { reason: String(data.get("reason") ?? "").trim() }
         : {}),
       ...(monitor ? { version: monitor.version } : {}),
+      ...(draft && !monitor ? { expectedAccountId: draft.accountId } : {}),
     };
     if (new TextEncoder().encode(body.bodyContains).length > 1000) {
       setError("Текст условия слишком длинный: максимум 1000 байт.");
@@ -70,6 +75,8 @@ export function MonitorForm({
       onClose();
     } catch (e) {
       setError(errorMessage(e));
+      if (e instanceof ApiError && e.code === "account_changed")
+        await refresh();
     } finally {
       setBusy(false);
     }
@@ -90,7 +97,7 @@ export function MonitorForm({
           <input
             name="name"
             autoFocus
-            defaultValue={monitor?.name}
+            defaultValue={monitor?.name ?? draft?.name}
             required
             minLength={1}
             maxLength={100}
@@ -102,7 +109,7 @@ export function MonitorForm({
           <input
             name="url"
             type="url"
-            defaultValue={monitor?.url}
+            defaultValue={monitor?.url ?? draft?.url}
             required
             maxLength={2048}
             placeholder="https://example.com"

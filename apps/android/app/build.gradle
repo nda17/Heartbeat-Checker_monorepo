@@ -1,0 +1,75 @@
+plugins {
+    id 'com.android.application'
+}
+
+def secret = { String name ->
+    def path = System.getenv(name + '_FILE')
+    path ? new File(path).getText('UTF-8').stripTrailing() : System.getenv(name)
+}
+def keystore = System.getenv('ANDROID_KEYSTORE_FILE')
+def storePassword = secret('ANDROID_KEYSTORE_PASSWORD')
+def keyAlias = System.getenv('ANDROID_KEY_ALIAS')
+def keyPassword = secret('ANDROID_KEY_PASSWORD')
+def signingReady = keystore && storePassword && keyAlias && keyPassword
+
+android {
+    namespace 'ru.heartbeatchecker.app'
+    compileSdk 37
+    buildToolsVersion '36.0.0'
+
+    defaultConfig {
+        applicationId 'ru.heartbeatchecker.app'
+        minSdk 29
+        targetSdk 37
+        versionCode 1
+        versionName '1.0.0'
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+    signingConfigs {
+        if (signingReady) {
+            release {
+                storeFile file(keystore)
+                storePassword storePassword
+                keyAlias keyAlias
+                keyPassword keyPassword
+            }
+        }
+    }
+    buildTypes {
+        release {
+            if (signingReady) signingConfig signingConfigs.release
+            minifyEnabled false
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    lint {
+        abortOnError true
+        checkReleaseBuilds true
+    }
+}
+
+tasks.register('requireReleaseSigning') {
+    doLast {
+        if (!signingReady || !file(keystore).isFile()) {
+            throw new GradleException('Release signing requires ANDROID_KEYSTORE_FILE, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD (passwords may use _FILE).')
+        }
+    }
+}
+tasks.configureEach {
+    if (name in ['packageRelease', 'packageReleaseBundle', 'signReleaseBundle', 'assembleRelease', 'bundleRelease']) {
+        dependsOn tasks.named('requireReleaseSigning')
+    }
+}
+
+dependencies {
+    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.7.3'
+    implementation 'androidx.activity:activity:1.13.0'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20250517'
+    androidTestImplementation 'androidx.test:runner:1.7.0'
+    androidTestImplementation 'androidx.test:core:1.7.0'
+    androidTestImplementation 'androidx.test.ext:junit:1.3.0'
+}
