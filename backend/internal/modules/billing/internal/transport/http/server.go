@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	auth "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing/internal/service"
 )
 
@@ -16,12 +17,14 @@ type Server struct{ service *service.Service }
 func New(s *service.Service) *Server { return &Server{s} }
 func (s *Server) Register(mux *http.ServeMux, protect func(http.Handler) http.Handler) {
 	for route, handler := range map[string]http.HandlerFunc{
+		"GET /api/v1/billing/orders/{id}":           s.get,
 		"GET /api/v1/billing":                       s.overview,
 		"POST /api/v1/billing/orders":               s.create,
 		"POST /api/v1/billing/orders/{id}/simulate": s.simulate,
 	} {
 		mux.Handle(route, protect(handler))
 	}
+	mux.HandleFunc("POST /webhooks/billing/yookassa", s.webhook)
 }
 func write(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -121,4 +124,40 @@ func (s *Server) simulate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, 200, map[string]any{"order": order})
+}
+
+func (s *Server) get(w http.ResponseWriter, r *http.Request) {
+	account, ok := owner(w, r)
+	if !ok {
+		return
+	}
+	order, err := s.service.GetOrder(r.Context(), account, r.PathValue("id"))
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	write(w, 200, map[string]any{"order": order})
+}
+func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
+	media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || media != "application/json" {
+		fail(w, 415, "json_required")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	decoder := json.NewDecoder(r.Body)
+	var notification contracts.ProviderNotification
+	if decoder.Decode(&notification) != nil || !errors.Is(decoder.Decode(&struct{}{}), io.EOF) {
+		fail(w, 400, "invalid_request")
+		return
+	}
+	if err = s.service.ReceiveNotification(r.Context(), notification); err != nil {
+		if errors.Is(err, service.ErrInvalid) {
+			fail(w, 400, "invalid_request")
+		} else {
+			fail(w, 503, "temporarily_unavailable")
+		}
+		return
+	}
+	write(w, 200, map[string]bool{"ok": true})
 }

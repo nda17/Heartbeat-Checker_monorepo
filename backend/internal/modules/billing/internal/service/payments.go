@@ -36,7 +36,7 @@ func nextMockMonth(start time.Time, anchorDay int) time.Time {
 }
 
 func (s *Service) Configure(provider string, ids []string, guard accounts.ActiveGuard) error {
-	if provider != "disabled" && provider != "mock" {
+	if provider != "disabled" && provider != "mock" && provider != "yookassa" {
 		return ErrInvalid
 	}
 	if guard == nil {
@@ -69,16 +69,21 @@ func newID() (string, error) {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[:4], b[4:6], b[6:8], b[8:10], b[10:]), nil
 }
 
-const orderColumns = `id,provider,status,monitor_count,amount_minor,currency,created_at,expires_at,completed_at,active_until`
+const orderColumns = `id,provider,status,monitor_count,amount_minor,currency,created_at,expires_at,completed_at,active_until,confirmation_url,fulfillment_status,fulfillment_reason,(provider_mode='test'),last_error_code,reconciliation_status`
 
 func scanOrder(row pgx.Row) (contracts.Order, error) {
 	var order contracts.Order
-	err := row.Scan(&order.ID, &order.Provider, &order.Status, &order.MonitorCount, &order.AmountMinor, &order.Currency, &order.CreatedAt, &order.ExpiresAt, &order.CompletedAt, &order.ActiveUntil)
+	err := row.Scan(&order.ID, &order.Provider, &order.Status, &order.MonitorCount, &order.AmountMinor, &order.Currency, &order.CreatedAt, &order.ExpiresAt, &order.CompletedAt, &order.ActiveUntil, &order.ConfirmationURL, &order.FulfillmentStatus, &order.FulfillmentReason, &order.Test, &order.LastErrorCode, &order.ReconciliationStatus)
 	return order, err
 }
 
 func (s *Service) Overview(ctx context.Context, accountID string) (contracts.Billing, error) {
-	result := contracts.Billing{Provider: s.provider, CanSimulate: s.provider == "mock" && s.allowed[accountID], PricePerMonitorMinor: PricePerMonitorMinor, Orders: []contracts.Order{}}
+	result := contracts.Billing{Provider: s.provider, CanSimulate: s.provider == "mock" && s.allowed[accountID], PricePerMonitorMinor: PricePerMonitorMinor, Orders: []contracts.Order{}, CanPay: s.provider == "yookassa" && s.allowed[accountID], Test: s.provider == "yookassa"}
+	if result.CanPay {
+		if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM billing.entitlements WHERE account_id=$1 AND source='admin_grant' AND valid_until>now())`, accountID).Scan(&result.AccessUnchanged); err != nil {
+			return result, err
+		}
+	}
 	if result.CanSimulate {
 		var activeGrant bool
 		if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM billing.entitlements WHERE account_id=$1 AND source='admin_grant' AND valid_until>now())`, accountID).Scan(&activeGrant); err != nil {
@@ -131,6 +136,9 @@ func (s *Service) beginMock(ctx context.Context, accountID string) (pgx.Tx, cont
 }
 
 func (s *Service) CreateOrder(ctx context.Context, accountID string, count int, key string) (contracts.Order, error) {
+	if s.provider == "yookassa" {
+		return s.createYooKassaOrder(ctx, accountID, count, key)
+	}
 	if count < 1 || count > 1000 || !validID(key) {
 		return contracts.Order{}, ErrInvalid
 	}
@@ -190,6 +198,9 @@ func (s *Service) Simulate(ctx context.Context, accountID, orderID, outcome stri
 	if err != nil {
 		return order, err
 	}
+	if order.Provider != "mock" {
+		return contracts.Order{}, ErrForbidden
+	}
 	if order.Status != "pending" {
 		if order.Status != outcome {
 			return order, ErrConflict
@@ -226,7 +237,7 @@ func (s *Service) Simulate(ctx context.Context, accountID, orderID, outcome stri
 			return order, err
 		}
 	}
-	order, err = scanOrder(tx.QueryRow(ctx, `UPDATE billing.orders SET status=$3,completed_at=$4,active_until=$5 WHERE account_id=$1 AND id=$2 RETURNING `+orderColumns, accountID, orderID, outcome, now, until))
+	order, err = scanOrder(tx.QueryRow(ctx, `UPDATE billing.orders SET status=$3,completed_at=$4::timestamptz,active_until=$5,fulfillment_status=CASE WHEN $3='succeeded' THEN 'fulfilled' ELSE 'not_required' END,fulfilled_at=CASE WHEN $3='succeeded' THEN $4::timestamptz ELSE NULL END,reconciliation_status='complete' WHERE account_id=$1 AND id=$2 RETURNING `+orderColumns, accountID, orderID, outcome, now, until))
 	if err != nil {
 		return order, err
 	}

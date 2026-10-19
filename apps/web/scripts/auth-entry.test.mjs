@@ -965,6 +965,11 @@ test("billing recovers its initial data load and retries both required GETs", as
     },
   });
   const page = compile("../src/_pages/billing/index.tsx", {
+    "@/entities/session": {
+      useSession: () => ({
+        profile: { account: { id: "billing-test-account" } },
+      }),
+    },
     "@/shared/api": {
       api,
       errorMessage: (error) => String(error?.message ?? error),
@@ -995,6 +1000,463 @@ test("billing recovers its initial data load and retries both required GETs", as
     calls.every(({ options }) => options.signal instanceof AbortSignal),
   );
   await harness.unmount();
+});
+
+test("YooKassa checkout retries an ambiguous create with the same key and never starts a mock timer", async () => {
+  const harness = createHarness("http://localhost/app/billing");
+  const timers = [];
+  const originalSetTimeout = harness.dom.window.setTimeout.bind(
+    harness.dom.window,
+  );
+  const originalClearTimeout = harness.dom.window.clearTimeout.bind(
+    harness.dom.window,
+  );
+  harness.dom.window.setTimeout = (callback, delay = 0, ...args) => {
+    const timer = originalSetTimeout(callback, delay, ...args);
+    timers.push({ callback, delay, timer, active: true });
+    return timer;
+  };
+  harness.dom.window.clearTimeout = (timer) => {
+    const entry = timers.find((item) => item.timer === timer);
+    if (entry) entry.active = false;
+    originalClearTimeout(timer);
+  };
+
+  const firstCreate = deferred();
+  const calls = [];
+  const pendingOrder = {
+    id: "8b9d2155-3d8a-44f0-a2a0-0fc3a8d2c8b4",
+    provider: "yookassa",
+    status: "pending",
+    reconciliationStatus: "pending",
+    monitorCount: 1,
+    amountMinor: 2900,
+    currency: "RUB",
+    confirmationUrl: "https://yookassa.ru/checkout/abc",
+    createdAt: "2026-01-01T00:00:00Z",
+    expiresAt: null,
+    completedAt: null,
+    activeUntil: null,
+  };
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/billing")
+      return {
+        provider: "yookassa",
+        canSimulate: false,
+        canPay: true,
+        test: true,
+        pricePerMonitorMinor: 2900,
+        orders: [],
+      };
+    if (path === "/entitlement")
+      return {
+        entitlement: { quota: 0, activeUntil: null, source: "none" },
+      };
+    if (path === "/billing/orders" && options.method === "POST")
+      return calls.filter(
+        (call) => call.path === path && call.options.method === "POST",
+      ).length === 1
+        ? firstCreate.promise
+        : { order: pendingOrder };
+    if (path === `/billing/orders/${pendingOrder.id}`)
+      return { order: pendingOrder };
+    throw new Error(`Unexpected billing API call: ${path}`);
+  };
+  const shared = compile("../src/shared/api/index.ts", {});
+  const page = compile(
+    "../src/_pages/billing/index.tsx",
+    {
+      "@/entities/session": {
+        useSession: () => ({
+          profile: { account: { id: "yookassa-test-owner" } },
+        }),
+      },
+      "@/shared/api": {
+        api,
+        errorMessage: (error) => String(error?.message ?? error),
+        paymentConfirmationUrl: shared.paymentConfirmationUrl,
+      },
+      "@/entities/monitor": {},
+      "@/shared/ui": {
+        dateTime: (value) => value ?? "—",
+        Loading: ({ text }) =>
+          React.createElement("div", { role: "status" }, text),
+        Notice: ({ children }) =>
+          React.createElement("div", { role: "alert" }, children),
+      },
+    },
+    { crypto: { randomUUID: () => "33333333-3333-4333-8333-333333333333" } },
+  );
+  await harness.render(React.createElement(page.BillingPage));
+  await settle();
+  const form = harness.host.querySelector(".billing-checkout form");
+  assert.ok(form, "the configured test checkout should render");
+  await act(async () => {
+    form.dispatchEvent(
+      new harness.dom.window.Event("submit", {
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await Promise.resolve();
+  });
+  const timeout = timers.findLast(
+    (item) => item.active && item.delay === 10_000,
+  );
+  assert.ok(timeout, "the in-flight create should have a bounded timeout");
+  await act(async () => {
+    originalClearTimeout(timeout.timer);
+    timeout.active = false;
+    timeout.callback();
+    await Promise.resolve();
+  });
+  assert.match(harness.host.textContent, /Повторите запрос на этой странице/);
+  const retry = [...harness.host.querySelectorAll("button")].find((button) =>
+    button.textContent.includes("Повторить запрос заказа"),
+  );
+  assert.ok(retry);
+  await act(async () => retry.click());
+  await settle();
+  const posts = calls.filter(
+    (call) => call.path === "/billing/orders" && call.options.method === "POST",
+  );
+  assert.equal(posts.length, 2);
+  assert.equal(
+    posts[0].options.body.idempotencyKey,
+    posts[1].options.body.idempotencyKey,
+  );
+  assert.equal(
+    posts[0].options.body.monitorCount,
+    posts[1].options.body.monitorCount,
+  );
+  assert.equal(posts[0].options.signal.aborted, true);
+  assert.equal(posts[1].options.signal.aborted, false);
+  assert.equal(
+    calls.filter((call) => call.path.startsWith("/billing/orders/")).length,
+    1,
+    "accepted POST should be followed by one authoritative order lookup",
+  );
+  assert.equal(calls.filter((call) => call.path === "/entitlement").length, 1);
+  assert.equal(
+    harness.host.querySelector('a[href="https://yookassa.ru/checkout/abc"]')
+      ?.textContent,
+    "Перейти к оплате в ЮKassa",
+  );
+  assert.ok(timers.every((item) => item.delay < 30 * 60 * 1000));
+  firstCreate.resolve({ order: { ...pendingOrder, id: "late-stale-order" } });
+  await settle();
+  assert.equal(harness.host.textContent.includes("late-stale-order"), false);
+  await harness.unmount();
+});
+
+test("YooKassa return only looks up the owner order and hides payment for manual review", async () => {
+  const orderId = "8b9d2155-3d8a-44f0-a2a0-0fc3a8d2c8b4";
+  const harness = createHarness(
+    `http://localhost/app/billing?order=${orderId}`,
+  );
+  const calls = [];
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/billing")
+      return {
+        provider: "yookassa",
+        canSimulate: false,
+        canPay: true,
+        test: true,
+        pricePerMonitorMinor: 2900,
+        orders: [],
+      };
+    if (path === "/entitlement")
+      return { entitlement: { quota: 0, activeUntil: null, source: "none" } };
+    if (path === `/billing/orders/${orderId}`)
+      return {
+        order: {
+          id: orderId,
+          provider: "yookassa",
+          status: "pending",
+          reconciliationStatus: "manual_review",
+          monitorCount: 1,
+          amountMinor: 2900,
+          currency: "RUB",
+          confirmationUrl: "https://yookassa.ru/checkout/abc",
+          createdAt: "2026-01-01T00:00:00Z",
+          expiresAt: null,
+          completedAt: null,
+          activeUntil: null,
+        },
+      };
+    throw new Error(`Unexpected billing API call: ${path}`);
+  };
+  const shared = compile("../src/shared/api/index.ts", {});
+  const page = compile("../src/_pages/billing/index.tsx", {
+    "@/entities/session": {
+      useSession: () => ({
+        profile: { account: { id: "yookassa-test-owner" } },
+      }),
+    },
+    "@/shared/api": {
+      api,
+      errorMessage: (error) => String(error?.message ?? error),
+      paymentConfirmationUrl: shared.paymentConfirmationUrl,
+    },
+    "@/entities/monitor": {},
+    "@/shared/ui": {
+      dateTime: (value) => value ?? "—",
+      Loading: ({ text }) =>
+        React.createElement("div", { role: "status" }, text),
+      Notice: ({ children }) =>
+        React.createElement("div", { role: "alert" }, children),
+    },
+  });
+  await harness.render(React.createElement(page.BillingPage));
+  await settle();
+  assert.equal(
+    calls.filter((call) => call.path === "/billing/orders").length,
+    0,
+  );
+  assert.equal(
+    calls.filter((call) => call.path === `/billing/orders/${orderId}`).length,
+    1,
+  );
+  assert.equal(
+    harness.host.querySelector('a[href^="https://yookassa.ru/"]'),
+    null,
+  );
+  assert.match(harness.host.textContent, /Нужна проверка результата/);
+  await harness.unmount();
+});
+
+test("YooKassa return hydrates pending count and amount from the owner order", async () => {
+  const orderId = "8b9d2155-3d8a-44f0-a2a0-0fc3a8d2c8b4";
+  const harness = createHarness(
+    `http://localhost/app/billing?order=${orderId}`,
+  );
+  const calls = [];
+  const order = {
+    id: orderId,
+    provider: "yookassa",
+    status: "pending",
+    reconciliationStatus: "pending",
+    monitorCount: 3,
+    amountMinor: 8700,
+    currency: "RUB",
+    confirmationUrl: "https://yookassa.ru/checkout/abc",
+    createdAt: "2026-01-01T00:00:00Z",
+    expiresAt: null,
+    completedAt: null,
+    activeUntil: null,
+  };
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/billing")
+      return {
+        provider: "yookassa",
+        canSimulate: false,
+        canPay: true,
+        test: true,
+        pricePerMonitorMinor: 3100,
+        orders: [],
+      };
+    if (path === "/entitlement")
+      return { entitlement: { quota: 0, activeUntil: null, source: "none" } };
+    if (path === `/billing/orders/${orderId}`) return { order };
+    throw new Error(`Unexpected billing API call: ${path}`);
+  };
+  const shared = compile("../src/shared/api/index.ts", {});
+  const page = compile("../src/_pages/billing/index.tsx", {
+    "@/entities/session": {
+      useSession: () => ({
+        profile: { account: { id: "yookassa-test-owner" } },
+      }),
+    },
+    "@/shared/api": {
+      api,
+      errorMessage: (error) => String(error?.message ?? error),
+      paymentConfirmationUrl: shared.paymentConfirmationUrl,
+    },
+    "@/entities/monitor": {},
+    "@/shared/ui": {
+      dateTime: (value) => value ?? "—",
+      Loading: ({ text }) =>
+        React.createElement("div", { role: "status" }, text),
+      Notice: ({ children }) =>
+        React.createElement("div", { role: "alert" }, children),
+    },
+  });
+  await harness.render(React.createElement(page.BillingPage));
+  await settle();
+  assert.equal(
+    harness.host.querySelector('input[name="monitorCount"]').value,
+    "3",
+  );
+  assert.match(harness.host.textContent, /87,00/);
+  assert.ok(
+    harness.host.querySelector('a[href="https://yookassa.ru/checkout/abc"]'),
+  );
+  assert.equal(
+    calls.filter((call) => call.path === "/billing/orders").length,
+    0,
+  );
+  await harness.unmount();
+});
+
+test("definitive YooKassa create rejections clear retry intent and refresh the current order", async () => {
+  for (const status of [400, 403, 409]) {
+    const harness = createHarness("http://localhost/app/billing");
+    const calls = [];
+    const pendingOrder = {
+      id: "8b9d2155-3d8a-44f0-a2a0-0fc3a8d2c8b4",
+      provider: "yookassa",
+      status: "pending",
+      reconciliationStatus: "pending",
+      monitorCount: 1,
+      amountMinor: 2900,
+      currency: "RUB",
+      confirmationUrl: "https://yookassa.ru/checkout/abc",
+      createdAt: "2026-01-01T00:00:00Z",
+      expiresAt: null,
+      completedAt: null,
+      activeUntil: null,
+    };
+    class ApiError extends Error {
+      constructor(code) {
+        super(code);
+        this.status = status;
+      }
+    }
+    let billingReads = 0;
+    let postCalls = 0;
+    const api = async (path, options = {}) => {
+      calls.push({ path, options });
+      if (path === "/billing") {
+        billingReads += 1;
+        return {
+          provider: "yookassa",
+          canSimulate: false,
+          canPay: true,
+          test: true,
+          pricePerMonitorMinor: 2900,
+          orders: status === 409 && billingReads > 1 ? [pendingOrder] : [],
+        };
+      }
+      if (path === "/entitlement")
+        return { entitlement: { quota: 0, activeUntil: null, source: "none" } };
+      if (path === "/billing/orders" && options.method === "POST") {
+        postCalls += 1;
+        if (postCalls === 1) throw new ApiError(`rejected_${status}`);
+        return { order: pendingOrder };
+      }
+      if (path === `/billing/orders/${pendingOrder.id}`)
+        return { order: pendingOrder };
+      throw new Error(`Unexpected billing API call: ${path}`);
+    };
+    const shared = compile("../src/shared/api/index.ts", {});
+    let idSequence = 0;
+    const page = compile(
+      "../src/_pages/billing/index.tsx",
+      {
+        "@/entities/session": {
+          useSession: () => ({
+            profile: { account: { id: "yookassa-test-owner" } },
+          }),
+        },
+        "@/shared/api": {
+          api,
+          ApiError,
+          errorMessage: (error) => String(error?.message ?? error),
+          paymentConfirmationUrl: shared.paymentConfirmationUrl,
+        },
+        "@/entities/monitor": {},
+        "@/shared/ui": {
+          dateTime: (value) => value ?? "—",
+          Loading: ({ text }) =>
+            React.createElement("div", { role: "status" }, text),
+          Notice: ({ children }) =>
+            React.createElement("div", { role: "alert" }, children),
+        },
+      },
+      {
+        crypto: {
+          randomUUID: () =>
+            `33333333-3333-4333-8333-${String(++idSequence).padStart(12, "0")}`,
+        },
+      },
+    );
+    await harness.render(React.createElement(page.BillingPage));
+    await settle();
+    const submit = async () => {
+      const form = harness.host.querySelector(".billing-checkout form");
+      assert.ok(form);
+      await act(async () => {
+        form.dispatchEvent(
+          new harness.dom.window.Event("submit", {
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        await Promise.resolve();
+      });
+      await settle();
+    };
+    await submit();
+    assert.equal(
+      harness.dom.window.sessionStorage.getItem(
+        "heartbeat-billing-request:yookassa-test-owner",
+      ),
+      null,
+      `${status} must clear the persisted idempotency intent`,
+    );
+    assert.ok(
+      calls.some((call) => call.path === "/billing" && call.options.signal),
+      `${status} should refresh the authoritative overview`,
+    );
+    if (status === 409) {
+      assert.ok(
+        calls.some(
+          (call) => call.path === `/billing/orders/${pendingOrder.id}`,
+        ),
+        "409 recovery should look up the existing pending order",
+      );
+      assert.equal(
+        postCalls,
+        1,
+        "409 recovery must not submit another payment",
+      );
+      assert.ok(
+        harness.host.querySelector(
+          'a[href="https://yookassa.ru/checkout/abc"]',
+        ),
+      );
+    } else {
+      const retryButton = [...harness.host.querySelectorAll("button")].find(
+        (button) => button.textContent.includes("Оформить заказ"),
+      );
+      assert.ok(
+        retryButton,
+        `${status} should unlock the form for a fresh request`,
+      );
+      assert.equal(
+        harness.host.querySelector('input[name="monitorCount"]').disabled,
+        false,
+      );
+      if (status === 400) {
+        const firstKey = calls.find((call) => call.path === "/billing/orders")
+          .options.body.idempotencyKey;
+        await submit();
+        const keys = calls
+          .filter(
+            (call) =>
+              call.path === "/billing/orders" && call.options.method === "POST",
+          )
+          .map((call) => call.options.body.idempotencyKey);
+        assert.equal(keys.length, 2);
+        assert.notEqual(keys[0], keys[1]);
+        assert.notEqual(keys[1], firstKey);
+      }
+    }
+    await harness.unmount();
+  }
 });
 
 test("OAuth identity loading recovers both provider and linked-identity GETs", async () => {

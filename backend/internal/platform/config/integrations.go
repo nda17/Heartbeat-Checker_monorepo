@@ -16,6 +16,10 @@ import (
 type IntegrationConfig struct {
 	BillingProvider               string
 	BillingMockAccountIDs         []string
+	BillingTestAccountIDs         []string
+	YooKassaMode                  string
+	YooKassaTestShopID            string
+	YooKassaTestSecretKey         string
 	BillingReportsEnabled         bool
 	MessengerNotificationsEnabled bool
 	TelegramInformerToken         string
@@ -45,8 +49,8 @@ func loadIntegrations(worker bool) (IntegrationConfig, error) {
 	if cfg.BillingProvider == "" {
 		cfg.BillingProvider = "disabled"
 	}
-	if cfg.BillingProvider != "disabled" && cfg.BillingProvider != "mock" {
-		return cfg, errors.New("BILLING_PROVIDER must be disabled or mock; real payments are not implemented")
+	if cfg.BillingProvider != "disabled" && cfg.BillingProvider != "mock" && cfg.BillingProvider != "yookassa" {
+		return cfg, errors.New("BILLING_PROVIDER must be disabled, mock or yookassa")
 	}
 	raw := strings.TrimSpace(os.Getenv("BILLING_MOCK_ACCOUNT_IDS"))
 	if raw != "" {
@@ -58,6 +62,20 @@ func loadIntegrations(worker bool) (IntegrationConfig, error) {
 			}
 			cfg.BillingMockAccountIDs = append(cfg.BillingMockAccountIDs, parsed.String())
 		}
+	}
+	if cfg.BillingProvider == "yookassa" {
+		cfg.YooKassaMode = os.Getenv("YOOKASSA_MODE")
+		cfg.YooKassaTestShopID = os.Getenv("YOOKASSA_TEST_SHOP_ID")
+		cfg.YooKassaTestSecretKey = os.Getenv("YOOKASSA_TEST_SECRET_KEY")
+		if cfg.YooKassaMode != "test" || cfg.YooKassaTestShopID == "" || len(cfg.YooKassaTestShopID) > 32 || strings.Trim(cfg.YooKassaTestShopID, "0123456789") != "" || !strings.HasPrefix(cfg.YooKassaTestSecretKey, "test_") || len(cfg.YooKassaTestSecretKey) < 16 || len(cfg.YooKassaTestSecretKey) > 512 || strings.ContainsAny(cfg.YooKassaTestSecretKey, " \t\r\n") {
+			return cfg, errors.New("complete YooKassa test configuration is required")
+		}
+		id := strings.TrimSpace(os.Getenv("BILLING_TEST_ACCOUNT_IDS"))
+		var parsed pgtype.UUID
+		if len(id) != 36 || parsed.Scan(id) != nil || !parsed.Valid {
+			return cfg, errors.New("BILLING_TEST_ACCOUNT_IDS must contain exactly one owner UUID")
+		}
+		cfg.BillingTestAccountIDs = []string{parsed.String()}
 	}
 	var err error
 	if cfg.SupportEnabled, err = integrationBool("SUPPORT_ENABLED"); err != nil {

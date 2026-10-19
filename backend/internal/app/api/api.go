@@ -60,7 +60,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("configure webhook notifications: %w", err)
 	}
-	billingModule, err := billing.NewConfigured(pool, cfg.AppEnv == "local", billing.Config{Provider: cfg.BillingProvider, MockAccountIDs: cfg.BillingMockAccountIDs}, accountModule)
+	billingModule, err := billing.NewConfigured(pool, cfg.AppEnv == "local", billing.Config{Provider: cfg.BillingProvider, MockAccountIDs: cfg.BillingMockAccountIDs, TestAccountIDs: cfg.BillingTestAccountIDs, Mode: cfg.YooKassaMode, ShopID: cfg.YooKassaTestShopID, SecretKey: cfg.YooKassaTestSecretKey}, accountModule)
 	if err != nil {
 		return fmt.Errorf("configure billing: %w", err)
 	}

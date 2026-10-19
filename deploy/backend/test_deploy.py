@@ -44,7 +44,11 @@ args = sys.argv[1:]
 with open(os.environ["DOCKER_LOG"], "a") as log:
     log.write(json.dumps(args) + "\n")
 if args[:2] == ["login", "ghcr.io"]:
-    sys.stdin.read()
+    payload = sys.stdin.read()
+    capture = os.environ.get("DOCKER_LOGIN_STDIN")
+    if capture:
+        with open(capture, "w") as output:
+            output.write(payload)
     if os.environ.get("MUTATE_NEXT_DURING_DEPLOY") == "1":
         with open(os.path.join(os.environ["DEPLOY_DIR"], ".env.next"), "a") as candidate:
             candidate.write("# changed during deployment\n")
@@ -69,10 +73,15 @@ if args and args[0] == "compose":
         api_environment = {"DATABASE_URL": "postgres://heartbeat:testpass@postgres:5432/heartbeat?sslmode=disable", "AUTH_MFA_ENCRYPTION_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}
         if os.environ.get("COMPOSE_OAUTH_KEYS") == "1":
             api_environment.update({"YANDEX_CLIENT_ID": "synthetic-yandex-client", "YANDEX_CLIENT_SECRET": "synthetic-yandex-secret-0123456789", "YANDEX_REDIRECT_URI": "https://heartbeat-checker.ru/api/v1/auth/oauth/yandex/callback", "YANDEX_SCOPES": "login:email login:info", "VK_CLIENT_ID": "12345678", "VK_CALLBACK_URL": "https://heartbeat-checker.ru/api/v1/auth/oauth/vk/callback"})
+        worker_environment = {"SMTP_TLS_MODE": "implicit_tls"}
+        if os.environ.get("COMPOSE_YOOKASSA_KEYS") == "1":
+            yookassa_environment = {"BILLING_PROVIDER": "yookassa", "BILLING_TEST_ACCOUNT_IDS": "51ec7d19-80c4-4fb6-8edb-79dc7abe3120", "YOOKASSA_MODE": "test", "YOOKASSA_TEST_SHOP_ID": "123456", "YOOKASSA_TEST_SECRET_KEY": "test_synthetic_secret_123"}
+            api_environment.update(yookassa_environment)
+            worker_environment.update({key: value for key, value in yookassa_environment.items() if key != "BILLING_PROVIDER"})
         print(json.dumps({"services": {
             "api": {"environment": api_environment},
             "postgres": {"environment": {"POSTGRES_PASSWORD": "testpass"}},
-            "worker": {"environment": {"SMTP_TLS_MODE": "implicit_tls"}},
+            "worker": {"environment": worker_environment},
             "probe": {"environment": {"PROBE_SHARED_SECRET": "test-probe-secret"}},
         }})); raise SystemExit(0)
     if "ps" in args and "-q" in args:
@@ -121,10 +130,10 @@ exec "$REAL_CP" "$@"
 '''
 
 CURL_MOCK = r'''#!/usr/bin/env python3
-import sys
+import os, sys
 args = sys.argv[1:]
 if "-w" in args:
-    sys.stdout.write("403")
+    sys.stdout.write(os.environ.get("CURL_STATUS", "403"))
 '''
 
 IPTABLES_MOCK = r'''#!/usr/bin/env python3
@@ -173,6 +182,7 @@ class BackendDeployTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
+        self.stage_test_counter = 0
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.backend = self.root / "backend"
@@ -181,13 +191,16 @@ class BackendDeployTests(unittest.TestCase):
         self.script = self.root / "deploy.sh"
         source = Path(__file__).with_name("deploy.sh").read_text()
         self.script.write_text(source.replace("cd /opt/heartbeat-checker/backend", 'cd "$DEPLOY_DIR"', 1))
+        (self.backend / "stage-yookassa.py.incoming").write_bytes(
+            Path(__file__).with_name("stage-yookassa.py").read_bytes()
+        )
         self.write_mock("docker", DOCKER_MOCK)
         self.write_mock("curl", CURL_MOCK)
         self.write_mock("sleep", "#!/bin/sh\nexit 0\n")
         self.write_mock("stat", STAT_MOCK)
         self.write_mock("python3", PYTHON_MOCK)
         self.write_mock("cp", CP_MOCK)
-        self.write_mock("flock", "#!/bin/sh\nexit 0\n")
+        self.write_mock("flock", "#!/bin/sh\n[ \"${FAIL_FLOCK:-0}\" != 1 ]\n")
         self.write_mock("sha256sum", "#!/bin/dash\ncase \"$1\" in\n  */.owner-import.json) exec \"$REAL_PYTHON\" -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],\"rb\").read()).hexdigest(), sys.argv[1])' \"$1\" ;;\nesac\nprintf '%064d  %s\\n' 0 \"$1\"\n")
         (self.backend / ".env").write_text(BASE_ENV)
         (self.backend / ".env").chmod(0o600)
@@ -208,7 +221,8 @@ class BackendDeployTests(unittest.TestCase):
         path.chmod(0o755)
 
     def run_deploy(self, activate_next_config=None, activate_messenger_notifications=None,
-                   provision_owner=None, activate_admin_mfa=None, activate_oauth=None, **extra_env):
+                   provision_owner=None, activate_admin_mfa=None, activate_oauth=None,
+                   activate_yookassa_test=None, stdin_payload="test-token\n", **extra_env):
         env = os.environ.copy()
         env.update({
             "PATH": f"{self.bin}:{env['PATH']}",
@@ -218,6 +232,7 @@ class BackendDeployTests(unittest.TestCase):
             "REAL_PYTHON": os.sys.executable,
             "REAL_CP": "/bin/cp",
             "FIREWALL_POLICY_SHA": FIREWALL_POLICY_SHA,
+            "DOCKER_LOGIN_STDIN": str(self.root / "docker-login.stdin"),
         })
         env.update(extra_env)
         args = [
@@ -228,9 +243,11 @@ class BackendDeployTests(unittest.TestCase):
             )],
             FIREWALL_IMAGE, FIREWALL_POLICY_SHA,
         ]
+        if activate_yookassa_test is not None:
+            args.append("true" if activate_yookassa_test else "false")
         return subprocess.run(
             args,
-            input="test-token\n", cwd=self.root, env=env, text=True, capture_output=True,
+            input=stdin_payload, cwd=self.root, env=env, text=True, capture_output=True,
         )
 
     def write_next_config(self, contents, mode=0o600):
@@ -309,6 +326,36 @@ class BackendDeployTests(unittest.TestCase):
         }
         values.update(overrides)
         return BASE_ENV.rstrip("\n") + "\n" + "".join(f"{key}={value}\n" for key, value in values.items())
+
+    def yookassa_candidate(self, **overrides):
+        values = {
+            "BILLING_PROVIDER": "yookassa",
+            "BILLING_TEST_ACCOUNT_IDS": "51ec7d19-80c4-4fb6-8edb-79dc7abe3120",
+            "YOOKASSA_MODE": "test",
+            "YOOKASSA_TEST_SHOP_ID": "123456",
+            "YOOKASSA_TEST_SECRET_KEY": "test_synthetic_secret_123",
+        }
+        values.update(overrides)
+        return BASE_ENV.rstrip("\n") + "\n" + "".join(f"{key}={value}\n" for key, value in values.items())
+
+    @staticmethod
+    def yookassa_payload(shop_id="123456", secret_key="test_synthetic_secret_123"):
+        return json.dumps({"shopId": shop_id, "secretKey": secret_key}, separators=(",", ":"))
+
+    def run_yookassa_stage(self, payload, active_env=BASE_ENV):
+        helper = Path(__file__).with_name("stage-yookassa.py")
+        self.stage_test_counter += 1
+        active = self.root / f"active-{self.stage_test_counter}"
+        active.mkdir(mode=0o700)
+        (active / ".env").write_text(active_env)
+        (active / ".env").chmod(0o600)
+        workdir = self.root / f"private-workdir-{self.stage_test_counter}"
+        workdir.mkdir(mode=0o700)
+        result = subprocess.run(
+            [os.sys.executable, str(helper), str(workdir)],
+            input=payload, cwd=active, text=False, capture_output=True,
+        )
+        return result, workdir
 
     def docker_calls(self):
         if not self.log.exists():
@@ -442,10 +489,143 @@ class BackendDeployTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.backend / ".env").read_text(), candidate_contents)
         self.assertFalse(candidate.exists())
+        self.assertEqual((self.root / "docker-login.stdin").read_text(), "test-token\n")
+        self.assertNotIn("test-token", self.log.read_text())
         receipt = json.loads((self.backend / "receipts" / f"{SOURCE_SHA}.json").read_text())
         self.assertTrue(receipt["oauth_activated"])
         for key in ("YANDEX_CLIENT_ID", "YANDEX_CLIENT_SECRET", "YANDEX_REDIRECT_URI", "YANDEX_SCOPES", "VK_CLIENT_ID", "VK_CALLBACK_URL"):
             self.assertIn(key + "=", (self.backend / ".env").read_text())
+
+    def test_legacy_staged_activation_rolls_back_before_migration(self):
+        staged = self.write_next_config(self.oauth_candidate())
+        result = self.run_deploy(activate_oauth=True, FAIL_COMPOSE_PREFLIGHT="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.backend / ".env").read_text(), BASE_ENV)
+        self.assertTrue(staged.exists(), "legacy staged input remains available after rollback")
+        self.assertFalse((self.backend / "pending").exists())
+
+    def test_yookassa_test_activation_is_owner_only_sandbox_and_receipted(self):
+        payload = self.yookassa_payload()
+        expected = self.yookassa_candidate()
+        result = self.run_deploy(
+            activate_yookassa_test=True,
+            COMPOSE_YOOKASSA_KEYS="1",
+            stdin_payload="test-token\n" + payload,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        activated = (self.backend / ".env").read_text()
+        for line in expected.splitlines():
+            normalized = line.replace("YOOKASSA_TEST_SECRET_KEY=test_synthetic_secret_123", "YOOKASSA_TEST_SECRET_KEY='test_synthetic_secret_123'")
+            self.assertIn(normalized, activated)
+        self.assertFalse((self.backend / ".env.next").exists())
+        self.assertIn("KEEP_EXISTING=one\n", (self.backend / ".env").read_text())
+        self.assertEqual((self.root / "docker-login.stdin").read_text(), "test-token\n")
+        combined_output = result.stdout + result.stderr
+        self.assertNotIn("test-token", combined_output)
+        self.assertNotIn("test_synthetic_secret_123", combined_output)
+        self.assertNotIn("test-token", self.log.read_text())
+        self.assertNotIn("test_synthetic_secret_123", self.log.read_text())
+        receipt = json.loads((self.backend / "receipts" / f"{SOURCE_SHA}.json").read_text())
+        self.assertTrue(receipt["yookassa_test_activated"])
+
+    def test_yookassa_private_candidate_validation_rejects_malformed_oversized_and_live_keys(self):
+        cases = [
+            b"not-json",
+            b'{"shopId":"123","shopId":"456","secretKey":"test_synthetic_secret_123"}',
+            b'{"shopId":"123","secretKey":"test_synthetic_secret_123","extra":"x"}',
+            b'{"shopId":"123","secretKey":"live_synthetic_secret_123"}',
+            b'{"shopId":"123","secretKey":"test_bad\\nsecret_123"}',
+            b'{"shopId":"' + b"1" * 2050 + b'","secretKey":"test_synthetic_secret_123"}',
+        ]
+        for payload in cases:
+            with self.subTest(payload=payload[:80]):
+                result, workdir = self.run_yookassa_stage(payload)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, b"")
+                self.assertNotIn(b"test_synthetic_secret_123", result.stderr)
+                self.assertFalse((workdir / ".env.next").exists())
+
+    def test_yookassa_stage_preserves_nonbilling_values_and_is_private(self):
+        result, workdir = self.run_yookassa_stage(self.yookassa_payload().encode())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        candidate = workdir / ".env.next"
+        self.assertEqual(candidate.stat().st_mode & 0o777, 0o600)
+        text = candidate.read_text()
+        self.assertIn("KEEP_EXISTING=one", text)
+        self.assertIn("TELEGRAM_API_BASE_URL=https://api.telegram.org", text)
+        self.assertIn("YOOKASSA_MODE=test", text)
+        self.assertIn("YOOKASSA_TEST_SECRET_KEY='test_synthetic_secret_123'", text)
+
+    def test_yookassa_activation_rejects_mixed_flags_rotation_and_external_candidate(self):
+        cases = [
+            {"activate_oauth": True},
+            {"activate_admin_mfa": True},
+            {"provision_owner": True},
+        ]
+        for flags in cases:
+            with self.subTest(flags=flags):
+                result = self.run_deploy(
+                    activate_yookassa_test=True, stdin_payload="test-token\n" + self.yookassa_payload(), **flags,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("separate configuration operation", result.stderr)
+                self.assertEqual(self.docker_calls(), [])
+
+        old = BASE_ENV + "YOOKASSA_TEST_SHOP_ID=654321\nYOOKASSA_TEST_SECRET_KEY='test_previous_secret_123'\n"
+        (self.backend / ".env").write_text(old)
+        (self.backend / ".env").chmod(0o600)
+        result = self.run_deploy(
+            activate_yookassa_test=True, COMPOSE_YOOKASSA_KEYS="1",
+            stdin_payload="test-token\n" + self.yookassa_payload(),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot rotate existing credentials", result.stderr)
+        self.assertEqual((self.backend / ".env").read_text(), old)
+        self.assertEqual(self.docker_calls(), [])
+
+        self.write_next_config(self.yookassa_candidate())
+        result = self.run_deploy(
+            activate_yookassa_test=True,
+            stdin_payload="test-token\n" + self.yookassa_payload(),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("existing staged configuration", result.stderr)
+        self.assertEqual(self.docker_calls(), [])
+
+    def test_yookassa_staging_waits_for_the_deployment_lock(self):
+        result = self.run_deploy(
+            activate_yookassa_test=True,
+            FAIL_FLOCK="1",
+            stdin_payload="test-token\n" + self.yookassa_payload(),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Another backend deployment is in progress", result.stderr)
+        self.assertEqual((self.backend / ".env").read_text(), BASE_ENV)
+        self.assertFalse((self.backend / ".env.next").exists())
+        self.assertEqual(self.docker_calls(), [])
+
+    def test_yookassa_pre_migration_failure_rolls_back_private_candidate(self):
+        result = self.run_deploy(
+            activate_yookassa_test=True,
+            COMPOSE_YOOKASSA_KEYS="1",
+            FAIL_COMPOSE_PREFLIGHT="1",
+            stdin_payload="test-token\n" + self.yookassa_payload(),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.backend / ".env").read_text(), BASE_ENV)
+        self.assertFalse((self.backend / ".env.next").exists())
+        self.assertFalse((self.backend / "pending").exists())
+        self.assertFalse((self.backend / f"receipts/{SOURCE_SHA}.json").exists())
+        self.assertFalse(list(self.root.glob("tmp*")))
+
+    def test_yookassa_candidate_is_ignored_without_activation_flag(self):
+        candidate = self.write_next_config(self.yookassa_candidate())
+        result = self.run_deploy(activate_yookassa_test=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(candidate.exists())
+        self.assertEqual((self.backend / ".env").read_text(), BASE_ENV)
+        receipt = json.loads((self.backend / "receipts" / f"{SOURCE_SHA}.json").read_text())
+        self.assertFalse(receipt["yookassa_test_activated"])
 
     def test_oauth_activation_rejects_unknown_keys_and_invalid_provider_contract(self):
         cases = [
@@ -516,7 +696,9 @@ class BackendDeployTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("mode-600 .env", result.stderr)
         self.assertEqual(self.docker_calls(), [])
-        self.assertEqual(after, before)
+        after_without_lock = {name: data for name, data in after.items() if name != ".deploy.lock"}
+        self.assertEqual(after_without_lock, before)
+        self.assertEqual((self.backend / ".deploy.lock").read_bytes(), b"")
 
     def test_backup_preflight_failure_preserves_release_and_skips_migration(self):
         stable = {name: (self.backend / name).read_bytes() for name in (".release.env", "compose.yaml", "Caddyfile")}

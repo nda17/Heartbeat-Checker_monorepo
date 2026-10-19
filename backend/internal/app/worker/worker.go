@@ -42,7 +42,7 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 	if err != nil {
 		return err
 	}
-	billingModule, err := billing.NewConfigured(pool, cfg.AppEnv == "local", billing.Config{Provider: cfg.BillingProvider, MockAccountIDs: cfg.BillingMockAccountIDs}, accountModule)
+	billingModule, err := billing.NewConfigured(pool, cfg.AppEnv == "local", billing.Config{Provider: cfg.BillingProvider, MockAccountIDs: cfg.BillingMockAccountIDs, TestAccountIDs: cfg.BillingTestAccountIDs, Mode: cfg.YooKassaMode, ShopID: cfg.YooKassaTestShopID, SecretKey: cfg.YooKassaTestSecretKey}, accountModule)
 	if err != nil {
 		return err
 	}
@@ -71,6 +71,9 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 		}
 	}
 	var wg sync.WaitGroup
+	if cfg.BillingProvider == "yookassa" {
+		startDeliveryLoop(ctx, &wg, logger, "payment reconciliation", billingModule.ProcessOnePayment)
+	}
 	if supportModule != nil {
 		startDeliveryLoop(ctx, &wg, logger, "support", supportModule.ProcessOne)
 	}

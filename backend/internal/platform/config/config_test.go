@@ -15,6 +15,8 @@ func clearConfigEnv(t *testing.T) {
 		"TURNSTILE_SECRET_KEY", "TURNSTILE_HOSTNAME", "TURNSTILE_LOCAL_TEST_MODE", "SMTP_ADDR", "SMTP_FROM",
 		"SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_TLS_MODE", "AUTH_MAIL_ENCRYPTION_KEY", "TRUSTED_PROXY_CIDRS",
 		"WEBHOOK_ENCRYPTION_KEY", "PROBE_URL", "PROBE_SHARED_SECRET",
+		"BILLING_PROVIDER", "BILLING_MOCK_ACCOUNT_IDS", "BILLING_TEST_ACCOUNT_IDS",
+		"YOOKASSA_MODE", "YOOKASSA_TEST_SHOP_ID", "YOOKASSA_TEST_SECRET_KEY",
 	} {
 		old, existed := os.LookupEnv(key)
 		t.Cleanup(func() {
@@ -25,6 +27,54 @@ func clearConfigEnv(t *testing.T) {
 			}
 		})
 		_ = os.Unsetenv(key)
+	}
+}
+
+func TestLoadIntegrationsKeepsYooKassaExplicitlyInTestModeForOneOwner(t *testing.T) {
+	const owner = "51ec7d19-80c4-4fb6-8edb-79dc7abe3120"
+	const mockAccount = "61ec7d19-80c4-4fb6-8edb-79dc7abe3120"
+	set := func(t *testing.T, mode, shop, secret, ownerIDs string) {
+		t.Helper()
+		clearConfigEnv(t)
+		_ = os.Setenv("BILLING_PROVIDER", "yookassa")
+		_ = os.Setenv("BILLING_MOCK_ACCOUNT_IDS", mockAccount)
+		_ = os.Setenv("BILLING_TEST_ACCOUNT_IDS", ownerIDs)
+		_ = os.Setenv("YOOKASSA_MODE", mode)
+		_ = os.Setenv("YOOKASSA_TEST_SHOP_ID", shop)
+		_ = os.Setenv("YOOKASSA_TEST_SECRET_KEY", secret)
+	}
+
+	t.Run("test sandbox configuration is shared by API and worker and preserves mock IDs", func(t *testing.T) {
+		set(t, "test", "123456", "test_synthetic_secret_123", owner)
+		for _, worker := range []bool{false, true} {
+			cfg, err := loadIntegrations(worker)
+			if err != nil {
+				t.Fatalf("loadIntegrations(worker=%t): %v", worker, err)
+			}
+			if cfg.BillingProvider != "yookassa" || cfg.YooKassaMode != "test" || cfg.YooKassaTestShopID != "123456" || cfg.YooKassaTestSecretKey != "test_synthetic_secret_123" || len(cfg.BillingTestAccountIDs) != 1 || cfg.BillingTestAccountIDs[0] != owner {
+				t.Fatalf("unexpected YooKassa configuration: %+v", cfg)
+			}
+			if len(cfg.BillingMockAccountIDs) != 1 || cfg.BillingMockAccountIDs[0] != mockAccount {
+				t.Fatalf("existing mock account config was not preserved: %+v", cfg.BillingMockAccountIDs)
+			}
+		}
+	})
+
+	for _, test := range []struct {
+		name, mode, shop, secret, ownerIDs string
+	}{
+		{"production mode", "live", "123456", "test_synthetic_secret_123", owner},
+		{"live credential", "test", "123456", "live_synthetic_secret_123", owner},
+		{"missing owner", "test", "123456", "test_synthetic_secret_123", ""},
+		{"multiple owners", "test", "123456", "test_synthetic_secret_123", owner + "," + mockAccount},
+		{"non-numeric shop", "test", "shop", "test_synthetic_secret_123", owner},
+	} {
+		t.Run(test.name+" is rejected", func(t *testing.T) {
+			set(t, test.mode, test.shop, test.secret, test.ownerIDs)
+			if _, err := loadIntegrations(false); err == nil {
+				t.Fatal("loadIntegrations() succeeded with invalid YooKassa configuration")
+			}
+		})
 	}
 }
 
