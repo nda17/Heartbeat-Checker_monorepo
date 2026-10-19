@@ -629,10 +629,14 @@ export function MonitorsPage() {
                         <Icon name="arrow-up-right" />
                       </button>
                       <span className="monitor-url" title={monitorTarget(m)}>
-                        {monitorCheckType(m.checkType) === "http"
-                          ? m.method
-                          : checkTypeLabel(m.checkType)}{" "}
-                        <span>{monitorTarget(m)}</span>
+                        <span className="monitor-url-method">
+                          {monitorCheckType(m.checkType) === "http"
+                            ? m.method
+                            : checkTypeLabel(m.checkType)}
+                        </span>{" "}
+                        <span className="monitor-url-target">
+                          {monitorTarget(m)}
+                        </span>
                       </span>
                       <span className="cell-sub">
                         Интервал: {m.intervalMinutes} мин · Порог:{" "}

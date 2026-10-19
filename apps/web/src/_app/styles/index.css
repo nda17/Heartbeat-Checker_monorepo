@@ -1712,7 +1712,7 @@ html[data-installed-app="true"] .landing-footer-inner {
 }
 .monitor-url {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 6px;
   color: var(--muted);
   font-family: ui-monospace, monospace;
@@ -1720,7 +1720,12 @@ html[data-installed-app="true"] .landing-footer-inner {
   margin-top: 7px;
   max-width: 260px;
 }
-.monitor-url > span {
+.monitor-url-method {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.monitor-url-target {
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5057,7 +5062,7 @@ html[data-installed-app="true"] .android-hero {
   .monitor-table.mobile-card-table .monitor-url {
     max-width: 100%;
   }
-  .monitor-table.mobile-card-table .monitor-url > span {
+  .monitor-table.mobile-card-table .monitor-url-target {
     white-space: normal;
     overflow-wrap: anywhere;
   }
