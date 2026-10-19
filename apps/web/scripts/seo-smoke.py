@@ -196,8 +196,11 @@ class Smoke:
                        "{} X-Robots-Tag must remain noindex,nofollow when present".format(path))
 
     def check_robots_and_sitemap(self):
-        status, _headers, body = self.get("/robots.txt")
+        status, headers, body = self.get("/robots.txt")
         expect(status == 200, "robots.txt returned HTTP {}".format(status))
+        expect(header_value(headers, "Content-Type").split(";", 1)[0].strip().lower() == "text/plain",
+               "robots.txt must have text/plain content type")
+        expect_index_follow_headers(headers, "/robots.txt")
         robots = body.decode("utf-8", errors="replace")
         normalized = robots.lower()
         expect("user-agent: *" in normalized, "robots.txt must include User-agent: *")
@@ -214,8 +217,11 @@ class Smoke:
                            for line in robots.splitlines()),
                    "robots.txt must not block crawl access to private HTML {}".format(path))
 
-        status, _headers, body = self.get("/sitemap.xml")
+        status, headers, body = self.get("/sitemap.xml")
         expect(status == 200, "sitemap.xml returned HTTP {}".format(status))
+        expect(header_value(headers, "Content-Type").split(";", 1)[0].strip().lower() == "application/xml",
+               "sitemap.xml must have application/xml content type")
+        expect_index_follow_headers(headers, "/sitemap.xml")
         try:
             root = ET.fromstring(body)
         except ET.ParseError as error:
@@ -259,6 +265,21 @@ def public_page_url(path):
 
 def header_value(headers, name):
     return headers.get(name, "")
+
+
+def header_values(headers, name):
+    return headers.get_all(name, [])
+
+
+def expect_index_follow_headers(headers, path):
+    values = header_values(headers, "X-Robots-Tag")
+    tokens = set().union(*(directives(value) for value in values))
+    agent_tokens = {part.split(":", 1)[-1].strip().lower()
+                    for value in values for part in value.split(",") if part.strip()}
+    expect({"index", "follow"}.issubset(tokens),
+           "{} must send X-Robots-Tag index,follow; found {}".format(path, values))
+    expect(not (tokens | agent_tokens).intersection({"noindex", "nofollow", "none"}),
+           "{} must not send blocking X-Robots-Tag directives: {}".format(path, values))
 
 
 def directives(value):
