@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import { useSession } from "@/entities/session";
 import {
   api,
   errorMessage,
@@ -24,6 +25,7 @@ export function OAuthIdentities({
   isAdmin: boolean;
   onChange: () => Promise<void>;
 }) {
+  const { beginSessionTransition, endSessionTransition } = useSession();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [identities, setIdentities] = useState<Identity[] | null>(null);
   const [busy, setBusy] = useState("");
@@ -47,7 +49,12 @@ export function OAuthIdentities({
       setSuccess(linked ? "Способ входа подключён." : "");
       setError(failure ? oauthCallbackMessage(failure) : "");
       window.history.replaceState(null, "", "/app/settings");
-      if (linked) void onChange();
+      if (linked)
+        void onChange().catch((cause) =>
+          setError(
+            `Способ входа подключён, но профиль не обновился: ${errorMessage(cause)}`,
+          ),
+        );
     }
     const controller = new AbortController();
     void load(controller.signal).catch((cause) => {
@@ -97,14 +104,28 @@ export function OAuthIdentities({
     setError("");
     setSuccess("");
     try {
-      await api(`/me/identities/${identity.provider}`, {
-        method: "DELETE",
-        authenticated: true,
-        body: { identityId: identity.id, password },
-      });
+      beginSessionTransition();
+      try {
+        await api(`/me/identities/${identity.provider}`, {
+          method: "DELETE",
+          authenticated: true,
+          body: { identityId: identity.id, password },
+        });
+      } finally {
+        endSessionTransition();
+      }
       form.reset();
-      await Promise.all([load(), onChange()]);
+      setIdentities(
+        (current) => current?.filter((item) => item.id !== identity.id) ?? null,
+      );
       setSuccess(`${names[identity.provider]} отключён от аккаунта.`);
+      try {
+        await Promise.all([load(), onChange()]);
+      } catch (cause) {
+        setError(
+          `${names[identity.provider]} отключён, но данные не обновились: ${errorMessage(cause)}`,
+        );
+      }
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {

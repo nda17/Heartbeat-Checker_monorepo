@@ -83,7 +83,7 @@ func (c *Client) Check(ctx context.Context, request contracts.Request) (contract
 		return contracts.Result{}, errors.New("invalid probe response")
 	}
 	switch result.ErrorCode {
-	case "", "check_cancelled", "probe_unavailable", "request_failed", "redirect_limit", "invalid_redirect", "response_too_large", "unexpected_status", "body_mismatch":
+	case "", "check_cancelled", "probe_unavailable", "request_failed", "request_timeout", "tls_certificate_invalid", "tls_handshake_failed", "redirect_limit", "invalid_redirect", "response_too_large", "unexpected_status", "body_mismatch":
 	default:
 		return contracts.Result{}, errors.New("invalid probe response")
 	}

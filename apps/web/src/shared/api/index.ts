@@ -40,7 +40,12 @@ export async function api<T>(
   }
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    throw new ApiError(response.status, data.error ?? "unknown_error");
+    const code = data && typeof data.error === "string" ? data.error : null;
+    throw new ApiError(
+      response.status,
+      code ??
+        (response.status >= 500 ? "temporarily_unavailable" : "unknown_error"),
+    );
   }
   if (response.status === 204 || response.status === 202) return undefined as T;
   return response.json() as Promise<T>;
@@ -94,7 +99,22 @@ const messages: Record<string, string> = {
   invalid_url:
     "Укажите публичный HTTP или HTTPS адрес. Внутренние и служебные адреса запрещены.",
 };
-export function errorMessage(error: unknown) {
+export function errorMessage(
+  error: unknown,
+  context?: "mfa" | "mfa-confirm" | "admin",
+) {
+  if (error instanceof ApiError && context) {
+    if (context.startsWith("mfa")) {
+      if (error.code === "invalid_credentials")
+        return context === "mfa-confirm"
+          ? "Код не подошёл. Введите актуальный код из аутентификатора и проверьте время на устройстве."
+          : "Пароль или код не подошёл. Проверьте пароль и используйте новый код; резервный код действует только один раз.";
+      if (error.code === "conflict")
+        return "Настройка истекла или уже завершена. Начните настройку заново.";
+    }
+    if (context === "admin" && error.code === "forbidden")
+      return "Изменение недоступно. Проверьте права и подтверждение MFA. Защита администраторов также ограничивает изменение собственного или последнего аккаунта администратора.";
+  }
   return error instanceof ApiError
     ? (messages[error.code] ??
         "Не удалось выполнить действие. Попробуйте ещё раз.")

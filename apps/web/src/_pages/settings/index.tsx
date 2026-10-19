@@ -8,25 +8,20 @@ import { OAuthIdentities } from "@/features/oauth-identities";
 import { api, errorMessage } from "@/shared/api";
 import { dateTime, Loading, Notice, PasswordInput } from "@/shared/ui";
 export function SettingsPage() {
-  const { profile, refresh } = useSession();
+  const { profile, refresh, beginSessionTransition, endSessionTransition } =
+    useSession();
   const router = useRouter();
   const [sessions, setSessions] = useState<Session[] | null>(null);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState("");
   const loadSessions = useCallback(async () => {
-    try {
-      setSessions(
-        (await api<{ sessions: Session[] }>("/me/sessions")).sessions,
-      );
-    } catch (e) {
-      setError(errorMessage(e));
-    }
+    setSessions((await api<{ sessions: Session[] }>("/me/sessions")).sessions);
   }, []);
   // Bootstrap browser-only session data; state changes after asynchronous API requests.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void loadSessions();
+    void loadSessions().catch((e) => setError(errorMessage(e)));
   }, [loadSessions]);
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -40,8 +35,12 @@ export function SettingsPage() {
         authenticated: true,
         body: { name: data.get("name") },
       });
-      await refresh();
       setSuccess("Имя сохранено.");
+      try {
+        await refresh();
+      } catch (e) {
+        setError(`Имя сохранено, но профиль не обновился: ${errorMessage(e)}`);
+      }
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -55,6 +54,7 @@ export function SettingsPage() {
     setBusy("password");
     setError("");
     setSuccess("");
+    beginSessionTransition();
     try {
       await api("/auth/password/change", {
         method: "POST",
@@ -69,6 +69,7 @@ export function SettingsPage() {
     } catch (e) {
       setError(errorMessage(e));
     } finally {
+      endSessionTransition();
       setBusy("");
     }
   }
@@ -76,6 +77,8 @@ export function SettingsPage() {
     setBusy(id ?? "all");
     setError("");
     setSuccess("");
+    const rotatesSession = !id || current;
+    if (rotatesSession) beginSessionTransition();
     try {
       await api(`/me/sessions${id ? `/${encodeURIComponent(id)}` : ""}`, {
         method: "DELETE",
@@ -83,12 +86,19 @@ export function SettingsPage() {
       });
       if (!id || current) router.replace("/login");
       else {
-        await loadSessions();
         setSuccess("Сессия завершена.");
+        try {
+          await loadSessions();
+        } catch (e) {
+          setError(
+            `Сессия завершена, но список не обновился: ${errorMessage(e)}`,
+          );
+        }
       }
     } catch (e) {
       setError(errorMessage(e));
     } finally {
+      if (rotatesSession) endSessionTransition();
       setBusy("");
     }
   }

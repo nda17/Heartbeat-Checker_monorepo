@@ -61,6 +61,31 @@ func TestClientCheckSendsAuthenticatedRequestAndAcceptsCorrelatedResult(t *testi
 	}
 }
 
+func TestClientAcceptsBoundedTimeoutAndTLSFailureCodes(t *testing.T) {
+	for _, code := range []string{"request_timeout", "tls_certificate_invalid", "tls_handshake_failed"} {
+		t.Run(code, func(t *testing.T) {
+			request := clientRequest()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				result := responseFor(request)
+				result.Outcome = "DOWN"
+				result.HTTPStatus = 0
+				result.ErrorCode = code
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(result)
+			}))
+			defer server.Close()
+			client, err := New(server.URL, testSecret)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := client.Check(context.Background(), request)
+			if err != nil || result.ErrorCode != code || result.Outcome != "DOWN" {
+				t.Fatalf("Check() = (%+v, %v), want accepted %s failure", result, err, code)
+			}
+		})
+	}
+}
+
 func TestClientDoesNotFollowRedirect(t *testing.T) {
 	var redirectTargetCalls atomic.Int32
 	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { redirectTargetCalls.Add(1) }))

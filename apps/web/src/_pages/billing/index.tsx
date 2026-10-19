@@ -65,16 +65,33 @@ export function BillingPage() {
     if (!request.current || request.current.count !== count)
       request.current = { count, key: crypto.randomUUID() };
     try {
-      await api("/billing/orders", {
+      const result = await api<{ order: Order }>("/billing/orders", {
         method: "POST",
         authenticated: true,
         body: { monitorCount: count, idempotencyKey: request.current.key },
       });
       request.current = null;
-      await load();
+      setBilling((current) =>
+        current
+          ? {
+              ...current,
+              orders: [
+                result.order,
+                ...current.orders.filter(
+                  (order) => order.id !== result.order.id,
+                ),
+              ],
+            }
+          : current,
+      );
       setSuccess(
         "Тестовый заказ создан. Выберите результат ниже. Деньги не списываются.",
       );
+      try {
+        await load();
+      } catch (e) {
+        setError(`Заказ создан, но список не обновился: ${errorMessage(e)}`);
+      }
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -94,12 +111,28 @@ export function BillingPage() {
           body: { outcome },
         },
       );
-      await load();
+      setBilling((current) =>
+        current
+          ? {
+              ...current,
+              orders: current.orders.map((item) =>
+                item.id === order.id ? result.order : item,
+              ),
+            }
+          : current,
+      );
       setSuccess(
         result.order.status === "succeeded"
           ? "Тестовая квота активирована. Деньги не списаны."
           : "Тестовый заказ отменён. Деньги не списаны.",
       );
+      try {
+        await load();
+      } catch (e) {
+        setError(
+          `Результат сохранён, но список не обновился: ${errorMessage(e)}`,
+        );
+      }
     } catch (e) {
       setError(errorMessage(e));
     } finally {

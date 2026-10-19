@@ -20,6 +20,12 @@ import (
 
 type testResolver map[string][]netip.Addr
 
+type testTimeoutError struct{}
+
+func (testTimeoutError) Error() string   { return "synthetic network timeout" }
+func (testTimeoutError) Timeout() bool   { return true }
+func (testTimeoutError) Temporary() bool { return true }
+
 func (r testResolver) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
 	ips, ok := r[host]
 	if !ok {
@@ -142,6 +148,37 @@ func TestCheckUsesOriginalHostnameForTLSNameAndPinnedIPForDial(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("TLS client did not send a ClientHello")
 	}
+}
+
+func TestCheckSupportsHTTP(t *testing.T) {
+	e := testExecutor(testResolver{"http.example": {netip.MustParseAddr("93.184.216.34")}}, func(context.Context, string, string) (net.Conn, error) {
+		return responseConn(t, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", nil), nil
+	})
+	result, err := e.Check(context.Background(), testRequest("http://http.example/health"))
+	if err != nil || result.Outcome != "UP" || result.HTTPStatus != http.StatusOK {
+		t.Fatalf("HTTP check = (%+v, %v), want successful HTTP response", result, err)
+	}
+}
+
+func TestCheckClassifiesTLSFailures(t *testing.T) {
+	t.Run("network timeout", func(t *testing.T) {
+		if got := requestErrorCode(context.Background(), &net.OpError{Op: "dial", Net: "tcp", Err: testTimeoutError{}}); got != "request_timeout" {
+			t.Fatalf("requestErrorCode(network timeout) = %q, want request_timeout", got)
+		}
+	})
+
+	t.Run("certificate verification", func(t *testing.T) {
+		certificateErr := &tls.CertificateVerificationError{Err: errors.New("synthetic untrusted certificate")}
+		if got := requestErrorCode(context.Background(), &establishmentError{&tlsHandshakeError{certificateErr}}); got != "tls_certificate_invalid" {
+			t.Fatalf("requestErrorCode(certificate verification) = %q, want tls_certificate_invalid", got)
+		}
+	})
+
+	t.Run("non-certificate handshake failure", func(t *testing.T) {
+		if got := requestErrorCode(context.Background(), &establishmentError{&tlsHandshakeError{errors.New("synthetic TLS alert")}}); got != "tls_handshake_failed" {
+			t.Fatalf("requestErrorCode(TLS alert) = %q, want tls_handshake_failed", got)
+		}
+	})
 }
 
 func TestCheckRedirectResolvesAndRejectsPrivateDestination(t *testing.T) {
@@ -420,8 +457,8 @@ func TestCheckHonorsCallerDeadline(t *testing.T) {
 	}
 	select {
 	case result := <-done:
-		if result.Outcome != "DOWN" || result.ErrorCode != "request_failed" {
-			t.Fatalf("deadline result = %+v, want DOWN/request_failed", result)
+		if result.Outcome != "DOWN" || result.ErrorCode != "request_timeout" {
+			t.Fatalf("deadline result = %+v, want DOWN/request_timeout", result)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("deadline did not stop check promptly")

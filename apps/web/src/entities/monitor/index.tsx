@@ -52,3 +52,25 @@ export function Status({ state }: { state: string }) {
     </span>
   );
 }
+
+const resultErrors: Record<string, string> = {
+  request_timeout:
+    "Сервер не ответил вовремя. Возможна задержка соединения или ответа.",
+  tls_certificate_invalid: "Не удалось проверить HTTPS-сертификат сервера.",
+  tls_handshake_failed: "Не удалось установить защищённое HTTPS-соединение.",
+  request_failed:
+    "Не удалось выполнить HTTP-запрос. Проверьте доступность адреса.",
+  probe_unavailable: "Проверка временно недоступна. Результат не определён.",
+  check_cancelled: "Проверка прервана. Результат не определён.",
+  redirect_limit: "Сервер вернул слишком много перенаправлений.",
+  invalid_redirect: "Сервер перенаправил запрос на недопустимый адрес.",
+  response_too_large: "Ответ сервера превышает допустимый размер.",
+  unexpected_status: "HTTP-код ответа отличается от ожидаемого.",
+  body_mismatch: "В ответе нет ожидаемого текста.",
+};
+export function resultErrorMessage(code: string) {
+  return (
+    resultErrors[code] ??
+    "Проверка завершилась ошибкой. Проверьте адрес и условия проверки."
+  );
+}

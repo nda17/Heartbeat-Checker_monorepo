@@ -166,7 +166,7 @@ func (e *Executor) Check(ctx context.Context, req contracts.Request) (contracts.
 				result.ErrorCode = "check_cancelled"
 				return result, nil
 			}
-			result.Outcome, result.ErrorCode = "DOWN", "request_failed"
+			result.Outcome, result.ErrorCode = "DOWN", requestErrorCode(ctx, err)
 			return result, nil
 		}
 		result.HTTPStatus = response.StatusCode
@@ -251,6 +251,27 @@ type establishmentError struct{ err error }
 func (e *establishmentError) Error() string { return "connection establishment failed" }
 func (e *establishmentError) Unwrap() error { return e.err }
 
+type tlsHandshakeError struct{ err error }
+
+func (e *tlsHandshakeError) Error() string { return "TLS handshake failed" }
+func (e *tlsHandshakeError) Unwrap() error { return e.err }
+
+func requestErrorCode(ctx context.Context, err error) string {
+	var netErr net.Error
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
+		return "request_timeout"
+	}
+	var certificateErr *tls.CertificateVerificationError
+	if errors.As(err, &certificateErr) {
+		return "tls_certificate_invalid"
+	}
+	var handshakeErr *tlsHandshakeError
+	if errors.As(err, &handshakeErr) {
+		return "tls_handshake_failed"
+	}
+	return "request_failed"
+}
+
 func resourceFailure(err error) bool {
 	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) || errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM) || errors.Is(err, syscall.EADDRNOTAVAIL)
 }
@@ -283,7 +304,7 @@ func (e *Executor) requestIPWithPayload(ctx context.Context, u *url.URL, method 
 		tlsConn := tls.Client(conn, tlsConfig)
 		if err := tlsConn.HandshakeContext(dialCtx); err != nil {
 			_ = conn.Close()
-			return nil, &establishmentError{err}
+			return nil, &establishmentError{&tlsHandshakeError{err}}
 		}
 		return tlsConn, nil
 	}

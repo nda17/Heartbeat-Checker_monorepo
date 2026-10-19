@@ -301,6 +301,80 @@ func (f *adminFixture) request(t *testing.T, actor adminTestActor, method, path 
 	return rec
 }
 
+func TestAdminAccountNameChangeAuditCapturesBeforeAndAfter(t *testing.T) {
+	f := newAdminFixture(t)
+	admin := f.seedActor(t, "a1000000-0000-4000-8000-000000000001", "b1000000-0000-4000-8000-000000000001", strings.Repeat("A", 43), "Admin", "admin-name-audit@example.test", "admin", true)
+	target := f.seedActor(t, "a1000000-0000-4000-8000-000000000002", "b1000000-0000-4000-8000-000000000002", strings.Repeat("B", 43), "Before Name", "name-audit-target@example.test", "user", false)
+	const reason = "correct account display name"
+
+	updated := f.request(t, admin, http.MethodPatch, "/api/v1/admin/accounts/"+target.id, map[string]any{
+		"version": 1,
+		"name":    "After Name",
+		"reason":  reason,
+	})
+	if updated.Code != http.StatusOK {
+		t.Fatalf("name-only account update status=%d body=%s", updated.Code, updated.Body.String())
+	}
+	var response struct {
+		Name    string `json:"name"`
+		Role    string `json:"role"`
+		Status  string `json:"status"`
+		Version int64  `json:"version"`
+	}
+	if err := json.Unmarshal(updated.Body.Bytes(), &response); err != nil || response.Name != "After Name" || response.Role != "user" || response.Status != "active" || response.Version != 2 {
+		t.Fatalf("name-only update response=%+v err=%v", response, err)
+	}
+
+	var before, after []byte
+	if err := f.pool.QueryRow(context.Background(), `SELECT before_state,after_state FROM admin.audit_events WHERE target_account_id=$1 AND action='account.updated' AND reason=$2`, target.id, reason).Scan(&before, &after); err != nil {
+		t.Fatalf("load account.updated audit event: %v", err)
+	}
+	var beforeState, afterState struct {
+		Name    string `json:"name"`
+		Role    string `json:"role"`
+		Status  string `json:"status"`
+		Version int64  `json:"version"`
+	}
+	if err := json.Unmarshal(before, &beforeState); err != nil {
+		t.Fatalf("decode before_state: %v", err)
+	}
+	if err := json.Unmarshal(after, &afterState); err != nil {
+		t.Fatalf("decode after_state: %v", err)
+	}
+	if beforeState.Name != "Before Name" || beforeState.Role != "user" || beforeState.Status != "active" || beforeState.Version != 1 {
+		t.Fatalf("unexpected before_state: %+v", beforeState)
+	}
+	if afterState.Name != "After Name" || afterState.Role != "user" || afterState.Status != "active" || afterState.Version != 2 {
+		t.Fatalf("unexpected after_state: %+v", afterState)
+	}
+}
+
+func TestAdminUnexpectedMFAFenceDatabaseErrorIsServerFailure(t *testing.T) {
+	f := newAdminFixture(t)
+	admin := f.seedActor(t, "a2000000-0000-4000-8000-000000000001", "b2000000-0000-4000-8000-000000000001", strings.Repeat("A", 43), "Admin", "admin-fence-error@example.test", "admin", true)
+	target := f.seedActor(t, "a2000000-0000-4000-8000-000000000002", "b2000000-0000-4000-8000-000000000002", strings.Repeat("B", 43), "Target User", "fence-error-target@example.test", "user", false)
+	if _, err := f.pool.Exec(context.Background(), `ALTER TABLE auth.mfa_factors RENAME TO mfa_factors_unavailable`); err != nil {
+		t.Fatal(err)
+	}
+
+	got := f.request(t, admin, http.MethodPatch, "/api/v1/admin/accounts/"+target.id, map[string]any{
+		"version": 1,
+		"name":    "Must Not Be Saved",
+		"reason":  "unexpected MFA fence database error",
+	})
+	if got.Code < http.StatusInternalServerError {
+		t.Fatalf("unexpected MFA verification database error status=%d body=%s, want 5xx", got.Code, got.Body.String())
+	}
+	var name string
+	if err := f.pool.QueryRow(context.Background(), `SELECT name FROM accounts.accounts WHERE id=$1`, target.id).Scan(&name); err != nil || name != "Target User" {
+		t.Fatalf("unexpected MFA verification error changed account name=%q err=%v", name, err)
+	}
+	var auditRows int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM admin.audit_events WHERE target_account_id=$1 AND action='account.updated'`, target.id).Scan(&auditRows); err != nil || auditRows != 0 {
+		t.Fatalf("unexpected MFA verification error left account.updated audit rows=%d err=%v", auditRows, err)
+	}
+}
+
 func TestAdminMFAFenceVersionedMutationsAndAuditAtomicity(t *testing.T) {
 	f := newAdminFixture(t)
 	admin := f.seedActor(t, "a0000000-0000-4000-8000-000000000001", "b0000000-0000-4000-8000-000000000001", strings.Repeat("A", 43), "Admin", "admin@example.test", "admin", true)

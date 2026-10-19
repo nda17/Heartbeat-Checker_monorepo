@@ -73,6 +73,12 @@ func messengerCause(code string) string {
 		return "ответ превышает допустимый размер"
 	case "request_failed":
 		return "HTTP-запрос не выполнен"
+	case "request_timeout":
+		return "время HTTP-проверки истекло"
+	case "tls_certificate_invalid":
+		return "не удалось проверить TLS-сертификат"
+	case "tls_handshake_failed":
+		return "не удалось установить TLS-соединение"
 	}
 	return ""
 }
