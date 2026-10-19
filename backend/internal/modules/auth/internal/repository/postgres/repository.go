@@ -82,7 +82,7 @@ func (r *Repository) InsertChallenge(ctx context.Context, c Challenge, tokenHash
 func (r *Repository) Challenge(ctx context.Context, tokenHash []byte) (Challenge, error) {
 	var c Challenge
 	err := r.pool.QueryRow(ctx, `SELECT id,email,name,password_hash,expires_at,failed_attempts FROM auth.registration_challenges
-		WHERE token_hash=$1 AND consumed_at IS NULL`, tokenHash).Scan(&c.ID, &c.Email, &c.Name, &c.PasswordHash, &c.ExpiresAt, &c.Attempts)
+		WHERE token_hash=$1 AND consumed_at IS NULL AND oauth_provider IS NULL AND password_hash IS NOT NULL`, tokenHash).Scan(&c.ID, &c.Email, &c.Name, &c.PasswordHash, &c.ExpiresAt, &c.Attempts)
 	return c, err
 }
 
@@ -98,7 +98,7 @@ func (r *Repository) CompleteRegistration(ctx context.Context, c Challenge, pass
 	var expires time.Time
 	var attempts int
 	err = tx.QueryRow(ctx, `SELECT password_hash,expires_at,failed_attempts FROM auth.registration_challenges
-		WHERE id=$1 AND consumed_at IS NULL FOR UPDATE`, c.ID).Scan(&currentHash, &expires, &attempts)
+		WHERE id=$1 AND consumed_at IS NULL AND oauth_provider IS NULL AND password_hash IS NOT NULL FOR UPDATE`, c.ID).Scan(&currentHash, &expires, &attempts)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrInvalid
@@ -170,13 +170,13 @@ func (r *Repository) BootstrapLocal(ctx context.Context, email, name, hash strin
 
 func (r *Repository) CredentialByEmail(ctx context.Context, email string) (Credential, error) {
 	var c Credential
-	err := r.pool.QueryRow(ctx, `SELECT account_id,email,password_hash,version FROM auth.credentials WHERE email=$1`, email).Scan(&c.AccountID, &c.Email, &c.PasswordHash, &c.Version)
+	err := r.pool.QueryRow(ctx, `SELECT account_id,email,COALESCE(password_hash,''),version FROM auth.credentials WHERE email=$1`, email).Scan(&c.AccountID, &c.Email, &c.PasswordHash, &c.Version)
 	return c, err
 }
 
 func (r *Repository) CredentialByAccount(ctx context.Context, accountID string) (Credential, error) {
 	var c Credential
-	err := r.pool.QueryRow(ctx, `SELECT account_id,email,password_hash,version FROM auth.credentials WHERE account_id=$1`, accountID).Scan(&c.AccountID, &c.Email, &c.PasswordHash, &c.Version)
+	err := r.pool.QueryRow(ctx, `SELECT account_id,email,COALESCE(password_hash,''),version FROM auth.credentials WHERE account_id=$1`, accountID).Scan(&c.AccountID, &c.Email, &c.PasswordHash, &c.Version)
 	return c, err
 }
 
@@ -189,14 +189,14 @@ func (r *Repository) LoginSession(ctx context.Context, c Credential, sessionID s
 	defer tx.Rollback(ctx)
 	var hash string
 	var version int64
-	err = tx.QueryRow(ctx, `SELECT password_hash,version FROM auth.credentials WHERE account_id=$1 FOR UPDATE`, c.AccountID).Scan(&hash, &version)
+	err = tx.QueryRow(ctx, `SELECT COALESCE(password_hash,''),version FROM auth.credentials WHERE account_id=$1 FOR UPDATE`, c.AccountID).Scan(&hash, &version)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrConflict
 		}
 		return err
 	}
-	if hash != c.PasswordHash || version != c.Version {
+	if hash == "" || hash != c.PasswordHash || version != c.Version {
 		return ErrConflict
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO auth.sessions (id,account_id,token_hash,credential_version,expires_at,ip,user_agent)
@@ -325,14 +325,14 @@ func (r *Repository) ChangePassword(ctx context.Context, c Credential, newHash s
 	defer tx.Rollback(ctx)
 	var hash string
 	var version int64
-	err = tx.QueryRow(ctx, `SELECT password_hash,version FROM auth.credentials WHERE account_id=$1 FOR UPDATE`, c.AccountID).Scan(&hash, &version)
+	err = tx.QueryRow(ctx, `SELECT COALESCE(password_hash,''),version FROM auth.credentials WHERE account_id=$1 FOR UPDATE`, c.AccountID).Scan(&hash, &version)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrConflict
 		}
 		return err
 	}
-	if hash != c.PasswordHash || version != c.Version {
+	if hash == "" || hash != c.PasswordHash || version != c.Version {
 		return ErrConflict
 	}
 	if _, err = tx.Exec(ctx, `UPDATE auth.credentials SET password_hash=$2,version=version+1,password_changed_at=now() WHERE account_id=$1`, c.AccountID, newHash); err != nil {
@@ -360,6 +360,7 @@ func Cleanup(ctx context.Context, tx pgx.Tx) error {
 		`DELETE FROM auth.sessions WHERE id IN (SELECT id FROM auth.sessions WHERE expires_at<=now() OR revoked_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.registration_challenges WHERE id IN (SELECT id FROM auth.registration_challenges WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.password_reset_tokens WHERE token_hash IN (SELECT token_hash FROM auth.password_reset_tokens WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
+		`DELETE FROM auth.oauth_attempts WHERE state_hash IN (SELECT state_hash FROM auth.oauth_attempts WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.rate_limits WHERE (scope,key_hash) IN (SELECT scope,key_hash FROM auth.rate_limits WHERE window_end<=now() ORDER BY window_end LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 	} {
 		if _, err := tx.Exec(ctx, query); err != nil {

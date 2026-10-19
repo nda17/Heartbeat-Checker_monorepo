@@ -1,11 +1,46 @@
+{
+    log {
+        output stdout
+        format filter {
+            wrap json
+            fields {
+                request>uri query {
+                    delete code
+                    delete state
+                    delete device_id
+                }
+            }
+        }
+    }
+}
+
 heartbeat-checker.ru {
+    @oauth_callbacks path /api/v1/auth/oauth/yandex/callback /api/v1/auth/oauth/vk/callback
+    log_skip @oauth_callbacks
     encode zstd gzip
-    reverse_proxy web:3000 {
-        header_up X-Heartbeat-Client-IP {http.request.remote.host}
+    handle @oauth_callbacks {
+        reverse_proxy https://api.heartbeat-checker.ru {
+            header_up Host api.heartbeat-checker.ru
+            header_up X-Heartbeat-Client-IP {http.request.remote.host}
+        }
+    }
+    handle {
+        reverse_proxy web:3000 {
+            header_up X-Heartbeat-Client-IP {http.request.remote.host}
+        }
     }
 
     log {
         output stdout
-        format json
+        format filter {
+            wrap json
+            fields {
+                request>uri query {
+                    delete code
+                    delete state
+                    delete device_id
+                }
+            }
+        }
     }
 }

@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 )
 
 type DeliveryError struct {
@@ -58,7 +60,7 @@ func NewProduction(addr, from, username, password, mode string) (*JobSender, err
 	return &JobSender{addr: addr, host: host, from: from, username: username, password: password, mode: mode}, nil
 }
 
-func (s *JobSender) SendWithID(ctx context.Context, to, subject, body, messageID string) error {
+func (s *JobSender) SendWithID(ctx context.Context, to, subject string, body contracts.MailContent, messageID string) error {
 	if validAddress(to) != nil || strings.ContainsAny(subject, "\r\n") || !validMessageID(messageID) {
 		return &DeliveryError{stage: "message", permanent: true}
 	}

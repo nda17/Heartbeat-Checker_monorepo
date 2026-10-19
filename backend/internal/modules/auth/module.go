@@ -17,7 +17,12 @@ import (
 	authhttp "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/transport/http"
 )
 
+type OAuthProvider = service.OAuthProvider
+type OAuthIdentityProfile = service.OAuthIdentityProfile
+
 type Config struct {
+	OAuthProviders    map[string]OAuthProvider
+	OAuthAudit        postgres.OAuthAudit
 	Origin            string
 	MailEncryptionKey string
 	MFAEncryptionKey  string
@@ -96,9 +101,19 @@ func New(pool *pgxpool.Pool, accounts contracts.Service, captcha CaptchaVerifier
 	if cfg.SessionTTL < time.Second || cfg.ChallengeTTL < time.Second || cfg.ResetTTL < time.Second || cfg.RateLimitWindow < time.Second {
 		return nil, errors.New("auth durations must be at least one second")
 	}
+	if len(cfg.OAuthProviders) > 0 && cfg.OAuthAudit == nil {
+		return nil, errors.New("OAuth audit writer is required")
+	}
+	for id, p := range cfg.OAuthProviders {
+		if (id != "vk" && id != "yandex") || p == nil || p.ID() != id {
+			return nil, errors.New("invalid OAuth provider configuration")
+		}
+	}
 	repo := postgres.New(pool)
 	svc := service.New(repo, accounts, captcha, mailer, service.Config{
 		Origin:            cfg.Origin,
+		OAuthProviders:    cfg.OAuthProviders,
+		OAuthAudit:        cfg.OAuthAudit,
 		MailEncryptionKey: mailKey,
 		MFAEncryptionKey:  mfaKey,
 		MFAAudit:          cfg.MFAAudit,

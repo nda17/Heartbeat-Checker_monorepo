@@ -1,8 +1,10 @@
 "use client";
+import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Session, useSession } from "@/entities/session";
 import { MessengerLinks } from "@/features/messenger-links";
+import { OAuthIdentities } from "@/features/oauth-identities";
 import { api, errorMessage } from "@/shared/api";
 import { dateTime, Loading, Notice, PasswordInput } from "@/shared/ui";
 export function SettingsPage() {
@@ -138,41 +140,61 @@ export function SettingsPage() {
             <span className="panel-index">02</span>
             <div>
               <h2>Пароль</h2>
-              <p>Обновите пароль и завершите прежние сессии.</p>
+              <p>
+                {profile.hasPassword
+                  ? "Обновите пароль и завершите прежние сессии."
+                  : "Установите пароль для управления способами входа и административной MFA."}
+              </p>
             </div>
           </div>
-          <form className="form-stack" onSubmit={changePassword}>
-            <label>
-              Текущий пароль
-              <PasswordInput
-                name="currentPassword"
-                autoComplete="current-password"
-                required
-                maxLength={1024}
-              />
-            </label>
-            <label>
-              Новый пароль
-              <PasswordInput
-                name="newPassword"
-                autoComplete="new-password"
-                required
-                minLength={12}
-                maxLength={1024}
-              />
-              <span className="field-hint">
-                От 12 символов. После смены понадобится войти снова.
-              </span>
-            </label>
-            <button className="secondary" disabled={!!busy}>
-              {busy === "password" ? "Обновляем…" : "Изменить пароль"}
-            </button>
-          </form>
+          {profile.hasPassword ? (
+            <form className="form-stack" onSubmit={changePassword}>
+              <label>
+                Текущий пароль
+                <PasswordInput
+                  name="currentPassword"
+                  autoComplete="current-password"
+                  required
+                  maxLength={1024}
+                />
+              </label>
+              <label>
+                Новый пароль
+                <PasswordInput
+                  name="newPassword"
+                  autoComplete="new-password"
+                  required
+                  minLength={12}
+                  maxLength={1024}
+                />
+                <span className="field-hint">
+                  От 12 символов. После смены понадобится войти снова.
+                </span>
+              </label>
+              <button className="secondary" disabled={!!busy}>
+                {busy === "password" ? "Обновляем…" : "Изменить пароль"}
+              </button>
+            </form>
+          ) : (
+            <p className="small">
+              У вас пока нет пароля. Запросите письмо для его установки, затем
+              вернитесь в настройки.
+              <br />
+              <Link href="/forgot-password">
+                Установить пароль через email →
+              </Link>
+            </p>
+          )}
         </section>
       </div>
+      <OAuthIdentities
+        hasPassword={profile.hasPassword}
+        isAdmin={profile.account.role === "admin"}
+        onChange={refresh}
+      />
       <section className="panel sessions-panel">
         <div className="panel-heading">
-          <span className="panel-index">03</span>
+          <span className="panel-index">04</span>
           <div>
             <h2>Активные сессии</h2>
             <p>Устройства, на которых выполнен вход в аккаунт.</p>

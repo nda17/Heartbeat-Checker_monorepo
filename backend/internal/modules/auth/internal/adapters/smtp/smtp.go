@@ -5,15 +5,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
+	"mime/multipart"
 	"mime/quotedprintable"
 	"net"
 	"net/mail"
 	"net/netip"
 	stdsmtp "net/smtp"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 )
 
 const sendTimeout = 5 * time.Second
@@ -44,7 +49,7 @@ func New(addr, from string) (*Sender, error) {
 	return &Sender{addr: addr, host: host, from: from}, nil
 }
 
-func (s *Sender) Send(ctx context.Context, recipient, subject, body string) error {
+func (s *Sender) Send(ctx context.Context, recipient, subject string, body contracts.MailContent) error {
 	if err := validAddress(recipient); err != nil {
 		return fmt.Errorf("SMTP recipient: %w", err)
 	}
@@ -108,28 +113,47 @@ func validAddress(address string) error {
 	return nil
 }
 
-func buildMessage(from, recipient, subject, body string) ([]byte, error) {
+func buildMessage(from, recipient, subject string, body contracts.MailContent) ([]byte, error) {
 	return buildMessageWithID(from, recipient, subject, body, "")
 }
 
-func buildMessageWithID(from, recipient, subject, body, messageID string) ([]byte, error) {
+func buildMessageWithID(from, recipient, subject string, body contracts.MailContent, messageID string) ([]byte, error) {
 	var message bytes.Buffer
-	fmt.Fprintf(&message, "From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n", from, recipient, mime.QEncoding.Encode("utf-8", subject))
+	fmt.Fprintf(&message, "From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\n", from, recipient, mime.QEncoding.Encode("utf-8", subject))
 	if messageID != "" {
-		// Insert before the blank line that separates headers from the body.
-		data := message.Bytes()
-		message.Reset()
-		message.Write(data[:len(data)-2])
-		fmt.Fprintf(&message, "Message-ID: %s\r\n\r\n", messageID)
+		fmt.Fprintf(&message, "Message-ID: %s\r\n", messageID)
 	}
-	content := strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\r", "\n")
-	content = strings.ReplaceAll(content, "\n", "\r\n")
-	writer := quotedprintable.NewWriter(&message)
-	if _, err := writer.Write([]byte(content)); err != nil {
-		return nil, fmt.Errorf("encode SMTP body: %w", err)
+	writeBody := func(w io.Writer, content string) error {
+		content = strings.ReplaceAll(strings.ReplaceAll(content, "\r\n", "\n"), "\r", "\n")
+		qp := quotedprintable.NewWriter(w)
+		if _, err := qp.Write([]byte(strings.ReplaceAll(content, "\n", "\r\n"))); err != nil {
+			return err
+		}
+		return qp.Close()
 	}
-	if err := writer.Close(); err != nil {
-		return nil, fmt.Errorf("finish SMTP body: %w", err)
+	if body.HTML == "" {
+		message.WriteString("Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n")
+		if err := writeBody(&message, body.Text); err != nil {
+			return nil, err
+		}
+	} else {
+		multipartWriter := multipart.NewWriter(&message)
+		fmt.Fprintf(&message, "Content-Type: multipart/alternative; boundary=%q\r\n\r\n", multipartWriter.Boundary())
+		for _, part := range []struct{ kind, content string }{{"text/plain", body.Text}, {"text/html", body.HTML}} {
+			h := make(textproto.MIMEHeader)
+			h.Set("Content-Type", part.kind+"; charset=UTF-8")
+			h.Set("Content-Transfer-Encoding", "quoted-printable")
+			w, err := multipartWriter.CreatePart(h)
+			if err != nil {
+				return nil, err
+			}
+			if err = writeBody(w, part.content); err != nil {
+				return nil, err
+			}
+		}
+		if err := multipartWriter.Close(); err != nil {
+			return nil, err
+		}
 	}
 	return message.Bytes(), nil
 }

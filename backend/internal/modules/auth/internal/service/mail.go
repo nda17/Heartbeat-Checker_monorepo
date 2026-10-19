@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/repository/postgres"
 )
 
@@ -17,6 +18,7 @@ type mailPayload struct {
 	Recipient string `json:"recipient"`
 	Subject   string `json:"subject"`
 	Body      string `json:"body"`
+	HTML      string `json:"html,omitempty"`
 }
 
 func DecodeMailKey(encoded string) ([]byte, error) {
@@ -71,7 +73,7 @@ func decryptMail(key []byte, job postgres.MailJob) (mailPayload, error) {
 }
 
 type JobSender interface {
-	SendWithID(context.Context, string, string, string, string) error
+	SendWithID(context.Context, string, string, contracts.MailContent, string) error
 }
 
 type MailWorker struct {
@@ -107,7 +109,7 @@ func (w *MailWorker) ProcessOne(ctx context.Context) (bool, error) {
 	}
 	messageID := fmt.Sprintf("<%s@%s>", job.ID, "heartbeat-checker.ru")
 	sendCtx, cancel := context.WithDeadline(ctx, job.ExpiresAt)
-	err = w.sender.SendWithID(sendCtx, p.Recipient, p.Subject, p.Body, messageID)
+	err = w.sender.SendWithID(sendCtx, p.Recipient, p.Subject, contracts.MailContent{Text: p.Body, HTML: p.HTML}, messageID)
 	cancel()
 	if ctx.Err() != nil {
 		return true, ctx.Err()

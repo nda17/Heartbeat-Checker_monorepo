@@ -41,8 +41,24 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			return fmt.Errorf("configure local SMTP: %w", err)
 		}
 	}
+	oauthProviders := make(map[string]auth.OAuthProvider)
+	for _, providerCfg := range []auth.OAuthProviderConfig{{Provider: "yandex", ClientID: cfg.YandexClientID, ClientSecret: cfg.YandexClientSecret, RedirectURI: cfg.YandexRedirectURI, Scopes: cfg.YandexScopes}, {Provider: "vk", ClientID: cfg.VKClientID, RedirectURI: cfg.VKCallbackURL}} {
+		if providerCfg.ClientID == "" {
+			continue
+		}
+		if providerCfg.RedirectURI != cfg.AuthOrigin+"/api/v1/auth/oauth/"+providerCfg.Provider+"/callback" {
+			return fmt.Errorf("OAuth callback must match AUTH_ORIGIN")
+		}
+		provider, err := auth.NewOAuthProvider(providerCfg)
+		if err != nil {
+			return fmt.Errorf("configure %s OAuth: %w", providerCfg.Provider, err)
+		}
+		oauthProviders[provider.ID()] = provider
+	}
 	authModule, err := auth.New(pool, accounts.New(pool), captcha, mailer, auth.Config{
 		Origin:            cfg.AuthOrigin,
+		OAuthProviders:    oauthProviders,
+		OAuthAudit:        admin.AuditOAuth,
 		MailEncryptionKey: cfg.AuthMailEncryptionKey,
 		MFAEncryptionKey:  cfg.AuthMFAEncryptionKey,
 		MFAAudit:          admin.AuditMFA,

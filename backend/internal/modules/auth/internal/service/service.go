@@ -28,10 +28,12 @@ type Captcha interface {
 	Verify(context.Context, string, string, string) error
 }
 type Mailer interface {
-	Send(context.Context, string, string, string) error
+	Send(context.Context, string, string, authcontracts.MailContent) error
 }
 
 type Config struct {
+	OAuthProviders    map[string]OAuthProvider
+	OAuthAudit        postgres.OAuthAudit
 	Origin            string
 	MailEncryptionKey []byte
 	MFAEncryptionKey  []byte
@@ -52,8 +54,9 @@ type LoginResult struct {
 	CSRF    string
 }
 type Profile struct {
-	Account contracts.Account `json:"account"`
-	Email   string            `json:"email"`
+	Account     contracts.Account `json:"account"`
+	Email       string            `json:"email"`
+	HasPassword bool              `json:"hasPassword"`
 }
 type Session struct {
 	ID         string    `json:"id"`
@@ -192,12 +195,16 @@ func (s *Service) Register(ctx context.Context, email, name, password, captchaTo
 	}
 	c := postgres.Challenge{ID: id, Email: email, Name: name, PasswordHash: hash, ExpiresAt: time.Now().Add(s.cfg.ChallengeTTL)}
 	link := s.cfg.Origin + "/verify-email#token=" + token
+	subject, content, err := RenderAuthMail("registration", AuthMailData{Name: name, ActionURL: link, ExpiresAt: c.ExpiresAt})
+	if err != nil {
+		return ErrUnavailable
+	}
 	if len(s.cfg.MailEncryptionKey) > 0 {
 		jobID, err := security.ID()
 		if err != nil {
 			return ErrUnavailable
 		}
-		payload, err := encryptMail(s.cfg.MailEncryptionKey, jobID, "registration", mailPayload{email, "Confirm your Heartbeat Checker email", "Open " + link + " and enter your password to confirm registration."})
+		payload, err := encryptMail(s.cfg.MailEncryptionKey, jobID, "registration", mailPayload{Recipient: email, Subject: subject, Body: content.Text, HTML: content.HTML})
 		if err != nil || s.repo.InsertChallengeWithMail(ctx, c, security.Digest(token), payload, jobID) != nil {
 			return ErrUnavailable
 		}
@@ -206,7 +213,7 @@ func (s *Service) Register(ctx context.Context, email, name, password, captchaTo
 	if err = s.repo.InsertChallenge(ctx, c, security.Digest(token)); err != nil {
 		return ErrUnavailable
 	}
-	if err = s.mailer.Send(ctx, email, "Confirm your Heartbeat Checker email", "Open "+link+" and enter your password to confirm registration."); err != nil {
+	if err = s.mailer.Send(ctx, email, subject, content); err != nil {
 		slog.Error("registration email delivery failed")
 	}
 	return nil
@@ -266,6 +273,12 @@ func (s *Service) Login(ctx context.Context, email, password, captchaToken strin
 	}
 	if err != nil {
 		return LoginResult{}, ErrUnavailable
+	}
+	if c.PasswordHash == "" {
+		if err := s.dummyPasswordCheck(password); err != nil {
+			return LoginResult{}, err
+		}
+		return LoginResult{}, ErrCredentials
 	}
 	matched, err := s.checkPassword(c.PasswordHash, password)
 	if err != nil {
@@ -344,7 +357,11 @@ func (s *Service) Profile(ctx context.Context, p Principal) (Profile, error) {
 	if err != nil {
 		return Profile{}, ErrUnavailable
 	}
-	return Profile{Account: a, Email: p.Email}, nil
+	c, err := s.repo.CredentialByAccount(ctx, p.AccountID)
+	if err != nil {
+		return Profile{}, ErrUnavailable
+	}
+	return Profile{Account: a, Email: p.Email, HasPassword: c.PasswordHash != ""}, nil
 }
 
 func (s *Service) ChangeName(ctx context.Context, p Principal, name string) (Profile, error) {
@@ -356,7 +373,11 @@ func (s *Service) ChangeName(ctx context.Context, p Principal, name string) (Pro
 	if err != nil {
 		return Profile{}, ErrUnavailable
 	}
-	return Profile{Account: a, Email: p.Email}, nil
+	c, err := s.repo.CredentialByAccount(ctx, p.AccountID)
+	if err != nil {
+		return Profile{}, ErrUnavailable
+	}
+	return Profile{Account: a, Email: p.Email, HasPassword: c.PasswordHash != ""}, nil
 }
 
 func (s *Service) Sessions(ctx context.Context, p Principal) ([]Session, error) {
@@ -416,12 +437,16 @@ func (s *Service) ResetRequest(ctx context.Context, email, captchaToken string, 
 		return ErrUnavailable
 	}
 	link := s.cfg.Origin + "/reset-password#token=" + token
+	subject, content, err := RenderAuthMail("password_reset", AuthMailData{ActionURL: link, ExpiresAt: time.Now().Add(s.cfg.ResetTTL)})
+	if err != nil {
+		return ErrUnavailable
+	}
 	if len(s.cfg.MailEncryptionKey) > 0 {
 		jobID, err := security.ID()
 		if err != nil {
 			return ErrUnavailable
 		}
-		payload, err := encryptMail(s.cfg.MailEncryptionKey, jobID, "reset", mailPayload{email, "Reset your Heartbeat Checker password", "Open " + link + " to set a new password."})
+		payload, err := encryptMail(s.cfg.MailEncryptionKey, jobID, "reset", mailPayload{Recipient: email, Subject: subject, Body: content.Text, HTML: content.HTML})
 		if err != nil || s.repo.InsertResetWithMail(ctx, c.AccountID, c.Version, security.Digest(token), time.Now().Add(s.cfg.ResetTTL), payload, jobID) != nil {
 			return ErrUnavailable
 		}
@@ -430,7 +455,7 @@ func (s *Service) ResetRequest(ctx context.Context, email, captchaToken string, 
 	if err = s.repo.InsertReset(ctx, c.AccountID, c.Version, security.Digest(token), time.Now().Add(s.cfg.ResetTTL)); err != nil {
 		return ErrUnavailable
 	}
-	if err = s.mailer.Send(ctx, email, "Reset your Heartbeat Checker password", "Open "+link+" to set a new password."); err != nil {
+	if err = s.mailer.Send(ctx, email, subject, content); err != nil {
 		slog.Error("password reset email delivery failed")
 	}
 	return nil
@@ -477,6 +502,9 @@ func (s *Service) ChangePassword(ctx context.Context, p Principal, current, newP
 	c, err := s.repo.CredentialByAccount(ctx, p.AccountID)
 	if err != nil {
 		return ErrUnavailable
+	}
+	if c.PasswordHash == "" {
+		return ErrPasswordSetupRequired
 	}
 	matched, err := s.checkPassword(c.PasswordHash, current)
 	if err != nil {

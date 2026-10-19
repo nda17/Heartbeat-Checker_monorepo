@@ -1,8 +1,14 @@
 import Link from "next/link";
-import { AuthForm, AuthMode } from "@/features/auth";
+import { AuthForm, AuthMode, OAuthRegistration } from "@/features/auth";
 import { ThemeToggle } from "@/features/theme-toggle";
 import { Brand, FooterLegalNotice } from "@/shared/ui";
-export function AuthPage({ mode }: { mode: AuthMode }) {
+export function AuthPage({
+  mode,
+  oauthRegistration = false,
+}: {
+  mode: AuthMode;
+  oauthRegistration?: boolean;
+}) {
   return (
     <div className="auth-page">
       <aside className="auth-aside">
@@ -35,7 +41,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
           <ThemeToggle />
         </div>
         <div className="auth-card">
-          <AuthForm mode={mode} />
+          {oauthRegistration ? <OAuthRegistration /> : <AuthForm mode={mode} />}
         </div>
         <footer className="small muted">
           <nav aria-label="Документы и контакты">

@@ -3,10 +3,13 @@ package smtp
 import (
 	"io"
 	"mime"
+	"mime/multipart"
 	"mime/quotedprintable"
 	"net/mail"
 	"strings"
 	"testing"
+
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 )
 
 func TestNewRestrictsSMTPToLoopbackAndValidFromAddress(t *testing.T) {
@@ -26,8 +29,46 @@ func TestNewRestrictsSMTPToLoopbackAndValidFromAddress(t *testing.T) {
 	}
 }
 
+func TestBuildMessageWritesTextFirstAndEscapesHTMLPartAsQuotedPrintable(t *testing.T) {
+	message, err := buildMessage("Heartbeat <alerts@example.com>", "user@example.net", "Проверка ✓", contracts.MailContent{
+		Text: "Откройте ссылку\nhttps://example.test/confirm?token=x",
+		HTML: `<p>Здравствуйте, &lt;script&gt; ✓</p>`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := mail.ReadMessage(strings.NewReader(string(message)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaType, params, err := mime.ParseMediaType(parsed.Header.Get("Content-Type"))
+	if err != nil || mediaType != "multipart/alternative" {
+		t.Fatalf("Content-Type=%q, err=%v", parsed.Header.Get("Content-Type"), err)
+	}
+	reader := multipart.NewReader(parsed.Body, params["boundary"])
+	wantTypes := []string{"text/plain", "text/html"}
+	wantBodies := []string{"Откройте ссылку\r\nhttps://example.test/confirm?token=x", `<p>Здравствуйте, &lt;script&gt; ✓</p>`}
+	for i := range wantTypes {
+		part, err := reader.NextRawPart()
+		if err != nil {
+			t.Fatalf("read MIME part %d: %v", i, err)
+		}
+		gotType, _, err := mime.ParseMediaType(part.Header.Get("Content-Type"))
+		if err != nil || gotType != wantTypes[i] || part.Header.Get("Content-Transfer-Encoding") != "quoted-printable" {
+			t.Fatalf("part %d headers=%v, err=%v", i, part.Header, err)
+		}
+		decoded, err := io.ReadAll(quotedprintable.NewReader(part))
+		if err != nil || string(decoded) != wantBodies[i] {
+			t.Fatalf("part %d body=%q, err=%v", i, decoded, err)
+		}
+	}
+	if _, err := reader.NextPart(); err != io.EOF {
+		t.Fatalf("unexpected extra MIME part: %v", err)
+	}
+}
+
 func TestBuildMessageEncodesHeadersAndQuotedPrintableBody(t *testing.T) {
-	message, err := buildMessage("Heartbeat <alerts@example.com>", "user@example.net", "Проверка ✓", "Состояние: работает\nСледующая строка.")
+	message, err := buildMessage("Heartbeat <alerts@example.com>", "user@example.net", "Проверка ✓", contracts.MailContent{Text: "Состояние: работает\nСледующая строка."})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +109,7 @@ func TestSendRejectsInvalidRecipientAndHeaderInjectionBeforeDial(t *testing.T) {
 		{"not-an-address", "subject"},
 		{"user@example.com", "hello\r\nBcc: victim@example.com"},
 	} {
-		if err := sender.Send(t.Context(), tt.recipient, tt.subject, "body"); err == nil {
+		if err := sender.Send(t.Context(), tt.recipient, tt.subject, contracts.MailContent{Text: "body"}); err == nil {
 			t.Errorf("Send(%q, %q) error = nil, want validation error", tt.recipient, tt.subject)
 		}
 	}

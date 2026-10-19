@@ -20,6 +20,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 )
 
 const (
@@ -221,7 +223,9 @@ func TestProductionSendWithIDHonorsEarlierContextDeadline(t *testing.T) {
 	defer cancel()
 	started := time.Now()
 	result := make(chan error, 1)
-	go func() { result <- sender.SendWithID(ctx, productionTestTo, "Subject", "Body", productionTestID) }()
+	go func() {
+		result <- sender.SendWithID(ctx, productionTestTo, "Subject", contracts.MailContent{Text: "Body"}, productionTestID)
+	}()
 	select {
 	case <-srv.paused:
 	case <-time.After(time.Second):
@@ -262,7 +266,7 @@ func TestProductionSendWithIDUsesVerifiedTLSAndSurvivesLostQUIT(t *testing.T) {
 	for _, mode := range []string{"implicit_tls", "starttls"} {
 		t.Run(mode, func(t *testing.T) {
 			srv := newSMTPTestServer(t, mode, "", 0, false)
-			err := srv.sender(t, productionTestHost).SendWithID(context.Background(), productionTestTo, "Verify your account", "Open the verification link", productionTestID)
+			err := srv.sender(t, productionTestHost).SendWithID(context.Background(), productionTestTo, "Verify your account", contracts.MailContent{Text: "Open the verification link"}, productionTestID)
 			if err != nil {
 				t.Fatalf("SendWithID() = %v", err)
 			}
@@ -293,7 +297,7 @@ func TestProductionSendWithIDUsesVerifiedTLSAndSurvivesLostQUIT(t *testing.T) {
 
 func TestProductionSendWithIDRejectsUnverifiedHostnameBeforeSMTPAuth(t *testing.T) {
 	srv := newSMTPTestServer(t, "implicit_tls", "", 0, true)
-	err := srv.sender(t, productionTestHost).SendWithID(context.Background(), productionTestTo, "Subject", "Body", productionTestID)
+	err := srv.sender(t, productionTestHost).SendWithID(context.Background(), productionTestTo, "Subject", contracts.MailContent{Text: "Body"}, productionTestID)
 	if err == nil {
 		t.Fatal("SendWithID() error = nil for hostname mismatch")
 	}
@@ -308,7 +312,7 @@ func TestProductionSendWithIDClassifiesSMTP4xxAnd5xxAsRetryableOrPermanent(t *te
 	for _, code := range []int{450, 550} {
 		t.Run(fmt.Sprint(code), func(t *testing.T) {
 			srv := newSMTPTestServer(t, "implicit_tls", "MAIL", code, false)
-			err := srv.sender(t, productionTestHost).SendWithID(context.Background(), productionTestTo, "Subject", "Body", productionTestID)
+			err := srv.sender(t, productionTestHost).SendWithID(context.Background(), productionTestTo, "Subject", contracts.MailContent{Text: "Body"}, productionTestID)
 			if err == nil {
 				t.Fatal("SendWithID() error = nil for SMTP rejection")
 			}

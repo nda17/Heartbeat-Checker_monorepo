@@ -13,6 +13,12 @@ import (
 )
 
 type Config struct {
+	YandexClientID     string
+	YandexClientSecret string
+	YandexRedirectURI  string
+	YandexScopes       string
+	VKClientID         string
+	VKCallbackURL      string
 	IntegrationConfig
 	AppEnv                string
 	HTTPAddr              string
@@ -45,6 +51,18 @@ func Load() (Config, error) {
 		DatabaseTimeout:  5 * time.Second,
 		ReadinessTimeout: 2 * time.Second,
 		ShutdownTimeout:  10 * time.Second,
+	}
+	cfg.YandexClientID = strings.TrimSpace(os.Getenv("YANDEX_CLIENT_ID"))
+	cfg.YandexClientSecret = strings.TrimSpace(os.Getenv("YANDEX_CLIENT_SECRET"))
+	cfg.YandexRedirectURI = strings.TrimSpace(os.Getenv("YANDEX_REDIRECT_URI"))
+	cfg.YandexScopes = strings.TrimSpace(os.Getenv("YANDEX_SCOPES"))
+	cfg.VKClientID = strings.TrimSpace(os.Getenv("VK_CLIENT_ID"))
+	cfg.VKCallbackURL = strings.TrimSpace(os.Getenv("VK_CALLBACK_URL"))
+	if (cfg.YandexClientID != "" || cfg.YandexClientSecret != "" || cfg.YandexRedirectURI != "") && (cfg.YandexClientID == "" || cfg.YandexClientSecret == "" || cfg.YandexRedirectURI == "") {
+		return Config{}, fmt.Errorf("complete YANDEX OAuth configuration is required")
+	}
+	if (cfg.VKClientID != "" || cfg.VKCallbackURL != "") && (cfg.VKClientID == "" || cfg.VKCallbackURL == "") {
+		return Config{}, fmt.Errorf("complete VK OAuth configuration is required")
 	}
 	if value, ok := os.LookupEnv("APP_ENV"); ok {
 		cfg.AppEnv = value

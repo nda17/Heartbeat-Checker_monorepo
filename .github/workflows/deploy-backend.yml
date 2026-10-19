@@ -27,6 +27,11 @@ on:
         required: false
         default: false
         type: boolean
+      activate_oauth:
+        description: Activate reviewed VK and Yandex OAuth settings from .env.next without rotating existing credentials
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -48,6 +53,7 @@ jobs:
       ACTIVATE_MESSENGER_NOTIFICATIONS: ${{ inputs.activate_messenger_notifications }}
       PROVISION_OWNER: ${{ inputs.provision_owner }}
       ACTIVATE_ADMIN_MFA: ${{ inputs.activate_admin_mfa }}
+      ACTIVATE_OAUTH: ${{ inputs.activate_oauth }}
       DEPLOY_HOST: ${{ vars.BACKEND_DEPLOY_HOST }}
       DEPLOY_USER: ${{ vars.BACKEND_DEPLOY_USER }}
     steps:
@@ -68,6 +74,9 @@ jobs:
           }
           [[ "$ACTIVATE_ADMIN_MFA" == true || "$ACTIVATE_ADMIN_MFA" == false ]] || {
             echo 'Invalid admin MFA activation flag'; exit 1;
+          }
+          [[ "$ACTIVATE_OAUTH" == true || "$ACTIVATE_OAUTH" == false ]] || {
+            echo 'Invalid OAuth activation flag'; exit 1;
           }
           [[ "$DEPLOY_HOST" == 176.12.64.115 && "$DEPLOY_USER" == heartbeat-deploy ]] || {
             echo 'Backend host/user do not match the approved VPS'; exit 1;
@@ -157,7 +166,7 @@ jobs:
             scp "${ssh_opts[@]}" deploy/backend/import-owner.sql "$target:/opt/heartbeat-checker/backend/import-owner.sql.incoming"
           fi
           printf '%s\n' "$GH_TOKEN" | ssh "${ssh_opts[@]}" "$target" \
-            "bash /opt/heartbeat-checker/backend/deploy.sh.incoming '$SOURCE_SHA' '$API_IMAGE' '$WORKER_IMAGE' '$PROBE_IMAGE' '$MIGRATE_IMAGE' '$GITHUB_ACTOR' '$BACKUP_IMAGE' '$ACTIVATE_TELEGRAM_RELAY' '$ACTIVATE_MESSENGER_NOTIFICATIONS' '$PROVISION_OWNER' '$ACTIVATE_ADMIN_MFA'"
+            "bash /opt/heartbeat-checker/backend/deploy.sh.incoming '$SOURCE_SHA' '$API_IMAGE' '$WORKER_IMAGE' '$PROBE_IMAGE' '$MIGRATE_IMAGE' '$GITHUB_ACTOR' '$BACKUP_IMAGE' '$ACTIVATE_TELEGRAM_RELAY' '$ACTIVATE_MESSENGER_NOTIFICATIONS' '$PROVISION_OWNER' '$ACTIVATE_ADMIN_MFA' '$ACTIVATE_OAUTH'"
 
       - name: Verify public backend denies runner traffic
         shell: bash

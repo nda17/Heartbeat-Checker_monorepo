@@ -6,12 +6,19 @@
             fields {
                 request>headers>X-Telegram-Bot-Api-Secret-Token delete
                 request>headers>X-Max-Bot-Api-Secret delete
+                request>uri query {
+                    delete code
+                    delete state
+                    delete device_id
+                }
             }
         }
     }
 }
 
 api.heartbeat-checker.ru {
+    @oauth_callbacks path /api/v1/auth/oauth/yandex/callback /api/v1/auth/oauth/vk/callback
+    log_skip @oauth_callbacks
     @messenger_webhook {
         method POST
         path /webhooks/support/telegram /webhooks/support/max /webhooks/notifications/telegram /webhooks/notifications/max
@@ -35,6 +42,11 @@ api.heartbeat-checker.ru {
             fields {
                 request>headers>X-Telegram-Bot-Api-Secret-Token delete
                 request>headers>X-Max-Bot-Api-Secret delete
+                request>uri query {
+                    delete code
+                    delete state
+                    delete device_id
+                }
             }
         }
     }

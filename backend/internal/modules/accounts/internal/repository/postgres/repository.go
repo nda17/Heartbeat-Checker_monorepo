@@ -79,3 +79,9 @@ func (r *Repository) TryActive(ctx context.Context, tx pgx.Tx, id string) (bool,
 	}
 	return status == "active", err == nil, err
 }
+
+func (r *Repository) GetForAuthTx(ctx context.Context, tx pgx.Tx, id string) (contracts.Account, error) {
+	var a contracts.Account
+	err := tx.QueryRow(ctx, `SELECT id,name,role,status,version,created_at FROM accounts.accounts WHERE id=$1 FOR SHARE`, id).Scan(&a.ID, &a.Name, &a.Role, &a.Status, &a.Version, &a.CreatedAt)
+	return a, err
+}
