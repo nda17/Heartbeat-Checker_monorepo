@@ -174,7 +174,7 @@ func (r *Repository) CompleteOAuthRegistration(ctx context.Context, tokenHash, b
 	if err != nil {
 		return "", "", err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO auth.credentials(account_id,email,password_hash) VALUES($1,$2,NULL)`, accountID, c.Email); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO auth.credentials(account_id,email,password_hash,email_verified_at) VALUES($1,$2,NULL,now())`, accountID, c.Email); err != nil {
 		return "", "", oauthConflict(err)
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO auth.oauth_identities(id,account_id,provider,subject) VALUES($1,$2,$3,$4)`, identityID, accountID, c.Provider, c.Subject); err != nil {

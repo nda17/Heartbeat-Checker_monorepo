@@ -56,9 +56,10 @@ type LoginResult struct {
 	CSRF    string
 }
 type Profile struct {
-	Account     contracts.Account `json:"account"`
-	Email       string            `json:"email"`
-	HasPassword bool              `json:"hasPassword"`
+	Account       contracts.Account `json:"account"`
+	Email         string            `json:"email"`
+	HasPassword   bool              `json:"hasPassword"`
+	EmailVerified bool              `json:"emailVerified"`
 }
 type Session struct {
 	ID         string    `json:"id"`
@@ -363,7 +364,7 @@ func (s *Service) Profile(ctx context.Context, p Principal) (Profile, error) {
 	if err != nil {
 		return Profile{}, ErrUnavailable
 	}
-	return Profile{Account: a, Email: p.Email, HasPassword: c.PasswordHash != ""}, nil
+	return Profile{Account: a, Email: p.Email, HasPassword: c.PasswordHash != "", EmailVerified: c.EmailVerified}, nil
 }
 
 func (s *Service) ChangeName(ctx context.Context, p Principal, name string) (Profile, error) {
@@ -379,7 +380,7 @@ func (s *Service) ChangeName(ctx context.Context, p Principal, name string) (Pro
 	if err != nil {
 		return Profile{}, ErrUnavailable
 	}
-	return Profile{Account: a, Email: p.Email, HasPassword: c.PasswordHash != ""}, nil
+	return Profile{Account: a, Email: p.Email, HasPassword: c.PasswordHash != "", EmailVerified: c.EmailVerified}, nil
 }
 
 func (s *Service) Sessions(ctx context.Context, p Principal) ([]Session, error) {

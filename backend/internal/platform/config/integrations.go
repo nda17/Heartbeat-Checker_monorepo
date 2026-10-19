@@ -22,6 +22,7 @@ type IntegrationConfig struct {
 	YooKassaTestSecretKey         string
 	BillingReportsEnabled         bool
 	MessengerNotificationsEnabled bool
+	EmailNotificationsEnabled     bool
 	TelegramInformerToken         string
 	MAXInformerToken              string
 	TelegramInformerBotUsername   string
@@ -85,6 +86,9 @@ func loadIntegrations(worker bool) (IntegrationConfig, error) {
 		return cfg, err
 	}
 	if cfg.MessengerNotificationsEnabled, err = integrationBool("MESSENGER_NOTIFICATIONS_ENABLED"); err != nil {
+		return cfg, err
+	}
+	if cfg.EmailNotificationsEnabled, err = integrationBool("EMAIL_NOTIFICATIONS_ENABLED"); err != nil {
 		return cfg, err
 	}
 	if !cfg.SupportEnabled && !cfg.BillingReportsEnabled && !cfg.MessengerNotificationsEnabled {

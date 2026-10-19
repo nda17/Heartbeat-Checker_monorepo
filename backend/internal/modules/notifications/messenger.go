@@ -18,6 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	authcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	billingcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing/contracts"
 )
 
@@ -30,7 +31,12 @@ var (
 )
 
 type MessengerConfig struct {
-	Enabled               bool
+	Enabled            bool
+	EmailEnabled       bool
+	EmailAddressReader func(context.Context, pgx.Tx, string) (string, error)
+	EmailSender        interface {
+		SendWithID(context.Context, string, string, authcontracts.MailContent, string) error
+	}
 	TelegramWebhookSecret string
 	MAXWebhookSecret      string
 	TelegramToken         string
@@ -78,6 +84,7 @@ type MessengerDestination struct {
 	ThreadID *string `json:"threadId"`
 	Ready    bool    `json:"ready"`
 	Version  int64   `json:"version"`
+	Email    string  `json:"email,omitempty"`
 }
 
 type MessengerRoute struct {
@@ -97,7 +104,7 @@ type PutMessengerRoute struct {
 
 func NewMessenger(pool *pgxpool.Pool, encodedKey string, cfg MessengerConfig, outbound bool, entitlement billingcontracts.Service) (*Messenger, error) {
 	m := &Messenger{pool: pool, cfg: cfg, entitlement: entitlement}
-	if !cfg.Enabled {
+	if !cfg.Enabled && !cfg.EmailEnabled {
 		return m, nil
 	}
 	key, err := base64.StdEncoding.Strict().DecodeString(encodedKey)
@@ -113,6 +120,15 @@ func NewMessenger(pool *pgxpool.Pool, encodedKey string, cfg MessengerConfig, ou
 		return nil, err
 	}
 	m.hashKey = key
+	if cfg.EmailEnabled && (cfg.EmailAddressReader == nil || outbound && cfg.EmailSender == nil) {
+		return nil, errors.New("email notifications require an account email reader and a worker sender")
+	}
+	if outbound && entitlement == nil {
+		return nil, errors.New("notification worker requires entitlement guard")
+	}
+	if !cfg.Enabled {
+		return m, nil
+	}
 	if !validMessengerBotName(cfg.TelegramBotUsername) || !validMAXBotURL(cfg.MAXBotURL) {
 		return nil, errors.New("messenger public bot links are required")
 	}
@@ -134,10 +150,14 @@ func NewMessenger(pool *pgxpool.Pool, encodedKey string, cfg MessengerConfig, ou
 }
 
 func (m *Messenger) enabled() error {
-	if !m.cfg.Enabled {
+	if !m.cfg.Enabled && !m.cfg.EmailEnabled {
 		return ErrMessengerUnavailable
 	}
 	return nil
+}
+
+func (m *Messenger) providerEnabled(provider string) bool {
+	return provider == "email" && m.cfg.EmailEnabled || messengerProvider(provider) && m.cfg.Enabled
 }
 
 func (m *Messenger) seal(accountID, id, field string, value []byte) ([]byte, error) {
@@ -170,6 +190,9 @@ func (m *Messenger) fingerprint(parts ...string) []byte {
 }
 
 func (m *Messenger) recipientFingerprint(target messengerTarget) []byte {
+	if target.Provider == "email" {
+		return m.fingerprint("email", "email", target.Email)
+	}
 	if target.Kind == "private" {
 		return m.fingerprint(target.Provider, "private", target.UserID)
 	}
@@ -177,6 +200,9 @@ func (m *Messenger) recipientFingerprint(target messengerTarget) []byte {
 }
 
 func (m *Messenger) sendFingerprint(target messengerTarget) []byte {
+	if target.Provider == "email" {
+		return m.recipientFingerprint(target)
+	}
 	if target.Provider == "telegram" && target.Kind != "private" {
 		return m.fingerprint("telegram", "chat", target.ChatID)
 	}

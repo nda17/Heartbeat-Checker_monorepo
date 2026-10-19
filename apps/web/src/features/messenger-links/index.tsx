@@ -42,8 +42,9 @@ function safeBotUrl(value: string | null) {
   }
 }
 
-export function MessengerLinks() {
+export function MessengerLinks({ email }: { email?: string }) {
   const [enabled, setEnabled] = useState(true);
+  const [emailEnabled, setEmailEnabled] = useState(false);
   const [destinations, setDestinations] = useState<Destination[] | null>(null);
   const [loadError, setLoadError] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
@@ -56,10 +57,12 @@ export function MessengerLinks() {
   const loadDestinations = useCallback(async (signal?: AbortSignal) => {
     const response = await api<{
       enabled?: boolean;
+      emailEnabled?: boolean;
       destinations: Destination[];
     }>("/messenger-destinations", { signal });
     if (signal?.aborted) return;
     setEnabled(response.enabled !== false);
+    setEmailEnabled(response.emailEnabled === true);
     setDestinations(response.destinations ?? []);
     setError("");
   }, []);
@@ -203,7 +206,11 @@ export function MessengerLinks() {
         (current) => current?.filter((item) => item.id !== removing.id) ?? null,
       );
       setRemoving(null);
-      setSuccess("Чат отключён. Уведомления для него остановлены.");
+      setSuccess(
+        removing.provider === "email"
+          ? "Email отключён. Новые попытки доставки остановлены."
+          : "Чат отключён. Уведомления для него остановлены.",
+      );
       try {
         await loadDestinations();
       } catch (e) {
@@ -215,6 +222,36 @@ export function MessengerLinks() {
       setBusy(false);
     }
   }
+  async function connectEmail() {
+    setBusy(true);
+    setError("");
+    setSuccess("");
+    try {
+      const { destination } = await api<{ destination: Destination }>(
+        "/messenger-destinations/email",
+        {
+          method: "POST",
+          authenticated: true,
+          body: {},
+        },
+      );
+      setDestinations((current) => [
+        ...(current ?? []).filter((item) => item.provider !== "email"),
+        destination,
+      ]);
+      setSuccess(
+        "Email подключён. Включите его в настройках уведомлений нужных мониторов.",
+      );
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const emailDestination = destinations?.find(
+    (item) => item.provider === "email" && item.ready,
+  );
+  const chats = destinations?.filter((item) => item.provider !== "email") ?? [];
   const botUrl = safeBotUrl(started?.startUrl ?? null);
   return (
     <section
@@ -224,10 +261,10 @@ export function MessengerLinks() {
       <div className="panel-heading">
         <span className="panel-index">05</span>
         <div>
-          <h2 id="messenger-heading">Чаты для уведомлений</h2>
+          <h2 id="messenger-heading">Каналы уведомлений</h2>
           <p>
-            Подтвердите чат через Informer, затем выберите его в настройках
-            монитора.
+            Подключите email аккаунта или подтвердите чат через Informer, затем
+            включите канал в настройках нужного монитора.
           </p>
         </div>
       </div>
@@ -246,46 +283,84 @@ export function MessengerLinks() {
         </div>
       ) : !destinations ? (
         <Loading text="Загружаем чаты…" />
-      ) : !enabled ? (
-        <p className="small muted">Подключение чатов сейчас недоступно.</p>
+      ) : !enabled && !emailEnabled ? (
+        <p className="small muted">Подключение каналов сейчас недоступно.</p>
       ) : (
         <>
-          <div className="messenger-options">
-            {linkOptions.map((option) => (
-              <button
-                key={`${option.provider}-${option.kind}`}
-                className="secondary"
-                disabled={busy}
-                onClick={() => void begin(option.provider, option.kind)}
-              >
-                ＋ {option.title}
-              </button>
-            ))}
-          </div>
-          {destinations.length ? (
-            <ul className="messenger-destinations">
-              {destinations.map((destination) => (
-                <li key={destination.id}>
-                  <div>
-                    <strong>{destination.label}</strong>
-                    <span className="small muted">
-                      {providerName[destination.provider]} ·{" "}
-                      {destinationKindName[destination.kind]}
-                      {!destination.ready && " · бот недоступен в этом чате"}
-                    </span>
-                  </div>
+          {emailEnabled && (
+            <div className="messenger-route">
+              <h3>Email</h3>
+              <strong>
+                {emailDestination?.email ??
+                  emailDestination?.label ??
+                  email ??
+                  "Email аккаунта"}
+              </strong>
+              <p className="small muted">
+                {emailDestination
+                  ? "Подтверждённый email. Уведомления включаются отдельно для каждого монитора."
+                  : "Используется только подтверждённый email аккаунта. Другой адрес указать нельзя."}
+              </p>
+              {emailDestination ? (
+                <button
+                  className="quiet danger-text"
+                  disabled={busy}
+                  onClick={() => setRemoving(emailDestination)}
+                >
+                  Отключить email
+                </button>
+              ) : (
+                <button
+                  className="secondary"
+                  disabled={busy}
+                  onClick={() => void connectEmail()}
+                >
+                  {busy ? "Подключаем…" : "Подключить email аккаунта"}
+                </button>
+              )}
+            </div>
+          )}
+          {enabled && (
+            <>
+              <div className="messenger-options">
+                {linkOptions.map((option) => (
                   <button
-                    className="quiet danger-text"
+                    key={`${option.provider}-${option.kind}`}
+                    className="secondary"
                     disabled={busy}
-                    onClick={() => setRemoving(destination)}
+                    onClick={() => void begin(option.provider, option.kind)}
                   >
-                    Отключить
+                    ＋ {option.title}
                   </button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="small muted">Пока нет подтверждённых чатов.</p>
+                ))}
+              </div>
+              {chats.length ? (
+                <ul className="messenger-destinations">
+                  {chats.map((destination) => (
+                    <li key={destination.id}>
+                      <div>
+                        <strong>{destination.label}</strong>
+                        <span className="small muted">
+                          {providerName[destination.provider]} ·{" "}
+                          {destinationKindName[destination.kind]}
+                          {!destination.ready &&
+                            " · бот недоступен в этом чате"}
+                        </span>
+                      </div>
+                      <button
+                        className="quiet danger-text"
+                        disabled={busy}
+                        onClick={() => setRemoving(destination)}
+                      >
+                        Отключить
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="small muted">Пока нет подтверждённых чатов.</p>
+              )}
+            </>
           )}
         </>
       )}
@@ -393,7 +468,11 @@ export function MessengerLinks() {
       )}
       {removing && (
         <Dialog
-          title="Отключить чат?"
+          title={
+            removing.provider === "email"
+              ? "Отключить email?"
+              : "Отключить чат?"
+          }
           onClose={() => setRemoving(null)}
           busy={busy}
         >

@@ -73,6 +73,13 @@ func LoadWorker() (WorkerConfig, error) {
 		return cfg, err
 	}
 	cfg.IntegrationConfig = integrations
+	if cfg.AppEnv == "local" && cfg.EmailNotificationsEnabled {
+		cfg.SMTPAddr = strings.TrimSpace(os.Getenv("SMTP_ADDR"))
+		cfg.SMTPFrom = strings.TrimSpace(os.Getenv("SMTP_FROM"))
+		if cfg.SMTPAddr == "" || cfg.SMTPFrom == "" {
+			return cfg, errors.New("email notifications require local SMTP_ADDR and SMTP_FROM")
+		}
+	}
 	return cfg, nil
 }
 

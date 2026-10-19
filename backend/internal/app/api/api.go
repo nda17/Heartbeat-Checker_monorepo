@@ -65,6 +65,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		return fmt.Errorf("configure billing: %w", err)
 	}
 	messengerModule, err := notifications.NewMessenger(pool, cfg.WebhookEncryptionKey, notifications.MessengerConfig{
+		EmailEnabled: cfg.EmailNotificationsEnabled, EmailAddressReader: auth.EmailForNotificationsTx,
 		Enabled: cfg.MessengerNotificationsEnabled, TelegramWebhookSecret: cfg.TelegramInformerWebhookSecret, MAXWebhookSecret: cfg.MAXInformerWebhookSecret,
 		TelegramBotUsername: cfg.TelegramInformerBotUsername, MAXBotURL: cfg.MAXInformerBotURL,
 	}, false, billingModule)

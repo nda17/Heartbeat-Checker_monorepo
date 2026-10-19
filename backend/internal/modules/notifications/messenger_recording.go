@@ -121,7 +121,7 @@ func (m *Messenger) CancelForReset(ctx context.Context, tx pgx.Tx, monitorID str
 }
 
 func (m *Messenger) enqueue(ctx context.Context, tx pgx.Tx, accountID, monitorID string, incident incidentcontracts.IncidentState, eventID string, sequence int64, kind string, o incidentcontracts.Observation) error {
-	rows, err := tx.Query(ctx, `SELECT id::text FROM notifications.messenger_routes WHERE monitor_id=$1 AND account_id=$2 AND enabled ORDER BY id`, monitorID, accountID)
+	rows, err := tx.Query(ctx, `SELECT id::text FROM notifications.messenger_routes WHERE monitor_id=$1 AND account_id=$2 AND enabled AND (provider='email' AND $3 OR provider IN ('telegram','max') AND $4) ORDER BY id`, monitorID, accountID, m.cfg.EmailEnabled, m.cfg.Enabled)
 	if err != nil {
 		return err
 	}
@@ -148,14 +148,14 @@ func (m *Messenger) enqueue(ctx context.Context, tx pgx.Tx, accountID, monitorID
 }
 
 func (m *Messenger) enqueueRoute(ctx context.Context, tx pgx.Tx, accountID, monitorID string, incident incidentcontracts.IncidentState, eventID string, sequence int64, kind string, o incidentcontracts.Observation, routeID string) error {
-	var destinationID string
+	var destinationID, provider string
 	var generation int64
 	var enabled bool
-	err := tx.QueryRow(ctx, `SELECT destination_id::text,delivery_generation,enabled FROM notifications.messenger_routes WHERE id=$1 FOR UPDATE`, routeID).Scan(&destinationID, &generation, &enabled)
+	err := tx.QueryRow(ctx, `SELECT destination_id::text,delivery_generation,enabled,provider FROM notifications.messenger_routes WHERE id=$1 FOR UPDATE`, routeID).Scan(&destinationID, &generation, &enabled, &provider)
 	if err != nil {
 		return err
 	}
-	if !enabled {
+	if !enabled || !m.providerEnabled(provider) {
 		return nil
 	}
 	var snapshot messengerSnapshot

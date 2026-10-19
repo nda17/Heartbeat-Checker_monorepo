@@ -61,6 +61,25 @@ func (s *Sender) Send(ctx context.Context, recipient, subject string, body contr
 		return err
 	}
 
+	return s.send(ctx, recipient, message)
+}
+
+func (s *Sender) SendWithID(ctx context.Context, recipient, subject string, body contracts.MailContent, messageID string) error {
+	if validAddress(recipient) != nil || strings.ContainsAny(subject, "\r\n") || !validMessageID(messageID) {
+		return &DeliveryError{stage: "message", permanent: true}
+	}
+	message, err := buildMessageWithID(s.from, recipient, subject, body, messageID)
+	if err != nil {
+		return &DeliveryError{stage: "message", permanent: true}
+	}
+	if err = s.send(ctx, recipient, message); err != nil {
+		return deliveryError("delivery", err)
+	}
+	return nil
+}
+
+func (s *Sender) send(ctx context.Context, recipient string, message []byte) error {
+
 	ctx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", s.addr)

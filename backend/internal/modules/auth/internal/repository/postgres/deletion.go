@@ -84,7 +84,8 @@ func (r *Repository) VerifyDeletionTx(ctx context.Context, tx pgx.Tx, c Credenti
 func (r *Repository) DeleteAccountTx(ctx context.Context, tx pgx.Tx, c Credential) error {
 	queries := []string{
 		`DELETE FROM auth.mail_jobs WHERE token_hash IN (
-			SELECT token_hash FROM auth.password_reset_tokens WHERE account_id=$1
+			SELECT token_hash FROM auth.email_verification_tokens WHERE account_id=$1
+			UNION SELECT token_hash FROM auth.password_reset_tokens WHERE account_id=$1
 			UNION SELECT token_hash FROM auth.registration_challenges
 			WHERE email=(SELECT email FROM auth.credentials WHERE account_id=$1)
 			OR EXISTS (SELECT 1 FROM auth.oauth_identities i WHERE i.account_id=$1
@@ -95,6 +96,7 @@ func (r *Repository) DeleteAccountTx(ctx context.Context, tx pgx.Tx, c Credentia
 			OR EXISTS (SELECT 1 FROM auth.oauth_identities i WHERE i.account_id=$1
 				AND i.provider=auth.registration_challenges.oauth_provider
 				AND i.subject=auth.registration_challenges.oauth_subject)`,
+		`DELETE FROM auth.email_verification_tokens WHERE account_id=$1`,
 		`DELETE FROM auth.password_reset_tokens WHERE account_id=$1`,
 		`DELETE FROM auth.oauth_attempts WHERE account_id=$1`,
 		`DELETE FROM auth.oauth_identities WHERE account_id=$1`,
@@ -108,7 +110,7 @@ func (r *Repository) DeleteAccountTx(ctx context.Context, tx pgx.Tx, c Credentia
 		}
 	}
 	command, err := tx.Exec(ctx, `UPDATE auth.credentials SET email='deleted+' || account_id::text || '@invalid.local',
-		password_hash=NULL,version=version+1,password_changed_at=now()
+		password_hash=NULL,version=version+1,password_changed_at=now(),email_verified_at=NULL
 		WHERE account_id=$1 AND version=$2`, c.AccountID, c.Version)
 	if err != nil {
 		return err

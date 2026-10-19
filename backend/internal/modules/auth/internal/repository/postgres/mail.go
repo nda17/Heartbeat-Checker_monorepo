@@ -69,6 +69,7 @@ func (r *Repository) ClaimMail(ctx context.Context) (*MailJob, error) {
 		WHERE expires_at>now() AND next_attempt_at<=now() AND attempts<8
 		AND (status='pending' OR (status='sending' AND lease_until<now()))
 		AND ((purpose='registration' AND EXISTS (SELECT 1 FROM auth.registration_challenges c WHERE c.token_hash=auth.mail_jobs.token_hash AND c.consumed_at IS NULL AND c.expires_at>now()))
+		OR (purpose='email_verification' AND EXISTS (SELECT 1 FROM auth.email_verification_tokens t JOIN auth.credentials c ON c.account_id=t.account_id JOIN accounts.accounts a ON a.id=t.account_id AND a.status='active' WHERE t.token_hash=auth.mail_jobs.token_hash AND t.consumed_at IS NULL AND t.expires_at>now() AND c.email=t.email AND c.email_verified_at IS NULL))
 		OR (purpose='reset' AND EXISTS (SELECT 1 FROM auth.password_reset_tokens t JOIN auth.credentials c ON c.account_id=t.account_id
 			JOIN accounts.accounts a ON a.id=t.account_id AND a.status='active'
 			WHERE t.token_hash=auth.mail_jobs.token_hash AND t.consumed_at IS NULL AND t.expires_at>now() AND t.credential_version=c.version)))

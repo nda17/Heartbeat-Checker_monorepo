@@ -44,7 +44,8 @@ function RouteEditor({
   );
   const options =
     current && !current.ready ? [...available, current] : available;
-  const selected = current?.id ?? "";
+  const selected =
+    current?.id ?? (provider === "email" ? available[0]?.id : "") ?? "";
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -57,7 +58,11 @@ function RouteEditor({
       !options.some((item) => item.id === destinationId) ||
       (enabled && !available.some((item) => item.id === destinationId))
     ) {
-      setError("Выберите подтверждённый доступный чат.");
+      setError(
+        provider === "email"
+          ? "Подключите подтверждённый email аккаунта."
+          : "Выберите подтверждённый доступный чат.",
+      );
       return;
     }
     setBusy(true);
@@ -97,10 +102,10 @@ function RouteEditor({
       {options.length ? (
         <>
           <label>
-            Чат
+            {provider === "email" ? "Email" : "Чат"}
             <select name="destinationId" defaultValue={selected} required>
               <option value="" disabled>
-                Выберите чат
+                {provider === "email" ? "Выберите email" : "Выберите чат"}
               </option>
               {options.map((item) => (
                 <option key={item.id} value={item.id}>
@@ -111,8 +116,9 @@ function RouteEditor({
             </select>
             {current && !current.ready && (
               <span className="field-hint">
-                Текущий чат недоступен. Уведомления можно выключить или выбрать
-                другой доступный чат.
+                {provider === "email"
+                  ? "Email отключён или больше не подтверждён. Подключите текущий адрес в настройках аккаунта."
+                  : "Текущий чат недоступен. Уведомления можно выключить или выбрать другой доступный чат."}
               </span>
             )}
           </label>
@@ -146,9 +152,11 @@ function RouteEditor({
         </>
       ) : (
         <p className="small muted">
-          {route
-            ? "Выбранный чат отключён или недоступен. "
-            : "Сначала подключите чат. "}
+          {provider === "email"
+            ? "Сначала подключите email аккаунта. "
+            : route
+              ? "Выбранный чат отключён или недоступен. "
+              : "Сначала подключите чат. "}
           <Link href="/app/settings">Перейти к настройкам аккаунта →</Link>
         </p>
       )}
@@ -166,19 +174,39 @@ export function MonitorNotifications({
   const [destinations, setDestinations] = useState<Destination[] | null>(null);
   const [routes, setRoutes] = useState<MessengerRoute[] | null>(null);
   const [enabled, setEnabled] = useState(true);
+  const [emailEnabled, setEmailEnabled] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [error, setError] = useState("");
   useEffect(() => {
-    let active = true;
+    const controller = new AbortController();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setError("");
+    const timeout = window.setTimeout(() => {
+      controller.abort();
+      setError(
+        "Загрузка настроек заняла слишком много времени. Повторите попытку.",
+      );
+    }, 10_000);
     Promise.all([
-      api<{ enabled?: boolean; destinations: Destination[] }>(
-        "/messenger-destinations",
-      ),
-      api<{ enabled?: boolean; routes: MessengerRoute[] }>(
-        `/monitors/${encodeURIComponent(monitor.id)}/messenger-routes`,
-      ),
+      api<{
+        enabled?: boolean;
+        emailEnabled?: boolean;
+        destinations: Destination[];
+      }>("/messenger-destinations", { signal: controller.signal }),
+      api<{
+        enabled?: boolean;
+        emailEnabled?: boolean;
+        routes: MessengerRoute[];
+      }>(`/monitors/${encodeURIComponent(monitor.id)}/messenger-routes`, {
+        signal: controller.signal,
+      }),
     ])
       .then(([destinationResponse, routeResponse]) => {
-        if (!active) return;
+        if (controller.signal.aborted) return;
+        setEmailEnabled(
+          destinationResponse.emailEnabled === true &&
+            routeResponse.emailEnabled === true,
+        );
         setEnabled(
           destinationResponse.enabled !== false &&
             routeResponse.enabled !== false,
@@ -187,38 +215,46 @@ export function MonitorNotifications({
         setRoutes(routeResponse.routes ?? []);
       })
       .catch((e) => {
-        if (active) setError(errorMessage(e));
-      });
+        if (!controller.signal.aborted) setError(errorMessage(e));
+      })
+      .finally(() => window.clearTimeout(timeout));
     return () => {
-      active = false;
+      controller.abort();
+      window.clearTimeout(timeout);
     };
-  }, [monitor.id]);
+  }, [monitor.id, loadAttempt]);
   function updateRoute(route: MessengerRoute) {
     setRoutes((current) => [
       ...(current ?? []).filter((item) => item.provider !== route.provider),
       route,
     ]);
   }
+  const providers = (["email", "telegram", "max"] as const).filter(
+    (provider) => (provider === "email" ? emailEnabled : enabled),
+  );
   return (
     <Dialog title={`Уведомления · ${monitor.name}`} wide onClose={onClose}>
       <p className="dialog-description">
-        Выберите подтверждённый чат для каждого канала. При выключенном канале
-        сообщения не отправляются.
+        Выберите подтверждённого получателя для каждого канала. При выключенном
+        канале сообщения не отправляются.
       </p>
       {error && <Notice>{error}</Notice>}
       {!destinations || !routes ? (
         error ? (
-          <button className="secondary" onClick={onClose}>
-            Закрыть
+          <button
+            className="secondary"
+            onClick={() => setLoadAttempt((value) => value + 1)}
+          >
+            Повторить загрузку настроек
           </button>
         ) : (
           <Loading text="Загружаем настройки…" />
         )
-      ) : !enabled ? (
-        <Notice>Уведомления через Informer сейчас недоступны.</Notice>
+      ) : !enabled && !emailEnabled ? (
+        <Notice>Уведомления сейчас недоступны.</Notice>
       ) : (
         <div className="messenger-routes">
-          {(["telegram", "max"] as const).map((provider) => (
+          {providers.map((provider) => (
             <RouteEditor
               key={provider}
               provider={provider}

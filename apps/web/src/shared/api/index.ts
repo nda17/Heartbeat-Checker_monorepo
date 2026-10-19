@@ -19,7 +19,9 @@ export async function api<T>(
   const headers: Record<string, string> = {};
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
   if (options.authenticated && !["GET", "HEAD"].includes(method)) {
-    const { csrfToken } = await api<{ csrfToken: string }>("/auth/csrf");
+    const { csrfToken } = await api<{ csrfToken: string }>("/auth/csrf", {
+      signal: options.signal,
+    });
     headers["X-CSRF-Token"] = csrfToken;
   }
   let response: Response;
@@ -51,6 +53,8 @@ export async function api<T>(
   return response.json() as Promise<T>;
 }
 const messages: Record<string, string> = {
+  email_not_verified:
+    "Сначала подтвердите email в настройках аккаунта, затем подключите уведомления.",
   mock_billing_forbidden: "Оплата недоступна для вашего аккаунта.",
   billing_conflict:
     "Заказ конфликтует с текущей квотой или уже начатым заказом. Обновите статус текущего заказа.",
