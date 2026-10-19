@@ -414,13 +414,15 @@ strong {
   color: #176b56;
   border-color: #cfe7dc;
 }
-.spinner {
-  height: 16px;
-  width: 16px;
+.ui-icon {
   display: inline-block;
-  border: 2px solid currentColor;
-  border-right-color: transparent;
-  border-radius: 50%;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+.spinner {
+  height: 20px;
+  width: 20px;
+  display: inline-block;
   animation: spin 0.7s linear infinite;
 }
 .loading {
@@ -1338,10 +1340,6 @@ html[data-installed-app="true"] .landing-footer-inner {
   font-weight: 500;
   color: #6b7784;
 }
-.sidebar nav a > span {
-  font-size: 17px;
-  font-weight: 400;
-}
 .sidebar nav a[aria-current="page"] {
   background: var(--soft);
   color: var(--accent);
@@ -1462,10 +1460,6 @@ html[data-installed-app="true"] .landing-footer-inner {
 .page-heading > .primary {
   font-size: 14px;
   padding: 12px 16px;
-}
-.page-heading > .primary > span {
-  font-size: 18px;
-  line-height: 1;
 }
 .stats-grid {
   display: grid;
@@ -1685,10 +1679,8 @@ html[data-installed-app="true"] .landing-footer-inner {
   font-size: 14px;
   font-weight: 600;
 }
-.monitor-name span {
+.monitor-name .ui-icon {
   color: #9dacae;
-  font-size: 14px;
-  flex-shrink: 0;
 }
 .monitor-name:hover {
   color: var(--accent);
@@ -1823,9 +1815,6 @@ html[data-installed-app="true"] .landing-footer-inner {
   gap: 10px;
   padding: 23px 3px;
   color: var(--muted);
-}
-.explanation > span {
-  font-size: 14px;
 }
 .explanation > p {
   font-size: 14px;
@@ -2562,9 +2551,6 @@ html[data-installed-app="true"] .landing-footer-inner {
     padding: 12px;
     font-size: 14px;
   }
-  .sidebar nav a > span {
-    font-size: 14px;
-  }
   .console-content {
     margin: 0;
     width: 100%;
@@ -2787,10 +2773,6 @@ html[data-installed-app="true"] .landing-footer-inner {
   min-height: 36px;
   background: transparent;
 }
-.theme-toggle svg {
-  width: 18px;
-  height: 18px;
-}
 .theme-sun {
   display: none;
 }
@@ -2948,7 +2930,7 @@ html[data-installed-app="true"] .landing-footer-inner {
 [data-theme="dark"] .icon-button,
 [data-theme="dark"] .monitor-table th,
 [data-theme="dark"] .data-table th,
-[data-theme="dark"] .monitor-name span,
+[data-theme="dark"] .monitor-name .ui-icon,
 [data-theme="dark"] .monitor-url,
 [data-theme="dark"] .monitor-url > span,
 [data-theme="dark"] .cell-sub,
@@ -3656,9 +3638,8 @@ html[data-installed-app="true"] .android-hero {
   display: flex;
   gap: 13px;
 }
-.landing .landing-observability-copy li > span {
+.landing .landing-observability-copy li > .ui-icon {
   color: var(--accent);
-  font-size: 17px;
 }
 .landing .landing-observability-copy li h3 {
   font-size: 14px;
@@ -3838,16 +3819,12 @@ html[data-installed-app="true"] .android-hero {
 .landing .landing-faq summary::-webkit-details-marker {
   display: none;
 }
-.landing .landing-faq summary::after {
-  content: "+";
+.landing .landing-faq summary > .ui-icon {
   color: var(--accent);
-  font-size: 20px;
-  font-weight: 400;
-  line-height: 1;
-  flex-shrink: 0;
+  transition: transform 0.16s;
 }
-.landing .landing-faq details[open] summary::after {
-  content: "−";
+.landing .landing-faq details[open] summary > .ui-icon {
+  transform: rotate(180deg);
 }
 .landing .landing-faq details p {
   padding: 0 35px 22px 0;
@@ -4064,9 +4041,6 @@ html[data-installed-app="true"] .android-hero {
   min-height: 30px;
   font-size: 14px;
   gap: 7px;
-}
-.landing-demo .landing-demo-play > span {
-  font-size: 14px;
 }
 .landing-demo .landing-demo-caption {
   font-size: 14px;
@@ -4454,6 +4428,9 @@ html[data-installed-app="true"] .android-hero {
 }
 .messenger-panel .panel-heading {
   padding: 0;
+  margin-bottom: 20px;
+}
+.messenger-panel > .messenger-route {
   margin-bottom: 20px;
 }
 .messenger-options {
@@ -4855,9 +4832,11 @@ html[data-installed-app="true"] .android-hero {
 }
 
 @media (pointer: coarse), (max-width: 640px) {
+  .icon-button,
   .row-actions .icon-button,
   .dialog-heading .icon-button,
-  .landing-header .icon-button {
+  .landing-header .icon-button,
+  .password-toggle {
     width: 44px;
     height: 44px;
     min-height: 44px;

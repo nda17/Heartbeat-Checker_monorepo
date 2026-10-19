@@ -1,4 +1,5 @@
 "use client";
+import { Icon } from "@/shared/ui";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 const stages = [
@@ -158,7 +159,10 @@ export function MonitoringDemo() {
         <p>{current.text}</p>
         <div className="landing-demo-event">
           <span aria-hidden="true">
-            {stage === 2 ? "!" : stage === 3 ? "✓" : "·"}
+            <Icon
+              name={stage === 2 ? "alert" : stage === 3 ? "check" : "dot"}
+              size={16}
+            />
           </span>
           {current.event}
         </div>
@@ -194,7 +198,7 @@ export function MonitoringDemo() {
             playing ? "Приостановить демонстрацию" : "Продолжить демонстрацию"
           }
         >
-          <span aria-hidden="true">{playing ? "Ⅱ" : "▷"}</span>
+          <Icon name={playing ? "pause" : "play"} />
           {playing ? "Пауза" : "Продолжить"}
         </button>
       </div>

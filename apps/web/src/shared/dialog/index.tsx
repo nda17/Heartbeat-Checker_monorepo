@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef } from "react";
+import { Icon } from "@/shared/ui";
 export function Dialog({
   title,
   children,
@@ -39,7 +40,7 @@ export function Dialog({
           disabled={busy}
           onClick={onClose}
         >
-          ×
+          <Icon name="close" />
         </button>
       </div>
       {children}

@@ -6,7 +6,7 @@ import {
   OAuthRegistration,
 } from "@/features/auth";
 import { ThemeToggle } from "@/features/theme-toggle";
-import { Brand, FooterLegalNotice } from "@/shared/ui";
+import { Brand, FooterLegalNotice, Icon } from "@/shared/ui";
 export function AuthPage({
   mode,
   oauthRegistration = false,
@@ -41,7 +41,7 @@ export function AuthPage({
       <main className="auth-main" id="main">
         <div className="auth-top">
           <Link className="back-home small" href="/">
-            ← На главную
+            <Icon name="arrow-left" /> На главную
           </Link>
           <ThemeToggle />
         </div>

@@ -1,3 +1,5 @@
+import { Icon } from "./icon";
+export { Icon } from "./icon";
 import Link from "next/link";
 import { FooterLegalNotice } from "./legal-notice";
 export { FooterLegalNotice };
@@ -6,7 +8,7 @@ export function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <Link href="/" className="brand" aria-label="Heartbeat Checker — главная">
       <span className="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none">
+        <svg viewBox="0 0 24 24" fill="none" focusable="false">
           <path
             d="M3 12h4l2.5-6 5 12 2.5-6h4"
             stroke="currentColor"
@@ -28,7 +30,13 @@ function AppStoreIcon({ store }: { store: AppStore }) {
   if (store === "google-play") {
     // Simple Icons (CC0): https://simpleicons.org/?q=googleplay
     return (
-      <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+      <svg
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+        focusable="false"
+      >
         <path
           fill="currentColor"
           d="M22.018 13.298l-3.919 2.218-3.515-3.493 3.543-3.521 3.891 2.202a1.49 1.49 0 0 1 0 2.594zM1.337.924a1.486 1.486 0 0 0-.112.568v21.017c0 .217.045.419.124.6l11.155-11.087L1.337.924zm12.207 10.065l3.258-3.238L3.45.195a1.466 1.466 0 0 0-.946-.179l11.04 10.973zm0 2.067l-11 10.933c.298.036.612-.016.906-.183l13.324-7.54-3.23-3.21z"
@@ -39,7 +47,13 @@ function AppStoreIcon({ store }: { store: AppStore }) {
   if (store === "appgallery") {
     // Simple Icons (CC0): https://simpleicons.org/?q=appgallery
     return (
-      <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+      <svg
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+        focusable="false"
+      >
         <path
           fill="currentColor"
           d="M6.734 0C1.804 0 0 1.803 0 6.733v10.535C0 22.198 1.803 24 6.734 24h10.529C22.193 24 24 22.197 24 17.268V6.733C24 1.803 22.197 0 17.266 0zM8 4h.565A3.439 3.439 0 0 0 12 7.435 3.439 3.439 0 0 0 15.435 4H16c0 2.206-1.794 4-4 4S8 6.206 8 4zm6.468 8h.52l.713 2.16.696-2.158h.66l-1.092 3.14h-.532l-.714-2.063-.714 2.063h-.528l-1.095-3.14h.678l.694 2.158zm6.236 0h.629v3.138h-.629zM2.666 12h.638v1.267h1.439V12h.637v3.142h-.637v-1.276h-1.44v1.276h-.637zm5.668 0h.637v1.772c0 .9-.496 1.417-1.36 1.417-.856 0-1.347-.507-1.347-1.39v-1.797H6.9v1.775c0 .524.255.805.719.805.46 0 .714-.273.714-.784zm2.344 0h.563l1.378 3.14h-.668l-.282-.654H10.23l-.286.654h-.651zm6.893.002h2.312v.572H18.2v.643h1.16v.573H18.2v.777h1.744v.573H17.57zm-6.623.793-.48 1.124h.964z"
@@ -55,6 +69,7 @@ function AppStoreIcon({ store }: { store: AppStore }) {
       viewBox="0 0 96 96"
       fill="none"
       aria-hidden="true"
+      focusable="false"
     >
       <path
         d="M6.74826 89.2517C13.4965 96 24.3577 96 46.08 96H49.92C71.6423 96 82.5034 96 89.2518 89.2517C96 82.5034 96 71.6422 96 49.9197V46.0797C96 24.3573 96 13.4961 89.2518 6.74786C82.5034 0 71.6423 0 49.9201 0H46.08C24.3577 0 13.4965 0 6.74826 6.74787C0 13.4961 0 24.3573 0 46.0797V49.9198C0 71.6422 0 82.5035 6.74826 89.2517Z"
@@ -106,6 +121,7 @@ function AndroidIcon() {
       height="24"
       viewBox="0 0 24 24"
       aria-hidden="true"
+      focusable="false"
     >
       <path
         fill="currentColor"
@@ -124,6 +140,7 @@ function MessengerIcon({ brand }: { brand: "vk" | "max" | "telegram" }) {
         height="24"
         viewBox="0 0 1000 1000"
         aria-hidden="true"
+        focusable="false"
       >
         <defs>
           <linearGradient
@@ -160,6 +177,7 @@ function MessengerIcon({ brand }: { brand: "vk" | "max" | "telegram" }) {
       viewBox={brand === "vk" ? "0 0 24 24" : "0 0 100 100"}
       fill="none"
       aria-hidden="true"
+      focusable="false"
     >
       {brand === "vk" ? (
         <path
@@ -248,31 +266,7 @@ export function PublicFooter({
           </a>
           <Link href="/contacts">Контакты</Link>
           <a href="mailto:info@heartbeat-checker.ru">
-            <svg
-              className="footer-link-icon"
-              width="24"
-              height="24"
-              viewBox="0 0 24 24"
-              fill="none"
-              aria-hidden="true"
-            >
-              <rect
-                x="3"
-                y="5"
-                width="18"
-                height="14"
-                rx="2"
-                stroke="currentColor"
-                strokeWidth="1.5"
-              />
-              <path
-                d="m3 6 9 7 9-7"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
+            <Icon name="mail" size={24} className="footer-link-icon" />
             <span>
               info@
               <wbr />
@@ -295,7 +289,7 @@ export function PublicFooter({
           {onHome && (
             <div className="landing-footer-contact">
               <Link href={landingMode ? "#how" : "/login"}>
-                {landingMode ? "Как это работает ↗" : "Личный кабинет ↗"}
+                {landingMode ? "Как это работает" : "Личный кабинет"} <Arrow />
               </Link>
             </div>
           )}
@@ -306,7 +300,7 @@ export function PublicFooter({
   );
 }
 export function Arrow() {
-  return <span aria-hidden="true">↗</span>;
+  return <Icon name="arrow-up-right" />;
 }
 export function Notice({
   children,
@@ -325,7 +319,7 @@ export function Notice({
   );
 }
 export function Spinner() {
-  return <span className="spinner" aria-hidden="true" />;
+  return <Icon name="loader" className="spinner" />;
 }
 export function Loading({ text = "Загрузка…" }: { text?: string }) {
   return (

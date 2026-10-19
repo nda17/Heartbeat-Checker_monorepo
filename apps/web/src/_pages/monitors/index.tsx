@@ -25,7 +25,7 @@ import {
   MonitorDraft,
   readMonitorDraft,
 } from "@/shared/android";
-import { dateTime, Loading, Notice, Spinner } from "@/shared/ui";
+import { dateTime, Loading, Notice, Spinner, Icon } from "@/shared/ui";
 type Detail = {
   monitor: Monitor;
   results: CheckResult[];
@@ -279,7 +279,7 @@ export function MonitorsPage() {
           disabled={!canCreate || !!busy}
           onClick={() => setEditor("new")}
         >
-          <span aria-hidden="true">＋</span> Добавить монитор
+          <Icon name="plus" /> Добавить монитор
         </button>
       </div>
       {error && <Notice>{error}</Notice>}
@@ -360,11 +360,11 @@ export function MonitorsPage() {
               действующая квота.
             </p>
             <Link href="/app/billing" className="text-link">
-              Перейти к оплате →
+              Перейти к оплате <Icon name="arrow-right" />
             </Link>
           </div>
           <span className="quota-symbol" aria-hidden="true">
-            Ⅱ
+            <Icon name="pause" size={32} />
           </span>
         </div>
       )}
@@ -404,7 +404,7 @@ export function MonitorsPage() {
               aria-label="Обновить мониторы"
               onClick={() => void load().catch(() => undefined)}
             >
-              ↻
+              <Icon name="refresh" />
             </button>
           </div>
         </div>
@@ -413,7 +413,7 @@ export function MonitorsPage() {
         ) : !monitors.length ? (
           <div className="empty-state">
             <div className="empty-icon" aria-hidden="true">
-              ⌁
+              <Icon name="activity" size={28} />
             </div>
             <h3>Всё начинается с первого адреса</h3>
             <p>
@@ -423,7 +423,7 @@ export function MonitorsPage() {
             </p>
             {canCreate && (
               <button className="secondary" onClick={() => setEditor("new")}>
-                ＋ Добавить первый монитор
+                <Icon name="plus" /> Добавить первый монитор
               </button>
             )}
           </div>
@@ -456,7 +456,7 @@ export function MonitorsPage() {
                         onClick={() => void showDetail(m)}
                       >
                         {m.name}
-                        <span aria-hidden="true">↗</span>
+                        <Icon name="arrow-up-right" />
                       </button>
                       <span className="monitor-url" title={monitorTarget(m)}>
                         {monitorCheckType(m.checkType) === "http"
@@ -509,39 +509,7 @@ export function MonitorsPage() {
                           {busy === m.id ? (
                             <Spinner />
                           ) : (
-                            <svg
-                              width="20"
-                              height="20"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="1.8"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              aria-hidden="true"
-                              focusable="false"
-                            >
-                              {m.enabled ? (
-                                <>
-                                  <rect
-                                    x="6"
-                                    y="4"
-                                    width="4"
-                                    height="16"
-                                    rx="1"
-                                  />
-                                  <rect
-                                    x="14"
-                                    y="4"
-                                    width="4"
-                                    height="16"
-                                    rx="1"
-                                  />
-                                </>
-                              ) : (
-                                <path d="m8 4 12 8-12 8V4Z" />
-                              )}
-                            </svg>
+                            <Icon name={m.enabled ? "pause" : "play"} />
                           )}
                         </button>
                         <button
@@ -551,21 +519,7 @@ export function MonitorsPage() {
                           disabled={!!busy}
                           onClick={() => setEditor(m)}
                         >
-                          <svg
-                            width="20"
-                            height="20"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.8"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            aria-hidden="true"
-                            focusable="false"
-                          >
-                            <path d="M9.6 2.8h4.8l.4 2.4 1.6.96 2.24-.8 2.4 4.16-1.84 1.52v1.92l1.84 1.52-2.4 4.16-2.24-.8-1.6.96-.4 2.4H9.6l-.4-2.4-1.6-.96-2.24.8-2.4-4.16 1.84-1.52v-1.92L2.96 9.52l2.4-4.16 2.24.8 1.6-.96.4-2.4Z" />
-                            <circle cx="12" cy="12" r="3" />
-                          </svg>
+                          <Icon name="settings" />
                         </button>
                         <button
                           className="icon-button"
@@ -574,20 +528,7 @@ export function MonitorsPage() {
                           disabled={!!busy}
                           onClick={() => setNotifications(m)}
                         >
-                          <svg
-                            width="20"
-                            height="20"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.8"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            aria-hidden="true"
-                            focusable="false"
-                          >
-                            <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />
-                          </svg>
+                          <Icon name="bell" />
                         </button>
                         <button
                           className="icon-button danger-text"
@@ -599,20 +540,7 @@ export function MonitorsPage() {
                             setDeleting(m);
                           }}
                         >
-                          <svg
-                            width="20"
-                            height="20"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.8"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            aria-hidden="true"
-                            focusable="false"
-                          >
-                            <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" />
-                          </svg>
+                          <Icon name="trash" />
                         </button>
                       </div>
                     </td>
@@ -630,7 +558,7 @@ export function MonitorsPage() {
         </div>
       </section>
       <div className="explanation">
-        <span aria-hidden="true">ⓘ</span>
+        <Icon name="info" />
         <p>
           Инцидент открывается после заданного для монитора числа неудачных
           проверок подряд и закрывается при первом успешном ответе. Принятый

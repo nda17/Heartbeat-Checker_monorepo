@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { PublicAuthLinks } from "@/features/auth";
 import { ThemeToggle } from "@/features/theme-toggle";
-import { Arrow, Brand, PublicFooter } from "@/shared/ui";
+import { Arrow, Brand, PublicFooter, Icon } from "@/shared/ui";
 import { MonitoringDemo } from "./monitoring-demo";
 
 export function HomePage() {
@@ -75,7 +75,7 @@ export function HomePage() {
                 <Arrow />
               </Link>
               <a href="#use-cases" className="text-link">
-                Что можно проверять ↓
+                Что можно проверять <Icon name="arrow-down" />
               </a>
             </div>
             <p className="small muted hero-note">
@@ -155,7 +155,7 @@ export function HomePage() {
           <div className="landing-use-cases">
             <article>
               <div className="landing-case-icon" aria-hidden="true">
-                ↗
+                <Icon name="globe" />
               </div>
               <span className="landing-case-type">
                 HTTP/HTTPS · САЙТ ИЛИ API
@@ -172,7 +172,7 @@ export function HomePage() {
             </article>
             <article>
               <div className="landing-case-icon" aria-hidden="true">
-                ↔
+                <Icon name="network" />
               </div>
               <span className="landing-case-type">TCP · ПОРТ СЕРВИСА</span>
               <h3>Порт принимает соединение</h3>
@@ -188,7 +188,7 @@ export function HomePage() {
             </article>
             <article>
               <div className="landing-case-icon" aria-hidden="true">
-                ◎
+                <Icon name="radar" />
               </div>
               <span className="landing-case-type">ICMP · ПИНГ СЕРВЕРА</span>
               <h3>Сервер отвечает на ping</h3>
@@ -249,7 +249,7 @@ export function HomePage() {
             </p>
             <ul>
               <li>
-                <span aria-hidden="true">↗</span>
+                <Icon name="arrow-up-right" />
                 <div>
                   <h3>Подробные проверки</h3>
                   <p>
@@ -260,7 +260,7 @@ export function HomePage() {
                 </div>
               </li>
               <li>
-                <span aria-hidden="true">↗</span>
+                <Icon name="arrow-up-right" />
                 <div>
                   <h3>История инцидентов</h3>
                   <p>
@@ -274,7 +274,7 @@ export function HomePage() {
           <div className="landing-states">
             <div className="landing-states-heading">
               <span className="eyebrow">КАК ЧИТАТЬ СОСТОЯНИЯ</span>
-              <span aria-hidden="true">◉</span>
+              <Icon name="activity" />
             </div>
             <article>
               <span className="badge up">
@@ -378,7 +378,10 @@ export function HomePage() {
           </div>
           <div className="landing-faq-list">
             <details>
-              <summary>Что считается одним монитором?</summary>
+              <summary>
+                Что считается одним монитором?
+                <Icon name="chevron-down" />
+              </summary>
               <p>
                 Один монитор регулярно проверяет один выбранный адрес. Метод,
                 ожидаемый код и проверка текста относятся к его настройкам и не
@@ -388,7 +391,10 @@ export function HomePage() {
               </p>
             </details>
             <details>
-              <summary>Сколько хранится история?</summary>
+              <summary>
+                Сколько хранится история?
+                <Icon name="chevron-down" />
+              </summary>
               <p>
                 Подробные результаты проверок — 7 дней. Закрытые инциденты
                 хранятся 90 дней после завершения; открытые инциденты
@@ -397,7 +403,10 @@ export function HomePage() {
               </p>
             </details>
             <details>
-              <summary>Почему UNKNOWN отличается от DOWN?</summary>
+              <summary>
+                Почему UNKNOWN отличается от DOWN?
+                <Icon name="chevron-down" />
+              </summary>
               <p>
                 DOWN означает неуспешную проверку. UNKNOWN — отсутствие свежего
                 результата, в том числе при проблеме исполнителя. Это не
@@ -408,7 +417,10 @@ export function HomePage() {
               </p>
             </details>
             <details>
-              <summary>Освобождает ли пауза место в квоте?</summary>
+              <summary>
+                Освобождает ли пауза место в квоте?
+                <Icon name="chevron-down" />
+              </summary>
               <p>
                 Нет. Квота учитывает настроенные мониторы, включая
                 приостановленные. Чтобы освободить место, удалите ненужный
@@ -417,7 +429,10 @@ export function HomePage() {
               </p>
             </details>
             <details>
-              <summary>Как приходят уведомления?</summary>
+              <summary>
+                Как приходят уведомления?
+                <Icon name="chevron-down" />
+              </summary>
               <p>
                 При подключении получателей можно выбрать email, MAX, Telegram
                 (личные сообщения, группы и темы) или вебхук с указанным вами
@@ -427,7 +442,10 @@ export function HomePage() {
               </p>
             </details>
             <details>
-              <summary>Как быстро подтверждается сбой?</summary>
+              <summary>
+                Как быстро подтверждается сбой?
+                <Icon name="chevron-down" />
+              </summary>
               <p>
                 Это зависит от интервала и порога конкретного монитора. Доступны
                 интервалы 1–10 минут и пороги 1–10 сбоев подряд; для новых

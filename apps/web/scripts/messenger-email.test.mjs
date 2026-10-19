@@ -87,6 +87,7 @@ function createHarness(url = "http://localhost/") {
 
 function uiMocks() {
   return {
+    Icon: () => null,
     Loading: () => React.createElement("span", { role: "status" }, "Загрузка"),
     Notice: ({ children, success }) =>
       React.createElement(

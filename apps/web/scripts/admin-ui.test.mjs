@@ -54,6 +54,7 @@ function loadComponent(relativePath, aliases, runtime = {}) {
 
 function uiMocks(React) {
   return {
+    Icon: () => null,
     Loading: () => React.createElement("span", { role: "status" }, "Загрузка"),
     Notice: ({ children, success }) =>
       React.createElement(

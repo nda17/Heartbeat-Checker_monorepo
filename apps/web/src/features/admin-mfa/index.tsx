@@ -3,7 +3,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { api, errorMessage } from "@/shared/api";
-import { dateTime, Loading, Notice, PasswordInput } from "@/shared/ui";
+import { dateTime, Loading, Notice, PasswordInput, Icon } from "@/shared/ui";
 
 export type MfaState = {
   enabled: boolean;
@@ -339,7 +339,7 @@ export function AdminMfa({
                 по ссылке или ввести ключ вручную.
               </p>
               <a className="text-link" href={enrollment.otpauthUri}>
-                Открыть аутентификатор ↗
+                Открыть аутентификатор <Icon name="arrow-up-right" />
               </a>
               <div className="admin-secret">
                 <span>Ключ для ручного ввода</span>

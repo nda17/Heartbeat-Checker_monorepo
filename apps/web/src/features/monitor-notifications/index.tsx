@@ -11,7 +11,7 @@ import {
 } from "@/entities/messenger";
 import { api, errorMessage } from "@/shared/api";
 import { Dialog } from "@/shared/dialog";
-import { Loading, Notice } from "@/shared/ui";
+import { Loading, Notice, Icon } from "@/shared/ui";
 
 const reminderOptions = [
   [0, "Без напоминаний"],
@@ -157,7 +157,9 @@ function RouteEditor({
             : route
               ? "Выбранный чат отключён или недоступен. "
               : "Сначала подключите чат. "}
-          <Link href="/app/settings">Перейти к настройкам аккаунта →</Link>
+          <Link href="/app/settings">
+            Перейти к настройкам аккаунта <Icon name="arrow-right" />
+          </Link>
         </p>
       )}
     </form>
