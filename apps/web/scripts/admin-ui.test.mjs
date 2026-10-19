@@ -283,6 +283,7 @@ async function selectAdminAccount(harness, accountName) {
 
 test("MFA enrollment renders a local SVG QR from the server otpauth URI", async (t) => {
   const calls = [];
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
   const otpauthUri =
     "otpauth://totp/Heartbeat%20Checker:admin%40example.test?secret=TESTSECRET&issuer=Heartbeat%20Checker";
   const qrProps = [];
@@ -298,7 +299,7 @@ test("MFA enrollment renders a local SVG QR from the server otpauth URI", async 
         enrollmentId: "enrollment-1",
         secret: "TESTSECRET",
         otpauthUri,
-        expiresAt: "2099-01-01T00:00:00Z",
+        expiresAt,
       },
     },
     calls,
@@ -353,6 +354,9 @@ test("MFA enrollment renders a local SVG QR from the server otpauth URI", async 
 
 test("MFA rotation ignores repeated confirmation and adopts the server's new access window", async (t) => {
   const calls = [];
+  const enrollmentExpiresAt = new Date(
+    Date.now() + 10 * 60 * 1000,
+  ).toISOString();
   const fresh = {
     enabled: true,
     verifiedUntil: "2099-02-01T00:00:00Z",
@@ -376,7 +380,7 @@ test("MFA rotation ignores repeated confirmation and adopts the server's new acc
         secret: "ROTATEDSECRET",
         otpauthUri:
           "otpauth://totp/Heartbeat%20Checker:admin%40example.test?secret=ROTATEDSECRET",
-        expiresAt: "2099-01-10T00:00:00Z",
+        expiresAt: enrollmentExpiresAt,
       },
       "/auth/mfa/enrollment/confirm": {
         recoveryCodes: ["new-code-1", "new-code-2"],

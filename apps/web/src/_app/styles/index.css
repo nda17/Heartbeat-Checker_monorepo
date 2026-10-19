@@ -1361,7 +1361,7 @@ input:read-only {
   padding: 0 40px;
   background: #fff;
   font-size: 14px;
-  color: #7c8995;
+  color: var(--muted);
 }
 .slash {
   color: #c5cbd2;
@@ -1443,7 +1443,7 @@ input:read-only {
 }
 .stat em {
   font-style: normal;
-  color: #a0adb4;
+  color: var(--muted);
   font-size: 23px;
   font-weight: 500;
 }
@@ -1475,7 +1475,7 @@ input:read-only {
 }
 .local-banner p {
   font-size: 14px;
-  color: #687b8b;
+  color: var(--muted);
 }
 .local-banner .badge {
   background: #fff;
@@ -1499,7 +1499,7 @@ input:read-only {
 }
 .quota-banner p {
   font-size: 14px;
-  color: #8d806b;
+  color: var(--muted);
   max-width: 650px;
   margin-top: 7px;
 }
@@ -1537,7 +1537,7 @@ input:read-only {
   padding: 2px 6px;
   min-width: 22px;
   background: #f1f4f6;
-  color: #83909d;
+  color: var(--muted);
   border: 1px solid #e9edf0;
   border-radius: 5px;
   font-weight: 500;
@@ -1590,7 +1590,7 @@ input:read-only {
 .data-table th {
   font-size: 14px;
   font-weight: 500;
-  color: #83919d;
+  color: var(--muted);
   padding: 12px 20px;
   background: #f8fafb;
   border-top: 1px solid var(--line);
@@ -1633,7 +1633,7 @@ input:read-only {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: #84909b;
+  color: var(--muted);
   font-family: ui-monospace, monospace;
   font-size: 14px;
   margin-top: 7px;
@@ -1643,12 +1643,12 @@ input:read-only {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: #829199;
+  color: var(--muted);
 }
 .cell-sub {
   display: block;
   font-size: 14px;
-  color: #9aa4ae;
+  color: var(--muted);
   margin-top: 5px;
 }
 .row-actions {
@@ -1668,7 +1668,7 @@ input:read-only {
   border-radius: 5px;
   padding: 5px 7px;
   background: #f0f3f5;
-  color: #6d7b86;
+  color: var(--muted);
   font-size: 14px;
   font-weight: 500;
   white-space: nowrap;
@@ -1710,7 +1710,7 @@ input:read-only {
   gap: 15px;
   background: #fdfefe;
   font-size: 14px;
-  color: #9aa6af;
+  color: var(--muted);
 }
 .empty-state {
   text-align: center;
@@ -1752,7 +1752,7 @@ input:read-only {
   align-items: flex-start;
   gap: 10px;
   padding: 23px 3px;
-  color: #8996a2;
+  color: var(--muted);
 }
 .explanation > span {
   font-size: 14px;
@@ -1769,7 +1769,7 @@ input:read-only {
   display: flex;
   justify-content: space-between;
   font-size: 14px;
-  color: #a0aab4;
+  color: var(--muted);
 }
 /* Settings */
 .settings-grid {
@@ -1790,7 +1790,7 @@ input:read-only {
 .panel-index {
   font-family: ui-monospace, monospace;
   font-size: 14px;
-  color: #98aaa7;
+  color: var(--muted);
   margin-top: 4px;
 }
 .panel-heading h2 {
@@ -1904,7 +1904,7 @@ input:read-only {
 }
 .session-agent {
   font-size: 14px;
-  color: #7f8d99;
+  color: var(--muted);
   overflow-wrap: anywhere;
   line-height: 1.8;
   margin: 5px 0;
@@ -4732,5 +4732,28 @@ button.primary:hover:not(:disabled) {
   .legal-content,
   .legal-lead {
     font-size: 16px;
+  }
+}
+
+@media (min-width: 641px) and (max-width: 950px) {
+  .console .page-heading {
+    display: block;
+  }
+  .console .page-heading > .primary {
+    margin-top: 16px;
+  }
+  .console .oauth-identity,
+  .console .oauth-identity-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .console .oauth-identity-form {
+    width: 100%;
+  }
+  .console .oauth-identity-form label {
+    min-width: 0;
+  }
+  .console .oauth-identity-form button {
+    align-self: flex-start;
   }
 }
