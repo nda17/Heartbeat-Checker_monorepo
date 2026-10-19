@@ -53,6 +53,8 @@ export async function api<T>(
   return response.json() as Promise<T>;
 }
 const messages: Record<string, string> = {
+  telegram_private_required:
+    "Сначала подключите личный Telegram администратора, который отправит команду в группе или топике. Используйте тот же профиль, без анонимной отправки или отправки от имени группы.",
   email_not_verified:
     "Сначала подтвердите email в настройках аккаунта, затем подключите уведомления.",
   mock_billing_forbidden: "Оплата недоступна для вашего аккаунта.",

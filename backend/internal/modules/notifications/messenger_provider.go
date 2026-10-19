@@ -19,6 +19,7 @@ import (
 )
 
 type messengerProviderError struct {
+	linkCode   string
 	permanent  bool
 	retryAfter time.Duration
 	statusCode int
@@ -191,7 +192,7 @@ func (m *Messenger) telegram(ctx context.Context, method string, body any, out a
 		return err
 	}
 	if !response.OK {
-		return messengerProviderError{permanent: response.Code != 429 && response.Code < 500, retryAfter: time.Duration(response.Parameters.RetryAfter) * time.Second, statusCode: response.Code, rebind: response.Parameters.MigrateToChatID != 0 || messengerNeedsRebind(response.Description)}
+		return messengerProviderError{permanent: response.Code != 408 && response.Code != 429 && response.Code < 500, retryAfter: time.Duration(response.Parameters.RetryAfter) * time.Second, statusCode: response.Code, rebind: response.Parameters.MigrateToChatID != 0 || messengerNeedsRebind(response.Description)}
 	}
 	if err := json.Unmarshal(response.Result, out); err != nil {
 		return messengerProviderError{}
@@ -209,6 +210,15 @@ func messengerNeedsRebind(description string) bool {
 	return false
 }
 
+func messengerVerificationError(err error, code string) error {
+	var provider messengerProviderError
+	if errors.As(err, &provider) && provider.permanent {
+		provider.linkCode = code
+		return provider
+	}
+	return err
+}
+
 func (m *Messenger) verifyTarget(ctx context.Context, t messengerTarget) (string, error) {
 	if t.Provider == "max" {
 		return "MAX · личный чат", nil
@@ -219,21 +229,21 @@ func (m *Messenger) verifyTarget(ctx context.Context, t messengerTarget) (string
 		IsBot    bool   `json:"is_bot"`
 	}
 	if err := m.telegram(ctx, "getMe", map[string]any{}, &bot); err != nil {
-		return "", err
+		return "", messengerVerificationError(err, "verification_unavailable")
 	}
 	if !bot.IsBot || bot.ID <= 0 || !strings.EqualFold(bot.Username, m.cfg.TelegramBotUsername) {
-		return "", messengerProviderError{permanent: true}
+		return "", messengerProviderError{permanent: true, linkCode: "verification_unavailable"}
 	}
 	if t.Kind == "private" {
 		return "Telegram · личный чат", nil
 	}
 	chatID, err := strconv.ParseInt(t.ChatID, 10, 64)
 	if err != nil || chatID >= 0 {
-		return "", messengerProviderError{permanent: true}
+		return "", messengerProviderError{permanent: true, linkCode: "telegram_target_mismatch"}
 	}
 	userID, err := strconv.ParseInt(t.UserID, 10, 64)
 	if err != nil || userID <= 0 {
-		return "", messengerProviderError{permanent: true}
+		return "", messengerProviderError{permanent: true, linkCode: "verification_failed"}
 	}
 	var chat struct {
 		ID      int64  `json:"id"`
@@ -242,10 +252,14 @@ func (m *Messenger) verifyTarget(ctx context.Context, t messengerTarget) (string
 		IsForum bool   `json:"is_forum"`
 	}
 	if err = m.telegram(ctx, "getChat", map[string]any{"chat_id": chatID}, &chat); err != nil {
-		return "", err
+		var provider messengerProviderError
+		if errors.As(err, &provider) && provider.permanent && provider.statusCode >= 400 && provider.statusCode < 500 {
+			return "", messengerVerificationError(err, "telegram_chat_unavailable")
+		}
+		return "", messengerVerificationError(err, "verification_unavailable")
 	}
 	if chat.ID != chatID || chat.Type != "supergroup" && chat.Type != "group" || t.Kind == "topic" && (!chat.IsForum || t.ThreadID == "1") || t.Kind == "group" && chat.IsForum {
-		return "", messengerProviderError{permanent: true}
+		return "", messengerProviderError{permanent: true, linkCode: "telegram_target_mismatch"}
 	}
 	for _, id := range []int64{bot.ID, userID} {
 		var member struct {
@@ -255,10 +269,21 @@ func (m *Messenger) verifyTarget(ctx context.Context, t messengerTarget) (string
 			} `json:"user"`
 		}
 		if err = m.telegram(ctx, "getChatMember", map[string]any{"chat_id": chatID, "user_id": id}, &member); err != nil {
-			return "", err
+			return "", messengerVerificationError(err, "verification_unavailable")
 		}
-		if member.User.ID != id || member.Status != "administrator" && member.Status != "creator" {
-			return "", messengerProviderError{permanent: true}
+		if member.User.ID != id {
+			return "", messengerProviderError{permanent: true, linkCode: "verification_failed"}
+		}
+		switch member.Status {
+		case "administrator", "creator":
+		case "member", "restricted", "left", "kicked":
+			code := "telegram_user_admin_required"
+			if id == bot.ID {
+				code = "telegram_bot_admin_required"
+			}
+			return "", messengerProviderError{permanent: true, linkCode: code}
+		default:
+			return "", messengerProviderError{permanent: true, linkCode: "verification_failed"}
 		}
 	}
 	label := strings.TrimSpace(chat.Title)

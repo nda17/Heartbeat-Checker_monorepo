@@ -10,7 +10,9 @@ export type MessengerLink = {
   id: string;
   provider: Provider;
   kind: DestinationKind;
-  status: "pending" | "observed" | "candidate" | "confirmed" | "expired";
+  status:
+    "pending" | "observed" | "candidate" | "confirmed" | "expired" | "failed";
+  errorCode?: string;
   expiresAt: string;
   candidate: Candidate | null;
   destinationId: string | null;

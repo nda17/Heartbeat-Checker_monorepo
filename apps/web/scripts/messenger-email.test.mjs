@@ -138,6 +138,70 @@ function loadWebhookNotifications(api) {
   ).WebhookNotifications;
 }
 
+function loadMessengerLinks(api, browserNow = Date.now()) {
+  const DateWithBrowserClock = class extends Date {
+    static now() {
+      return browserNow;
+    }
+  };
+  const aliases = {
+    ...apiAliases(api),
+    "@/entities/messenger": loadComponent(
+      "../src/entities/messenger/index.ts",
+      {},
+    ),
+    "@/shared/dialog": {
+      Dialog: ({ title, children, onClose, busy }) =>
+        React.createElement(
+          "section",
+          { role: "dialog", "aria-label": title },
+          React.createElement(
+            "button",
+            { disabled: busy, onClick: onClose },
+            "Закрыть окно",
+          ),
+          children,
+        ),
+    },
+  };
+  return loadComponent("../src/features/messenger-links/index.tsx", aliases, {
+    Date: DateWithBrowserClock,
+    navigator: globalThis.navigator,
+  }).MessengerLinks;
+}
+
+function messengerLink(id, kind, status, errorCode, expiresAt) {
+  return {
+    id,
+    provider: "telegram",
+    kind,
+    status,
+    errorCode,
+    expiresAt,
+    candidate:
+      status === "candidate"
+        ? {
+            label: "Operations",
+            chatId: "-10077",
+            userId: "321",
+            threadId: kind === "topic" ? "44" : null,
+          }
+        : null,
+    destinationId: null,
+  };
+}
+
+async function clickMessengerButton(harness, label) {
+  const button = [...harness.host.querySelectorAll("button")].find((item) =>
+    item.textContent.includes(label),
+  );
+  assert.ok(button, `missing messenger button: ${label}`);
+  await act(async () =>
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true })),
+  );
+  await settle();
+}
+
 function webhookApi(api) {
   const aliases = {
     ...apiAliases(api),
@@ -175,6 +239,16 @@ async function settle() {
     await Promise.resolve();
     await Promise.resolve();
   });
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 }
 
 async function fillWebhookURL(input, value) {
@@ -887,6 +961,573 @@ test("changing monitors discards a pending webhook secret response", async () =>
       /late-secret-for-old-monitor/,
     );
     assert.doesNotMatch(harness.host.textContent, /old-monitor/);
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("Telegram group and topic permission failures stay explicit before TTL and restart once with the same kind", async (t) => {
+  for (const { kind, option } of [
+    { kind: "group", option: "Telegram · группа" },
+    { kind: "topic", option: "Telegram · топик группы" },
+  ]) {
+    await t.test(kind, async () => {
+      const harness = createHarness();
+      const writes = [];
+      let linkNumber = 0;
+      const futureExpiry = new Date(Date.now() + 10 * 60_000).toISOString();
+      const api = async (path, options = {}) => {
+        if (path === "/messenger-destinations")
+          return { enabled: true, emailEnabled: false, destinations: [] };
+        if (path === "/messenger-links" && options.method === "POST") {
+          writes.push(options.body);
+          linkNumber += 1;
+          return {
+            link:
+              linkNumber === 1
+                ? messengerLink(
+                    `link-${linkNumber}`,
+                    kind,
+                    "failed",
+                    "telegram_bot_admin_required",
+                    futureExpiry,
+                  )
+                : messengerLink(
+                    `link-${linkNumber}`,
+                    kind,
+                    "pending",
+                    undefined,
+                    futureExpiry,
+                  ),
+            startUrl: null,
+            command: "/connect@heartbeat_test_bot token",
+          };
+        }
+        throw new Error(`Unexpected request: ${path}`);
+      };
+      const MessengerLinks = loadMessengerLinks(
+        api,
+        Date.now() + 2 * 24 * 60 * 60_000,
+      );
+      try {
+        await harness.render(React.createElement(MessengerLinks));
+        await settle();
+        await clickMessengerButton(harness, option);
+        assert.match(
+          harness.host.textContent,
+          /Назначьте Informer администратором группы/,
+        );
+        assert.doesNotMatch(
+          harness.host.textContent,
+          /Срок действия ссылки истёк/,
+        );
+        assert.ok(
+          [...harness.host.querySelectorAll("button")].some((button) =>
+            button.textContent.includes("Начать заново"),
+          ),
+          "a permanent permission failure should offer an explicit restart before its link TTL",
+        );
+
+        const restart = [...harness.host.querySelectorAll("button")].find(
+          (button) => button.textContent.includes("Начать заново"),
+        );
+        await act(async () => {
+          restart.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+          restart.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+          await Promise.resolve();
+        });
+        await settle();
+        assert.equal(
+          JSON.stringify(writes),
+          JSON.stringify([
+            { provider: "telegram", kind },
+            { provider: "telegram", kind },
+          ]),
+        );
+        assert.match(harness.host.textContent, /Ожидаем сообщение боту/);
+      } finally {
+        await harness.unmount();
+      }
+    });
+  }
+});
+
+test("server link status wins over browser clock skew and legacy expiry does not claim a known cause", async (t) => {
+  await t.test(
+    "a server candidate can be confirmed when the browser clock is ahead",
+    async () => {
+      const harness = createHarness();
+      const confirmCalls = [];
+      const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString();
+      const api = async (path, options = {}) => {
+        if (path === "/messenger-destinations")
+          return { enabled: true, emailEnabled: false, destinations: [] };
+        if (path === "/messenger-links" && options.method === "POST")
+          return {
+            link: messengerLink(
+              "candidate-1",
+              "group",
+              "candidate",
+              undefined,
+              expiresAt,
+            ),
+            startUrl: null,
+            command: "/connect@heartbeat_test_bot token",
+          };
+        if (path === "/messenger-links/candidate-1/confirm") {
+          confirmCalls.push(options.method);
+          return {
+            destination: {
+              id: "destination-1",
+              provider: "telegram",
+              kind: "group",
+              label: "Operations",
+              chatId: "-10077",
+              userId: "321",
+              threadId: null,
+              ready: true,
+              version: 1,
+            },
+          };
+        }
+        throw new Error(`Unexpected request: ${path}`);
+      };
+      const MessengerLinks = loadMessengerLinks(
+        api,
+        Date.now() + 2 * 24 * 60 * 60_000,
+      );
+      try {
+        await harness.render(React.createElement(MessengerLinks));
+        await settle();
+        await clickMessengerButton(harness, "Telegram · группа");
+        assert.ok(
+          [...harness.host.querySelectorAll("button")].some((button) =>
+            button.textContent.includes("Подтвердить этот чат"),
+          ),
+        );
+        await clickMessengerButton(harness, "Подтвердить этот чат");
+        assert.deepEqual(confirmCalls, ["POST"]);
+        assert.match(harness.host.textContent, /Чат подтверждён/);
+        assert.doesNotMatch(
+          harness.host.textContent,
+          /Срок действия ссылки истёк/,
+        );
+      } finally {
+        await harness.unmount();
+      }
+    },
+  );
+
+  await t.test(
+    "a server-expired link remains expired when the browser clock is behind",
+    async () => {
+      const harness = createHarness();
+      const api = async (path) => {
+        if (path === "/messenger-destinations")
+          return { enabled: true, emailEnabled: false, destinations: [] };
+        if (path === "/messenger-links" && path)
+          return {
+            link: messengerLink(
+              "expired-1",
+              "topic",
+              "expired",
+              "link_expired",
+              new Date(Date.now() - 60_000).toISOString(),
+            ),
+            startUrl: null,
+            command: "/connect@heartbeat_test_bot token",
+          };
+        throw new Error(`Unexpected request: ${path}`);
+      };
+      const MessengerLinks = loadMessengerLinks(
+        api,
+        Date.now() - 2 * 24 * 60 * 60_000,
+      );
+      try {
+        await harness.render(React.createElement(MessengerLinks));
+        await settle();
+        await clickMessengerButton(harness, "Telegram · топик группы");
+        assert.match(harness.host.textContent, /Срок действия ссылки истёк/);
+        assert.ok(
+          [...harness.host.querySelectorAll("button")].some((button) =>
+            button.textContent.includes("Начать заново"),
+          ),
+        );
+        assert.equal(
+          [...harness.host.querySelectorAll("button")].some((button) =>
+            button.textContent.includes("Подтвердить этот чат"),
+          ),
+          false,
+        );
+      } finally {
+        await harness.unmount();
+      }
+    },
+  );
+
+  await t.test("a legacy expired row stays a generic failure", async () => {
+    const harness = createHarness();
+    const api = async (path) => {
+      if (path === "/messenger-destinations")
+        return { enabled: true, emailEnabled: false, destinations: [] };
+      if (path === "/messenger-links" && path)
+        return {
+          link: messengerLink(
+            "legacy-expired",
+            "group",
+            "expired",
+            undefined,
+            new Date(Date.now() - 60_000).toISOString(),
+          ),
+          startUrl: null,
+          command: "/connect@heartbeat_test_bot token",
+        };
+      throw new Error(`Unexpected request: ${path}`);
+    };
+    const MessengerLinks = loadMessengerLinks(
+      api,
+      Date.now() - 2 * 24 * 60 * 60_000,
+    );
+    try {
+      await harness.render(React.createElement(MessengerLinks));
+      await settle();
+      await clickMessengerButton(harness, "Telegram · группа");
+      assert.match(harness.host.textContent, /Эта попытка привязки недоступна/);
+      assert.doesNotMatch(
+        harness.host.textContent,
+        /Срок действия ссылки истёк/,
+      );
+    } finally {
+      await harness.unmount();
+    }
+  });
+});
+
+test("closing a link invalidates its pending poll before a new group link starts", async () => {
+  const harness = createHarness();
+  Object.defineProperty(document, "visibilityState", {
+    configurable: true,
+    value: "visible",
+  });
+  let starts = 0;
+  let resolveOldPoll;
+  let markPollStarted;
+  const pollStarted = new Promise((resolve) => {
+    markPollStarted = resolve;
+  });
+  const oldPoll = new Promise((resolve) => {
+    resolveOldPoll = resolve;
+  });
+  const api = async (path, options = {}) => {
+    if (path === "/messenger-destinations")
+      return { enabled: true, emailEnabled: false, destinations: [] };
+    if (path === "/messenger-links" && options.method === "POST") {
+      starts += 1;
+      return {
+        link: messengerLink(
+          `link-${starts}`,
+          "group",
+          "pending",
+          undefined,
+          new Date(Date.now() + 10 * 60_000).toISOString(),
+        ),
+        startUrl: null,
+        command: `/connect@heartbeat_test_bot token-${starts}`,
+      };
+    }
+    if (path === "/messenger-links/link-1") {
+      markPollStarted();
+      return oldPoll;
+    }
+    if (path === "/messenger-links/link-2")
+      return {
+        link: messengerLink(
+          "link-2",
+          "group",
+          "pending",
+          undefined,
+          new Date(Date.now() + 10 * 60_000).toISOString(),
+        ),
+      };
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const MessengerLinks = loadMessengerLinks(api);
+  try {
+    await harness.render(React.createElement(MessengerLinks));
+    await settle();
+    await clickMessengerButton(harness, "Telegram · группа");
+    await Promise.race([
+      pollStarted,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("poll did not start")), 3500),
+      ),
+    ]);
+    await clickMessengerButton(harness, "Закрыть окно");
+    await clickMessengerButton(harness, "Telegram · группа");
+    assert.match(harness.host.textContent, /token-2/);
+    resolveOldPoll({
+      link: messengerLink(
+        "link-1",
+        "group",
+        "candidate",
+        undefined,
+        new Date(Date.now() + 10 * 60_000).toISOString(),
+      ),
+    });
+    await settle();
+    assert.match(harness.host.textContent, /token-2/);
+    assert.doesNotMatch(harness.host.textContent, /Operations/);
+    assert.match(harness.host.textContent, /Ожидаем сообщение боту/);
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("a candidate poll started before confirmation cannot replace the confirmed result", async () => {
+  const harness = createHarness();
+  Object.defineProperty(document, "visibilityState", {
+    configurable: true,
+    value: "visible",
+  });
+  const oldPoll = deferred();
+  let pollStartedResolve;
+  let didStartPoll = false;
+  const pollStarted = new Promise((resolve) => {
+    pollStartedResolve = resolve;
+  });
+  const destination = {
+    id: "destination-confirmed",
+    provider: "telegram",
+    kind: "topic",
+    label: "Operations · deploys",
+    chatId: "-10077",
+    userId: "321",
+    threadId: "44",
+    ready: true,
+    version: 1,
+  };
+  const api = async (path, options = {}) => {
+    if (path === "/messenger-destinations")
+      return { enabled: true, emailEnabled: false, destinations: [] };
+    if (path === "/messenger-links" && options.method === "POST")
+      return {
+        link: messengerLink(
+          "candidate-topic",
+          "topic",
+          "candidate",
+          undefined,
+          new Date(Date.now() + 10 * 60_000).toISOString(),
+        ),
+        startUrl: null,
+        command: "/connect@heartbeat_test_bot topic-token",
+      };
+    if (path === "/messenger-links/candidate-topic") {
+      didStartPoll = true;
+      pollStartedResolve();
+      return oldPoll.promise;
+    }
+    if (
+      path === "/messenger-links/candidate-topic/confirm" &&
+      options.method === "POST"
+    )
+      return { destination };
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const MessengerLinks = loadMessengerLinks(api);
+  try {
+    await harness.render(React.createElement(MessengerLinks));
+    await settle();
+    await clickMessengerButton(harness, "Telegram · топик группы");
+    await Promise.race([
+      pollStarted,
+      new Promise((resolve) => setTimeout(resolve, 3500)),
+    ]);
+    assert.equal(
+      didStartPoll,
+      true,
+      "candidate polling should be active before confirmation",
+    );
+    await clickMessengerButton(harness, "Подтвердить этот чат");
+    assert.match(harness.host.textContent, /Чат подтверждён/);
+    oldPoll.resolve({
+      link: messengerLink(
+        "candidate-topic",
+        "topic",
+        "expired",
+        "link_expired",
+        new Date(Date.now() - 60_000).toISOString(),
+      ),
+    });
+    await settle();
+    assert.equal(harness.host.querySelector('[role="dialog"]'), null);
+    assert.match(harness.host.textContent, /Чат подтверждён/);
+    assert.doesNotMatch(harness.host.textContent, /Срок действия ссылки истёк/);
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("an ambiguous confirmation is reconciled by GET without replaying its POST", async () => {
+  const harness = createHarness();
+  const confirmationWrites = [];
+  const destination = {
+    id: "destination-reconciled",
+    provider: "telegram",
+    kind: "group",
+    label: "Operations",
+    chatId: "-10077",
+    userId: "321",
+    threadId: null,
+    ready: true,
+    version: 1,
+  };
+  const api = async (path, options = {}) => {
+    if (path === "/messenger-destinations")
+      return { enabled: true, emailEnabled: false, destinations: [] };
+    if (path === "/messenger-links" && options.method === "POST")
+      return {
+        link: messengerLink(
+          "confirm-timeout",
+          "group",
+          "candidate",
+          undefined,
+          new Date(Date.now() + 10 * 60_000).toISOString(),
+        ),
+        startUrl: null,
+        command: "/connect@heartbeat_test_bot token",
+      };
+    if (
+      path === "/messenger-links/confirm-timeout/confirm" &&
+      options.method === "POST"
+    ) {
+      confirmationWrites.push("POST");
+      throw new Error("connection ended before response");
+    }
+    if (path === "/messenger-links/confirm-timeout")
+      return {
+        link: {
+          ...messengerLink(
+            "confirm-timeout",
+            "group",
+            "confirmed",
+            undefined,
+            new Date(Date.now() + 10 * 60_000).toISOString(),
+          ),
+          destinationId: destination.id,
+        },
+      };
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const MessengerLinks = loadMessengerLinks(api);
+  try {
+    await harness.render(React.createElement(MessengerLinks));
+    await settle();
+    await clickMessengerButton(harness, "Telegram · группа");
+    await clickMessengerButton(harness, "Подтвердить этот чат");
+    assert.deepEqual(confirmationWrites, ["POST"]);
+    assert.match(
+      harness.host.textContent,
+      /Чат подтверждён\. Теперь его можно выбрать для монитора/,
+    );
+    assert.equal(
+      harness.host.textContent.includes("Подтвердить этот чат"),
+      false,
+    );
+    assert.equal(
+      confirmationWrites.length,
+      1,
+      "reconciliation must not replay the confirmation write",
+    );
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("disconnect is not undone by a destinations read started after confirmation", async () => {
+  const harness = createHarness();
+  let destinationReads = 0;
+  const delayedRefresh = deferred();
+  const destination = {
+    id: "destination-race",
+    provider: "telegram",
+    kind: "group",
+    label: "Operations",
+    chatId: "-10077",
+    userId: "321",
+    threadId: null,
+    ready: true,
+    version: 1,
+  };
+  const api = async (path, options = {}) => {
+    if (path === "/messenger-destinations") {
+      destinationReads += 1;
+      if (destinationReads === 2) return delayedRefresh.promise;
+      return { enabled: true, emailEnabled: false, destinations: [] };
+    }
+    if (path === "/messenger-links" && options.method === "POST")
+      return {
+        link: messengerLink(
+          "destination-race-link",
+          "group",
+          "candidate",
+          undefined,
+          new Date(Date.now() + 10 * 60_000).toISOString(),
+        ),
+        startUrl: null,
+        command: "/connect@heartbeat_test_bot token",
+      };
+    if (
+      path === "/messenger-links/destination-race-link/confirm" &&
+      options.method === "POST"
+    )
+      return { destination };
+    if (
+      path === "/messenger-destinations/destination-race" &&
+      options.method === "DELETE"
+    )
+      return undefined;
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const MessengerLinks = loadMessengerLinks(api);
+  try {
+    await harness.render(React.createElement(MessengerLinks));
+    await settle();
+    await clickMessengerButton(harness, "Telegram · группа");
+    await clickMessengerButton(harness, "Подтвердить этот чат");
+    assert.match(harness.host.textContent, /Operations/);
+    assert.equal(
+      destinationReads,
+      2,
+      "confirmation should start its follow-up read",
+    );
+
+    await clickMessengerButton(harness, "Отключить");
+    const dialog = harness.host.querySelector('[role="dialog"]');
+    const confirmDisconnect = [...dialog.querySelectorAll("button")].find(
+      (button) => button.textContent.includes("Отключить"),
+    );
+    assert.ok(confirmDisconnect);
+    await act(async () =>
+      confirmDisconnect.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      ),
+    );
+    await settle();
+    assert.equal(
+      destinationReads,
+      3,
+      "disconnect should load the current destination list",
+    );
+    assert.match(harness.host.textContent, /Пока нет подтверждённых чатов/);
+
+    delayedRefresh.resolve({
+      enabled: true,
+      emailEnabled: false,
+      destinations: [destination],
+    });
+    await settle();
+    assert.match(harness.host.textContent, /Пока нет подтверждённых чатов/);
+    assert.doesNotMatch(harness.host.textContent, /Operations/);
   } finally {
     await harness.unmount();
   }
