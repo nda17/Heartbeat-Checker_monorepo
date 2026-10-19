@@ -7,12 +7,13 @@ export function HomePage() {
   const landingMode = process.env.WEB_MODE === "landing";
   return (
     <div className="landing" data-web-mode={process.env.WEB_MODE ?? "app"}>
-      <header className="landing-header">
+      <header className="landing-header landing-header-home">
         <Brand />
         <nav aria-label="Главная навигация">
           <ThemeToggle />
           <Link href="#how">Как это работает</Link>
           <Link href="#pricing">Тариф</Link>
+          <Link href="/android">Приложения</Link>
           {landingMode ? (
             <Link href="#demo">Демонстрация</Link>
           ) : (
