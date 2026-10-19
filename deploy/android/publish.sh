@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 [[ $# == 4 && $1 =~ ^[0-9a-f]{40}$ && $2 =~ ^([0-9A-F]{2}:){31}[0-9A-F]{2}$ && $3 =~ ^[0-9]+$ && $4 =~ ^[0-9a-f]{64}$ ]] || { echo 'Expected source SHA, public fingerprint, run ID and encrypted recovery checksum'; exit 1; }
+[[ $(id -u) -ne 0 ]] || { echo 'Android publication requires the non-root deployment user'; exit 1; }
 source_sha=$1
 fingerprint=$2
 run_id=$3
@@ -39,7 +40,7 @@ for line in Path(".backup.env").read_text().splitlines():
 assert set(values) == allowed, "Missing S3 configuration"
 Path(sys.argv[1]).write_text("".join(key + "=" + values[key] + "\n" for key in sorted(values)))
 PY
-docker run --rm --pull never --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+docker run --rm --pull never --user "$(id -u):$(id -g)" --read-only --cap-drop ALL --security-opt no-new-privileges:true \
   --pids-limit 64 --memory 256m --cpus 1 --env-file "$env_file" \
   --mount "type=bind,src=$stage,dst=/release,readonly" \
   --entrypoint /opt/backup-venv/bin/python "$image" /release/publish.py "$source_sha" "$fingerprint" "$recovery_sha" > "$stage/publication-receipt.json.incoming"
