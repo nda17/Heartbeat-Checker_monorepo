@@ -632,7 +632,8 @@ export function BillingPage() {
               <span className="badge">Квота</span>
               <p>
                 Доступ к {entitlement.quota} мониторам выдан администратором до{" "}
-                {dateTime(entitlement.activeUntil)}. Платежей по этой квоте нет.
+                {dateTime(entitlement.activeUntil, { year: true })}. Платежей по
+                этой квоте нет.
               </p>
             </div>
           ) : billing.provider !== "yookassa" ? (
@@ -808,7 +809,7 @@ export function BillingPage() {
                         </td>
                         <td data-label="Квота до">
                           {order.activeUntil
-                            ? dateTime(order.activeUntil)
+                            ? dateTime(order.activeUntil, { year: true })
                             : "—"}
                         </td>
                       </tr>
