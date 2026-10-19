@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	auth "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/monitors/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/monitors/internal/service"
@@ -110,11 +112,25 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	in := contracts.MonitorInput{Enabled: true}
+	in := struct {
+		contracts.MonitorInput
+		ExpectedAccountID *string `json:"expectedAccountId,omitempty"`
+	}{MonitorInput: contracts.MonitorInput{Enabled: true}}
 	if !decode(w, r, &in) {
 		return
 	}
-	m, err := s.service.Create(r.Context(), id, in)
+	if in.ExpectedAccountID != nil {
+		var expected pgtype.UUID
+		if len(*in.ExpectedAccountID) != 36 || expected.Scan(*in.ExpectedAccountID) != nil || !expected.Valid || expected.String() != *in.ExpectedAccountID {
+			fail(w, 400, "invalid_request")
+			return
+		}
+		if *in.ExpectedAccountID != id {
+			fail(w, 403, "account_changed")
+			return
+		}
+	}
+	m, err := s.service.Create(r.Context(), id, in.MonitorInput)
 	if err != nil {
 		failure(w, err)
 		return

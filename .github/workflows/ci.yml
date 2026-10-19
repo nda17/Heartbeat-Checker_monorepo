@@ -61,6 +61,123 @@ jobs:
       - name: Build backend commands
         run: go build ./cmd/api ./cmd/worker ./cmd/probe ./cmd/migrate ./cmd/local-grant ./cmd/local-admin
 
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install explicit Android SDK components
+        run: bash deploy/android/setup-sdk.sh
+      - name: Android lint, tests and debug build without release credentials
+        working-directory: apps/android
+        run: ./gradlew --no-daemon :app:lint :app:testDebugUnitTest :app:assembleDebug
+      - name: Validate Android delivery scripts
+        run: |
+          shellcheck deploy/android/publish.sh deploy/android/setup-sdk.sh
+          bash -n deploy/android/publish.sh deploy/android/setup-sdk.sh
+          python3 -m py_compile deploy/android/release.py deploy/android/publish.py
+          python3 -m unittest discover -s deploy/android -p 'test_*.py'
+
+  android-emulator:
+    needs: android
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android SDK and API 35 emulator image
+        run: bash deploy/android/setup-sdk.sh 'emulator' 'system-images;android-35;google_apis;x86_64'
+      - name: Prepare accelerated Android emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes libpulse0
+          [[ -c /dev/kvm ]] || { echo 'Hosted runner requires KVM for Android smoke'; exit 1; }
+          sudo setfacl -m "u:$(id -un):rw" /dev/kvm
+          printf 'no\n' | avdmanager create avd --force --name heartbeat-ci --package 'system-images;android-35;google_apis;x86_64' --device pixel_7
+      - name: Run native instrumentation smoke on Android API 35
+        working-directory: apps/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          adb_bin="$ANDROID_HOME/platform-tools/adb"
+          emulator_bin="$ANDROID_HOME/emulator/emulator"
+          report_dir=app/build/reports/emulator
+          mkdir -p "$report_dir"
+          emulator_log="$report_dir/emulator.log"
+          emulator_pid=
+          exec 3>&2 # Keep EXIT diagnostics outside the preflight log redirects.
+          cleanup() {
+            status=$?
+            trap - EXIT
+            set +e
+            timeout 5 "$adb_bin" devices -l > "$report_dir/adb-devices.txt" 2>&1
+            timeout 10 "$adb_bin" -s emulator-5554 logcat -d -t 200 > "$report_dir/logcat.txt" 2>&1
+            tail -150 "$emulator_log" >&3 2>&3
+            timeout 10 "$adb_bin" -s emulator-5554 emu kill > /dev/null 2>&1
+            if [[ -n "$emulator_pid" ]]; then kill "$emulator_pid" 2>/dev/null; fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+          {
+            avdmanager list avd
+            LD_LIBRARY_PATH="$ANDROID_HOME/emulator/lib64:$ANDROID_HOME/emulator/lib64/qt/lib:$ANDROID_HOME/emulator/lib64/vulkan:$ANDROID_HOME/emulator/lib64/gles_swiftshader${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+              ldd "$ANDROID_HOME/emulator/qemu/linux-x86_64/qemu-system-x86_64" | tee "$report_dir/native-libraries.txt"
+            if grep -F 'not found' "$report_dir/native-libraries.txt"; then
+              echo 'Android emulator has missing native runtime libraries'
+              exit 1
+            fi
+            "$emulator_bin" -version
+            "$emulator_bin" -accel-check
+            "$emulator_bin" -list-avds | tee "$report_dir/available-avds.txt"
+            grep -Fx 'heartbeat-ci' "$report_dir/available-avds.txt"
+          } > "$emulator_log" 2>&1
+          "$emulator_bin" -avd heartbeat-ci -port 5554 -no-window -no-audio -no-boot-anim \
+            -no-snapshot -gpu swiftshader_indirect -camera-back none -camera-front none \
+            >> "$emulator_log" 2>&1 &
+          emulator_pid=$!
+          deadline=$((SECONDS + 240))
+          while true; do
+            kill -0 "$emulator_pid" || { echo 'Android emulator exited before boot completed'; exit 1; }
+            if [[ $(timeout 5 "$adb_bin" -s emulator-5554 get-state 2>/dev/null || true) == device &&
+                  $(timeout 5 "$adb_bin" -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r') == 1 ]]; then
+              break
+            fi
+            if (( SECONDS >= deadline )); then
+              echo 'Android emulator boot timed out'
+              exit 1
+            fi
+            sleep 2
+          done
+          "$adb_bin" -s emulator-5554 shell settings put global window_animation_scale 0
+          "$adb_bin" -s emulator-5554 shell settings put global transition_animation_scale 0
+          "$adb_bin" -s emulator-5554 shell settings put global animator_duration_scale 0
+          "$adb_bin" -s emulator-5554 shell input keyevent 82
+          "$adb_bin" -s emulator-5554 shell svc wifi disable
+          "$adb_bin" -s emulator-5554 shell svc data disable
+          test -n "$(find app/src/androidTest -type f -name '*.java' -print -quit)"
+          echo 'Emulator boot complete; running native instrumentation tests'
+          ANDROID_SERIAL=emulator-5554 ./gradlew --no-daemon :app:connectedDebugAndroidTest
+      - name: Retain instrumentation reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-emulator-${{ github.sha }}
+          path: |
+            apps/android/app/build/reports/androidTests/
+            apps/android/app/build/outputs/androidTest-results/
+            apps/android/app/build/reports/emulator/
+          if-no-files-found: warn
+          retention-days: 30
+
   web:
     runs-on: ubuntu-24.04
     defaults:
@@ -68,12 +185,26 @@ jobs:
         working-directory: apps/web
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24.21.0'
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
+      - name: Validate committed Android release metadata
+        working-directory: .
+        env:
+          SIGNING_FINGERPRINT: ${{ vars.ANDROID_SIGNING_CERTIFICATE_SHA256 }}
+        run: |
+          set -euo pipefail
+          manifest=apps/web/src/shared/android/release.json
+          if jq -e '. != null' "$manifest" >/dev/null; then
+            python3 deploy/android/release.py "$manifest" --frontend-sha "$GITHUB_SHA" --fingerprint "$SIGNING_FINGERPRINT"
+          fi
       - run: npm ci
+      - name: Android draft contract tests
+        run: node --test scripts/android-draft.test.mjs
       - run: npm run lint
       - run: npm run typecheck
       - name: Build web
@@ -147,7 +278,7 @@ jobs:
           set -euo pipefail
           shellcheck deploy/backend/bootstrap.sh deploy/backend/probe-firewall.sh deploy/backend/deploy.sh deploy/backend/backup.sh
           bash -n deploy/backend/bootstrap.sh deploy/backend/probe-firewall.sh deploy/backend/deploy.sh deploy/backend/backup.sh
-          export POSTGRES_PASSWORD=dummy DATABASE_URL=postgres://heartbeat:dummy@postgres:5432/heartbeat?sslmode=disable
+          export POSTGRES_PASSWORD=dummy DATABASE_URL='postgres://heartbeat:dummy@postgres:5432/heartbeat?sslmode=disable'
           export TURNSTILE_SECRET_KEY=dummy WEBHOOK_ENCRYPTION_KEY=dummy AUTH_MAIL_ENCRYPTION_KEY=dummy
           export PROBE_SHARED_SECRET=dummy SMTP_ADDR=smtp.example:465 SMTP_FROM=no-reply@example.com
           export SMTP_USERNAME=dummy SMTP_PASSWORD=dummy SMTP_TLS_MODE=implicit_tls
@@ -219,6 +350,35 @@ jobs:
             [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")" == "$GITHUB_SHA" ]]
             [[ "$(docker image inspect --format '{{ index .Config.Labels "org.heartbeat-checker.web-mode" }}' "$image")" == "$mode" ]]
           done
+      - name: Cold-start frontend without external network or S3 DNS
+        shell: bash
+        run: |
+          set -euo pipefail
+          container=$(docker run --rm -d --network none heartbeat-checker/web:ci-app)
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          expected_url=$(jq -r '.downloadUrl // ""' apps/web/src/shared/android/release.json)
+          docker exec -i -e "EXPECTED_APK_URL=$expected_url" "$container" node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          const base = 'http://127.0.0.1:3000';
+          let ready = false;
+          for (let attempt = 0; attempt < 45; attempt++) {
+            try { ready = (await fetch(base)).status === 200; } catch {}
+            if (ready) break;
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+          assert.ok(ready, 'Frontend must cold-start with no external network');
+          for (const path of ['/android', '/manifest.webmanifest', '/.well-known/assetlinks.json', '/terms']) {
+            assert.equal((await fetch(base + path)).status, 200, path);
+          }
+          const download = await fetch(base + '/downloads/android', {redirect: 'manual'});
+          assert.equal(download.status, process.env.EXPECTED_APK_URL ? 302 : 404);
+          if (process.env.EXPECTED_APK_URL) assert.equal(download.headers.get('location'), process.env.EXPECTED_APK_URL);
+          assert.equal(download.headers.get('cache-control'), 'no-store');
+          JS
+          docker network disconnect none "$container"
+          docker network connect bridge "$container"
+          docker exec "$container" node --input-type=module -e 'const response=await fetch("http://127.0.0.1:3000/android"); if(response.status!==200)process.exit(1)'
+
       - name: Smoke public landing routes from built image
         run: |
           set -euo pipefail

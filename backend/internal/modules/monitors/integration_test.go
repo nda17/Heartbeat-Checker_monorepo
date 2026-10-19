@@ -352,6 +352,65 @@ func TestMonitorHTTPQuotaIsolationCSRFAndLeaseInvalidation(t *testing.T) {
 	}
 }
 
+func TestMonitorCreateExpectedAccountFencePreservesLegacyCallsAndQuota(t *testing.T) {
+	f := newMonitorFixture(t)
+	actor := f.newActor(t, "Expected Account Owner")
+	other := f.newActor(t, "Different Account")
+	f.grant(t, actor, 3)
+
+	request := func(name string, expected *string) *httptest.ResponseRecorder {
+		t.Helper()
+		payload := map[string]any{
+			"name": name, "url": "https://" + strings.ToLower(strings.ReplaceAll(name, " ", "-")) + ".example/health",
+			"method": http.MethodGet, "expectedStatus": http.StatusOK, "enabled": true,
+		}
+		if expected != nil {
+			payload["expectedAccountId"] = *expected
+		}
+		return f.request(t, actor, http.MethodPost, "/api/v1/monitors", payload, actor.csrf, monitorTestOrigin)
+	}
+
+	foreignID := other.account.ID
+	foreign := request("foreign account fence", &foreignID)
+	if foreign.Code != http.StatusForbidden || !strings.Contains(foreign.Body.String(), `"error":"account_changed"`) {
+		t.Fatalf("foreign account fence = %d %s, want 403 account_changed", foreign.Code, foreign.Body.String())
+	}
+	malformedID := "not-a-canonical-uuid"
+	malformed := request("malformed account fence", &malformedID)
+	if malformed.Code != http.StatusBadRequest || !strings.Contains(malformed.Body.String(), `"error":"invalid_request"`) {
+		t.Fatalf("malformed account fence = %d %s, want 400 invalid_request", malformed.Code, malformed.Body.String())
+	}
+
+	assertEntitlement := func(wantCount int) {
+		t.Helper()
+		response := f.request(t, actor, http.MethodGet, "/api/v1/entitlement", nil, "", "")
+		var body struct {
+			Entitlement struct {
+				Quota        int `json:"quota"`
+				MonitorCount int `json:"monitorCount"`
+			} `json:"entitlement"`
+		}
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil {
+			t.Fatalf("read entitlement after fenced create = %d %s", response.Code, response.Body.String())
+		}
+		if body.Entitlement.Quota != 3 || body.Entitlement.MonitorCount != wantCount {
+			t.Fatalf("entitlement after fenced create = %+v, want quota=3 count=%d", body.Entitlement, wantCount)
+		}
+	}
+	assertEntitlement(0)
+
+	legacy := request("legacy client without expected account", nil)
+	if legacy.Code != http.StatusCreated {
+		t.Fatalf("create without expectedAccountId = %d %s, want 201", legacy.Code, legacy.Body.String())
+	}
+	matchingID := actor.account.ID
+	matching := request("matching expected account", &matchingID)
+	if matching.Code != http.StatusCreated {
+		t.Fatalf("create with matching expectedAccountId = %d %s, want 201", matching.Code, matching.Body.String())
+	}
+	assertEntitlement(2)
+}
+
 func TestMonitorSchedulingHTTPDefaultsValidationAndPatchOmission(t *testing.T) {
 	f := newMonitorFixture(t)
 	actor := f.newActor(t, "Scheduling HTTP")

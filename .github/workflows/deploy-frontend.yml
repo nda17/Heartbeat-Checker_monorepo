@@ -36,6 +36,7 @@ jobs:
       WEB_PUBLIC_ORIGIN: ${{ vars.WEB_PUBLIC_ORIGIN }}
       GO_API_ORIGIN: ${{ vars.GO_API_ORIGIN }}
       TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
+      ANDROID_SIGNING_CERTIFICATE_SHA256: ${{ vars.ANDROID_SIGNING_CERTIFICATE_SHA256 }}
       DEPLOY_HOST: ${{ vars.FRONTEND_DEPLOY_HOST }}
       DEPLOY_USER: ${{ vars.FRONTEND_DEPLOY_USER }}
     steps:
@@ -81,6 +82,21 @@ jobs:
             | jq -e --arg sha "$SOURCE_SHA" '.workflow_runs | any(.[]; .event == "push" and .head_sha == $sha and .conclusion == "success")' >/dev/null \
             || { echo 'No successful CI workflow run for the exact SHA'; exit 1; }
 
+      - name: Validate committed Android release provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest=apps/web/src/shared/android/release.json
+          if jq -e '. != null' "$manifest" >/dev/null; then
+            python3 deploy/android/release.py "$manifest" --frontend-sha "$SOURCE_SHA" \
+              --fingerprint "$ANDROID_SIGNING_CERTIFICATE_SHA256"
+          fi
+          digest=$(sha256sum "$manifest" | cut -d' ' -f1)
+          echo "ANDROID_MANIFEST_SHA256=$digest" >> "$GITHUB_ENV"
+          jq -n --arg frontendSourceSha "$SOURCE_SHA" --arg manifestSha256 "$digest" \
+            --slurpfile androidRelease "$manifest" \
+            '{frontendSourceSha: $frontendSourceSha, manifestSha256: $manifestSha256, androidRelease: $androidRelease[0]}' > frontend-android-receipt.json
+
       - name: Build and publish immutable web image
         id: image
         shell: bash
@@ -104,6 +120,7 @@ jobs:
           printf '%s\n' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           docker build -f apps/web/Dockerfile \
             --build-arg "VCS_REF=$SOURCE_SHA" \
+            --build-arg "ANDROID_MANIFEST_SHA256=$ANDROID_MANIFEST_SHA256" \
             --build-arg "WEB_MODE=$WEB_MODE" \
             --build-arg "GO_API_ORIGIN=$api_origin" \
             --build-arg "WEB_PUBLIC_ORIGIN=$WEB_PUBLIC_ORIGIN" \
@@ -111,6 +128,7 @@ jobs:
             -t "$image:$tag" apps/web
           [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image:$tag")" == "$SOURCE_SHA" ]]
           [[ "$(docker image inspect --format '{{ index .Config.Labels "org.heartbeat-checker.web-mode" }}' "$image:$tag")" == "$WEB_MODE" ]]
+          [[ "$(docker image inspect --format '{{ index .Config.Labels "org.heartbeat-checker.android-manifest-sha256" }}' "$image:$tag")" == "$ANDROID_MANIFEST_SHA256" ]]
           docker push "$image:$tag"
           digest=$(docker buildx imagetools inspect "$image:$tag" | awk '$1 == "Digest:" { print $2; exit }')
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'Unable to resolve pushed OCI digest'; exit 1; }
@@ -138,5 +156,14 @@ jobs:
           scp "${ssh_opts[@]}" deploy/frontend/compose.yaml "$target:/opt/heartbeat-checker/frontend/compose.yaml.incoming"
           scp "${ssh_opts[@]}" deploy/frontend/Caddyfile "$target:/opt/heartbeat-checker/frontend/Caddyfile.incoming"
           scp "${ssh_opts[@]}" deploy/frontend/deploy.sh "$target:/opt/heartbeat-checker/frontend/deploy.sh.incoming"
+          # shellcheck disable=SC2029 # Release arguments are validated and intentionally expand locally.
           printf '%s\n' "$GH_TOKEN" | ssh "${ssh_opts[@]}" "$target" \
             "bash /opt/heartbeat-checker/frontend/deploy.sh.incoming '$SOURCE_SHA' '$WEB_IMAGE' '$api_origin' '$GITHUB_ACTOR' '$WEB_MODE'"
+
+      - name: Retain frontend Android provenance receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: frontend-android-${{ inputs.source_sha }}
+          path: frontend-android-receipt.json
+          if-no-files-found: error
+          retention-days: 90

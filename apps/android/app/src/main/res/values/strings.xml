@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">Heartbeat Checker</string>
+    <string name="drafts_short">Черновики</string>
+    <string name="drafts_long">Сохранённые адреса мониторов</string>
+    <string name="asset_statements">[{\"relation\":[\"delegate_permission/common.handle_all_urls\"],\"target\":{\"namespace\":\"web\",\"site\":\"https://heartbeat-checker.ru\"}}]</string>
+</resources>

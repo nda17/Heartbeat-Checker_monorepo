@@ -1,0 +1,171 @@
+name: Publish Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full SHA merged into master with successful exact-SHA CI
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: heartbeat-checker-android-production
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: android-release
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      SIGNING_FINGERPRINT: ${{ vars.ANDROID_SIGNING_CERTIFICATE_SHA256 }}
+    steps:
+      - name: Validate release inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/master && "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$SIGNING_FINGERPRINT" =~ ^([0-9A-F]{2}:){31}[0-9A-F]{2}$ ]] || { echo 'Configure the permanent public release certificate fingerprint'; exit 1; }
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify master ancestry and exact-SHA CI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/master
+          curl -fsS --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SOURCE_SHA&status=completed&per_page=100" \
+            | jq -e --arg sha "$SOURCE_SHA" '.workflow_runs | any(.[]; .event == "push" and .head_sha == $sha and .conclusion == "success")' >/dev/null
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install explicit Android SDK components
+        run: bash deploy/android/setup-sdk.sh
+      - name: Build signed release APK
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [[ -n "$ANDROID_KEYSTORE_BASE64" && -n "$ANDROID_KEYSTORE_PASSWORD" && -n "$ANDROID_KEY_ALIAS" && -n "$ANDROID_KEY_PASSWORD" ]] || { echo 'Missing dedicated signing credentials'; exit 1; }
+          export ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/heartbeat-android-release.keystore"
+          trap 'rm -f "$ANDROID_KEYSTORE_FILE"' EXIT
+          umask 077
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_FILE"
+          unset ANDROID_KEYSTORE_BASE64
+          cd apps/android
+          ./gradlew --no-daemon :app:assembleRelease
+      - name: Verify package, signing certificate and release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p android-release
+          cp apps/android/app/build/outputs/apk/release/app-release.apk android-release/Heartbeat-Checker.apk
+          apk="$PWD/android-release/Heartbeat-Checker.apk"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/android-signature.txt"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > "$RUNNER_TEMP/android-badging.txt"
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          import hashlib, json, os, re
+          from pathlib import Path
+          signature = Path(os.environ['RUNNER_TEMP'], 'android-signature.txt').read_text()
+          certificates = re.findall(r'^Signer #\d+ certificate SHA-256 digest: ([a-fA-F0-9]{64})$', signature, re.M)
+          assert len(certificates) == 1, 'Expected exactly one APK signer'
+          fingerprint = ':'.join(re.findall('..', certificates[0].upper()))
+          assert fingerprint == os.environ['SIGNING_FINGERPRINT'], 'Release signing certificate mismatch'
+          badging = Path(os.environ['RUNNER_TEMP'], 'android-badging.txt').read_text()
+          match = re.search(r"^package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'", badging, re.M)
+          assert match and match.groups() == ('ru.heartbeatchecker.app', '1', '1.0.0'), 'Unexpected application/version'
+          assert 'application-debuggable' not in badging, 'Release APK must not be debuggable'
+          apk = Path('android-release/Heartbeat-Checker.apk')
+          value = dict(schemaVersion=1, packageName=match[1], versionCode=int(match[2]), versionName=match[3], sourceSha=os.environ['SOURCE_SHA'],
+                       releasedAt=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), sizeBytes=apk.stat().st_size,
+                       sha256=hashlib.sha256(apk.read_bytes()).hexdigest(), signingCertificateSha256=fingerprint,
+                       downloadUrl='https://s3.twcstorage.ru/heartbeat-data-1/heartbeat-checker/android/' + match[3] + '/Heartbeat-Checker.apk')
+          Path('android-release/release.json').write_text(json.dumps(value, indent=2) + '\n')
+          PY
+          python3 deploy/android/release.py android-release/release.json --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" --apk "$apk"
+      - name: Retain immutable signed build before publication
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-build-${{ inputs.source_sha }}
+          path: |
+            android-release/Heartbeat-Checker.apk
+            android-release/release.json
+          if-no-files-found: error
+          retention-days: 90
+  publish:
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production-backend
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      SIGNING_FINGERPRINT: ${{ vars.ANDROID_SIGNING_CERTIFICATE_SHA256 }}
+      SIGNING_RECOVERY_SHA256: ${{ vars.ANDROID_SIGNING_RECOVERY_SHA256 }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: android-build-${{ inputs.source_sha }}
+          path: android-release
+      - name: Recheck immutable signed artifact
+        run: python3 deploy/android/release.py android-release/release.json --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" --apk android-release/Heartbeat-Checker.apk
+      - name: Publish exact APK through protected backup runner
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ vars.BACKEND_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.BACKEND_DEPLOY_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.BACKEND_DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.BACKEND_DEPLOY_KNOWN_HOSTS }}
+          ANDROID_SIGNING_RECOVERY_BASE64: ${{ secrets.ANDROID_SIGNING_RECOVERY_BASE64 }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_HOST" == 176.12.64.115 && "$DEPLOY_USER" == heartbeat-deploy ]]
+          [[ -n "$SSH_PRIVATE_KEY" && -n "$SSH_KNOWN_HOSTS" ]]
+          [[ -n "$ANDROID_SIGNING_RECOVERY_BASE64" && "$SIGNING_RECOVERY_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          umask 077
+          publish_dir=$(mktemp -d)
+          trap 'rm -rf "$publish_dir"' EXIT
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$publish_dir/key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$publish_dir/known_hosts"
+          printf '%s' "$ANDROID_SIGNING_RECOVERY_BASE64" | base64 --decode > "$publish_dir/recovery.tar.age"
+          [[ $(stat -c %s "$publish_dir/recovery.tar.age") -gt 0 && $(stat -c %s "$publish_dir/recovery.tar.age") -lt 1048576 ]]
+          [[ "$(sha256sum "$publish_dir/recovery.tar.age" | cut -d' ' -f1)" == "$SIGNING_RECOVERY_SHA256" ]]
+          unset ANDROID_SIGNING_RECOVERY_BASE64
+          ssh_opts=(-i "$publish_dir/key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$publish_dir/known_hosts" -o BatchMode=yes)
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          stage="/opt/heartbeat-checker/backend/android-releases/$SOURCE_SHA-$GITHUB_RUN_ID"
+          # shellcheck disable=SC2029 # Validated public release values expand locally.
+          ssh "${ssh_opts[@]}" "$target" "umask 022; mkdir -p '$stage'; test ! -L '$stage'"
+          scp "${ssh_opts[@]}" android-release/Heartbeat-Checker.apk android-release/release.json "$publish_dir/recovery.tar.age" deploy/android/publish.py deploy/android/release.py deploy/android/publish.sh "$target:$stage/"
+          # shellcheck disable=SC2029 # Validated public release values expand locally.
+          ssh "${ssh_opts[@]}" "$target" "bash '$stage/publish.sh' '$SOURCE_SHA' '$SIGNING_FINGERPRINT' '$GITHUB_RUN_ID' '$SIGNING_RECOVERY_SHA256'" > android-release/publication-receipt.json
+          jq -e --arg sha "$SOURCE_SHA" --arg recovery "$SIGNING_RECOVERY_SHA256" '.signingRecoverySha256 == $recovery and .status == "published" and .release.sourceSha == $sha and .anonymousListing == "403" and .anonymousBackupPrefixListing == "403" and .anonymousBackupObject == "403" and .anonymousSigningRecovery == "403"' android-release/publication-receipt.json >/dev/null
+      - name: Retain verified publication receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-release-${{ inputs.source_sha }}
+          path: |
+            android-release/release.json
+            android-release/publication-receipt.json
+          if-no-files-found: error
+          retention-days: 90

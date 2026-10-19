@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "@/_app/styles";
+import { CookieNotice } from "@/features/cookie-notice";
 export const metadata: Metadata = {
   title: {
     default: "Heartbeat Checker — мониторинг сайтов",
@@ -24,6 +25,7 @@ export default function RootLayout({
           К содержимому
         </a>
         {children}
+        <CookieNotice />
       </body>
     </html>
   );

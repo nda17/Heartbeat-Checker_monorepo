@@ -1,0 +1,5 @@
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="drafts" android:enabled="true" android:icon="@drawable/ic_heartbeat_monochrome" android:shortcutShortLabel="@string/drafts_short" android:shortcutLongLabel="@string/drafts_long">
+        <intent android:action="ru.heartbeatchecker.app.DRAFTS" android:targetPackage="ru.heartbeatchecker.app" android:targetClass="ru.heartbeatchecker.app.MainActivity" />
+    </shortcut>
+</shortcuts>

@@ -36,6 +36,7 @@ export function PublicFooter({ onHome = false }: { onHome?: boolean }) {
         <Link href="/privacy">Персональные данные</Link>
         <Link href="/cookies">Cookie</Link>
         <Link href="/contacts">Контакты</Link>
+        <Link href="/android">Приложение для Android</Link>
         <a
           href="https://max.ru/id272385800008_biz"
           target="_blank"

@@ -5,16 +5,24 @@ import { useCallback, useEffect, useState } from "react";
 import { Profile, SessionContext } from "@/entities/session";
 import { ThemeToggle } from "@/features/theme-toggle";
 import { api, ApiError, errorMessage, safeAppReturnTo } from "@/shared/api";
+import {
+  captureMonitorDraft,
+  clearMonitorDraft,
+  readMonitorDraft,
+} from "@/shared/android";
 import { Brand, Loading, Notice } from "@/shared/ui";
 export function ConsoleShell({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [error, setError] = useState("");
+  const [draftError, setDraftError] = useState("");
   const [leaving, setLeaving] = useState(false);
   const path = usePathname();
   const router = useRouter();
   const refresh = useCallback(async () => {
     try {
-      setProfile(await api<Profile>("/me"));
+      const current = await api<Profile>("/me");
+      readMonitorDraft(current.account.id);
+      setProfile(current);
       setError("");
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
@@ -32,13 +40,34 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
   }, [router]);
   // Bootstrap browser-only session data; state changes after asynchronous API requests.
   useEffect(() => {
+    const problem = captureMonitorDraft();
     // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (problem) setDraftError(problem);
     void refresh();
+    const visible = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    const focused = () => void refresh();
+    document.addEventListener("visibilitychange", visible);
+    window.addEventListener("focus", focused);
+    return () => {
+      document.removeEventListener("visibilitychange", visible);
+      window.removeEventListener("focus", focused);
+    };
   }, [refresh]);
+  useEffect(() => {
+    const capture = () => {
+      const problem = captureMonitorDraft(profile?.account.id);
+      if (problem) setDraftError(problem);
+    };
+    window.addEventListener("hashchange", capture);
+    return () => window.removeEventListener("hashchange", capture);
+  }, [profile?.account.id]);
   async function logout() {
     setLeaving(true);
     try {
       await api("/auth/logout", { method: "POST", authenticated: true });
+      clearMonitorDraft();
       setProfile(null);
       router.replace("/login");
     } catch (e) {
@@ -60,7 +89,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
       </main>
     );
   return (
-    <SessionContext value={{ profile, refresh }}>
+    <SessionContext key={profile.account.id} value={{ profile, refresh }}>
       <div className="console">
         <aside className="sidebar">
           <Brand compact />
@@ -143,6 +172,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
           </header>
           <main id="main" className="workspace">
             {error && <Notice>{error}</Notice>}
+            {draftError && <Notice>{draftError}</Notice>}
             {children}
           </main>
           <footer className="console-footer">
