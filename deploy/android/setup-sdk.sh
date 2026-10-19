@@ -30,10 +30,11 @@ mv "$download_dir/extracted/cmdline-tools" "$sdk_root/cmdline-tools/$tools_versi
 export ANDROID_HOME="$sdk_root"
 export ANDROID_SDK_ROOT="$sdk_root"
 export ANDROID_USER_HOME="$RUNNER_TEMP/heartbeat-android-user"
+export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
 export PATH="$sdk_root/cmdline-tools/$tools_version/bin:$sdk_root/platform-tools:$sdk_root/emulator:$PATH"
-mkdir -p "$ANDROID_USER_HOME"
-printf 'ANDROID_HOME=%s\nANDROID_SDK_ROOT=%s\nANDROID_USER_HOME=%s\n' \
-  "$ANDROID_HOME" "$ANDROID_SDK_ROOT" "$ANDROID_USER_HOME" >> "$GITHUB_ENV"
+mkdir -p "$ANDROID_AVD_HOME"
+printf 'ANDROID_HOME=%s\nANDROID_SDK_ROOT=%s\nANDROID_USER_HOME=%s\nANDROID_AVD_HOME=%s\n' \
+  "$ANDROID_HOME" "$ANDROID_SDK_ROOT" "$ANDROID_USER_HOME" "$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
 printf '%s\n' "$sdk_root/cmdline-tools/$tools_version/bin" "$sdk_root/platform-tools" \
   "$sdk_root/emulator" >> "$GITHUB_PATH"
 
