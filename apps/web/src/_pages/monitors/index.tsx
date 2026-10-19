@@ -296,6 +296,15 @@ export function MonitorsPage() {
           </p>
         </div>
       )}
+      {entitlement?.source === "admin_grant" && (
+        <div className="local-banner">
+          <span className="badge">Квота</span>
+          <p>
+            Доступ к проверкам выдан администратором. Лимит: {entitlement.quota}
+            , срок действия: {dateTime(entitlement.activeUntil)}.
+          </p>
+        </div>
+      )}
       {entitlement && !quotaActive && (
         <div className="quota-banner">
           <div>

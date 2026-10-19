@@ -310,6 +310,72 @@ func TestMessengerMigrationNumbersExistingIncidentsAndPreservesPriorChecksums(t 
 	}
 }
 
+func TestAdminConsoleMigrationPreservesPriorStateAndAddsVersionedMFA(t *testing.T) {
+	pool := testDatabase(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `CREATE TABLE public.schema_migrations(version text PRIMARY KEY,checksum text NOT NULL,applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
+		t.Fatal(err)
+	}
+	previousChecksums := map[string]string{}
+	names, err := fs.Glob(files, "*.sql")
+	if err != nil {
+		t.Fatalf("list embedded migrations: %v", err)
+	}
+	for _, name := range names {
+		if name >= "0012_admin_console.sql" {
+			break
+		}
+		data, err := files.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", name, err)
+		}
+		if _, err := pool.Exec(ctx, string(data)); err != nil {
+			t.Fatalf("apply migration %s: %v", name, err)
+		}
+		sum := sha256.Sum256(data)
+		version := strings.TrimSuffix(name, ".sql")
+		checksum := hex.EncodeToString(sum[:])
+		if _, err := pool.Exec(ctx, `INSERT INTO public.schema_migrations(version,checksum) VALUES($1,$2)`, version, checksum); err != nil {
+			t.Fatalf("record migration %s: %v", name, err)
+		}
+		previousChecksums[version] = checksum
+	}
+	if len(previousChecksums) != 11 {
+		t.Fatalf("seeded %d migrations before 0012, want 11", len(previousChecksums))
+	}
+	const accountID = "a0000000-0000-4000-8000-000000000012"
+	if _, err := pool.Exec(ctx, `INSERT INTO accounts.accounts(id,name) VALUES($1,'Pre-admin-console account')`, accountID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason) VALUES($1,3,now()+interval '1 day','mock_test','legacy grant')`, accountID); err != nil {
+		t.Fatalf("seed preexisting entitlement: %v", err)
+	}
+	if err := Apply(ctx, pool); err != nil {
+		t.Fatalf("apply admin console migration: %v", err)
+	}
+	var accountVersion int64
+	var source, reason string
+	var limit int
+	if err := pool.QueryRow(ctx, `SELECT a.version,e.source,e.reason,e.monitor_limit FROM accounts.accounts a JOIN billing.entitlements e ON e.account_id=a.id WHERE a.id=$1`, accountID).Scan(&accountVersion, &source, &reason, &limit); err != nil {
+		t.Fatal(err)
+	}
+	if accountVersion != 1 || source != "mock_test" || reason != "legacy grant" || limit != 3 {
+		t.Fatalf("migration changed existing account/entitlement: version=%d source=%q reason=%q limit=%d", accountVersion, source, reason, limit)
+	}
+	for _, table := range []string{"auth.mfa_factors", "auth.mfa_enrollments", "auth.mfa_recovery_codes", "admin.audit_events"} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); err != nil || !exists {
+			t.Errorf("table %s missing after 0012: exists=%t err=%v", table, exists, err)
+		}
+	}
+	for version, checksum := range previousChecksums {
+		var after string
+		if err := pool.QueryRow(ctx, `SELECT checksum FROM public.schema_migrations WHERE version=$1`, version).Scan(&after); err != nil || after != checksum {
+			t.Errorf("prior migration %s checksum changed: before=%s after=%s err=%v", version, checksum, after, err)
+		}
+	}
+}
+
 func TestSchedulingMigrationPreservesExistingMonitorsAndDefaults(t *testing.T) {
 	pool := testDatabase(t)
 	ctx := context.Background()

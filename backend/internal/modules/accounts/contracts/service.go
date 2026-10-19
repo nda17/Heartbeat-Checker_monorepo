@@ -25,6 +25,7 @@ type Account struct {
 	Name      string    `json:"name"`
 	Role      string    `json:"role"`
 	Status    string    `json:"status"`
+	Version   int64     `json:"version"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 

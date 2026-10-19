@@ -79,6 +79,13 @@ func scanOrder(row pgx.Row) (contracts.Order, error) {
 
 func (s *Service) Overview(ctx context.Context, accountID string) (contracts.Billing, error) {
 	result := contracts.Billing{Provider: s.provider, CanSimulate: s.provider == "mock" && s.allowed[accountID], PricePerMonitorMinor: PricePerMonitorMinor, Orders: []contracts.Order{}}
+	if result.CanSimulate {
+		var activeGrant bool
+		if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM billing.entitlements WHERE account_id=$1 AND source='admin_grant' AND valid_until>now())`, accountID).Scan(&activeGrant); err != nil {
+			return result, err
+		}
+		result.CanSimulate = !activeGrant
+	}
 	rows, err := s.pool.Query(ctx, `SELECT `+orderColumns+` FROM billing.orders WHERE account_id=$1 ORDER BY created_at DESC,id DESC LIMIT 100`, accountID)
 	if err != nil {
 		return result, err
@@ -104,6 +111,11 @@ func (s *Service) beginMock(ctx context.Context, accountID string) (pgx.Tx, cont
 		return nil, contracts.Entitlement{}, err
 	}
 	entitlement, err := s.Lock(ctx, tx, accountID)
+	if err == nil {
+		if entitlement.Source == "admin_grant" && entitlement.Quota > 0 {
+			err = ErrForbidden
+		}
+	}
 	if err == nil {
 		var active bool
 		active, err = s.accounts.Active(ctx, tx, accountID)

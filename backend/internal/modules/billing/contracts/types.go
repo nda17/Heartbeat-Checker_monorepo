@@ -9,5 +9,6 @@ type Entitlement struct {
 	ActiveUntil      *time.Time `json:"activeUntil"`
 	Source           string     `json:"source"`
 	MonitorCount     int        `json:"monitorCount"`
+	Version          int64      `json:"version"`
 	RenewalAnchorDay int        `json:"-"`
 }

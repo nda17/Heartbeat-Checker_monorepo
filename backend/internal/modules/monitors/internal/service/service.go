@@ -174,6 +174,16 @@ func (s *Service) Get(ctx context.Context, owner, id string) (contracts.Monitor,
 		return contracts.Monitor{}, err
 	}
 	defer tx.Rollback(ctx)
+	result, err := s.GetTx(ctx, tx, owner, id, e)
+	if err != nil {
+		return result, err
+	}
+	return result, tx.Commit(ctx)
+}
+func (s *Service) GetTx(ctx context.Context, tx pgx.Tx, owner, id string, e billing.Entitlement) (contracts.Monitor, error) {
+	if !ValidID(id) {
+		return contracts.Monitor{}, ErrNotFound
+	}
 	m, err := s.repo.Get(ctx, tx, owner, id, false)
 	if err != nil {
 		return contracts.Monitor{}, translate(err)
@@ -182,18 +192,26 @@ func (s *Service) Get(ctx context.Context, owner, id string) (contracts.Monitor,
 	if err != nil {
 		return contracts.Monitor{}, err
 	}
-	return view(m, e, rank), tx.Commit(ctx)
+	return view(m, e, rank), nil
 }
 func (s *Service) Create(ctx context.Context, owner string, in contracts.MonitorInput) (contracts.Monitor, error) {
-	target, err := validate(&in)
-	if err != nil {
-		return contracts.Monitor{}, err
-	}
 	tx, e, err := s.begin(ctx, owner)
 	if err != nil {
 		return contracts.Monitor{}, err
 	}
 	defer tx.Rollback(ctx)
+	m, err := s.CreateTx(ctx, tx, owner, e, in)
+	if err != nil {
+		return m, err
+	}
+	return m, tx.Commit(ctx)
+}
+
+func (s *Service) CreateTx(ctx context.Context, tx pgx.Tx, owner string, e billing.Entitlement, in contracts.MonitorInput) (contracts.Monitor, error) {
+	target, err := validate(&in)
+	if err != nil {
+		return contracts.Monitor{}, err
+	}
 	if e.Quota == 0 {
 		return contracts.Monitor{}, ErrEntitlement
 	}
@@ -215,20 +233,28 @@ func (s *Service) Create(ctx context.Context, owner string, in contracts.Monitor
 	if err != nil {
 		return contracts.Monitor{}, err
 	}
-	return view(m, e, count+1), tx.Commit(ctx)
+	return view(m, e, count+1), nil
 }
 func (s *Service) Patch(ctx context.Context, owner, id string, p contracts.Patch) (contracts.Monitor, error) {
+	tx, e, err := s.begin(ctx, owner)
+	if err != nil {
+		return contracts.Monitor{}, err
+	}
+	defer tx.Rollback(ctx)
+	m, err := s.PatchTx(ctx, tx, owner, id, e, p)
+	if err != nil {
+		return m, err
+	}
+	return m, tx.Commit(ctx)
+}
+
+func (s *Service) PatchTx(ctx context.Context, tx pgx.Tx, owner, id string, e billing.Entitlement, p contracts.Patch) (contracts.Monitor, error) {
 	if !ValidID(id) {
 		return contracts.Monitor{}, ErrNotFound
 	}
 	if p.Version < 1 {
 		return contracts.Monitor{}, ErrInvalid
 	}
-	tx, e, err := s.begin(ctx, owner)
-	if err != nil {
-		return contracts.Monitor{}, err
-	}
-	defer tx.Rollback(ctx)
 	m, err := s.repo.Get(ctx, tx, owner, id, false)
 	if err != nil {
 		return contracts.Monitor{}, translate(err)
@@ -299,17 +325,25 @@ func (s *Service) Patch(ctx context.Context, owner, id string, p contracts.Patch
 	if err != nil {
 		return contracts.Monitor{}, err
 	}
-	return view(m, e, rank), tx.Commit(ctx)
+	return view(m, e, rank), nil
 }
 func (s *Service) Delete(ctx context.Context, owner, id string) error {
-	if !ValidID(id) {
-		return ErrNotFound
-	}
 	tx, _, err := s.begin(ctx, owner)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if err := s.DeleteTx(ctx, tx, owner, id); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Service) DeleteTx(ctx context.Context, tx pgx.Tx, owner, id string) error {
+	if !ValidID(id) {
+		return ErrNotFound
+	}
+	var err error
 	if _, err = s.repo.Get(ctx, tx, owner, id, false); err != nil {
 		return translate(err)
 	}
@@ -319,7 +353,7 @@ func (s *Service) Delete(ctx context.Context, owner, id string) error {
 	if err = s.repo.Delete(ctx, tx, owner, id); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 func (s *Service) Results(ctx context.Context, owner, id string, limit int, before time.Time) ([]contracts.Result, error) {
 	if _, err := s.Get(ctx, owner, id); err != nil {

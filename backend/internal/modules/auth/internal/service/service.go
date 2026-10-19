@@ -34,6 +34,8 @@ type Mailer interface {
 type Config struct {
 	Origin            string
 	MailEncryptionKey []byte
+	MFAEncryptionKey  []byte
+	MFAAudit          postgres.MFAAudit
 	SessionTTL        time.Duration
 	ChallengeTTL      time.Duration
 	ResetTTL          time.Duration
@@ -309,7 +311,8 @@ func (s *Service) Authenticate(ctx context.Context, rawToken string) (Principal,
 	if len(rawToken) != 43 {
 		return Principal{}, ErrUnauthorized
 	}
-	session, err := s.repo.SessionByToken(ctx, security.Digest(rawToken))
+	tokenHash := security.Digest(rawToken)
+	session, err := s.repo.SessionByToken(ctx, tokenHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Principal{}, ErrUnauthorized
 	}
@@ -329,7 +332,11 @@ func (s *Service) Authenticate(ctx context.Context, rawToken string) (Principal,
 	if err := s.repo.TouchSession(ctx, session.ID); err != nil {
 		return Principal{}, ErrUnavailable
 	}
-	return Principal{AccountID: session.AccountID, SessionID: session.ID, Email: session.Email, Role: a.Role}, nil
+	p := Principal{AccountID: session.AccountID, SessionID: session.ID, Email: session.Email, Role: a.Role, MFAEnabled: session.FactorVersion != nil, TokenHash: tokenHash}
+	if session.FactorVersion != nil && session.MFAVersion != nil && *session.FactorVersion == *session.MFAVersion {
+		p.MFAVerifiedUntil, p.MFAStepUpUntil = session.MFAVerifiedUntil, session.MFAStepUpUntil
+	}
+	return p, nil
 }
 
 func (s *Service) Profile(ctx context.Context, p Principal) (Profile, error) {

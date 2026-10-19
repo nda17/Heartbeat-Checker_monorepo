@@ -72,6 +72,11 @@ const messages: Record<string, string> = {
     "Настройки уже изменены. Обновите список и попробуйте снова.",
   link_not_ready:
     "Чат ещё не проверен ботом или срок привязки истёк. Повторите подключение.",
+  mfa_enrollment_required:
+    "Для работы с администрированием настройте приложение-аутентификатор.",
+  mfa_required: "Подтвердите вход одноразовым кодом или резервным кодом.",
+  mfa_step_up_required:
+    "Для изменения данных повторно подтвердите вход одноразовым кодом.",
   conflict: "Настройки уже изменены. Обновите список и попробуйте снова.",
   invalid_url:
     "Укажите публичный HTTP или HTTPS адрес. Внутренние и служебные адреса запрещены.",
@@ -82,8 +87,9 @@ export function errorMessage(error: unknown) {
         "Не удалось выполнить действие. Попробуйте ещё раз.")
     : "Не удалось выполнить действие. Попробуйте ещё раз.";
 }
-// Preserve only an incident deep link within the authenticated monitor page.
+// Preserve only reviewed authenticated destinations after login.
 export function safeAppReturnTo(value: string | null) {
+  if (value === "/app/admin") return value;
   if (!value?.startsWith("/app?")) return null;
   try {
     const url = new URL(value, "https://heartbeat-checker.invalid");

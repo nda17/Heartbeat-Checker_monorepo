@@ -38,15 +38,19 @@ type Challenge struct {
 	Attempts     int
 }
 type Session struct {
-	ID         string
-	AccountID  string
-	Email      string
-	IP         string
-	UserAgent  string
-	Version    int64
-	CreatedAt  time.Time
-	LastUsedAt time.Time
-	ExpiresAt  time.Time
+	ID               string
+	AccountID        string
+	Email            string
+	IP               string
+	UserAgent        string
+	Version          int64
+	CreatedAt        time.Time
+	LastUsedAt       time.Time
+	ExpiresAt        time.Time
+	MFAVersion       *int64
+	FactorVersion    *int64
+	MFAVerifiedUntil *time.Time
+	MFAStepUpUntil   *time.Time
 }
 
 func (r *Repository) Allow(ctx context.Context, scope, key string, max int, window time.Duration) (bool, error) {
@@ -205,9 +209,11 @@ func (r *Repository) LoginSession(ctx context.Context, c Credential, sessionID s
 
 func (r *Repository) SessionByToken(ctx context.Context, tokenHash []byte) (Session, error) {
 	var s Session
-	err := r.pool.QueryRow(ctx, `SELECT s.id,s.account_id,c.email,s.credential_version,s.created_at,s.last_used_at,s.expires_at
+	err := r.pool.QueryRow(ctx, `SELECT s.id,s.account_id,c.email,s.credential_version,s.created_at,s.last_used_at,s.expires_at,
+		s.mfa_version,f.version,s.mfa_verified_until,s.mfa_step_up_until
 		FROM auth.sessions s JOIN auth.credentials c ON c.account_id=s.account_id AND c.version=s.credential_version
-		WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now()`, tokenHash).Scan(&s.ID, &s.AccountID, &s.Email, &s.Version, &s.CreatedAt, &s.LastUsedAt, &s.ExpiresAt)
+		LEFT JOIN auth.mfa_factors f ON f.account_id=s.account_id
+		WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now()`, tokenHash).Scan(&s.ID, &s.AccountID, &s.Email, &s.Version, &s.CreatedAt, &s.LastUsedAt, &s.ExpiresAt, &s.MFAVersion, &s.FactorVersion, &s.MFAVerifiedUntil, &s.MFAStepUpUntil)
 	return s, err
 }
 

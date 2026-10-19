@@ -27,7 +27,9 @@ from botocore.config import Config
 
 
 PREFIX = "heartbeat-checker/production/daily/"
-RECOVERY_KEYS = ("WEBHOOK_ENCRYPTION_KEY", "AUTH_MAIL_ENCRYPTION_KEY", "SUPPORT_ENCRYPTION_KEY")
+LEGACY_RECOVERY_KEYS = ("WEBHOOK_ENCRYPTION_KEY", "AUTH_MAIL_ENCRYPTION_KEY", "SUPPORT_ENCRYPTION_KEY")
+MFA_RECOVERY_KEY = "AUTH_MFA_ENCRYPTION_KEY"
+RECOVERY_KEYS = (*LEGACY_RECOVERY_KEYS, MFA_RECOVERY_KEY)
 STATE_DIR = Path(os.environ.get("BACKUP_STATE_DIR", "/state"))
 UTC = timezone.utc
 
@@ -136,6 +138,8 @@ def recovery_keys():
     result = {}
     for key in RECOVERY_KEYS:
         value = os.environ.get(key, "")
+        if key == MFA_RECOVERY_KEY and not value:
+            continue  # Bundles before MFA activation contain only the original three keys.
         try:
             if len(base64.b64decode(value, validate=True)) != 32:
                 raise ValueError()
@@ -143,6 +147,21 @@ def recovery_keys():
             raise BackupError("invalid_recovery_key:" + key) from exc
         result[key] = value
     return result
+
+
+def encrypted_mfa_data(connection, env):
+    options = ["psql", *connection, "-At", "-v", "ON_ERROR_STOP=1", "-c"]
+    tables = command(options + ["SELECT to_regclass('auth.mfa_factors') IS NOT NULL, "
+                                "to_regclass('auth.mfa_enrollments') IS NOT NULL"], env=env).decode().strip()
+    if tables == "f|f":
+        return False
+    if tables != "t|t":
+        raise BackupError("incomplete_mfa_schema")
+    rows = command(options + ["SELECT EXISTS(SELECT 1 FROM auth.mfa_factors) OR "
+                              "EXISTS(SELECT 1 FROM auth.mfa_enrollments)"], env=env).decode().strip()
+    if rows not in ("t", "f"):
+        raise BackupError("invalid_mfa_data_check")
+    return rows == "t"
 
 
 def s3_client():
@@ -208,7 +227,12 @@ def restore_downloaded(ciphertext, identity, scratch, metadata, keys):
             raise BackupError("unexpected_recovery_bundle")
         if json.load(archive.extractfile("recovery.json")) != metadata:
             raise BackupError("recovery_metadata_mismatch")
-        if json.load(archive.extractfile("recovery-keys.json")) != keys:
+        restored_keys = json.load(archive.extractfile("recovery-keys.json"))
+        names = metadata.get("recovery_key_names")
+        if (names not in (list(LEGACY_RECOVERY_KEYS), list(RECOVERY_KEYS))
+                or not isinstance(restored_keys, dict)
+                or set(restored_keys) != set(names)
+                or any(restored_keys.get(key) != keys.get(key) for key in names)):
             raise BackupError("recovery_keys_mismatch")
         with dump.open("wb") as target:
             shutil.copyfileobj(archive.extractfile("database.dump"), target)
@@ -236,6 +260,8 @@ def restore_downloaded(ciphertext, identity, scratch, metadata, keys):
         migrations = json.loads(ledger)
         if not migrations:
             raise BackupError("restored_migration_ledger_empty")
+        if MFA_RECOVERY_KEY not in restored_keys and encrypted_mfa_data([*connection, "-d", "restorecheck"], local_env):
+            raise BackupError("missing_mfa_recovery_key")
         return migrations
     finally:
         if started:
@@ -264,6 +290,8 @@ def run_backup(state, path, client):
         with tempfile.TemporaryDirectory(prefix="heartbeat-backup-", dir="/tmp") as temporary:
             scratch = Path(temporary)
             keys = recovery_keys()
+            if MFA_RECOVERY_KEY not in keys and encrypted_mfa_data([], database_env(os.environ["DATABASE_URL"])):
+                raise BackupError("missing_mfa_recovery_key")
             dump = scratch / "database.dump"
             with dump.open("wb") as target:
                 command(["pg_dump", "--format=custom", "--no-owner", "--no-privileges"],
@@ -272,7 +300,7 @@ def run_backup(state, path, client):
                 raise BackupError("empty_dump")
             metadata = {"format_version": 1, "database": "heartbeat", "created_at": state["started_at"],
                         "source_sha": os.environ["BACKUP_SOURCE_SHA"], "dump_sha256": digest(dump),
-                        "recovery_key_names": list(RECOVERY_KEYS),
+                        "recovery_key_names": list(keys),
                         "postgres_version": command(["pg_dump", "--version"]).decode().strip()}
             state["phase"] = "encrypt"
             save(path, state)

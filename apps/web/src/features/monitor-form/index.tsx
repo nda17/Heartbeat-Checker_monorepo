@@ -8,10 +8,14 @@ export function MonitorForm({
   monitor,
   onClose,
   onSaved,
+  basePath = "/monitors",
+  requireReason = false,
 }: {
   monitor?: Monitor;
   onClose: () => void;
   onSaved: () => Promise<void>;
+  basePath?: string;
+  requireReason?: boolean;
 }) {
   const [method, setMethod] = useState(monitor?.method ?? "GET");
   const [busy, setBusy] = useState(false);
@@ -30,6 +34,9 @@ export function MonitorForm({
       bodyContains:
         method === "HEAD" ? "" : String(data.get("bodyContains") ?? ""),
       enabled: data.get("enabled") === "on",
+      ...(requireReason
+        ? { reason: String(data.get("reason") ?? "").trim() }
+        : {}),
       ...(monitor ? { version: monitor.version } : {}),
     };
     if (new TextEncoder().encode(body.bodyContains).length > 1000) {
@@ -56,7 +63,7 @@ export function MonitorForm({
     setBusy(true);
     try {
       await api(
-        `/monitors${monitor ? `/${encodeURIComponent(monitor.id)}` : ""}`,
+        `${basePath}${monitor ? `/${encodeURIComponent(monitor.id)}` : ""}`,
         { method: monitor ? "PATCH" : "POST", body, authenticated: true },
       );
       await onSaved();
@@ -201,6 +208,18 @@ export function MonitorForm({
             </span>
           </span>
         </label>
+        {requireReason && (
+          <label>
+            Причина изменения
+            <textarea
+              name="reason"
+              required
+              minLength={1}
+              maxLength={500}
+              rows={3}
+            />
+          </label>
+        )}
         <div className="dialog-actions">
           <button
             type="button"

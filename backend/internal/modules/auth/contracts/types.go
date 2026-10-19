@@ -1,9 +1,15 @@
 package contracts
 
+import "time"
+
 // Principal is the authenticated identity passed between modules.
 type Principal struct {
-	AccountID string `json:"accountId"`
-	SessionID string `json:"sessionId"`
-	Email     string `json:"email"`
-	Role      string `json:"role"`
+	AccountID        string     `json:"accountId"`
+	SessionID        string     `json:"sessionId"`
+	Email            string     `json:"email"`
+	Role             string     `json:"role"`
+	MFAEnabled       bool       `json:"-"`
+	MFAVerifiedUntil *time.Time `json:"-"`
+	MFAStepUpUntil   *time.Time `json:"-"`
+	TokenHash        []byte     `json:"-"`
 }
