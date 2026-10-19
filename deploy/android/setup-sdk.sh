@@ -11,6 +11,7 @@ set -euo pipefail
 tools_version=20.0
 tools_build=14742923
 tools_sha1=48833c34b761c10cb20bcd16582129395d121b27
+tools_sha256=04453066b540409d975c676d781da1477479dde3761310f1a7eb92a1dfb15af7
 sdk_root="$RUNNER_TEMP/heartbeat-android-sdk"
 download_dir=$(mktemp -d)
 trap 'rm -rf "$download_dir"' EXIT
@@ -20,6 +21,7 @@ curl --fail --silent --show-error --location --proto '=https' --proto-redir '=ht
   --output "$download_dir/tools.zip" \
   "https://dl.google.com/android/repository/commandlinetools-linux-${tools_build}_latest.zip"
 printf '%s  %s\n' "$tools_sha1" "$download_dir/tools.zip" | sha1sum --check --status
+printf '%s  %s\n' "$tools_sha256" "$download_dir/tools.zip" | sha256sum --check --status
 unzip -q "$download_dir/tools.zip" -d "$download_dir/extracted"
 mkdir -p "$sdk_root/cmdline-tools"
 [[ ! -e "$sdk_root/cmdline-tools/$tools_version" ]]
