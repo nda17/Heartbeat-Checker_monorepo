@@ -75,12 +75,19 @@ const config: NextConfig = {
           { key: "Referrer-Policy", value: "no-referrer" },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "X-Frame-Options", value: "DENY" },
+          { key: "X-Robots-Tag", value: "noindex, nofollow" },
           {
             key: "Permissions-Policy",
             value: "camera=(), microphone=(), geolocation=()",
           },
         ],
       },
+      ...["/", "/android", "/contacts", "/terms", "/privacy", "/cookies"].map(
+        (source) => ({
+          source,
+          headers: [{ key: "X-Robots-Tag", value: "index, follow" }],
+        }),
+      ),
     ];
   },
 };

@@ -1,16 +1,17 @@
-import type { Metadata } from "next";
 import Link from "next/link";
 import { Brand, PublicFooter } from "@/shared/ui";
 import { ThemeToggle } from "@/features/theme-toggle";
+import { publicPageMetadata, PublicPageStructuredData } from "@/shared/seo";
 import { androidRelease } from "@/shared/android";
-export const metadata: Metadata = {
-  title: "Приложение для Android",
-  description: "Скачать подписанное приложение Heartbeat Checker для Android.",
-};
+export const metadata = publicPageMetadata("/android");
 export default function AndroidPage() {
   const release = androidRelease();
   return (
     <div className="landing legal-page">
+      <PublicPageStructuredData
+        path="/android"
+        android={release ?? undefined}
+      />
       <header className="landing-header">
         <Brand />
         <nav aria-label="Главная навигация">

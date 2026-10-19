@@ -17,6 +17,11 @@
 heartbeat-checker.ru {
     @oauth_callbacks path /api/v1/auth/oauth/yandex/callback /api/v1/auth/oauth/vk/callback
     log_skip @oauth_callbacks
+    @api path /api/v1/*
+    header @api {
+        X-Robots-Tag "noindex, nofollow"
+        defer
+    }
     encode zstd gzip
     handle @oauth_callbacks {
         reverse_proxy https://api.heartbeat-checker.ru {

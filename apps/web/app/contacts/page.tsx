@@ -1,8 +1,12 @@
-import type { Metadata } from "next";
+import { ContactsPage } from "@/_pages/legal";
+import { publicPageMetadata, PublicPageStructuredData } from "@/shared/seo";
 
-export const metadata: Metadata = {
-  title: "Контакты и реквизиты",
-  description: "Контакты и сведения об исполнителе Heartbeat Checker.",
-};
-
-export { ContactsPage as default } from "@/_pages/legal";
+export const metadata = publicPageMetadata("/contacts");
+export default function Page() {
+  return (
+    <>
+      <PublicPageStructuredData path="/contacts" />
+      <ContactsPage />
+    </>
+  );
+}

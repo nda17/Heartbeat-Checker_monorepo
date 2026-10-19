@@ -1,8 +1,12 @@
-import type { Metadata } from "next";
+import { CookiesPage } from "@/_pages/legal";
+import { publicPageMetadata, PublicPageStructuredData } from "@/shared/seo";
 
-export const metadata: Metadata = {
-  title: "Cookie и локальное хранилище",
-  description: "Какие данные сохраняются в браузере при посещении сайта.",
-};
-
-export { CookiesPage as default } from "@/_pages/legal";
+export const metadata = publicPageMetadata("/cookies");
+export default function Page() {
+  return (
+    <>
+      <PublicPageStructuredData path="/cookies" />
+      <CookiesPage />
+    </>
+  );
+}
