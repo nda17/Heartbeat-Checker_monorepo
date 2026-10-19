@@ -961,6 +961,118 @@ test("deleting an admin monitor keeps the operator in the admin page", async (t)
   assert.ok(harness.host.textContent.includes("Монитор удалён."));
 });
 
+test("deleted account rows are terminal and cannot open account details", async (t) => {
+  const account = {
+    id: "deleted-1",
+    name: "Deleted account",
+    email: "deleted+deleted-1@invalid.local",
+    role: "user",
+    status: "deleted",
+    version: 2,
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+  const fixture = adminPageHarness({ account });
+  const { calls, harness } = fixture;
+  t.after(() => harness.unmount());
+
+  await fixture.render();
+  const row = [
+    ...harness.host.querySelectorAll(".admin-account-list button"),
+  ].find((button) => button.textContent.includes(account.name));
+  assert.ok(row, "deleted account remains visible in the search results");
+  assert.match(row.textContent, /Удалён/);
+  assert.equal(row.disabled, true);
+  await act(async () => row.click());
+
+  assert.equal(
+    calls.some((call) => call.path === `/admin/accounts/${account.id}`),
+    false,
+    "a deleted account must not issue a detail request",
+  );
+  assert.equal(harness.host.querySelector(".admin-detail-nav"), null);
+  assert.equal(harness.host.querySelector(".admin-monitor-actions"), null);
+});
+
+test("list refresh makes a selected deleted account terminal and closes its form", async (t) => {
+  const account = {
+    id: "target-deleted-on-refresh",
+    name: "Target account",
+    email: "target@example.test",
+    role: "user",
+    status: "active",
+    version: 1,
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+  const monitor = {
+    id: "monitor-1",
+    name: "Status check",
+    url: "https://status.example/health",
+    state: "UP",
+    version: 1,
+    method: "GET",
+    expectedStatus: 200,
+    intervalMinutes: 5,
+    failureThreshold: 2,
+    bodyContains: "",
+    enabled: true,
+  };
+  let accountListReads = 0;
+  const fixture = adminPageHarness({
+    account,
+    monitors: [monitor],
+    apiHandler: async (path) => {
+      if (path.startsWith("/admin/accounts?")) {
+        accountListReads += 1;
+        return {
+          items: [
+            {
+              ...account,
+              status: accountListReads > 1 ? "deleted" : "active",
+            },
+          ],
+          nextCursor: null,
+        };
+      }
+      return undefined;
+    },
+  });
+  const { calls, harness } = fixture;
+  t.after(() => harness.unmount());
+
+  await fixture.render();
+  await selectAdminAccount(harness, account.name);
+  const monitorsTab = [
+    ...harness.host.querySelectorAll(".admin-detail-nav button"),
+  ].find((button) => button.textContent === "Мониторы");
+  assert.ok(monitorsTab);
+  await act(async () => monitorsTab.click());
+  const addButton = [...harness.host.querySelectorAll("button")].find(
+    (button) => button.textContent.trim() === "Добавить",
+  );
+  assert.ok(addButton);
+  await act(async () => addButton.click());
+  assert.ok(harness.host.querySelector('[role="dialog"] form'));
+
+  const searchForm = harness.host.querySelector(".admin-search");
+  assert.ok(searchForm);
+  await submit(searchForm);
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  assert.ok(harness.host.textContent.includes("Аккаунт удалён."));
+  assert.equal(harness.host.querySelector('[role="dialog"]'), null);
+  assert.equal(harness.host.querySelector(".admin-detail-nav"), null);
+  assert.equal(harness.host.querySelector(".admin-detail-panel"), null);
+  assert.equal(
+    calls.filter((call) => call.path === `/admin/accounts/${account.id}`)
+      .length,
+    1,
+    "the refresh must clear the current detail without fetching it again",
+  );
+});
+
 test("step-up expiry keeps the admin monitor dialog closable and restores MFA access", async (t) => {
   const clock = { now: Date.now() };
   class ControlledDate extends Date {

@@ -20,7 +20,7 @@ func (r *Repository) LockAdminAccount(ctx context.Context, tx pgx.Tx, id string)
 }
 
 func (r *Repository) AdminUpdate(ctx context.Context, tx pgx.Tx, current contracts.Account, expected int64, name, role, status *string) (contracts.Account, bool, error) {
-	if current.Version != expected {
+	if current.Version != expected || current.Status == "deleted" {
 		return current, false, ErrAdminConflict
 	}
 	updated := current
@@ -54,7 +54,7 @@ func (r *Repository) AdminUpdate(ctx context.Context, tx pgx.Tx, current contrac
 		}
 	}
 	err := tx.QueryRow(ctx, `UPDATE accounts.accounts SET name=$2,role=$3,status=$4,version=version+1,updated_at=now()
-		WHERE id=$1 AND version=$5 RETURNING id,name,role,status,version,created_at`, current.ID, updated.Name, updated.Role, updated.Status, expected).
+		WHERE id=$1 AND version=$5 AND status<>'deleted' RETURNING id,name,role,status,version,created_at`, current.ID, updated.Name, updated.Role, updated.Status, expected).
 		Scan(&updated.ID, &updated.Name, &updated.Role, &updated.Status, &updated.Version, &updated.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return current, false, ErrAdminConflict

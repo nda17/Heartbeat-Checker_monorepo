@@ -70,3 +70,9 @@ func (m *Module) AdminUpdate(ctx context.Context, tx pgx.Tx, current contracts.A
 func (m *Module) GetForAuthTx(ctx context.Context, tx pgx.Tx, id string) (contracts.Account, error) {
 	return m.repo.GetForAuthTx(ctx, tx, id)
 }
+
+// TombstoneTx retains the UUID as a financial reference while removing profile data.
+// The caller already holds the account row lock and has checked its active status.
+func (m *Module) TombstoneTx(ctx context.Context, tx pgx.Tx, id string) error {
+	return m.repo.TombstoneTx(ctx, tx, id)
+}

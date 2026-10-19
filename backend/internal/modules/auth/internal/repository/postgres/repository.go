@@ -180,13 +180,24 @@ func (r *Repository) CredentialByAccount(ctx context.Context, accountID string) 
 	return c, err
 }
 
-// LoginSession serializes session creation with password reset/change on credentials.
+// LoginSession takes the account lock before credentials, as deletion does.
 func (r *Repository) LoginSession(ctx context.Context, c Credential, sessionID string, tokenHash []byte, expires time.Time, ip, agent string) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	var status string
+	err = tx.QueryRow(ctx, `SELECT status FROM accounts.accounts WHERE id=$1 FOR SHARE`, c.AccountID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrConflict
+	}
+	if err != nil {
+		return err
+	}
+	if status != "active" {
+		return ErrConflict
+	}
 	var hash string
 	var version int64
 	err = tx.QueryRow(ctx, `SELECT COALESCE(password_hash,''),version FROM auth.credentials WHERE account_id=$1 FOR UPDATE`, c.AccountID).Scan(&hash, &version)
@@ -266,7 +277,41 @@ func (r *Repository) RevokeAllSessions(ctx context.Context, accountID string) er
 }
 
 func (r *Repository) InsertReset(ctx context.Context, accountID string, version int64, tokenHash []byte, expires time.Time) error {
-	_, err := r.pool.Exec(ctx, `INSERT INTO auth.password_reset_tokens (token_hash,account_id,credential_version,expires_at)
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err = insertResetTx(ctx, tx, accountID, version, tokenHash, expires); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func insertResetTx(ctx context.Context, tx pgx.Tx, accountID string, version int64, tokenHash []byte, expires time.Time) error {
+	var status string
+	err := tx.QueryRow(ctx, `SELECT status FROM accounts.accounts WHERE id=$1 FOR SHARE`, accountID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrConflict
+	}
+	if err != nil {
+		return err
+	}
+	if status != "active" {
+		return ErrConflict
+	}
+	var currentVersion int64
+	err = tx.QueryRow(ctx, `SELECT version FROM auth.credentials WHERE account_id=$1 FOR SHARE`, accountID).Scan(&currentVersion)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrConflict
+	}
+	if err != nil {
+		return err
+	}
+	if currentVersion != version {
+		return ErrConflict
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO auth.password_reset_tokens (token_hash,account_id,credential_version,expires_at)
 		VALUES ($1,$2,$3,$4)`, tokenHash, accountID, version, expires)
 	return err
 }

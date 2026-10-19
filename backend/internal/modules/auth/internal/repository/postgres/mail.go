@@ -39,8 +39,7 @@ func (r *Repository) InsertResetWithMail(ctx context.Context, accountID string, 
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `INSERT INTO auth.password_reset_tokens (token_hash,account_id,credential_version,expires_at)
-		VALUES ($1,$2,$3,$4)`, tokenHash, accountID, version, expires); err != nil {
+	if err = insertResetTx(ctx, tx, accountID, version, tokenHash, expires); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO auth.mail_jobs(id,purpose,token_hash,payload,expires_at) VALUES ($1,'reset',$2,$3,$4)`, jobID, tokenHash, payload, expires); err != nil {
@@ -70,7 +69,9 @@ func (r *Repository) ClaimMail(ctx context.Context) (*MailJob, error) {
 		WHERE expires_at>now() AND next_attempt_at<=now() AND attempts<8
 		AND (status='pending' OR (status='sending' AND lease_until<now()))
 		AND ((purpose='registration' AND EXISTS (SELECT 1 FROM auth.registration_challenges c WHERE c.token_hash=auth.mail_jobs.token_hash AND c.consumed_at IS NULL AND c.expires_at>now()))
-		OR (purpose='reset' AND EXISTS (SELECT 1 FROM auth.password_reset_tokens t JOIN auth.credentials c ON c.account_id=t.account_id WHERE t.token_hash=auth.mail_jobs.token_hash AND t.consumed_at IS NULL AND t.expires_at>now() AND t.credential_version=c.version)))
+		OR (purpose='reset' AND EXISTS (SELECT 1 FROM auth.password_reset_tokens t JOIN auth.credentials c ON c.account_id=t.account_id
+			JOIN accounts.accounts a ON a.id=t.account_id AND a.status='active'
+			WHERE t.token_hash=auth.mail_jobs.token_hash AND t.consumed_at IS NULL AND t.expires_at>now() AND t.credential_version=c.version)))
 		ORDER BY next_attempt_at,created_at FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&job.ID, &job.Purpose, &job.Payload, &job.ExpiresAt, &job.Attempts)
 	if err == pgx.ErrNoRows {
 		if err = tx.Commit(ctx); err != nil {

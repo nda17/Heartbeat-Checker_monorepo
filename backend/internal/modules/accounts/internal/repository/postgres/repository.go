@@ -85,3 +85,15 @@ func (r *Repository) GetForAuthTx(ctx context.Context, tx pgx.Tx, id string) (co
 	err := tx.QueryRow(ctx, `SELECT id,name,role,status,version,created_at FROM accounts.accounts WHERE id=$1 FOR SHARE`, id).Scan(&a.ID, &a.Name, &a.Role, &a.Status, &a.Version, &a.CreatedAt)
 	return a, err
 }
+
+func (r *Repository) TombstoneTx(ctx context.Context, tx pgx.Tx, id string) error {
+	command, err := tx.Exec(ctx, `UPDATE accounts.accounts SET name='Deleted account',role='user',status='deleted',
+		deleted_at=now(),version=version+1,updated_at=now() WHERE id=$1 AND status='active'`, id)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() != 1 {
+		return ErrAdminConflict
+	}
+	return nil
+}

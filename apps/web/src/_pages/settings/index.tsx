@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Session, useSession } from "@/entities/session";
 import { MessengerLinks } from "@/features/messenger-links";
 import { OAuthIdentities } from "@/features/oauth-identities";
+import { AccountDeletion } from "@/features/account-deletion";
 import { api, errorMessage } from "@/shared/api";
 import { dateTime, Loading, Notice, PasswordInput } from "@/shared/ui";
 export function SettingsPage() {
@@ -255,6 +256,7 @@ export function SettingsPage() {
         )}
       </section>
       <MessengerLinks />
+      <AccountDeletion />
     </>
   );
 }

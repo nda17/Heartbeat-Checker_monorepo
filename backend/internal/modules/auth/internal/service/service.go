@@ -23,6 +23,7 @@ var ErrRateLimited = errors.New("rate limited")
 var ErrChallenge = errors.New("challenge failed")
 var ErrUnavailable = errors.New("temporarily unavailable")
 var ErrBusy = errors.New("password verification busy")
+var ErrAdminTransferRequired = errors.New("administrator must transfer role before deletion")
 
 type Captcha interface {
 	Verify(context.Context, string, string, string) error
@@ -42,6 +43,7 @@ type Config struct {
 	ChallengeTTL      time.Duration
 	ResetTTL          time.Duration
 	RateLimitWindow   time.Duration
+	AccountDeletion   postgres.AccountDeletion
 }
 type Client struct {
 	IP        string
@@ -447,12 +449,20 @@ func (s *Service) ResetRequest(ctx context.Context, email, captchaToken string, 
 			return ErrUnavailable
 		}
 		payload, err := encryptMail(s.cfg.MailEncryptionKey, jobID, "reset", mailPayload{Recipient: email, Subject: subject, Body: content.Text, HTML: content.HTML})
-		if err != nil || s.repo.InsertResetWithMail(ctx, c.AccountID, c.Version, security.Digest(token), time.Now().Add(s.cfg.ResetTTL), payload, jobID) != nil {
+		if err != nil {
+			return ErrUnavailable
+		}
+		if err = s.repo.InsertResetWithMail(ctx, c.AccountID, c.Version, security.Digest(token), time.Now().Add(s.cfg.ResetTTL), payload, jobID); errors.Is(err, postgres.ErrConflict) {
+			return nil
+		} else if err != nil {
 			return ErrUnavailable
 		}
 		return nil
 	}
 	if err = s.repo.InsertReset(ctx, c.AccountID, c.Version, security.Digest(token), time.Now().Add(s.cfg.ResetTTL)); err != nil {
+		if errors.Is(err, postgres.ErrConflict) {
+			return nil
+		}
 		return ErrUnavailable
 	}
 	if err = s.mailer.Send(ctx, email, subject, content); err != nil {
@@ -523,6 +533,54 @@ func (s *Service) ChangePassword(ctx context.Context, p Principal, current, newP
 	err = s.repo.ChangePassword(ctx, c, newHash)
 	if errors.Is(err, postgres.ErrConflict) {
 		return ErrCredentials
+	}
+	if err != nil {
+		return ErrUnavailable
+	}
+	return nil
+}
+
+// DeleteMe requires a fresh password and rechecks the exact session in the
+// deletion transaction. A stale browser account ID cannot delete a new login.
+func (s *Service) DeleteMe(ctx context.Context, p Principal, expectedAccountID, currentPassword string, client Client) error {
+	if !security.ValidID(expectedAccountID) || len(currentPassword) == 0 || len(currentPassword) > 1024 {
+		return ErrInvalid
+	}
+	if expectedAccountID != p.AccountID {
+		return ErrConflict
+	}
+	if p.Role == "admin" {
+		return ErrAdminTransferRequired
+	}
+	if err := s.allow(ctx, "account_delete", p.AccountID, client.IP, 20, 5, 15*time.Minute); err != nil {
+		return err
+	}
+	c, err := s.repo.CredentialByAccount(ctx, p.AccountID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrConflict
+	}
+	if err != nil {
+		return ErrUnavailable
+	}
+	if c.PasswordHash == "" {
+		return ErrPasswordSetupRequired
+	}
+	matched, err := s.checkPassword(c.PasswordHash, currentPassword)
+	if err != nil {
+		return err
+	}
+	if !matched {
+		return ErrCredentials
+	}
+	if s.cfg.AccountDeletion == nil {
+		return ErrUnavailable
+	}
+	err = s.repo.DeleteAccount(ctx, c, p.SessionID, p.TokenHash, s.cfg.AccountDeletion)
+	if errors.Is(err, postgres.ErrAdminTransferRequired) {
+		return ErrAdminTransferRequired
+	}
+	if errors.Is(err, postgres.ErrConflict) {
+		return ErrConflict
 	}
 	if err != nil {
 		return ErrUnavailable

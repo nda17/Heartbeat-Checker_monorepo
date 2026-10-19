@@ -56,6 +56,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/mfa/recovery-codes", s.mfaRecoveryCodes)
 	mux.HandleFunc("GET /api/v1/me", s.me)
 	mux.HandleFunc("PATCH /api/v1/me", s.editMe)
+	mux.HandleFunc("DELETE /api/v1/me", s.deleteMe)
 	mux.HandleFunc("GET /api/v1/me/sessions", s.sessions)
 	mux.HandleFunc("DELETE /api/v1/me/sessions/{id}", s.revokeSession)
 	mux.HandleFunc("DELETE /api/v1/me/sessions", s.revokeAllSessions)
@@ -94,6 +95,8 @@ func failService(w http.ResponseWriter, err error) {
 		fail(w, 503, "oauth_provider_unavailable")
 	case errors.Is(err, service.ErrPasswordSetupRequired):
 		fail(w, 409, "password_setup_required")
+	case errors.Is(err, service.ErrAdminTransferRequired):
+		fail(w, 403, "admin_transfer_required")
 	case errors.Is(err, service.ErrInvalid):
 		fail(w, 400, "invalid_request")
 	case errors.Is(err, service.ErrCredentials):
@@ -325,6 +328,26 @@ func (s *Server) editMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, profile)
+}
+
+func (s *Server) deleteMe(w http.ResponseWriter, r *http.Request) {
+	p, _, ok := s.require(w, r, true)
+	if !ok {
+		return
+	}
+	var in struct {
+		CurrentPassword   string `json:"currentPassword"`
+		ExpectedAccountID string `json:"expectedAccountId"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if err := s.service.DeleteMe(r.Context(), p, in.ExpectedAccountID, in.CurrentPassword, client(r)); err != nil {
+		failService(w, err)
+		return
+	}
+	s.clearCookie(w)
+	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 	p, _, ok := s.require(w, r, false)

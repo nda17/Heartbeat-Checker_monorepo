@@ -221,6 +221,9 @@ func (m *Module) beginMutation(ctx context.Context, p authcontracts.Principal, t
 	if actor.Role != "admin" || actor.Status != "active" {
 		return nil, ErrForbidden
 	}
+	if locked[targetID].Status == "deleted" {
+		return nil, ErrNotFound
+	}
 	if err := m.auth.VerifyAdminTx(ctx, tx, p, true); err != nil {
 		if errors.Is(err, auth.ErrAdminVerificationDenied) {
 			return nil, ErrForbidden

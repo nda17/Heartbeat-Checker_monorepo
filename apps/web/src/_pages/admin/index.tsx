@@ -14,7 +14,7 @@ type AdminAccount = {
   name: string;
   email: string;
   role: "user" | "admin";
-  status: "active" | "blocked";
+  status: "active" | "blocked" | "deleted";
   version: number;
   createdAt: string;
 };
@@ -144,6 +144,25 @@ export function AdminPage() {
           append ? [...(current ?? []), ...result.items] : result.items,
         );
         setNextCursor(result.nextCursor);
+        if (
+          result.items.some(
+            (account) =>
+              account.id === selectedId.current && account.status === "deleted",
+          )
+        ) {
+          selectedId.current = null;
+          ++detailRequest.current;
+          ++auditRequest.current;
+          setDetail(null);
+          setMonitors(null);
+          setAudit(null);
+          setMonitorForm(null);
+          setSuccess("");
+          setRefreshError("");
+          setError(
+            "Аккаунт удалён. Его данные недоступны для управления и восстановления.",
+          );
+        }
       } catch (cause) {
         if (request === accountRequest.current) throw cause;
       }
@@ -246,7 +265,14 @@ export function AdminPage() {
     setAccounts(null);
   }
   async function select(id: string) {
-    if (mutationBusy.current || accessTransition.current) return;
+    if (
+      mutationBusy.current ||
+      accessTransition.current ||
+      accounts?.some(
+        (account) => account.id === id && account.status === "deleted",
+      )
+    )
+      return;
     selectedId.current = id;
     ++detailRequest.current;
     ++auditRequest.current;
@@ -497,7 +523,9 @@ export function AdminPage() {
                       className={
                         detail?.account.id === account.id ? "selected" : ""
                       }
-                      disabled={!!busy || mfaBusy}
+                      disabled={
+                        !!busy || mfaBusy || account.status === "deleted"
+                      }
                       onClick={() => void select(account.id)}
                     >
                       <strong>{account.name}</strong>
@@ -509,7 +537,9 @@ export function AdminPage() {
                         ·{" "}
                         {account.status === "active"
                           ? "Активен"
-                          : "Заблокирован"}
+                          : account.status === "deleted"
+                            ? "Удалён"
+                            : "Заблокирован"}
                       </small>
                     </button>
                   </li>
