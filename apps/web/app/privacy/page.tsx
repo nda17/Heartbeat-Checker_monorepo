@@ -1,9 +1,12 @@
-import type { Metadata } from "next";
+import { PrivacyPage } from "@/_pages/legal";
+import { publicPageMetadata, PublicPageStructuredData } from "@/shared/seo";
 
-export const metadata: Metadata = {
-  title: "Политика обработки персональных данных",
-  description:
-    "Как обрабатываются сведения посетителей сайта и обращения в поддержку.",
-};
-
-export { PrivacyPage as default } from "@/_pages/legal";
+export const metadata = publicPageMetadata("/privacy");
+export default function Page() {
+  return (
+    <>
+      <PublicPageStructuredData path="/privacy" />
+      <PrivacyPage />
+    </>
+  );
+}

@@ -177,6 +177,27 @@ jobs:
           WEB_PUBLIC_ORIGIN: http://127.0.0.1:3000
           GO_API_ORIGIN: http://127.0.0.1:8080
         run: npm run build
+      - name: Smoke rendered SEO metadata and crawl boundaries
+        env:
+          WEB_MODE: app
+          WEB_PUBLIC_ORIGIN: http://127.0.0.1:3000
+          GO_API_ORIGIN: http://127.0.0.1:8080
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: 1x00000000000000000000AA
+          PORT: '3139'
+        run: |
+          set -euo pipefail
+          node scripts/start.mjs > "$RUNNER_TEMP/seo-server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          deadline=$((SECONDS + 45))
+          until curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:3139/; do
+            if (( SECONDS >= deadline )); then
+              cat "$RUNNER_TEMP/seo-server.log"
+              exit 1
+            fi
+            sleep 1
+          done
+          python3 scripts/seo-smoke.py --base-url http://127.0.0.1:3139
       - name: Build public landing without backend
         env:
           WEB_MODE: landing

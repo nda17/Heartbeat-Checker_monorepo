@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import "@/_app/styles";
+import { publicOrigin } from "@/shared/seo";
 import { CookieNotice } from "@/features/cookie-notice";
 export const metadata: Metadata = {
+  metadataBase: new URL(publicOrigin),
   title: {
     default: "Heartbeat Checker — мониторинг сайтов",
     template: "%s · Heartbeat Checker",
