@@ -144,7 +144,6 @@ export function MonitorForm({
             Один адрес, один HTTP-запрос. Укажите условия успешной проверки.
           </p>
           <form className="form-stack" onSubmit={submit}>
-            {error && <Notice>{error}</Notice>}
             <label>
               Название
               <input
@@ -280,6 +279,7 @@ export function MonitorForm({
                 />
               </label>
             )}
+            {error && <Notice>{error}</Notice>}
             <div className="dialog-actions">
               <button
                 type="button"

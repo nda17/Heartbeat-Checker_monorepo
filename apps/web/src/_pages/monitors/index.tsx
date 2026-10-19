@@ -428,7 +428,7 @@ export function MonitorsPage() {
           </div>
         ) : (
           <div className="table-scroll">
-            <table className="monitor-table">
+            <table className="monitor-table mobile-card-table" role="table">
               <thead>
                 <tr>
                   <th>Монитор / адрес</th>
@@ -443,7 +443,7 @@ export function MonitorsPage() {
               <tbody>
                 {visible.map((m) => (
                   <tr key={m.id}>
-                    <td>
+                    <td data-label="Монитор / адрес">
                       <button
                         className="monitor-name"
                         disabled={!!busy}
@@ -460,10 +460,10 @@ export function MonitorsPage() {
                         {m.failureThreshold}
                       </span>
                     </td>
-                    <td>
+                    <td data-label="Состояние">
                       <Status state={m.state} />
                     </td>
-                    <td>
+                    <td data-label="HTTP / время проверки">
                       <span className="mono">{m.lastHttpStatus ?? "—"}</span>
                       <span className="cell-sub">
                         {m.lastLatencyMs === null
@@ -471,7 +471,7 @@ export function MonitorsPage() {
                           : `${m.lastLatencyMs} мс`}
                       </span>
                     </td>
-                    <td>
+                    <td data-label="Последняя проверка">
                       {dateTime(m.lastCheckedAt)}
                       <span className="cell-sub">
                         {m.nextCheckAt
@@ -481,7 +481,7 @@ export function MonitorsPage() {
                             : "Проверки приостановлены"}
                       </span>
                     </td>
-                    <td>
+                    <td data-label="Действия">
                       <div className="row-actions">
                         <button
                           className="icon-button"
@@ -651,7 +651,7 @@ export function MonitorsPage() {
           </h3>
           {detail.incidents.length ? (
             <div className="table-scroll">
-              <table className="data-table">
+              <table className="data-table mobile-card-table" role="table">
                 <thead>
                   <tr>
                     <th>Номер</th>
@@ -676,15 +676,17 @@ export function MonitorsPage() {
                           : undefined
                       }
                     >
-                      <td>
+                      <td data-label="Номер">
                         <span className="incident-number">№{i.number}</span>
                         {i.id === detail.targetIncidentId && (
                           <span className="cell-sub">Из уведомления</span>
                         )}
                       </td>
-                      <td>{dateTime(i.openedAt)}</td>
-                      <td>{dateTime(i.confirmedAt)}</td>
-                      <td>
+                      <td data-label="Начало">{dateTime(i.openedAt)}</td>
+                      <td data-label="Подтверждён">
+                        {dateTime(i.confirmedAt)}
+                      </td>
+                      <td data-label="Завершение">
                         {i.closedAt ? (
                           <>
                             {dateTime(i.closedAt)}
@@ -710,7 +712,7 @@ export function MonitorsPage() {
           {detail.results.length ? (
             <>
               <div className="table-scroll">
-                <table className="data-table">
+                <table className="data-table mobile-card-table" role="table">
                   <thead>
                     <tr>
                       <th>Время</th>
@@ -722,8 +724,8 @@ export function MonitorsPage() {
                   <tbody>
                     {detail.results.map((r) => (
                       <tr key={r.id}>
-                        <td>{dateTime(r.checkedAt)}</td>
-                        <td>
+                        <td data-label="Время">{dateTime(r.checkedAt)}</td>
+                        <td data-label="Результат">
                           <span
                             className={`badge ${r.outcome === "UP" || r.outcome === "SUCCESS" ? "up" : r.outcome === "UNKNOWN" ? "unknown" : "down"}`}
                           >
@@ -739,8 +741,12 @@ export function MonitorsPage() {
                             </span>
                           )}
                         </td>
-                        <td className="mono">{r.httpStatus ?? "—"}</td>
-                        <td className="mono">{r.latencyMs} мс</td>
+                        <td className="mono" data-label="HTTP">
+                          {r.httpStatus ?? "—"}
+                        </td>
+                        <td className="mono" data-label="Время HTTP-проверки">
+                          {r.latencyMs} мс
+                        </td>
                       </tr>
                     ))}
                   </tbody>

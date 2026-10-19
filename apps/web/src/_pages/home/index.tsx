@@ -1,10 +1,12 @@
 import Link from "next/link";
+import { PublicAuthLinks } from "@/features/auth";
 import { ThemeToggle } from "@/features/theme-toggle";
 import { Arrow, Brand, PublicFooter } from "@/shared/ui";
 import { MonitoringDemo } from "./monitoring-demo";
 
 export function HomePage() {
   const landingMode = process.env.WEB_MODE === "landing";
+  const appMode = (process.env.WEB_MODE ?? "app") === "app";
   return (
     <div className="landing" data-web-mode={process.env.WEB_MODE ?? "app"}>
       <header className="landing-header landing-header-home">
@@ -13,9 +15,13 @@ export function HomePage() {
           <ThemeToggle />
           <Link href="#how">Как это работает</Link>
           <Link href="#pricing">Тариф</Link>
-          <Link href="/android">Приложения</Link>
+          <Link href="/android" data-install-promotion>
+            Приложения
+          </Link>
           {landingMode ? (
             <Link href="#demo">Демонстрация</Link>
+          ) : appMode ? (
+            <PublicAuthLinks />
           ) : (
             <>
               <Link href="/login">Войти</Link>
@@ -60,7 +66,7 @@ export function HomePage() {
             </p>
             <div className="hero-actions">
               <Link
-                href={landingMode ? "#demo" : "/register"}
+                href={landingMode ? "#demo" : appMode ? "/app" : "/register"}
                 className="button"
               >
                 {landingMode
@@ -100,20 +106,32 @@ export function HomePage() {
           aria-label="Основные правила мониторинга"
         >
           <div>
-            <strong>1–10 мин</strong>
-            <span>интервал · по умолчанию 5 мин</span>
+            <h2>Частота проверок</h2>
+            <strong>Каждые 1–10 минут</strong>
+            <p>Интервал выбираете вы. По умолчанию — 5 минут.</p>
           </div>
           <div>
-            <strong>1–10 сбоев</strong>
-            <span>порог инцидента · по умолчанию 2</span>
+            <h2>Подтверждение сбоя</h2>
+            <strong>1–10 ошибок подряд</strong>
+            <p>
+              Вы выбираете, после скольких неудачных проверок зафиксировать
+              сбой. По умолчанию — после двух.
+            </p>
           </div>
           <div>
+            <h2>История проверок</h2>
             <strong>7 дней</strong>
-            <span>подробных результатов</span>
+            <p>
+              Храним результат каждой проверки: время ответа, HTTP-код и ошибки.
+            </p>
           </div>
           <div>
+            <h2>История сбоев</h2>
             <strong>90 дней</strong>
-            <span>закрытых инцидентов</span>
+            <p>
+              Храним завершённые сбои: когда начались, сколько длились и когда
+              закончились.
+            </p>
           </div>
         </div>
 

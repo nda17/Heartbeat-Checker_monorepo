@@ -34,6 +34,8 @@ function money(amountMinor: number) {
 }
 export function BillingPage() {
   const [billing, setBilling] = useState<Billing | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
   const [count, setCount] = useState(1);
   const [busy, setBusy] = useState(false);
@@ -41,18 +43,38 @@ export function BillingPage() {
   const [success, setSuccess] = useState("");
   const [demo, setDemo] = useState<"succeeded" | "canceled" | null>(null);
   const request = useRef<{ count: number; key: string } | null>(null);
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal?: AbortSignal) => {
     const [result, access] = await Promise.all([
-      api<Billing>("/billing"),
-      api<{ entitlement: Entitlement }>("/entitlement"),
+      api<Billing>("/billing", { signal }),
+      api<{ entitlement: Entitlement }>("/entitlement", { signal }),
     ]);
+    if (signal?.aborted) return;
     setBilling(result);
     setEntitlement(access.entitlement);
   }, []);
   useEffect(() => {
+    const controller = new AbortController();
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void load().catch((e) => setError(errorMessage(e)));
-  }, [load]);
+    setLoadError("");
+    const timer = window.setTimeout(() => {
+      controller.abort();
+      setLoadError(
+        "Загрузка оплаты заняла слишком много времени. Повторите попытку.",
+      );
+    }, 10_000);
+    void load(controller.signal)
+      .catch((cause) => {
+        if (!controller.signal.aborted) {
+          setLoadError(errorMessage(cause));
+          controller.abort();
+        }
+      })
+      .finally(() => window.clearTimeout(timer));
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [load, loadAttempt]);
   async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!billing?.canSimulate) {
@@ -155,7 +177,18 @@ export function BillingPage() {
       </div>
       {error && <Notice>{error}</Notice>}
       {success && <Notice success>{success}</Notice>}
-      {!billing ? (
+      {loadError ? (
+        <div className="form-stack">
+          <Notice>{loadError}</Notice>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => setLoadAttempt((value) => value + 1)}
+          >
+            Повторить загрузку оплаты
+          </button>
+        </div>
+      ) : !billing ? (
         <Loading text="Загружаем заказы…" />
       ) : (
         <>
@@ -296,7 +329,7 @@ export function BillingPage() {
               </div>
             ) : (
               <div className="table-scroll">
-                <table className="monitor-table">
+                <table className="monitor-table mobile-card-table" role="table">
                   <thead>
                     <tr>
                       <th>Заказ</th>
@@ -309,20 +342,20 @@ export function BillingPage() {
                   <tbody>
                     {billing.orders.map((order) => (
                       <tr key={order.id}>
-                        <td>
+                        <td data-label="Заказ">
                           <strong>TEST</strong>
                           <span className="cell-sub">
                             {dateTime(order.createdAt)}
                           </span>
                           <span className="cell-sub mono">{order.id}</span>
                         </td>
-                        <td>{order.monitorCount}</td>
-                        <td>
+                        <td data-label="Мониторы">{order.monitorCount}</td>
+                        <td data-label="Условная сумма">
                           {money(order.amountMinor)}
                           <span className="cell-sub">Деньги не списаны</span>
                         </td>
-                        <td>{statuses[order.status]}</td>
-                        <td>
+                        <td data-label="Результат">{statuses[order.status]}</td>
+                        <td data-label="Квота до">
                           {order.activeUntil
                             ? dateTime(order.activeUntil)
                             : "—"}

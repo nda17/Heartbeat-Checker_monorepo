@@ -1,5 +1,10 @@
 import Link from "next/link";
-import { AuthForm, AuthMode, OAuthRegistration } from "@/features/auth";
+import {
+  AuthEntry,
+  AuthForm,
+  AuthMode,
+  OAuthRegistration,
+} from "@/features/auth";
 import { ThemeToggle } from "@/features/theme-toggle";
 import { Brand, FooterLegalNotice } from "@/shared/ui";
 export function AuthPage({
@@ -41,7 +46,14 @@ export function AuthPage({
           <ThemeToggle />
         </div>
         <div className="auth-card">
-          {oauthRegistration ? <OAuthRegistration /> : <AuthForm mode={mode} />}
+          {oauthRegistration ? (
+            <OAuthRegistration />
+          ) : (mode === "login" || mode === "register") &&
+            (process.env.WEB_MODE ?? "app") === "app" ? (
+            <AuthEntry key={mode} mode={mode} />
+          ) : (
+            <AuthForm mode={mode} />
+          )}
         </div>
         <footer className="small muted">
           <nav aria-label="Документы и контакты">

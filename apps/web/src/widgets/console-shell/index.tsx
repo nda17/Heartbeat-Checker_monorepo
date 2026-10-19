@@ -16,6 +16,9 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState("");
   const [draftError, setDraftError] = useState("");
   const [leaving, setLeaving] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const sidebar = useRef<HTMLElement>(null);
+  const menuButton = useRef<HTMLButtonElement>(null);
   const path = usePathname();
   const router = useRouter();
   const profileRequest = useRef(0);
@@ -87,6 +90,19 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
     window.addEventListener("hashchange", capture);
     return () => window.removeEventListener("hashchange", capture);
   }, [profile?.account.id]);
+  useEffect(() => {
+    const header = sidebar.current;
+    if (!menuOpen || !header) return;
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setMenuOpen(false);
+      menuButton.current?.focus();
+    };
+    header.addEventListener("keydown", escape);
+    return () => header.removeEventListener("keydown", escape);
+  }, [menuOpen, profile?.account.id]);
   async function logout() {
     setLeaving(true);
     try {
@@ -120,24 +136,43 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
       value={{ profile, refresh, beginSessionTransition, endSessionTransition }}
     >
       <div className="console">
-        <aside className="sidebar">
-          <Brand compact />
+        <aside className="sidebar" ref={sidebar}>
+          <div className="sidebar-heading">
+            <Brand compact />
+            <button
+              ref={menuButton}
+              type="button"
+              className="secondary sidebar-menu-toggle"
+              aria-expanded={menuOpen}
+              aria-controls="console-navigation"
+              onClick={() => setMenuOpen((value) => !value)}
+            >
+              Меню
+            </button>
+          </div>
           <p className="sidebar-label">РАБОЧЕЕ ПРОСТРАНСТВО</p>
-          <nav aria-label="Кабинет">
+          <nav
+            id="console-navigation"
+            aria-label="Кабинет"
+            data-open={menuOpen}
+          >
             <Link
               href="/app"
+              onClick={() => setMenuOpen(false)}
               aria-current={path === "/app" ? "page" : undefined}
             >
               <span aria-hidden="true">◉</span> Обзор мониторов
             </Link>
             <Link
               href="/app/billing"
+              onClick={() => setMenuOpen(false)}
               aria-current={path === "/app/billing" ? "page" : undefined}
             >
               <span aria-hidden="true">₽</span> Оплата
             </Link>
             <Link
               href="/app/settings"
+              onClick={() => setMenuOpen(false)}
               aria-current={path === "/app/settings" ? "page" : undefined}
             >
               <span aria-hidden="true">⚙</span> Настройки аккаунта
@@ -145,6 +180,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
             {profile.account.role === "admin" && (
               <Link
                 href="/app/admin"
+                onClick={() => setMenuOpen(false)}
                 aria-current={path === "/app/admin" ? "page" : undefined}
               >
                 <span aria-hidden="true">◈</span> Администрирование

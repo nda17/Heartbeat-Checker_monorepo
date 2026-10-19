@@ -45,28 +45,44 @@ function safeBotUrl(value: string | null) {
 export function MessengerLinks() {
   const [enabled, setEnabled] = useState(true);
   const [destinations, setDestinations] = useState<Destination[] | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [started, setStarted] = useState<LinkStart | null>(null);
   const [link, setLink] = useState<MessengerLink | null>(null);
   const [removing, setRemoving] = useState<Destination | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
-  const loadDestinations = useCallback(async () => {
+  const loadDestinations = useCallback(async (signal?: AbortSignal) => {
     const response = await api<{
       enabled?: boolean;
       destinations: Destination[];
-    }>("/messenger-destinations");
+    }>("/messenger-destinations", { signal });
+    if (signal?.aborted) return;
     setEnabled(response.enabled !== false);
     setDestinations(response.destinations ?? []);
     setError("");
   }, []);
   useEffect(() => {
-    const timer = window.setTimeout(
-      () => void loadDestinations().catch((e) => setError(errorMessage(e))),
-      0,
-    );
-    return () => window.clearTimeout(timer);
-  }, [loadDestinations]);
+    const controller = new AbortController();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoadError("");
+    const timer = window.setTimeout(() => {
+      controller.abort();
+      setLoadError(
+        "Загрузка чатов заняла слишком много времени. Повторите попытку.",
+      );
+    }, 10_000);
+    void loadDestinations(controller.signal)
+      .catch((cause) => {
+        if (!controller.signal.aborted) setLoadError(errorMessage(cause));
+      })
+      .finally(() => window.clearTimeout(timer));
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [loadDestinations, loadAttempt]);
   useEffect(() => {
     if (!link || (link.status !== "pending" && link.status !== "observed"))
       return;
@@ -217,7 +233,18 @@ export function MessengerLinks() {
       </div>
       {error && <Notice>{error}</Notice>}
       {success && <Notice success>{success}</Notice>}
-      {!destinations ? (
+      {loadError ? (
+        <div className="form-stack">
+          <Notice>{loadError}</Notice>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => setLoadAttempt((value) => value + 1)}
+          >
+            Повторить загрузку чатов
+          </button>
+        </div>
+      ) : !destinations ? (
         <Loading text="Загружаем чаты…" />
       ) : !enabled ? (
         <p className="small muted">Подключение чатов сейчас недоступно.</p>
