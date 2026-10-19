@@ -1,5 +1,11 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { MonitorForm } from "@/features/monitor-form";
@@ -9,6 +15,8 @@ import {
   Entitlement,
   Incident,
   Monitor,
+  MonitorPage,
+  MonitorSort,
   Status,
   checkTiming,
   checkTypeLabel,
@@ -25,7 +33,14 @@ import {
   MonitorDraft,
   readMonitorDraft,
 } from "@/shared/android";
-import { dateTime, Loading, Notice, Spinner, Icon } from "@/shared/ui";
+import {
+  dateTime,
+  Loading,
+  Notice,
+  Spinner,
+  Icon,
+  MessengerIcon,
+} from "@/shared/ui";
 type Detail = {
   monitor: Monitor;
   results: CheckResult[];
@@ -38,13 +53,31 @@ const incidentCloseReasons: Record<string, string> = {
   paused: "Монитор приостановлен",
   deleted: "Монитор удалён",
 };
+const notificationNames = {
+  telegram: "Telegram",
+  max: "MAX",
+  email: "Email",
+  webhook: "Webhook",
+};
 export function MonitorsPage() {
   const { profile } = useSession();
   const [sharedDraft, setSharedDraft] = useState<MonitorDraft | null>(null);
   const [formDraft, setFormDraft] = useState<
     (MonitorDraft & { accountId: string }) | null
   >(null);
-  const [monitors, setMonitors] = useState<Monitor[] | null>(null);
+  const [list, setList] = useState<MonitorPage | null>(null);
+  const monitors = list?.monitors ?? null;
+  const [selection, setSelection] = useState({
+    page: 1,
+    pageSize: 25,
+    sort: "created_desc" as MonitorSort,
+    q: "",
+  });
+  const currentSelection = useRef(selection);
+  useLayoutEffect(() => {
+    currentSelection.current = selection;
+  }, [selection]);
+  const [listLoading, setListLoading] = useState(false);
   const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
@@ -59,23 +92,58 @@ export function MonitorsPage() {
   const openedDeepLink = useRef("");
   const detailRequest = useRef(0);
   const listRequest = useRef(0);
+  const listController = useRef<AbortController | null>(null);
+  const detailController = useRef<AbortController | null>(null);
   const router = useRouter();
   const searchParams = useSearchParams();
   const deepLink = safeAppReturnTo(`/app?${searchParams.toString()}`);
   const load = useCallback(async () => {
+    const selected = currentSelection.current;
     const request = ++listRequest.current;
+    listController.current?.abort();
+    const controller = new AbortController();
+    listController.current = controller;
+    let timedOut = false;
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 10000);
+    setListLoading(true);
     try {
-      const [list, access] = await Promise.all([
-        api<{ monitors: Monitor[] }>("/monitors"),
-        api<{ entitlement: Entitlement }>("/entitlement"),
+      const params = new URLSearchParams({
+        page: String(selected.page),
+        pageSize: String(selected.pageSize),
+        sort: selected.sort,
+        q: selected.q,
+      });
+      const [page, access] = await Promise.all([
+        api<MonitorPage>(`/monitors?${params}`, { signal: controller.signal }),
+        api<{ entitlement: Entitlement }>("/entitlement", {
+          signal: controller.signal,
+        }),
       ]);
-      if (request !== listRequest.current) return;
-      setMonitors(list.monitors ?? []);
+      if (
+        request !== listRequest.current ||
+        controller.signal.aborted ||
+        currentSelection.current !== selected
+      )
+        return;
+      setList(page);
       setEntitlement(access.entitlement);
+      setSelection((current) =>
+        current !== selected || current.page === page.pagination.page
+          ? current
+          : { ...current, page: page.pagination.page },
+      );
       setUpdatedAt(new Date());
       setError("");
     } catch (e) {
-      if (request !== listRequest.current) return;
+      if (
+        request !== listRequest.current ||
+        currentSelection.current !== selected ||
+        (controller.signal.aborted && !timedOut)
+      )
+        return;
       if (e instanceof ApiError && e.status === 401) {
         const returnTo = safeAppReturnTo(
           window.location.pathname + window.location.search,
@@ -85,25 +153,54 @@ export function MonitorsPage() {
             ? `/login?returnTo=${encodeURIComponent(returnTo)}`
             : "/login",
         );
-      } else setError(errorMessage(e));
+      } else
+        setError(
+          timedOut
+            ? "Список не успел загрузиться. Повторите обновление."
+            : errorMessage(e),
+        );
       throw e;
+    } finally {
+      window.clearTimeout(timeout);
+      controller.abort();
+      if (request === listRequest.current) {
+        listController.current = null;
+        setListLoading(false);
+      }
     }
   }, [router]);
-  // Bootstrap browser-only session data; state changes after asynchronous API requests.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const q = filter.trim();
+      setSelection((current) =>
+        current.q === q ? current : { ...current, page: 1, q },
+      );
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [filter]);
+  // Each selection owns its reads; polling never supersedes an unfinished load.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load().catch(() => undefined);
     const timer = setInterval(() => {
-      if (document.visibilityState === "visible")
+      if (document.visibilityState === "visible" && !listController.current)
         void load().catch(() => undefined);
     }, 15000);
     return () => {
       clearInterval(timer);
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- Fence the latest read when leaving this route.
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- Fence reads for the old selection.
       ++listRequest.current;
-      ++detailRequest.current;
+      listController.current?.abort();
+      listController.current = null;
     };
-  }, [load]);
+  }, [load, selection]);
+  useEffect(
+    () => () => {
+      ++detailRequest.current;
+      detailController.current?.abort();
+    },
+    [],
+  );
   useEffect(() => {
     const update = () => setSharedDraft(readMonitorDraft(profile.account.id));
     update();
@@ -152,22 +249,36 @@ export function MonitorsPage() {
     }
   }
   const showDetail = useCallback(
-    async (monitor: Monitor, targetIncidentId?: string) => {
+    async (monitor: Monitor | string, targetIncidentId?: string) => {
+      const monitorId = typeof monitor === "string" ? monitor : monitor.id;
       const requestId = ++detailRequest.current;
-      setBusy(`detail-${monitor.id}`);
+      detailController.current?.abort();
+      const controller = new AbortController();
+      detailController.current = controller;
+      const timeout = window.setTimeout(() => controller.abort(), 10000);
+      setBusy(`detail-${monitorId}`);
       setError("");
       setDetailError("");
       try {
-        const [results, incidents, target] = await Promise.all([
+        const [current, results, incidents, target] = await Promise.all([
+          typeof monitor === "string"
+            ? api<{ monitor: Monitor }>(
+                `/monitors/${encodeURIComponent(monitorId)}`,
+                { signal: controller.signal },
+              )
+            : Promise.resolve({ monitor }),
           api<{ results: CheckResult[] }>(
-            `/monitors/${encodeURIComponent(monitor.id)}/results?limit=50`,
+            `/monitors/${encodeURIComponent(monitorId)}/results?limit=50`,
+            { signal: controller.signal },
           ),
           api<{ incidents: Incident[] }>(
-            `/monitors/${encodeURIComponent(monitor.id)}/incidents`,
+            `/monitors/${encodeURIComponent(monitorId)}/incidents`,
+            { signal: controller.signal },
           ),
           targetIncidentId
             ? api<{ incident: Incident }>(
-                `/monitors/${encodeURIComponent(monitor.id)}/incidents/${encodeURIComponent(targetIncidentId)}`,
+                `/monitors/${encodeURIComponent(monitorId)}/incidents/${encodeURIComponent(targetIncidentId)}`,
+                { signal: controller.signal },
               )
             : Promise.resolve(null),
         ]);
@@ -175,7 +286,7 @@ export function MonitorsPage() {
         const targetIncident = target?.incident;
         if (requestId !== detailRequest.current) return;
         setDetail({
-          monitor,
+          monitor: current.monitor,
           results: results.results ?? [],
           incidents:
             targetIncident &&
@@ -186,12 +297,16 @@ export function MonitorsPage() {
         });
       } catch (e) {
         if (requestId !== detailRequest.current) return;
-        setError(
+        setDetailError(
           targetIncidentId && e instanceof ApiError && e.status === 404
             ? "Монитор или инцидент не найден или больше недоступен."
             : errorMessage(e),
         );
       } finally {
+        window.clearTimeout(timeout);
+        controller.abort();
+        if (requestId === detailRequest.current)
+          detailController.current = null;
         if (requestId === detailRequest.current) setBusy("");
       }
     },
@@ -199,23 +314,36 @@ export function MonitorsPage() {
   );
   useEffect(() => {
     if (!deepLink) {
-      if (openedDeepLink.current) detailRequest.current += 1;
       openedDeepLink.current = "";
       return;
     }
-    if (!monitors || openedDeepLink.current === deepLink) return;
-    detailRequest.current += 1;
+    if (openedDeepLink.current === deepLink) return;
     const params = new URLSearchParams(deepLink.split("?")[1]);
-    const monitor = monitors.find((item) => item.id === params.get("monitor"));
+    const monitorId = params.get("monitor");
+    let ownedRequest: number | undefined;
     const timer = window.setTimeout(() => {
       openedDeepLink.current = deepLink;
-      if (monitor)
-        void showDetail(monitor, params.get("incident") ?? undefined);
-      else setError("Монитор или инцидент не найден или больше недоступен.");
+      if (monitorId) {
+        void showDetail(monitorId, params.get("incident") ?? undefined);
+        ownedRequest = detailRequest.current;
+      }
     }, 0);
-    return () => window.clearTimeout(timer);
-    // React state refreshes every 15 seconds; each URL is opened only once.
-  }, [deepLink, monitors, showDetail]);
+    return () => {
+      window.clearTimeout(timer);
+      if (
+        ownedRequest !== undefined &&
+        detailRequest.current === ownedRequest
+      ) {
+        ++detailRequest.current;
+        detailController.current?.abort();
+        detailController.current = null;
+        setBusy((current) =>
+          current === `detail-${monitorId}` ? "" : current,
+        );
+        setDetailError("");
+      }
+    };
+  }, [deepLink, showDetail]);
   useEffect(() => {
     if (!detail?.targetIncidentId) return;
     const frame = requestAnimationFrame(() => {
@@ -248,14 +376,18 @@ export function MonitorsPage() {
       if (request === detailRequest.current) setBusy("");
     }
   }
-  const up = monitors?.filter((m) => m.state === "UP").length ?? 0;
-  const down = monitors?.filter((m) => m.state === "DOWN").length ?? 0;
-  const visible =
-    monitors?.filter((m) =>
-      `${m.name} ${monitorTarget(m)}`
-        .toLowerCase()
-        .includes(filter.toLowerCase()),
-    ) ?? [];
+  function changeSort(field: "name" | "created") {
+    setSelection((current) => ({
+      ...current,
+      page: 1,
+      sort: current.sort.startsWith(field)
+        ? (`${field}_${current.sort.endsWith("asc") ? "desc" : "asc"}` as MonitorSort)
+        : field === "name"
+          ? "name_asc"
+          : "created_desc",
+    }));
+  }
+  const pagination = list?.pagination;
   const quotaActive =
     entitlement &&
     entitlement.quota > 0 &&
@@ -283,10 +415,11 @@ export function MonitorsPage() {
         </button>
       </div>
       {error && <Notice>{error}</Notice>}
+      {!detail && detailError && <Notice>{detailError}</Notice>}
       <div className="stats-grid">
         <div className="stat">
           <span>Всего мониторов</span>
-          <strong>{monitors?.length ?? "—"}</strong>
+          <strong>{list?.summary.total ?? "—"}</strong>
           <small>В вашем пространстве</small>
         </div>
         <div className="stat">
@@ -294,7 +427,7 @@ export function MonitorsPage() {
             <i className="stat-dot green" />
             Доступны
           </span>
-          <strong>{monitors ? up : "—"}</strong>
+          <strong>{list?.summary.up ?? "—"}</strong>
           <small>Успешная последняя проверка</small>
         </div>
         <div className="stat">
@@ -302,7 +435,7 @@ export function MonitorsPage() {
             <i className="stat-dot red" />
             Недоступны
           </span>
-          <strong>{monitors ? down : "—"}</strong>
+          <strong>{list?.summary.down ?? "—"}</strong>
           <small>Неуспешная последняя проверка</small>
         </div>
         <div className="stat quota-stat">
@@ -377,11 +510,12 @@ export function MonitorsPage() {
           </p>
         </div>
       )}
-      <section className="panel monitor-panel">
+      <section className="panel monitor-panel" aria-busy={listLoading}>
         <div className="table-toolbar">
           <div>
             <h2>
-              Мониторы <span className="count">{monitors?.length ?? "—"}</span>
+              Мониторы{" "}
+              <span className="count">{list?.summary.total ?? "—"}</span>
             </h2>
             <p className="small muted">
               {updatedAt
@@ -389,15 +523,51 @@ export function MonitorsPage() {
                 : "Загружаем состояние"}
             </p>
           </div>
-          <div className="toolbar-actions">
+          <div className="toolbar-actions monitor-list-controls">
             <input
               className="search"
               type="search"
               placeholder="Найти монитор…"
               aria-label="Поиск мониторов"
               value={filter}
-              onChange={(e) => setFilter(e.target.value)}
+              maxLength={400}
+              onChange={(e) =>
+                setFilter(Array.from(e.target.value).slice(0, 200).join(""))
+              }
             />
+            <div
+              className="monitor-list-sort"
+              aria-label="Сортировка мониторов"
+            >
+              {(
+                [
+                  ["name", "По имени"],
+                  ["created", "По дате"],
+                ] as const
+              ).map(([field, label]) => {
+                const selected = selection.sort.startsWith(field);
+                const ascending = selected
+                  ? selection.sort.endsWith("asc")
+                  : field === "name";
+                return (
+                  <button
+                    key={field}
+                    className="quiet"
+                    aria-pressed={selected}
+                    onClick={() => changeSort(field)}
+                    title={`${label}: ${ascending ? "по возрастанию" : "по убыванию"}`}
+                  >
+                    {label}
+                    <span
+                      className="monitor-list-direction"
+                      data-ascending={ascending}
+                    >
+                      <Icon name="arrow-down" size={20} />
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
             <button
               className="icon-button"
               title="Обновить"
@@ -410,7 +580,7 @@ export function MonitorsPage() {
         </div>
         {!monitors ? (
           <Loading text="Загружаем мониторы…" />
-        ) : !monitors.length ? (
+        ) : list?.summary.total === 0 ? (
           <div className="empty-state">
             <div className="empty-icon" aria-hidden="true">
               <Icon name="activity" size={28} />
@@ -427,7 +597,7 @@ export function MonitorsPage() {
               </button>
             )}
           </div>
-        ) : !visible.length ? (
+        ) : !monitors.length ? (
           <div className="empty-state">
             <h3>Совпадений нет</h3>
             <p>Попробуйте другое название или URL.</p>
@@ -447,7 +617,7 @@ export function MonitorsPage() {
                 </tr>
               </thead>
               <tbody>
-                {visible.map((m) => (
+                {monitors.map((m) => (
                   <tr key={m.id}>
                     <td data-label="Монитор / адрес">
                       <button
@@ -467,6 +637,33 @@ export function MonitorsPage() {
                       <span className="cell-sub">
                         Интервал: {m.intervalMinutes} мин · Порог:{" "}
                         {m.failureThreshold}
+                      </span>
+                      <span className="monitor-list-channels">
+                        <Icon name="bell" size={20} />
+                        {m.notificationChannels?.length ? (
+                          m.notificationChannels.map((channel) => (
+                            <span
+                              key={channel}
+                              className="monitor-list-channel"
+                              title={`${notificationNames[channel]}: уведомления включены`}
+                              role="img"
+                              aria-label={`${notificationNames[channel]}: уведомления включены`}
+                            >
+                              {channel === "telegram" || channel === "max" ? (
+                                <MessengerIcon brand={channel} />
+                              ) : (
+                                <Icon
+                                  name={
+                                    channel === "email" ? "mail" : "network"
+                                  }
+                                  size={20}
+                                />
+                              )}
+                            </span>
+                          ))
+                        ) : (
+                          <span>Уведомления выключены</span>
+                        )}
                       </span>
                     </td>
                     <td data-label="Состояние">
@@ -550,6 +747,44 @@ export function MonitorsPage() {
             </table>
           </div>
         )}
+        {pagination && list?.summary.total !== 0 && (
+          <div className="monitor-list-pagination">
+            <span>
+              {pagination.total} {selection.q ? "найдено" : "мониторов"}
+            </span>
+            <nav aria-label="Страницы мониторов">
+              <button
+                className="quiet"
+                disabled={listLoading || pagination.page <= 1}
+                onClick={() =>
+                  setSelection((current) => ({
+                    ...current,
+                    page: pagination.page - 1,
+                  }))
+                }
+              >
+                <Icon name="arrow-left" size={20} /> Назад
+              </button>
+              <span aria-live="polite">
+                Страница {pagination.page} из {pagination.totalPages}
+              </span>
+              <button
+                className="quiet"
+                disabled={
+                  listLoading || pagination.page >= pagination.totalPages
+                }
+                onClick={() =>
+                  setSelection((current) => ({
+                    ...current,
+                    page: pagination.page + 1,
+                  }))
+                }
+              >
+                Вперёд <Icon name="arrow-right" size={20} />
+              </button>
+            </nav>
+          </div>
+        )}
         <div className="table-footnote">
           <span>HTTP/HTTPS · TCP · ICMP · Интервал 1–10 мин</span>
           <span>
@@ -615,7 +850,14 @@ export function MonitorsPage() {
       {notifications && (
         <MonitorNotifications
           monitor={notifications}
-          onClose={() => setNotifications(null)}
+          onClose={() => {
+            setNotifications(null);
+            void load().catch(() =>
+              setError(
+                "Настройки уведомлений закрыты, но список не обновился. Повторите обновление.",
+              ),
+            );
+          }}
         />
       )}
       {deleting && (
@@ -653,6 +895,8 @@ export function MonitorsPage() {
           wide
           onClose={() => {
             detailRequest.current += 1;
+            detailController.current?.abort();
+            setDetailError("");
             setDetail(null);
           }}
           busy={!!busy}

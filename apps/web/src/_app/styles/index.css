@@ -5111,3 +5111,85 @@ html[data-installed-app="true"] .android-hero {
   margin: 0;
   padding-left: 22px;
 }
+
+.monitor-list-controls {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.monitor-list-sort {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.monitor-list-sort button {
+  padding: 8px 9px;
+  font-size: 14px;
+  white-space: nowrap;
+}
+.monitor-list-sort button[aria-pressed="true"] {
+  background: var(--soft);
+  color: var(--accent);
+}
+.monitor-list-direction {
+  display: inline-flex;
+}
+.monitor-list-direction[data-ascending="true"] {
+  transform: rotate(180deg);
+}
+.monitor-list-channels {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.monitor-list-channel {
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+}
+.monitor-list-channel svg {
+  width: 20px;
+  height: 20px;
+}
+.monitor-list-pagination,
+.monitor-list-pagination nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.monitor-list-pagination {
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-top: 1px solid var(--line);
+  font-size: 14px;
+  color: var(--muted);
+}
+.monitor-list-pagination button {
+  padding: 8px;
+  font-size: 14px;
+}
+@media (max-width: 640px) {
+  .monitor-list-sort button,
+  .monitor-list-pagination button {
+    min-height: 44px;
+  }
+  .monitor-list-controls {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .monitor-list-controls .search {
+    flex: 1 1 180px;
+    min-width: 0;
+  }
+  .monitor-list-pagination,
+  .monitor-list-pagination nav {
+    justify-content: center;
+    gap: 8px;
+  }
+  .monitor-list-pagination {
+    padding: 12px;
+  }
+}

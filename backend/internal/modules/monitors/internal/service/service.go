@@ -34,10 +34,15 @@ type Service struct {
 	billing   billing.Service
 	incidents incidents.Service
 	accounts  accounts.ActiveGuard
+	channels  contracts.NotificationChannelsReader
 }
 
-func New(repo *postgres.Repository, billing billing.Service, incidents incidents.Service, accounts accounts.ActiveGuard) *Service {
-	return &Service{repo, billing, incidents, accounts}
+func New(repo *postgres.Repository, billing billing.Service, incidents incidents.Service, accounts accounts.ActiveGuard, channels ...contracts.NotificationChannelsReader) *Service {
+	var reader contracts.NotificationChannelsReader
+	if len(channels) > 0 {
+		reader = channels[0]
+	}
+	return &Service{repo: repo, billing: billing, incidents: incidents, accounts: accounts, channels: reader}
 }
 
 func ValidID(id string) bool {
@@ -144,6 +149,9 @@ func (s *Service) begin(ctx context.Context, owner string) (pgx.Tx, billing.Enti
 	return tx, e, nil
 }
 func view(m postgres.Row, e billing.Entitlement, rank int) contracts.Monitor {
+	return viewAt(m, e, rank, time.Now())
+}
+func viewAt(m postgres.Row, e billing.Entitlement, rank int, asOf time.Time) contracts.Monitor {
 	v := m.Monitor
 	switch {
 	case !m.Enabled:
@@ -152,7 +160,7 @@ func view(m postgres.Row, e billing.Entitlement, rank int) contracts.Monitor {
 	case e.Quota == 0 || rank > e.Quota:
 		v.State = "SUBSCRIPTION_REQUIRED"
 		v.NextCheckAt = nil
-	case m.LastCheckedAt == nil || time.Since(*m.LastCheckedAt) > time.Duration(2*m.IntervalMinutes)*time.Minute+30*time.Second:
+	case m.LastCheckedAt == nil || asOf.Sub(*m.LastCheckedAt) > time.Duration(2*m.IntervalMinutes)*time.Minute+30*time.Second:
 		v.State = "UNKNOWN"
 	}
 	return v
@@ -173,6 +181,57 @@ func (s *Service) List(ctx context.Context, owner string) ([]contracts.Monitor, 
 	}
 	return items, tx.Commit(ctx)
 }
+
+// ListPage keeps the account billing lock across summary and page reads. All
+// account monitor writes take the same lock; one instant determines freshness.
+func (s *Service) ListPage(ctx context.Context, owner string, options contracts.ListOptions) (contracts.MonitorPage, error) {
+	options.Query = strings.TrimSpace(options.Query)
+	if options.Page < 1 || options.PageSize < 1 || options.PageSize > 100 || !utf8.ValidString(options.Query) || utf8.RuneCountInString(options.Query) > 200 {
+		return contracts.MonitorPage{}, ErrInvalid
+	}
+	switch options.Sort {
+	case "created_desc", "created_asc", "name_asc", "name_desc":
+	default:
+		return contracts.MonitorPage{}, ErrInvalid
+	}
+	tx, e, err := s.begin(ctx, owner)
+	if err != nil {
+		return contracts.MonitorPage{}, err
+	}
+	defer tx.Rollback(ctx)
+	asOf := time.Now().UTC().Truncate(time.Microsecond)
+	summary, total, err := s.repo.PageSummary(ctx, tx, owner, options, e.Quota, asOf)
+	if err != nil {
+		return contracts.MonitorPage{}, err
+	}
+	totalPages := max(1, (total+options.PageSize-1)/options.PageSize)
+	options.Page = min(options.Page, totalPages)
+	rows, err := s.repo.ListPage(ctx, tx, owner, options)
+	if err != nil {
+		return contracts.MonitorPage{}, err
+	}
+	result := contracts.MonitorPage{Monitors: make([]contracts.ListedMonitor, 0, len(rows)), Pagination: contracts.Pagination{Page: options.Page, PageSize: options.PageSize, Total: total, TotalPages: totalPages}, Summary: summary}
+	ids := make([]string, 0, len(rows))
+	for _, m := range rows {
+		ids = append(ids, m.ID)
+	}
+	channels := map[string][]string{}
+	if s.channels != nil && len(ids) > 0 {
+		channels, err = s.channels.EnabledChannelsTx(ctx, tx, owner, ids)
+		if err != nil {
+			return contracts.MonitorPage{}, err
+		}
+	}
+	for _, m := range rows {
+		enabled := channels[m.ID]
+		if enabled == nil {
+			enabled = []string{}
+		}
+		result.Monitors = append(result.Monitors, contracts.ListedMonitor{Monitor: viewAt(m, e, m.Rank, asOf), NotificationChannels: enabled})
+	}
+	return result, tx.Commit(ctx)
+}
+
 func (s *Service) Entitlement(ctx context.Context, owner string) (billing.Entitlement, error) {
 	tx, e, err := s.begin(ctx, owner)
 	if err != nil {

@@ -72,7 +72,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("configure messenger notifications: %w", err)
 	}
-	monitorModule := monitors.New(pool, billingModule, incidents.New(pool, notifications.NewRecorder(messengerModule)), accountModule)
+	monitorModule := monitors.New(pool, billingModule, incidents.New(pool, notifications.NewRecorder(messengerModule)), accountModule, messengerModule)
 	authModule, err := auth.New(pool, accountModule, captcha, mailer, auth.Config{
 		Origin:            cfg.AuthOrigin,
 		OAuthProviders:    oauthProviders,
