@@ -171,7 +171,7 @@ export function MonitorForm({
                 Публичный HTTP или HTTPS адрес. Без логина и пароля в URL.
               </span>
             </label>
-            <div className="form-row">
+            <div className="form-row monitor-method-row">
               <label>
                 Метод
                 <select

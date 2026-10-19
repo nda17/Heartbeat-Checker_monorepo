@@ -206,7 +206,7 @@ export function MessengerLinks() {
       aria-labelledby="messenger-heading"
     >
       <div className="panel-heading">
-        <span className="panel-index">04</span>
+        <span className="panel-index">05</span>
         <div>
           <h2 id="messenger-heading">Чаты для уведомлений</h2>
           <p>

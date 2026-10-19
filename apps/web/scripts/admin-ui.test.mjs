@@ -177,10 +177,12 @@ function adminPageHarness({
   monitors = [],
   apiHandler,
   replacements = [],
+  mfaState,
+  dateImplementation = Date,
 }) {
   const harness = createHarness();
   const calls = [];
-  const mfa = {
+  const mfa = mfaState ?? {
     enabled: true,
     verifiedUntil: "2099-01-15T00:00:00Z",
     stepUpUntil: "2099-01-16T00:00:00Z",
@@ -222,10 +224,14 @@ function adminPageHarness({
   const router = { replace: (path) => replacements.push(path) };
   const shared = sharedAliases(api);
   const sessionModule = { useSession: () => session };
-  const { AdminMfa } = loadComponent("../src/features/admin-mfa/index.tsx", {
-    ...shared,
-    "qrcode.react": qrcode,
-  });
+  const { AdminMfa } = loadComponent(
+    "../src/features/admin-mfa/index.tsx",
+    {
+      ...shared,
+      "qrcode.react": qrcode,
+    },
+    { Date: dateImplementation },
+  );
   const { MonitorForm } = loadComponent(
     "../src/features/monitor-form/index.tsx",
     {
@@ -233,23 +239,37 @@ function adminPageHarness({
       "@/entities/session": sessionModule,
       "@/entities/monitor": { Status: () => null },
       "@/shared/dialog": {
-        Dialog: ({ title, children }) =>
+        Dialog: ({ title, children, onClose, busy }) =>
           React.createElement(
             "section",
             { role: "dialog", "aria-label": title },
+            React.createElement(
+              "button",
+              {
+                type: "button",
+                "aria-label": "Закрыть",
+                disabled: busy,
+                onClick: onClose,
+              },
+              "×",
+            ),
             children,
           ),
       },
     },
   );
-  const { AdminPage } = loadComponent("../src/_pages/admin/index.tsx", {
-    ...shared,
-    "next/navigation": { useRouter: () => router },
-    "@/entities/session": sessionModule,
-    "@/entities/monitor": { Status: () => null },
-    "@/features/admin-mfa": { AdminMfa },
-    "@/features/monitor-form": { MonitorForm },
-  });
+  const { AdminPage } = loadComponent(
+    "../src/_pages/admin/index.tsx",
+    {
+      ...shared,
+      "next/navigation": { useRouter: () => router },
+      "@/entities/session": sessionModule,
+      "@/entities/monitor": { Status: () => null },
+      "@/features/admin-mfa": { AdminMfa },
+      "@/features/monitor-form": { MonitorForm },
+    },
+    { Date: dateImplementation },
+  );
   return {
     calls,
     harness,
@@ -939,4 +959,102 @@ test("deleting an admin monitor keeps the operator in the admin page", async (t)
     "a successful monitor deletion must not navigate away from admin",
   );
   assert.ok(harness.host.textContent.includes("Монитор удалён."));
+});
+
+test("step-up expiry keeps the admin monitor dialog closable and restores MFA access", async (t) => {
+  const clock = { now: Date.now() };
+  class ControlledDate extends Date {
+    constructor(...args) {
+      super(...(args.length ? args : [clock.now]));
+    }
+
+    static now() {
+      return clock.now;
+    }
+  }
+  const stepUpUntil = new Date(clock.now + 60_000).toISOString();
+  const account = {
+    id: "target-1",
+    name: "Target account",
+    email: "target@example.test",
+    role: "user",
+    status: "active",
+    version: 1,
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+  const fixture = adminPageHarness({
+    account,
+    dateImplementation: ControlledDate,
+    mfaState: {
+      enabled: true,
+      verifiedUntil: new Date(clock.now + 20 * 60_000).toISOString(),
+      stepUpUntil,
+      recoveryCodesRemaining: 3,
+    },
+  });
+  const { harness } = fixture;
+  t.after(() => harness.unmount());
+  const intervals = [];
+  harness.dom.window.setInterval = (callback) => {
+    intervals.push(callback);
+    return intervals.length;
+  };
+  harness.dom.window.clearInterval = () => {};
+
+  await fixture.render();
+  await selectAdminAccount(harness, account.name);
+  const monitorsTab = [
+    ...harness.host.querySelectorAll(".admin-detail-nav button"),
+  ].find((button) => button.textContent === "Мониторы");
+  assert.ok(monitorsTab);
+  await act(async () => monitorsTab.click());
+  const addButton = [...harness.host.querySelectorAll("button")].find(
+    (button) => button.textContent.trim() === "Добавить",
+  );
+  assert.ok(addButton, "step-up access should allow opening the monitor form");
+  await act(async () => addButton.click());
+  const form = harness.host.querySelector('[role="dialog"] form');
+  assert.ok(form);
+  fill(form, "name", "Draft monitor");
+  fill(form, "url", "https://status.example/health");
+  fill(form, "reason", "Add monitor during step-up session");
+
+  clock.now = Date.parse(stepUpUntil) + 1;
+  await act(async () => {
+    for (const callback of intervals) callback();
+    await Promise.resolve();
+  });
+
+  const dialog = harness.host.querySelector('[role="dialog"]');
+  assert.ok(
+    dialog,
+    "the open form must remain visible after step-up expires so it does not become an unreachable modal",
+  );
+  assert.equal(
+    dialog.querySelector('[name="name"]')?.value,
+    "Draft monitor",
+    "form data should remain available while the operator decides what to do",
+  );
+  const close = dialog.querySelector('[aria-label="Закрыть"]');
+  assert.ok(
+    close && !close.disabled,
+    "the expired form should remain closable",
+  );
+  await act(async () => close.click());
+
+  const reverify = [...harness.host.querySelectorAll("button")].find(
+    (button) => button.textContent === "Подтвердить действия",
+  );
+  assert.ok(
+    reverify && !reverify.disabled,
+    "closing the form must restore MFA controls",
+  );
+  await act(async () => reverify.click());
+  assert.ok(
+    [...harness.host.querySelectorAll("form")].some(
+      (item) =>
+        item.elements.namedItem("password") && item.elements.namedItem("code"),
+    ),
+    "the operator should be able to reopen MFA verification",
+  );
 });

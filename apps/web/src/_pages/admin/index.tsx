@@ -251,6 +251,7 @@ export function AdminPage() {
     ++detailRequest.current;
     ++auditRequest.current;
     setDetailTab("profile");
+    setSuccess("");
     setDetail(null);
     setMonitors(null);
     setAudit(null);
@@ -469,7 +470,7 @@ export function AdminPage() {
               </div>
             </div>
             <form className="admin-search" onSubmit={search}>
-              <label className="visually-hidden" htmlFor="admin-account-search">
+              <label className="sr-only" htmlFor="admin-account-search">
                 Поиск аккаунтов
               </label>
               <input
@@ -548,7 +549,10 @@ export function AdminPage() {
                     key={key}
                     className="quiet"
                     aria-pressed={detailTab === key}
-                    onClick={() => setDetailTab(key)}
+                    onClick={() => {
+                      setDetailTab(key);
+                      setSuccess("");
+                    }}
                   >
                     {label}
                   </button>
@@ -777,7 +781,10 @@ export function AdminPage() {
                         className="secondary"
                         type="button"
                         disabled={mfaBusy || !!busy}
-                        onClick={() => setMonitorForm("new")}
+                        onClick={() => {
+                          setSuccess("");
+                          setMonitorForm("new");
+                        }}
                       >
                         Добавить
                       </button>
@@ -802,7 +809,10 @@ export function AdminPage() {
                                 className="quiet"
                                 type="button"
                                 disabled={!!busy || mfaBusy}
-                                onClick={() => setMonitorForm(monitor)}
+                                onClick={() => {
+                                  setSuccess("");
+                                  setMonitorForm(monitor);
+                                }}
                               >
                                 Изменить
                               </button>
@@ -899,7 +909,7 @@ export function AdminPage() {
           Для изменения данных повторно подтвердите вход в блоке MFA.
         </Notice>
       )}
-      {monitorForm && detail && canWrite && (
+      {monitorForm && detail && (
         <MonitorForm
           monitor={monitorForm === "new" ? undefined : monitorForm}
           basePath={accountPath("/monitors")}
@@ -907,6 +917,9 @@ export function AdminPage() {
           onClose={() => setMonitorForm(null)}
           onSaved={async () => {
             await loadDetail(detail.account.id);
+            setSuccess(
+              monitorForm === "new" ? "Монитор добавлен." : "Монитор обновлён.",
+            );
           }}
         />
       )}

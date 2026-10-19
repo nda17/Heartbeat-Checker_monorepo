@@ -534,6 +534,9 @@ input:read-only {
   grid-template-columns: 1fr 1fr;
   gap: 16px;
 }
+.monitor-method-row {
+  align-items: end;
+}
 .optional {
   font-size: 14px;
   color: var(--muted);
