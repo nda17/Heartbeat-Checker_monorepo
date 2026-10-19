@@ -88,6 +88,11 @@ const config: NextConfig = {
           headers: [{ key: "X-Robots-Tag", value: "index, follow" }],
         }),
       ),
+      // Discovery files must not inherit the private-page noindex default.
+      ...["/robots.txt", "/sitemap.xml"].map((source) => ({
+        source,
+        headers: [{ key: "X-Robots-Tag", value: "index, follow" }],
+      })),
     ];
   },
 };
