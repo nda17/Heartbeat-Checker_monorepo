@@ -25,7 +25,7 @@ import {
   MonitorDraft,
   readMonitorDraft,
 } from "@/shared/android";
-import { dateTime, Loading, Notice } from "@/shared/ui";
+import { dateTime, Loading, Notice, Spinner } from "@/shared/ui";
 type Detail = {
   monitor: Monitor;
   results: CheckResult[];
@@ -506,7 +506,43 @@ export function MonitorsPage() {
                           disabled={!!busy}
                           onClick={() => void toggle(m)}
                         >
-                          {busy === m.id ? "…" : m.enabled ? "Ⅱ" : "▷"}
+                          {busy === m.id ? (
+                            <Spinner />
+                          ) : (
+                            <svg
+                              width="20"
+                              height="20"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.8"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              aria-hidden="true"
+                              focusable="false"
+                            >
+                              {m.enabled ? (
+                                <>
+                                  <rect
+                                    x="6"
+                                    y="4"
+                                    width="4"
+                                    height="16"
+                                    rx="1"
+                                  />
+                                  <rect
+                                    x="14"
+                                    y="4"
+                                    width="4"
+                                    height="16"
+                                    rx="1"
+                                  />
+                                </>
+                              ) : (
+                                <path d="m8 4 12 8-12 8V4Z" />
+                              )}
+                            </svg>
+                          )}
                         </button>
                         <button
                           className="icon-button"
@@ -515,7 +551,21 @@ export function MonitorsPage() {
                           disabled={!!busy}
                           onClick={() => setEditor(m)}
                         >
-                          ⚙
+                          <svg
+                            width="20"
+                            height="20"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
+                            focusable="false"
+                          >
+                            <path d="M9.6 2.8h4.8l.4 2.4 1.6.96 2.24-.8 2.4 4.16-1.84 1.52v1.92l1.84 1.52-2.4 4.16-2.24-.8-1.6.96-.4 2.4H9.6l-.4-2.4-1.6-.96-2.24.8-2.4-4.16 1.84-1.52v-1.92L2.96 9.52l2.4-4.16 2.24.8 1.6-.96.4-2.4Z" />
+                            <circle cx="12" cy="12" r="3" />
+                          </svg>
                         </button>
                         <button
                           className="icon-button"
@@ -524,7 +574,20 @@ export function MonitorsPage() {
                           disabled={!!busy}
                           onClick={() => setNotifications(m)}
                         >
-                          ◔
+                          <svg
+                            width="20"
+                            height="20"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
+                            focusable="false"
+                          >
+                            <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />
+                          </svg>
                         </button>
                         <button
                           className="icon-button danger-text"
@@ -536,7 +599,20 @@ export function MonitorsPage() {
                             setDeleting(m);
                           }}
                         >
-                          ×
+                          <svg
+                            width="20"
+                            height="20"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
+                            focusable="false"
+                          >
+                            <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" />
+                          </svg>
                         </button>
                       </div>
                     </td>
