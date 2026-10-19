@@ -7,10 +7,10 @@ def secret = { String name ->
     path ? new File(path).getText('UTF-8').stripTrailing() : System.getenv(name)
 }
 def keystore = System.getenv('ANDROID_KEYSTORE_FILE')
-def storePassword = secret('ANDROID_KEYSTORE_PASSWORD')
-def keyAlias = System.getenv('ANDROID_KEY_ALIAS')
-def keyPassword = secret('ANDROID_KEY_PASSWORD')
-def signingReady = keystore && storePassword && keyAlias && keyPassword
+def releaseStorePassword = secret('ANDROID_KEYSTORE_PASSWORD')
+def releaseKeyAlias = System.getenv('ANDROID_KEY_ALIAS')
+def releaseKeyPassword = secret('ANDROID_KEY_PASSWORD')
+def signingReady = keystore && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
 
 android {
     namespace 'ru.heartbeatchecker.app'
@@ -29,9 +29,9 @@ android {
         if (signingReady) {
             release {
                 storeFile file(keystore)
-                storePassword storePassword
-                keyAlias keyAlias
-                keyPassword keyPassword
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
             }
         }
     }
