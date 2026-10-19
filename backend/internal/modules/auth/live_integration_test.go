@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"mime/quotedprintable"
 	"net"
 	"net/http"
@@ -124,7 +126,7 @@ func runAuthMailSmoke(t *testing.T, captcha CaptchaVerifier, captchaToken string
 	if registered.Code != http.StatusAccepted {
 		t.Fatalf("live registration returned %d (%s)", registered.Code, strings.TrimSpace(registered.Body.String()))
 	}
-	verifyToken, verifyMessageID := mailpitToken(t, apiURL, email, "Confirm your Heartbeat Checker email", &ownedIDs)
+	verifyToken, verifyMessageID := mailpitToken(t, apiURL, email, "Подтвердите вашу почту — Heartbeat Checker", &ownedIDs)
 	verified := f.request(t, http.MethodPost, "/api/v1/auth/verify", map[string]string{"token": verifyToken, "password": integrationPass}, nil, "", integrationOrigin, "")
 	if verified.Code != http.StatusNoContent {
 		t.Fatalf("live email verification returned %d", verified.Code)
@@ -139,7 +141,7 @@ func runAuthMailSmoke(t *testing.T, captcha CaptchaVerifier, captchaToken string
 	if resetRequest.Code != http.StatusAccepted {
 		t.Fatalf("live password reset request returned %d", resetRequest.Code)
 	}
-	resetToken, resetMessageID := mailpitToken(t, apiURL, email, "Reset your Heartbeat Checker password", &ownedIDs)
+	resetToken, resetMessageID := mailpitToken(t, apiURL, email, "Установите новый пароль — Heartbeat Checker", &ownedIDs)
 	reset := f.request(t, http.MethodPost, "/api/v1/auth/password/reset/confirm", map[string]string{"token": resetToken, "password": "live reset secure password"}, nil, "", integrationOrigin, "")
 	if reset.Code != http.StatusNoContent {
 		t.Fatalf("live password reset confirmation returned %d", reset.Code)
@@ -218,11 +220,11 @@ func mailpitToken(t *testing.T, apiURL, email, subject string, ownedIDs *[]strin
 					if err != nil {
 						break
 					}
-					decoded, err := io.ReadAll(quotedprintable.NewReader(message.Body))
+					decoded, err := authMessageText(message)
 					if err != nil {
 						break
 					}
-					for _, field := range strings.Fields(string(decoded)) {
+					for _, field := range strings.Fields(decoded) {
 						if !strings.Contains(field, "#token=") {
 							continue
 						}
@@ -241,4 +243,77 @@ func mailpitToken(t *testing.T, apiURL, email, subject string, ownedIDs *[]strin
 	}
 	t.Fatal("Mailpit did not receive the expected auth email with a token")
 	return "", ""
+}
+
+func authMessageText(message *mail.Message) (string, error) {
+	mediaType, params, err := mime.ParseMediaType(message.Header.Get("Content-Type"))
+	if err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(mediaType, "multipart/") {
+		reader := multipart.NewReader(message.Body, params["boundary"])
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				return "", fmt.Errorf("mail message has no text part")
+			}
+			if err != nil {
+				return "", err
+			}
+			partType, _, err := mime.ParseMediaType(part.Header.Get("Content-Type"))
+			if err != nil {
+				_ = part.Close()
+				return "", err
+			}
+			if partType == "text/plain" {
+				body, readErr := io.ReadAll(io.LimitReader(part, 64<<10))
+				_ = part.Close()
+				return string(body), readErr
+			}
+			_ = part.Close()
+		}
+	}
+	if mediaType != "text/plain" {
+		return "", fmt.Errorf("unsupported auth mail content type %q", mediaType)
+	}
+	return readQuotedPrintableMessageBody(message)
+}
+
+func TestAuthMessageTextSupportsMultipartAndLegacyPlainBody(t *testing.T) {
+	tests := []struct {
+		name, raw, want string
+	}{
+		{
+			name: "multipart text first",
+			raw: "MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=smoke-boundary\r\n\r\n" +
+				"--smoke-boundary\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n" +
+				"Confirm: https://example.test/verify#token=3Dabc123\r\n" +
+				"--smoke-boundary\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n" +
+				"<p>Confirm</p>\r\n--smoke-boundary--\r\n",
+			want: "Confirm: https://example.test/verify#token=abc123",
+		},
+		{
+			name: "legacy plain text",
+			raw: "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n" +
+				"Confirm: https://example.test/verify#token=3Dlegacy123\r\n",
+			want: "Confirm: https://example.test/verify#token=legacy123\r\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			message, err := mail.ReadMessage(strings.NewReader(tt.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := authMessageText(message)
+			if err != nil || got != tt.want {
+				t.Fatalf("authMessageText() = %q, %v; want %q", got, err, tt.want)
+			}
+		})
+	}
+}
+
+func readQuotedPrintableMessageBody(message *mail.Message) (string, error) {
+	decoded, err := io.ReadAll(io.LimitReader(quotedprintable.NewReader(message.Body), 64<<10))
+	return string(decoded), err
 }
