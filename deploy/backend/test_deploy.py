@@ -179,7 +179,7 @@ class BackendDeployTests(unittest.TestCase):
         self.write_mock("python3", PYTHON_MOCK)
         self.write_mock("cp", CP_MOCK)
         self.write_mock("flock", "#!/bin/sh\nexit 0\n")
-        self.write_mock("sha256sum", "#!/bin/sh\nif [[ \"$1\" == */.owner-import.json ]]; then exec \"$REAL_PYTHON\" -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],\"rb\").read()).hexdigest(), sys.argv[1])' \"$1\"; fi\nprintf '%064d  %s\\n' 0 \"$1\"\n")
+        self.write_mock("sha256sum", "#!/bin/dash\ncase \"$1\" in\n  */.owner-import.json) exec \"$REAL_PYTHON\" -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],\"rb\").read()).hexdigest(), sys.argv[1])' \"$1\" ;;\nesac\nprintf '%064d  %s\\n' 0 \"$1\"\n")
         (self.backend / ".env").write_text(BASE_ENV)
         (self.backend / ".env").chmod(0o600)
         (self.backend / "compose.yaml.incoming").write_text("compose candidate\n")
