@@ -14,8 +14,9 @@ activate_telegram_relay=${8-false}
 activate_messenger_notifications=${9-false}
 provision_owner=${10-false}
 activate_admin_mfa=${11-false}
+activate_oauth=${12-false}
 
-[[ $# -ge 7 && $# -le 11 && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) && ( $activate_messenger_notifications == true || $activate_messenger_notifications == false ) && ( $provision_owner == true || $provision_owner == false ) && ( $activate_admin_mfa == true || $activate_admin_mfa == false ) ]] || {
+[[ $# -ge 7 && $# -le 12 && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) && ( $activate_messenger_notifications == true || $activate_messenger_notifications == false ) && ( $provision_owner == true || $provision_owner == false ) && ( $activate_admin_mfa == true || $activate_admin_mfa == false ) && ( $activate_oauth == true || $activate_oauth == false ) ]] || {
   echo 'Invalid release arguments' >&2; exit 1;
 }
 for spec in "api:$api_image" "worker:$worker_image" "probe:$probe_image" "migrate:$migrate_image" "backup:$backup_image"; do
@@ -159,7 +160,7 @@ except (OSError, UnicodeError, ValueError, TypeError):
 PY
 fi
 
-if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa; then
+if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth; then
   [[ -f .env.next && ! -L .env.next && $(stat -c %a .env.next) == 600 ]] || {
     if $activate_messenger_notifications; then
       echo 'Configuration activation requires a regular mode-600 .env.next' >&2
@@ -172,7 +173,7 @@ if $activate_telegram_relay || $activate_messenger_notifications || $activate_ad
     echo 'Resolve the previous configuration activation staging file' >&2; exit 1;
   }
   cp -p .env.next "$workdir/.env.next"
-  python3 - "$workdir/.env.next" "$activate_telegram_relay" "$activate_messenger_notifications" "$activate_admin_mfa" <<'PY'
+  python3 - "$workdir/.env.next" "$activate_telegram_relay" "$activate_messenger_notifications" "$activate_admin_mfa" "$activate_oauth" <<'PY'
 import base64
 import binascii
 from pathlib import Path
@@ -197,7 +198,12 @@ relay = sys.argv[2] == "true"
 messenger = sys.argv[3] == "true"
 admin_mfa = sys.argv[4] == "true"
 mfa_key = b"AUTH_MFA_ENCRYPTION_KEY"
-allowed = (set(relay_targets) if relay else set()) | (messenger_keys if messenger else set()) | ({mfa_key} if admin_mfa else set())
+oauth_keys = {
+    b"YANDEX_CLIENT_ID", b"YANDEX_CLIENT_SECRET", b"YANDEX_REDIRECT_URI",
+    b"YANDEX_SCOPES", b"VK_CLIENT_ID", b"VK_CALLBACK_URL",
+}
+oauth = sys.argv[5] == "true"
+allowed = (set(relay_targets) if relay else set()) | (messenger_keys if messenger else set()) | ({mfa_key} if admin_mfa else set()) | (oauth_keys if oauth else set())
 prefix = "Relay activation rejected" if relay and not messenger else "Configuration activation rejected"
 
 def reject(message):
@@ -234,6 +240,24 @@ old_lines, old_values = parse(".env")
 new_lines, new_values = parse(sys.argv[1])
 if old_lines != new_lines:
     reject("changes outside selected keys")
+if oauth:
+    for key in oauth_keys:
+        previous = old_values.get(key, b"")
+        if unquote_literal(previous) and new_values.get(key) != previous:
+            reject("existing OAuth credential cannot be rotated")
+    if not re.fullmatch(rb"[A-Za-z0-9_-]{16,128}", new_values.get(b"YANDEX_CLIENT_ID", b"")):
+        reject("invalid Yandex client ID")
+    secret = new_values.get(b"YANDEX_CLIENT_SECRET", b"")
+    if not 16 <= len(secret) <= 512 or any(c < 33 or c > 126 or c in b"'\"$`\\#" for c in secret):
+        reject("invalid Yandex client secret")
+    if new_values.get(b"YANDEX_REDIRECT_URI") != b"https://heartbeat-checker.ru/api/v1/auth/oauth/yandex/callback":
+        reject("invalid Yandex callback URL")
+    if unquote_literal(new_values.get(b"YANDEX_SCOPES", b"")) != b"login:email login:info":
+        reject("invalid Yandex scopes")
+    if not re.fullmatch(rb"[0-9]{4,32}", new_values.get(b"VK_CLIENT_ID", b"")):
+        reject("invalid VK client ID")
+    if new_values.get(b"VK_CALLBACK_URL") != b"https://heartbeat-checker.ru/api/v1/auth/oauth/vk/callback":
+        reject("invalid VK callback URL")
 if relay and any(new_values.get(key) != value for key, value in relay_targets.items()):
     reject("unexpected Telegram endpoint")
 if admin_mfa:
@@ -315,6 +339,9 @@ except (KeyError, ValueError, binascii.Error):
     raise SystemExit("Production admin MFA key is required")
 if any("AUTH_MFA_ENCRYPTION_KEY" in c[name]["environment"] for name in ("worker", "probe")):
     raise SystemExit("Admin MFA key must be scoped to API only")
+oauth_keys = ("YANDEX_CLIENT_ID", "YANDEX_CLIENT_SECRET", "YANDEX_REDIRECT_URI", "YANDEX_SCOPES", "VK_CLIENT_ID", "VK_CALLBACK_URL")
+if any(key in c[name]["environment"] for key in oauth_keys for name in ("worker", "probe")):
+    raise SystemExit("OAuth configuration must be scoped to API only")
 '
 "${compose_new[@]}" pull postgres caddy api worker probe migrate
 docker pull "$backup_image"
@@ -485,7 +512,8 @@ jq -n --arg source_sha "$source_sha" --arg api "$api_image" \
   --argjson telegram_relay_activated "$activate_telegram_relay" \
   --argjson messenger_notifications_activated "$activate_messenger_notifications" \
   --argjson owner_import_requested "$provision_owner" --argjson admin_mfa_activated "$activate_admin_mfa" \
-  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image},backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,messenger_notifications_activated:$messenger_notifications_activated,owner_import_requested:$owner_import_requested,admin_mfa_activated:$admin_mfa_activated,completed_at:(now|todate)}' \
+  --argjson oauth_activated "$activate_oauth" \
+  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image},backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,messenger_notifications_activated:$messenger_notifications_activated,owner_import_requested:$owner_import_requested,admin_mfa_activated:$admin_mfa_activated,oauth_activated:$oauth_activated,completed_at:(now|todate)}' \
   > "receipts/$source_sha.json.incoming"
 mv compose.backup.yaml.incoming compose.backup.yaml
 mv backup.sh.incoming backup.sh

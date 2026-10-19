@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth"
+	authcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/incidents"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/monitors"
@@ -41,7 +42,29 @@ func (adminTestCaptcha) Verify(context.Context, string, string, string) error { 
 
 type adminTestMailer struct{}
 
-func (adminTestMailer) Send(context.Context, string, string, string) error { return nil }
+func (adminTestMailer) Send(context.Context, string, string, authcontracts.MailContent) error {
+	return nil
+}
+
+type oauthAuditTestMailer struct{ content authcontracts.MailContent }
+
+func (m *oauthAuditTestMailer) Send(_ context.Context, _ string, _ string, content authcontracts.MailContent) error {
+	m.content = content
+	return nil
+}
+
+type oauthAuditTestProvider struct{}
+
+func (oauthAuditTestProvider) ID() string { return "yandex" }
+func (oauthAuditTestProvider) AuthorizationURL(state, _ string) string {
+	return "https://provider.example/authorize?state=" + url.QueryEscape(state)
+}
+func (oauthAuditTestProvider) Exchange(_ context.Context, code, verifier, deviceID, state string) (auth.OAuthIdentityProfile, error) {
+	if code != "fake-code" || verifier == "" || deviceID != "fake-device" || state == "" {
+		return auth.OAuthIdentityProfile{}, fmt.Errorf("invalid synthetic callback")
+	}
+	return auth.OAuthIdentityProfile{Subject: "synthetic-audit-subject", Email: "oauth-audit@example.test", Name: "Synthetic OAuth"}, nil
+}
 
 type adminTestActor struct {
 	id    string
@@ -102,6 +125,104 @@ func newAdminFixture(t *testing.T) *adminFixture {
 		return authModule.RequireRole("admin", next)
 	})
 	return &adminFixture{pool: pool, handler: mux}
+}
+
+func TestOAuthRegistrationAuditFailureRollsBackAccountAndIdentity(t *testing.T) {
+	f := newAdminFixture(t)
+	if _, err := f.pool.Exec(context.Background(), `CREATE FUNCTION admin.reject_oauth_registered_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='oauth.registered' THEN RAISE EXCEPTION 'synthetic audit trigger'; END IF; RETURN NEW; END $$; CREATE TRIGGER reject_oauth_registered_audit BEFORE INSERT ON admin.audit_events FOR EACH ROW EXECUTE FUNCTION admin.reject_oauth_registered_audit()`); err != nil {
+		t.Fatal(err)
+	}
+	mailer := &oauthAuditTestMailer{}
+	oauthModule, err := auth.New(f.pool, accounts.New(f.pool), adminTestCaptcha{}, mailer, auth.Config{
+		Origin: adminTestOrigin, ChallengeTTL: time.Hour, ResetTTL: time.Hour, RateLimitWindow: time.Hour,
+		OAuthProviders: map[string]auth.OAuthProvider{"yandex": oauthAuditTestProvider{}}, OAuthAudit: AuditOAuth,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	oauthModule.Register(mux)
+	startReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/oauth/yandex/start", strings.NewReader(`{"mode":"login","returnTo":"/app"}`))
+	startReq.Header.Set("Content-Type", "application/json")
+	startReq.Header.Set("Origin", adminTestOrigin)
+	startW := httptest.NewRecorder()
+	mux.ServeHTTP(startW, startReq)
+	if startW.Code != http.StatusOK {
+		t.Fatalf("OAuth start status=%d body=%s", startW.Code, startW.Body.String())
+	}
+	var startBody struct {
+		AuthorizationURL string `json:"authorizationUrl"`
+	}
+	if err := json.Unmarshal(startW.Body.Bytes(), &startBody); err != nil {
+		t.Fatal(err)
+	}
+	authorize, err := url.Parse(startBody.AuthorizationURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attempt *http.Cookie
+	for _, cookie := range startW.Result().Cookies() {
+		if cookie.Name == "hc_oauth_attempt" {
+			attempt = cookie
+		}
+	}
+	if attempt == nil || authorize.Query().Get("state") == "" {
+		t.Fatalf("OAuth start missing state/cookie: %#v %q", attempt, authorize.Query().Get("state"))
+	}
+	callbackReq := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/yandex/callback?code=fake-code&state="+url.QueryEscape(authorize.Query().Get("state"))+"&device_id=fake-device", nil)
+	callbackReq.AddCookie(attempt)
+	callbackW := httptest.NewRecorder()
+	mux.ServeHTTP(callbackW, callbackReq)
+	var registration *http.Cookie
+	for _, cookie := range callbackW.Result().Cookies() {
+		if cookie.Name == "hc_oauth_registration" {
+			registration = cookie
+		}
+	}
+	if registration == nil {
+		t.Fatalf("OAuth callback missing registration proof: %v", callbackW.Result().Cookies())
+	}
+	var token string
+	for _, word := range strings.Fields(mailer.content.Text) {
+		if strings.Contains(word, "verify-email?oauth=1") {
+			u, err := url.Parse(strings.TrimSuffix(word, "."))
+			if err == nil {
+				token = u.Query().Get("token")
+				if token == "" {
+					fragment, _ := url.ParseQuery(u.Fragment)
+					token = fragment.Get("token")
+				}
+			}
+		}
+	}
+	if token == "" {
+		t.Fatal("OAuth confirmation token was not captured in the synthetic mail")
+	}
+	confirmReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/oauth/registration/confirm", strings.NewReader(`{"token":"`+token+`"}`))
+	confirmReq.Header.Set("Content-Type", "application/json")
+	confirmReq.Header.Set("Origin", adminTestOrigin)
+	confirmReq.AddCookie(registration)
+	confirmW := httptest.NewRecorder()
+	mux.ServeHTTP(confirmW, confirmReq)
+	if confirmW.Code == http.StatusOK {
+		t.Fatal("OAuth confirmation succeeded although real AuditOAuth insert was rejected")
+	}
+	var credentials, identities, consumed, auditRows int
+	if err := f.pool.QueryRow(context.Background(), "SELECT count(*) FROM auth.credentials WHERE email='oauth-audit@example.test'").Scan(&credentials); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.pool.QueryRow(context.Background(), "SELECT count(*) FROM auth.oauth_identities WHERE subject='synthetic-audit-subject'").Scan(&identities); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.pool.QueryRow(context.Background(), "SELECT count(*) FROM auth.registration_challenges WHERE oauth_subject='synthetic-audit-subject' AND consumed_at IS NOT NULL").Scan(&consumed); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.pool.QueryRow(context.Background(), "SELECT count(*) FROM admin.audit_events WHERE action='oauth.registered'").Scan(&auditRows); err != nil {
+		t.Fatal(err)
+	}
+	if credentials != 0 || identities != 0 || consumed != 0 || auditRows != 0 {
+		t.Fatalf("real audit failure left partial state: credentials=%d identities=%d consumed=%d audit=%d", credentials, identities, consumed, auditRows)
+	}
 }
 
 func (f *adminFixture) seedActor(t *testing.T, accountID, sessionID, token, name, email, role string, mfa bool) adminTestActor {

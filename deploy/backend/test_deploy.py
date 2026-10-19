@@ -60,8 +60,11 @@ if args[:2] == ["inspect"]:
     print("healthy" if "Health.Status" in args[1] else "true"); raise SystemExit(0)
 if args and args[0] == "compose":
     if "config" in args and "--format" in args:
+        api_environment = {"DATABASE_URL": "postgres://heartbeat:testpass@postgres:5432/heartbeat?sslmode=disable", "AUTH_MFA_ENCRYPTION_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}
+        if os.environ.get("COMPOSE_OAUTH_KEYS") == "1":
+            api_environment.update({"YANDEX_CLIENT_ID": "synthetic-yandex-client", "YANDEX_CLIENT_SECRET": "synthetic-yandex-secret-0123456789", "YANDEX_REDIRECT_URI": "https://heartbeat-checker.ru/api/v1/auth/oauth/yandex/callback", "YANDEX_SCOPES": "login:email login:info", "VK_CLIENT_ID": "12345678", "VK_CALLBACK_URL": "https://heartbeat-checker.ru/api/v1/auth/oauth/vk/callback"})
         print(json.dumps({"services": {
-            "api": {"environment": {"DATABASE_URL": "postgres://heartbeat:testpass@postgres:5432/heartbeat?sslmode=disable", "AUTH_MFA_ENCRYPTION_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}},
+            "api": {"environment": api_environment},
             "postgres": {"environment": {"POSTGRES_PASSWORD": "testpass"}},
             "worker": {"environment": {"SMTP_TLS_MODE": "implicit_tls"}},
             "probe": {"environment": {"PROBE_SHARED_SECRET": "test-probe-secret"}},
@@ -199,7 +202,7 @@ class BackendDeployTests(unittest.TestCase):
         path.chmod(0o755)
 
     def run_deploy(self, activate_next_config=None, activate_messenger_notifications=None,
-                   provision_owner=None, activate_admin_mfa=None, **extra_env):
+                   provision_owner=None, activate_admin_mfa=None, activate_oauth=None, **extra_env):
         env = os.environ.copy()
         env.update({
             "PATH": f"{self.bin}:{env['PATH']}",
@@ -225,6 +228,10 @@ class BackendDeployTests(unittest.TestCase):
             while len(args) < 12:
                 args.append("false")
             args.append("true" if activate_admin_mfa else "false")
+        if activate_oauth is not None:
+            while len(args) < 13:
+                args.append("false")
+            args.append("true" if activate_oauth else "false")
         return subprocess.run(
             args,
             input="test-token\n", cwd=self.root, env=env, text=True, capture_output=True,
@@ -294,6 +301,18 @@ class BackendDeployTests(unittest.TestCase):
 
     def admin_mfa_candidate(self, key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="):
         return BASE_ENV + f"AUTH_MFA_ENCRYPTION_KEY={key}\n"
+
+    def oauth_candidate(self, **overrides):
+        values = {
+            "YANDEX_CLIENT_ID": "synthetic-yandex-client-1234",
+            "YANDEX_CLIENT_SECRET": "synthetic-yandex-secret-0123456789",
+            "YANDEX_REDIRECT_URI": "https://heartbeat-checker.ru/api/v1/auth/oauth/yandex/callback",
+            "YANDEX_SCOPES": "login:email login:info",
+            "VK_CLIENT_ID": "12345678",
+            "VK_CALLBACK_URL": "https://heartbeat-checker.ru/api/v1/auth/oauth/vk/callback",
+        }
+        values.update(overrides)
+        return BASE_ENV.rstrip("\n") + "\n" + "".join(f"{key}={value}\n" for key, value in values.items())
 
     def docker_calls(self):
         if not self.log.exists():
@@ -409,6 +428,89 @@ class BackendDeployTests(unittest.TestCase):
         self.assertEqual(self.docker_calls(), [])
         self.assertEqual((self.backend / ".env").read_text(), old)
         self.assertTrue(staged.exists())
+
+    def test_oauth_candidate_is_ignored_without_activation_flag(self):
+        candidate = self.write_next_config(self.oauth_candidate())
+        original = candidate.read_bytes()
+        result = self.run_deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(candidate.read_bytes(), original)
+        self.assertEqual((self.backend / ".env").read_text(), BASE_ENV)
+        receipt = json.loads((self.backend / "receipts" / f"{SOURCE_SHA}.json").read_text())
+        self.assertFalse(receipt["oauth_activated"])
+
+    def test_oauth_candidate_activation_is_allowlisted_scoped_and_receipted(self):
+        candidate_contents = self.oauth_candidate()
+        candidate = self.write_next_config(candidate_contents)
+        result = self.run_deploy(activate_oauth=True, COMPOSE_OAUTH_KEYS="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.backend / ".env").read_text(), candidate_contents)
+        self.assertFalse(candidate.exists())
+        receipt = json.loads((self.backend / "receipts" / f"{SOURCE_SHA}.json").read_text())
+        self.assertTrue(receipt["oauth_activated"])
+        for key in ("YANDEX_CLIENT_ID", "YANDEX_CLIENT_SECRET", "YANDEX_REDIRECT_URI", "YANDEX_SCOPES", "VK_CLIENT_ID", "VK_CALLBACK_URL"):
+            self.assertIn(key + "=", (self.backend / ".env").read_text())
+
+    def test_oauth_activation_rejects_unknown_keys_and_invalid_provider_contract(self):
+        cases = [
+            (self.oauth_candidate() + "UNRELATED_SECRET=synthetic\n", "changes outside selected keys"),
+            (self.oauth_candidate(YANDEX_REDIRECT_URI="https://attacker.example/callback"), "invalid Yandex callback URL"),
+            (self.oauth_candidate(YANDEX_SCOPES="login:email"), "invalid Yandex scopes"),
+            (self.oauth_candidate(YANDEX_CLIENT_SECRET="short"), "invalid Yandex client secret"),
+            (self.oauth_candidate(VK_CALLBACK_URL="https://heartbeat-checker.ru/oauth/callback"), "invalid VK callback URL"),
+        ]
+        for candidate_contents, reason in cases:
+            with self.subTest(reason=reason):
+                self.write_next_config(candidate_contents)
+                result = self.run_deploy(activate_oauth=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(reason, result.stderr)
+                self.assertEqual(self.docker_calls(), [])
+                self.assertEqual((self.backend / ".env").read_text(), BASE_ENV)
+
+    def test_oauth_activation_preserves_existing_raw_credentials(self):
+        old = self.oauth_candidate(YANDEX_CLIENT_ID='"synthetic-yandex-client-1234"')
+        (self.backend / ".env").write_text(old)
+        (self.backend / ".env").chmod(0o600)
+        rotated = self.oauth_candidate(YANDEX_CLIENT_ID="changed-yandex-client-id")
+        candidate = self.write_next_config(rotated)
+        result = self.run_deploy(activate_oauth=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("existing OAuth credential cannot be rotated", result.stderr)
+        self.assertEqual(self.docker_calls(), [])
+        self.assertEqual((self.backend / ".env").read_text(), old)
+        self.assertTrue(candidate.exists())
+
+    def test_oauth_candidate_must_be_regular_mode_600(self):
+        candidate = self.write_next_config(self.oauth_candidate(), mode=0o640)
+        result = self.run_deploy(activate_oauth=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("regular mode-600 .env.next", result.stderr)
+        self.assertEqual(self.docker_calls(), [])
+        self.assertTrue(candidate.exists())
+
+    def test_combined_messenger_and_oauth_activation_updates_both_receipt_flags(self):
+        self.configure_informer_base()
+        combined = self.informer_candidate().rstrip("\n") + "\n" + "".join(
+            line + "\n" for line in self.oauth_candidate().splitlines()
+            if line.startswith(("YANDEX_", "VK_"))
+        )
+        self.write_next_config(combined)
+        result = self.run_deploy(activate_next_config=False, activate_messenger_notifications=True, activate_oauth=True, COMPOSE_OAUTH_KEYS="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads((self.backend / "receipts" / f"{SOURCE_SHA}.json").read_text())
+        self.assertTrue(receipt["messenger_notifications_activated"])
+        self.assertTrue(receipt["oauth_activated"])
+
+    def test_oauth_candidate_mutation_during_deploy_retains_pending_journal_without_receipt(self):
+        candidate = self.write_next_config(self.oauth_candidate())
+        original = candidate.read_bytes()
+        result = self.run_deploy(activate_oauth=True, MUTATE_NEXT_DURING_DEPLOY="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Staged activation env changed during deployment", result.stderr)
+        self.assertIn("phase=", (self.backend / "pending").read_text())
+        self.assertEqual(candidate.read_bytes(), original + b"# changed during deployment\n")
+        self.assertFalse((self.backend / "receipts" / f"{SOURCE_SHA}.json").exists())
 
     def test_missing_provisioned_config_fails_before_any_change(self):
         (self.backend / ".env").unlink()

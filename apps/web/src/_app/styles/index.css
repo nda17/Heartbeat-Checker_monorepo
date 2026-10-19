@@ -1084,6 +1084,26 @@ input:read-only {
   color: var(--accent);
   font-weight: 500;
 }
+.oauth-options {
+  margin-top: 23px;
+}
+.oauth-divider {
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+  margin-bottom: 13px;
+}
+.oauth-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.oauth-buttons button {
+  min-height: 42px;
+}
+.oauth-options .notice {
+  margin-top: 13px;
+}
 .auth-main > footer {
   font-size: 11px;
 }
@@ -1694,6 +1714,46 @@ input:read-only {
   font-size: 10px;
   margin-top: 4px;
   min-height: 38px;
+}
+.oauth-identities-panel {
+  padding: 27px;
+  margin-bottom: 25px;
+}
+.oauth-identities-panel > .small {
+  margin-bottom: 15px;
+}
+.oauth-identity {
+  border-top: 1px solid var(--line);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px 0;
+}
+.oauth-identity:last-child {
+  padding-bottom: 0;
+}
+.oauth-identity > div {
+  min-width: 0;
+}
+.oauth-identity strong {
+  font-size: 13px;
+}
+.oauth-identity p {
+  margin-top: 6px;
+}
+.oauth-identity-form {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+}
+.oauth-identity-form label {
+  font-size: 10px;
+  min-width: 185px;
+}
+.oauth-identity-form button {
+  min-height: 38px;
+  white-space: nowrap;
 }
 .sessions-panel {
   padding: 26px;
@@ -2433,8 +2493,21 @@ input:read-only {
     font-size: 7px;
   }
   .settings-panel,
-  .sessions-panel {
+  .sessions-panel,
+  .oauth-identities-panel {
     padding: 20px;
+  }
+  .oauth-identity {
+    flex-direction: column;
+    gap: 12px;
+  }
+  .oauth-identity-form {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .oauth-identity-form label {
+    min-width: 0;
   }
   .panel-heading p {
     font-size: 9px;

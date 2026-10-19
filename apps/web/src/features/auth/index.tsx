@@ -2,7 +2,13 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { api, errorMessage, safeAppReturnTo } from "@/shared/api";
+import {
+  api,
+  errorMessage,
+  oauthAuthorizationUrl,
+  oauthCallbackMessage,
+  safeAppReturnTo,
+} from "@/shared/api";
 import { Turnstile } from "@/shared/turnstile";
 import { Notice, PasswordInput, Spinner } from "@/shared/ui";
 export type AuthMode =
@@ -39,6 +45,74 @@ const config = {
     endpoint: "/auth/password/reset/confirm",
   },
 };
+type OAuthProvider = "yandex" | "vk";
+type Provider = { id: OAuthProvider; name: string; enabled: boolean };
+function OAuthButtons() {
+  const [providers, setProviders] = useState<Provider[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const controller = new AbortController();
+    void api<{ providers: Provider[] }>("/auth/oauth/providers", {
+      signal: controller.signal,
+    })
+      .then((result) =>
+        setProviders(result.providers.filter((item) => item.enabled)),
+      )
+      .catch((failure) => {
+        if (!(failure instanceof DOMException && failure.name === "AbortError"))
+          setError(errorMessage(failure));
+      });
+    return () => controller.abort();
+  }, []);
+  async function start(provider: OAuthProvider) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const returnTo = safeAppReturnTo(
+        new URLSearchParams(window.location.search).get("returnTo"),
+      );
+      const result = await api<{ authorizationUrl: string }>(
+        `/auth/oauth/${provider}/start`,
+        {
+          method: "POST",
+          body: { mode: "login", ...(returnTo ? { returnTo } : {}) },
+        },
+      );
+      window.location.assign(
+        oauthAuthorizationUrl(provider, result.authorizationUrl),
+      );
+    } catch (failure) {
+      setError(errorMessage(failure));
+      setBusy(false);
+    }
+  }
+  if (providers.length === 0 && !error) return null;
+  return (
+    <div className="oauth-options">
+      {providers.length > 0 && (
+        <>
+          <p className="oauth-divider">или продолжить через</p>
+          <div className="oauth-buttons">
+            {providers.map((provider) => (
+              <button
+                key={provider.id}
+                className="secondary"
+                type="button"
+                disabled={busy}
+                onClick={() => void start(provider.id)}
+              >
+                {provider.name}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+      {error && <Notice>{error}</Notice>}
+    </div>
+  );
+}
 export function AuthForm({ mode }: { mode: AuthMode }) {
   const cfg = config[mode];
   const router = useRouter();
@@ -48,6 +122,7 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
   const [resetKey, setResetKey] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [oauthError, setOAuthError] = useState("");
   const [done, setDone] = useState(false);
   const consumedLink = useRef(false);
   const isLink = mode === "verify" || mode === "reset-confirm";
@@ -64,6 +139,22 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLinkReady(true);
   }, [isLink]);
+  useEffect(() => {
+    if (mode !== "login") return;
+    const url = new URL(window.location.href);
+    const code = url.searchParams.get("oauthError");
+    if (!code) return;
+    // Capture the one-time callback result before removing it from the browser URL.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setOAuthError(oauthCallbackMessage(code));
+    url.searchParams.delete("oauthError");
+    const returnTo = safeAppReturnTo(url.searchParams.get("returnTo"));
+    window.history.replaceState(
+      null,
+      "",
+      returnTo ? `/login?${new URLSearchParams({ returnTo })}` : "/login",
+    );
+  }, [mode]);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
@@ -159,6 +250,7 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
         </div>
       ) : (
         <form onSubmit={submit} className="form-stack">
+          {oauthError && <Notice>{oauthError}</Notice>}
           {error && <Notice>{error}</Notice>}
           {isLink && linkReady && !token && (
             <Notice>
@@ -264,6 +356,7 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
           )}
         </form>
       )}
+      {!done && (mode === "login" || mode === "register") && <OAuthButtons />}
       {!done && (
         <p className="auth-switch">
           {mode === "login" ? (
@@ -279,6 +372,114 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
           )}
         </p>
       )}
+    </>
+  );
+}
+
+type OAuthRegistrationInfo = {
+  provider: OAuthProvider;
+  email: string;
+  name: string;
+  expiresAt: string;
+};
+
+export function OAuthRegistration() {
+  const router = useRouter();
+  const consumedLink = useRef(false);
+  const [registration, setRegistration] =
+    useState<OAuthRegistrationInfo | null>(null);
+  const [token, setToken] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!consumedLink.current) {
+      consumedLink.current = true;
+      const params = new URLSearchParams(window.location.hash.slice(1));
+      // The email token is available only after hydration and is immediately removed from the URL.
+      setToken(params.get("token") ?? "");
+      if (window.location.hash)
+        window.history.replaceState(
+          null,
+          "",
+          window.location.pathname + window.location.search,
+        );
+    }
+    const controller = new AbortController();
+    void api<OAuthRegistrationInfo>("/auth/oauth/registration", {
+      signal: controller.signal,
+    })
+      .then(setRegistration)
+      .catch((failure) => {
+        if (!(failure instanceof DOMException && failure.name === "AbortError"))
+          setError(errorMessage(failure));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, []);
+  async function confirm() {
+    if (!token || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api<{ returnTo: string }>(
+        "/auth/oauth/registration/confirm",
+        { method: "POST", body: { token } },
+      );
+      setToken("");
+      router.replace(safeAppReturnTo(result.returnTo) ?? "/app");
+      router.refresh();
+    } catch (failure) {
+      setError(errorMessage(failure));
+      setBusy(false);
+    }
+  }
+  return (
+    <>
+      <div className="auth-heading">
+        <p className="eyebrow">HEARTBEAT CHECKER</p>
+        <h1>Подтвердите email</h1>
+        <p>
+          Для регистрации через Яндекс или VK подтвердите адрес из письма в этом
+          браузере. Аккаунт появится только после подтверждения.
+        </p>
+      </div>
+      {error && <Notice>{error}</Notice>}
+      {loading ? (
+        <div className="auth-done">
+          <Spinner /> Проверяем регистрацию…
+        </div>
+      ) : registration ? (
+        <div className="form-stack">
+          <p className="small">
+            Письмо отправлено на <strong>{registration.email}</strong>.
+            Проверьте также папку «Спам» и откройте ссылку в этом браузере.
+          </p>
+          {token ? (
+            <button
+              className="primary full"
+              disabled={busy}
+              onClick={() => void confirm()}
+            >
+              {busy ? "Подтверждаем…" : "Подтвердить email и войти"}
+            </button>
+          ) : (
+            <p className="small muted">
+              Откройте ссылку из письма, чтобы продолжить.
+            </p>
+          )}
+        </div>
+      ) : (
+        <p className="small muted">
+          Начните вход через провайдера заново. Если ссылка устарела, новое
+          письмо будет отправлено при следующей регистрации.
+        </p>
+      )}
+      <p className="auth-switch">
+        <Link href="/login">← Вернуться ко входу</Link>
+      </p>
     </>
   );
 }

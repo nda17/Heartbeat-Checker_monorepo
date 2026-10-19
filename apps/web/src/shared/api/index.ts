@@ -78,6 +78,18 @@ const messages: Record<string, string> = {
   mfa_step_up_required:
     "Для изменения данных повторно подтвердите вход одноразовым кодом.",
   conflict: "Настройки уже изменены. Обновите список и попробуйте снова.",
+  oauth_provider_unavailable:
+    "Вход через этого провайдера временно недоступен.",
+  oauth_login_requires_logout:
+    "Для входа через другой аккаунт сначала выйдите из текущего.",
+  oauth_identity_conflict:
+    "Этот профиль провайдера уже подключён к другому аккаунту.",
+  oauth_email_conflict:
+    "Аккаунт с этим email уже есть. Войдите существующим способом и подключите провайдера в настройках.",
+  oauth_registration_expired:
+    "Время подтверждения истекло. Начните регистрацию через провайдера заново.",
+  password_setup_required:
+    "Сначала установите пароль через восстановление доступа.",
   invalid_url:
     "Укажите публичный HTTP или HTTPS адрес. Внутренние и служебные адреса запрещены.",
 };
@@ -87,9 +99,55 @@ export function errorMessage(error: unknown) {
         "Не удалось выполнить действие. Попробуйте ещё раз.")
     : "Не удалось выполнить действие. Попробуйте ещё раз.";
 }
+const oauthMessages: Record<string, string> = {
+  oauth_cancelled:
+    "Вход через провайдера отменён. Вы можете попробовать снова.",
+  oauth_failed:
+    "Не удалось завершить вход через провайдера. Попробуйте ещё раз.",
+  oauth_state_invalid: "Срок проверки входа истёк. Начните вход заново.",
+  oauth_email_required:
+    "Провайдер не передал подтверждённый email. Зарегистрируйтесь по email, затем подключите провайдера в настройках.",
+  oauth_email_conflict:
+    "Аккаунт с этим email уже есть. Войдите существующим способом и подключите провайдера в настройках.",
+  oauth_identity_conflict:
+    "Этот профиль провайдера уже подключён к другому аккаунту.",
+  oauth_session_changed:
+    "Сессия изменилась во время подключения. Войдите снова и повторите действие.",
+  oauth_registration_expired:
+    "Время подтверждения истекло. Начните регистрацию через провайдера заново.",
+  oauth_login_requires_logout:
+    "Для входа через другой аккаунт сначала выйдите из текущего.",
+  password_setup_required:
+    "Сначала установите пароль через восстановление доступа.",
+  oauth_provider_unavailable:
+    "Вход через этого провайдера временно недоступен.",
+  mfa_enrollment_required:
+    "Для изменения способов входа настройте приложение-аутентификатор.",
+  mfa_required: "Подтвердите вход одноразовым или резервным кодом.",
+  mfa_step_up_required:
+    "Для изменения способов входа повторно подтвердите вход одноразовым кодом.",
+};
+export function oauthCallbackMessage(code: string) {
+  return oauthMessages[code] ?? oauthMessages.oauth_failed;
+}
+export function oauthAuthorizationUrl(provider: "yandex" | "vk", raw: string) {
+  const url = new URL(raw);
+  const origin =
+    provider === "yandex" ? "https://oauth.yandex.ru" : "https://id.vk.ru";
+  if (
+    url.origin !== origin ||
+    url.pathname !== "/authorize" ||
+    url.hash ||
+    url.username ||
+    url.password
+  )
+    throw new Error("Invalid OAuth authorization URL");
+  return url.href;
+}
 // Preserve only reviewed authenticated destinations after login.
 export function safeAppReturnTo(value: string | null) {
-  if (value === "/app/admin") return value;
+  if (value === "/app" || value === "/app/admin" || value === "/app/settings")
+    return value;
   if (!value?.startsWith("/app?")) return null;
   try {
     const url = new URL(value, "https://heartbeat-checker.invalid");

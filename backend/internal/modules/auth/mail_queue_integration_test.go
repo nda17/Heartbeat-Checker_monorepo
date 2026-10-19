@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/repository/postgres"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/security"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/service"
@@ -24,7 +25,7 @@ type queueTestSender struct {
 	deadlines  []time.Time
 }
 
-func (s *queueTestSender) SendWithID(ctx context.Context, to, _, _, id string) error {
+func (s *queueTestSender) SendWithID(ctx context.Context, to, _ string, _ contracts.MailContent, id string) error {
 	s.recipients = append(s.recipients, to)
 	s.ids = append(s.ids, id)
 	if deadline, ok := ctx.Deadline(); ok {

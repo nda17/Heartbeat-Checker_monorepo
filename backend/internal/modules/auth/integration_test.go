@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/security"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/migrations"
 )
@@ -38,7 +39,8 @@ func (integrationCaptcha) Verify(_ context.Context, token, _ string, _ string) e
 }
 
 type capturedMail struct {
-	to, subject, body string
+	to, subject string
+	body        contracts.MailContent
 }
 
 type integrationMailer struct {
@@ -46,7 +48,7 @@ type integrationMailer struct {
 	messages []capturedMail
 }
 
-func (m *integrationMailer) Send(_ context.Context, to, subject, body string) error {
+func (m *integrationMailer) Send(_ context.Context, to, subject string, body contracts.MailContent) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.messages = append(m.messages, capturedMail{to: to, subject: subject, body: body})
@@ -59,14 +61,14 @@ func (m *integrationMailer) token(t *testing.T, to, path string, occurrence int)
 	defer m.mu.Unlock()
 	var found []capturedMail
 	for _, message := range m.messages {
-		if message.to == to && strings.Contains(message.body, path) {
+		if message.to == to && strings.Contains(message.body.Text, path) {
 			found = append(found, message)
 		}
 	}
 	if occurrence < 0 || occurrence >= len(found) {
 		t.Fatalf("email %q has %d messages for %q, requested %d", to, len(found), path, occurrence)
 	}
-	fields := strings.Fields(found[occurrence].body)
+	fields := strings.Fields(found[occurrence].body.Text)
 	for _, field := range fields {
 		if !strings.Contains(field, path) {
 			continue
@@ -347,7 +349,7 @@ func TestIntegrationRegistrationVerificationAndOpaqueLoginSession(t *testing.T) 
 	if !stored {
 		t.Fatal("session token hash was not stored")
 	}
-	if strings.Contains(f.mail.messages[0].body, integrationPass) {
+	if strings.Contains(f.mail.messages[0].body.Text, integrationPass) {
 		t.Fatal("registration email exposed the password")
 	}
 	var me struct {

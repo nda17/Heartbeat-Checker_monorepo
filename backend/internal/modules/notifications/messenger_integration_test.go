@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth"
+	authcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/incidents"
 	incidentcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/incidents/contracts"
@@ -33,7 +34,9 @@ func (messengerTestCaptcha) Verify(context.Context, string, string, string) erro
 
 type messengerTestMailer struct{}
 
-func (messengerTestMailer) Send(context.Context, string, string, string) error { return nil }
+func (messengerTestMailer) Send(context.Context, string, string, authcontracts.MailContent) error {
+	return nil
+}
 
 type messengerTestActor struct {
 	accountID string

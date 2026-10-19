@@ -74,6 +74,12 @@ func (s *Service) mfaPassword(ctx context.Context, p Principal, password string,
 	if err != nil {
 		return postgres.Credential{}, ErrUnavailable
 	}
+	if c.PasswordHash == "" {
+		if err := s.dummyPasswordCheck(password); err != nil {
+			return postgres.Credential{}, err
+		}
+		return postgres.Credential{}, ErrPasswordSetupRequired
+	}
 	matched, err := s.checkPassword(c.PasswordHash, password)
 	if err != nil {
 		return postgres.Credential{}, err

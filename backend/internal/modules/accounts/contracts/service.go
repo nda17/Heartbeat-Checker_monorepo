@@ -32,6 +32,7 @@ type Account struct {
 type Service interface {
 	Create(context.Context, pgx.Tx, string) (Account, error)
 	Get(context.Context, string) (Account, error)
+	GetForAuthTx(context.Context, pgx.Tx, string) (Account, error)
 	UpdateName(context.Context, string, string) (Account, error)
 }
 

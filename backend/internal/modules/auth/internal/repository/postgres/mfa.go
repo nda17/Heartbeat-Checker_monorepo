@@ -59,10 +59,10 @@ func (r *Repository) MFAEnrollment(ctx context.Context, accountID, enrollmentID 
 func (r *Repository) mfaTx(ctx context.Context, tx pgx.Tx, accountID, sessionID string, c Credential) (MFAFactor, Session, error) {
 	var hash string
 	var version int64
-	if err := tx.QueryRow(ctx, `SELECT password_hash,version FROM auth.credentials WHERE account_id=$1 FOR UPDATE`, accountID).Scan(&hash, &version); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(password_hash,''),version FROM auth.credentials WHERE account_id=$1 FOR UPDATE`, accountID).Scan(&hash, &version); err != nil {
 		return MFAFactor{}, Session{}, err
 	}
-	if hash != c.PasswordHash || version != c.Version {
+	if hash == "" || hash != c.PasswordHash || version != c.Version {
 		return MFAFactor{}, Session{}, ErrConflict
 	}
 	var f MFAFactor

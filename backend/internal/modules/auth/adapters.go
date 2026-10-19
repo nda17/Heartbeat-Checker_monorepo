@@ -3,6 +3,8 @@ package auth
 import (
 	"context"
 
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/adapters/oauth"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/adapters/smtp"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/adapters/turnstile"
 )
@@ -12,7 +14,7 @@ type CaptchaVerifier interface {
 }
 
 type MailSender interface {
-	Send(context.Context, string, string, string) error
+	Send(context.Context, string, string, contracts.MailContent) error
 }
 
 func NewTurnstile(secret, hostname string, local bool) (CaptchaVerifier, error) {
@@ -28,3 +30,7 @@ type MailJobSender = smtp.JobSender
 func NewProductionMailer(addr, from, username, password, mode string) (*MailJobSender, error) {
 	return smtp.NewProduction(addr, from, username, password, mode)
 }
+
+type OAuthProviderConfig = oauth.Config
+
+func NewOAuthProvider(cfg OAuthProviderConfig) (OAuthProvider, error) { return oauth.New(cfg) }

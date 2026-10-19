@@ -23,6 +23,7 @@ import (
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts"
 	accountcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth"
+	authcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/incidents"
 	monitorcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/monitors/contracts"
@@ -56,7 +57,9 @@ func (monitorCaptcha) Verify(context.Context, string, string, string) error { re
 
 type monitorMailer struct{}
 
-func (monitorMailer) Send(context.Context, string, string, string) error { return nil }
+func (monitorMailer) Send(context.Context, string, string, authcontracts.MailContent) error {
+	return nil
+}
 
 func newMonitorFixture(t *testing.T) *monitorFixture {
 	t.Helper()

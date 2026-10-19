@@ -33,6 +33,13 @@ func New(s *service.Service, origin string, secure bool, ttl time.Duration) *Ser
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/v1/auth/oauth/providers", s.oauthProviders)
+	mux.HandleFunc("POST /api/v1/auth/oauth/{provider}/start", s.oauthStart)
+	mux.HandleFunc("GET /api/v1/auth/oauth/{provider}/callback", s.oauthCallback)
+	mux.HandleFunc("GET /api/v1/auth/oauth/registration", s.oauthRegistration)
+	mux.HandleFunc("POST /api/v1/auth/oauth/registration/confirm", s.oauthConfirm)
+	mux.HandleFunc("GET /api/v1/me/identities", s.oauthIdentities)
+	mux.HandleFunc("DELETE /api/v1/me/identities/{provider}", s.oauthUnlink)
 	mux.HandleFunc("POST /api/v1/auth/register", s.register)
 	mux.HandleFunc("POST /api/v1/auth/verify", s.verify)
 	mux.HandleFunc("POST /api/v1/auth/login", s.login)
@@ -71,6 +78,22 @@ func fail(w http.ResponseWriter, status int, code string) {
 }
 func failService(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, service.ErrOAuthEmailConflict):
+		fail(w, 409, "oauth_email_conflict")
+	case errors.Is(err, service.ErrOAuthEmailRequired):
+		fail(w, 400, "oauth_email_required")
+	case errors.Is(err, service.ErrOAuthLoginRequiresLogout):
+		fail(w, 409, "oauth_login_requires_logout")
+	case errors.Is(err, service.ErrOAuthIdentityConflict):
+		fail(w, 409, "oauth_identity_conflict")
+	case errors.Is(err, service.ErrOAuthRegistrationExpired):
+		fail(w, 410, "oauth_registration_expired")
+	case errors.Is(err, service.ErrOAuthState):
+		fail(w, 400, "oauth_state_invalid")
+	case errors.Is(err, service.ErrOAuthUnavailable):
+		fail(w, 503, "oauth_provider_unavailable")
+	case errors.Is(err, service.ErrPasswordSetupRequired):
+		fail(w, 409, "password_setup_required")
 	case errors.Is(err, service.ErrInvalid):
 		fail(w, 400, "invalid_request")
 	case errors.Is(err, service.ErrCredentials):

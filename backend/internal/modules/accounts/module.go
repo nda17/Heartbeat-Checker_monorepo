@@ -66,3 +66,7 @@ func (m *Module) LockAdminAccount(ctx context.Context, tx pgx.Tx, id string) (co
 func (m *Module) AdminUpdate(ctx context.Context, tx pgx.Tx, current contracts.Account, version int64, name, role, status *string) (contracts.Account, bool, error) {
 	return m.repo.AdminUpdate(ctx, tx, current, version, name, role, status)
 }
+
+func (m *Module) GetForAuthTx(ctx context.Context, tx pgx.Tx, id string) (contracts.Account, error) {
+	return m.repo.GetForAuthTx(ctx, tx, id)
+}
