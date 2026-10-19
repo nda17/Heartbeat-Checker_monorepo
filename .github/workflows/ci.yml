@@ -71,14 +71,14 @@ jobs:
           distribution: temurin
           java-version: '17'
       - name: Install explicit Android SDK components
-        run: sdkmanager 'platforms;android-37.0' 'build-tools;36.0.0'
+        run: bash deploy/android/setup-sdk.sh
       - name: Android lint, tests and debug build without release credentials
         working-directory: apps/android
         run: ./gradlew --no-daemon :app:lint :app:testDebugUnitTest :app:assembleDebug
       - name: Validate Android delivery scripts
         run: |
-          shellcheck deploy/android/publish.sh
-          bash -n deploy/android/publish.sh
+          shellcheck deploy/android/publish.sh deploy/android/setup-sdk.sh
+          bash -n deploy/android/publish.sh deploy/android/setup-sdk.sh
           python3 -m py_compile deploy/android/release.py deploy/android/publish.py
           python3 -m unittest discover -s deploy/android -p 'test_*.py'
 
@@ -93,10 +93,11 @@ jobs:
           distribution: temurin
           java-version: '17'
       - name: Install Android SDK and API 35 emulator image
+        run: bash deploy/android/setup-sdk.sh 'emulator' 'system-images;android-35;google_apis;x86_64'
+      - name: Prepare accelerated Android emulator
         shell: bash
         run: |
           set -euo pipefail
-          sdkmanager 'platforms;android-37.0' 'build-tools;36.0.0' 'platform-tools' 'emulator' 'system-images;android-35;google_apis;x86_64'
           [[ -c /dev/kvm ]] || { echo 'Hosted runner requires KVM for Android smoke'; exit 1; }
           sudo setfacl -m "u:$(id -un):rw" /dev/kvm
           printf 'no\n' | avdmanager create avd --force --name heartbeat-ci --package 'system-images;android-35;google_apis;x86_64' --device pixel_7
@@ -107,20 +108,43 @@ jobs:
           set -euo pipefail
           adb_bin="$ANDROID_HOME/platform-tools/adb"
           emulator_bin="$ANDROID_HOME/emulator/emulator"
+          report_dir=app/build/reports/emulator
+          mkdir -p "$report_dir"
+          emulator_log="$report_dir/emulator.log"
+          emulator_pid=
+          cleanup() {
+            status=$?
+            trap - EXIT
+            set +e
+            timeout 5 "$adb_bin" devices -l > "$report_dir/adb-devices.txt" 2>&1
+            timeout 10 "$adb_bin" -s emulator-5554 logcat -d -t 200 > "$report_dir/logcat.txt" 2>&1
+            tail -150 "$emulator_log"
+            timeout 10 "$adb_bin" -s emulator-5554 emu kill > /dev/null 2>&1
+            if [[ -n "$emulator_pid" ]]; then kill "$emulator_pid" 2>/dev/null; fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+          {
+            avdmanager list avd
+            "$emulator_bin" -version
+            "$emulator_bin" -accel-check
+            "$emulator_bin" -list-avds
+          } > "$emulator_log" 2>&1
           "$emulator_bin" -avd heartbeat-ci -port 5554 -no-window -no-audio -no-boot-anim \
             -no-snapshot -gpu swiftshader_indirect -camera-back none -camera-front none \
-            > "$RUNNER_TEMP/heartbeat-emulator.log" 2>&1 &
+            >> "$emulator_log" 2>&1 &
           emulator_pid=$!
-          trap '"$adb_bin" -s emulator-5554 emu kill >/dev/null 2>&1 || kill "$emulator_pid" 2>/dev/null || true' EXIT
-          timeout 180 "$adb_bin" -s emulator-5554 wait-for-device
           deadline=$((SECONDS + 240))
-          until [[ $("$adb_bin" -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r') == 1 ]]; do
+          while true; do
+            kill -0 "$emulator_pid" || { echo 'Android emulator exited before boot completed'; exit 1; }
+            if [[ $(timeout 5 "$adb_bin" -s emulator-5554 get-state 2>/dev/null || true) == device &&
+                  $(timeout 5 "$adb_bin" -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r') == 1 ]]; then
+              break
+            fi
             if (( SECONDS >= deadline )); then
               echo 'Android emulator boot timed out'
-              tail -100 "$RUNNER_TEMP/heartbeat-emulator.log"
               exit 1
             fi
-            kill -0 "$emulator_pid" || { tail -100 "$RUNNER_TEMP/heartbeat-emulator.log"; exit 1; }
             sleep 2
           done
           "$adb_bin" -s emulator-5554 shell settings put global window_animation_scale 0
@@ -139,6 +163,7 @@ jobs:
           path: |
             apps/android/app/build/reports/androidTests/
             apps/android/app/build/outputs/androidTest-results/
+            apps/android/app/build/reports/emulator/
           if-no-files-found: warn
           retention-days: 30
 
@@ -360,6 +385,7 @@ jobs:
           if (process.env.EXPECTED_APK_URL) assert.equal(download.headers.get('location'), process.env.EXPECTED_APK_URL);
           assert.equal(download.headers.get('cache-control'), 'no-store');
           JS
+          docker network disconnect none "$container"
           docker network connect bridge "$container"
           docker exec "$container" node --input-type=module -e 'const response=await fetch("http://127.0.0.1:3000/android"); if(response.status!==200)process.exit(1)'
 

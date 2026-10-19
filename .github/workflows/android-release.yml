@@ -24,7 +24,6 @@ jobs:
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
       SIGNING_FINGERPRINT: ${{ vars.ANDROID_SIGNING_CERTIFICATE_SHA256 }}
-      SIGNING_RECOVERY_SHA256: ${{ vars.ANDROID_SIGNING_RECOVERY_SHA256 }}
     steps:
       - name: Validate release inputs
         shell: bash
@@ -53,12 +52,11 @@ jobs:
           distribution: temurin
           java-version: '17'
       - name: Install explicit Android SDK components
-        run: sdkmanager 'platforms;android-37.0' 'build-tools;36.0.0'
+        run: bash deploy/android/setup-sdk.sh
       - name: Build signed release APK
         shell: bash
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_SIGNING_RECOVERY_BASE64: ${{ secrets.ANDROID_SIGNING_RECOVERY_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
@@ -69,12 +67,7 @@ jobs:
           trap 'rm -f "$ANDROID_KEYSTORE_FILE"' EXIT
           umask 077
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_FILE"
-          [[ -n "$ANDROID_SIGNING_RECOVERY_BASE64" && "$SIGNING_RECOVERY_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          mkdir -p android-release
-          printf '%s' "$ANDROID_SIGNING_RECOVERY_BASE64" | base64 --decode > android-release/recovery.tar.age
-          [[ $(stat -c %s android-release/recovery.tar.age) -gt 0 && $(stat -c %s android-release/recovery.tar.age) -lt 1048576 ]]
-          [[ "$(sha256sum android-release/recovery.tar.age | cut -d' ' -f1)" == "$SIGNING_RECOVERY_SHA256" ]]
-          unset ANDROID_SIGNING_RECOVERY_BASE64 ANDROID_KEYSTORE_BASE64
+          unset ANDROID_KEYSTORE_BASE64
           cd apps/android
           ./gradlew --no-daemon :app:assembleRelease
       - name: Verify package, signing certificate and release metadata
@@ -111,7 +104,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: android-build-${{ inputs.source_sha }}
-          path: android-release/
+          path: |
+            android-release/Heartbeat-Checker.apk
+            android-release/release.json
           if-no-files-found: error
           retention-days: 90
   publish:
@@ -141,21 +136,27 @@ jobs:
           DEPLOY_USER: ${{ vars.BACKEND_DEPLOY_USER }}
           SSH_PRIVATE_KEY: ${{ secrets.BACKEND_DEPLOY_SSH_KEY }}
           SSH_KNOWN_HOSTS: ${{ secrets.BACKEND_DEPLOY_KNOWN_HOSTS }}
+          ANDROID_SIGNING_RECOVERY_BASE64: ${{ secrets.ANDROID_SIGNING_RECOVERY_BASE64 }}
         run: |
           set -euo pipefail
           [[ "$DEPLOY_HOST" == 176.12.64.115 && "$DEPLOY_USER" == heartbeat-deploy ]]
           [[ -n "$SSH_PRIVATE_KEY" && -n "$SSH_KNOWN_HOSTS" ]]
-          ssh_dir=$(mktemp -d)
-          trap 'rm -rf "$ssh_dir"' EXIT
-          printf '%s\n' "$SSH_PRIVATE_KEY" > "$ssh_dir/key"
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
-          chmod 600 "$ssh_dir/key" "$ssh_dir/known_hosts"
-          ssh_opts=(-i "$ssh_dir/key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$ssh_dir/known_hosts" -o BatchMode=yes)
+          [[ -n "$ANDROID_SIGNING_RECOVERY_BASE64" && "$SIGNING_RECOVERY_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          umask 077
+          publish_dir=$(mktemp -d)
+          trap 'rm -rf "$publish_dir"' EXIT
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$publish_dir/key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$publish_dir/known_hosts"
+          printf '%s' "$ANDROID_SIGNING_RECOVERY_BASE64" | base64 --decode > "$publish_dir/recovery.tar.age"
+          [[ $(stat -c %s "$publish_dir/recovery.tar.age") -gt 0 && $(stat -c %s "$publish_dir/recovery.tar.age") -lt 1048576 ]]
+          [[ "$(sha256sum "$publish_dir/recovery.tar.age" | cut -d' ' -f1)" == "$SIGNING_RECOVERY_SHA256" ]]
+          unset ANDROID_SIGNING_RECOVERY_BASE64
+          ssh_opts=(-i "$publish_dir/key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$publish_dir/known_hosts" -o BatchMode=yes)
           target="$DEPLOY_USER@$DEPLOY_HOST"
           stage="/opt/heartbeat-checker/backend/android-releases/$SOURCE_SHA-$GITHUB_RUN_ID"
           # shellcheck disable=SC2029 # Validated public release values expand locally.
           ssh "${ssh_opts[@]}" "$target" "umask 022; mkdir -p '$stage'; test ! -L '$stage'"
-          scp "${ssh_opts[@]}" android-release/Heartbeat-Checker.apk android-release/release.json android-release/recovery.tar.age deploy/android/publish.py deploy/android/release.py deploy/android/publish.sh "$target:$stage/"
+          scp "${ssh_opts[@]}" android-release/Heartbeat-Checker.apk android-release/release.json "$publish_dir/recovery.tar.age" deploy/android/publish.py deploy/android/release.py deploy/android/publish.sh "$target:$stage/"
           # shellcheck disable=SC2029 # Validated public release values expand locally.
           ssh "${ssh_opts[@]}" "$target" "bash '$stage/publish.sh' '$SOURCE_SHA' '$SIGNING_FINGERPRINT' '$GITHUB_RUN_ID' '$SIGNING_RECOVERY_SHA256'" > android-release/publication-receipt.json
           jq -e --arg sha "$SOURCE_SHA" --arg recovery "$SIGNING_RECOVERY_SHA256" '.signingRecoverySha256 == $recovery and .status == "published" and .release.sourceSha == $sha and .anonymousListing == "403" and .anonymousBackupPrefixListing == "403" and .anonymousBackupObject == "403" and .anonymousSigningRecovery == "403"' android-release/publication-receipt.json >/dev/null
