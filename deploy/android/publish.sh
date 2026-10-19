@@ -25,21 +25,19 @@ installed_sha=$("${compose[@]}" config --format json | python3 -c 'import json,s
 env_file=$(mktemp)
 chmod 600 "$env_file"
 trap 'rm -f "$env_file"' EXIT
-python3 - "$env_file" <<'PY'
+"${compose[@]}" config --format json | python3 -c '
 from pathlib import Path
-import sys
+import json, sys
 allowed = {"BACKUP_S3_ENDPOINT", "BACKUP_S3_BUCKET", "BACKUP_S3_REGION", "BACKUP_S3_ACCESS_KEY_ID", "BACKUP_S3_SECRET_ACCESS_KEY"}
-values = {}
-for line in Path(".backup.env").read_text().splitlines():
-    if not line or line.startswith("#"):
-        continue
-    key, _, value = line.partition("=")
-    if key in allowed:
-        assert key not in values and value and not value.startswith(("'", '"')), "Expected unquoted canonical S3 values"
-        values[key] = value
-assert set(values) == allowed, "Missing S3 configuration"
-Path(sys.argv[1]).write_text("".join(key + "=" + values[key] + "\n" for key in sorted(values)))
-PY
+environment = json.load(sys.stdin)["services"]["backup"]["environment"]
+values = {key: environment.get(key) for key in allowed}
+assert all(isinstance(value, str) and value and not any(char in value for char in "\r\n\0")
+           for value in values.values()), "Missing or invalid S3 configuration"
+# Compose config serializes each literal dollar twice, including in JSON.
+assert all("$" not in value.replace("$$", "") for value in values.values()), "Invalid Compose dollar escaping"
+values = {key: value.replace("$$", "$") for key, value in values.items()}
+Path(sys.argv[1]).write_text("".join(key + "=" + values[key] + "\n" for key in sorted(values)), encoding="utf-8")
+' "$env_file"
 docker run --rm --pull never --user "$(id -u):$(id -g)" --read-only --cap-drop ALL --security-opt no-new-privileges:true \
   --pids-limit 64 --memory 256m --cpus 1 --env-file "$env_file" \
   --mount "type=bind,src=$stage,dst=/release,readonly" \

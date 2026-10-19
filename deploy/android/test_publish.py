@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import types
@@ -248,6 +249,90 @@ class PublisherTests(unittest.TestCase):
         self.opener.public_body = b"wrong public bytes"
         with self.assertRaisesRegex(AssertionError, "Public APK checksum mismatch"):
             self._run()
+
+
+class PublishEnvironmentTests(unittest.TestCase):
+    SCRIPT = Path(__file__).with_name("publish.sh")
+    ALLOWED = {
+        "BACKUP_S3_ENDPOINT",
+        "BACKUP_S3_BUCKET",
+        "BACKUP_S3_REGION",
+        "BACKUP_S3_ACCESS_KEY_ID",
+        "BACKUP_S3_SECRET_ACCESS_KEY",
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        script = cls.SCRIPT.read_text(encoding="utf-8")
+        marker = 'python3 -c \'\n'
+        start = script.index(marker) + len(marker)
+        end = script.index("\n' \"$env_file\"", start)
+        cls.parser = script[start:end]
+
+    def _run_parser(self, environment, *, compose_dollars=True):
+        if compose_dollars:
+            environment = {
+                key: value.replace("$", "$$") if isinstance(value, str) else value
+                for key, value in environment.items()
+            }
+        config = {"services": {"backup": {"environment": environment}}}
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "resolved.env"
+            result = subprocess.run(
+                [sys.executable, "-c", self.parser, str(output)],
+                input=json.dumps(config),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result, output.read_text(encoding="utf-8") if output.exists() else None
+
+    def test_resolved_values_are_preserved_and_only_s3_keys_are_exported(self):
+        environment = {
+            "BACKUP_S3_ENDPOINT": 'https://example.test/path?$mode=a#fragment=1 "quoted"',
+            "BACKUP_S3_BUCKET": "bucket=with=equals # comment-like text",
+            "BACKUP_S3_REGION": "'region-starts-with-a-quote",
+            "BACKUP_S3_ACCESS_KEY_ID": 'access$HOME\'and"both"',
+            "BACKUP_S3_SECRET_ACCESS_KEY": 'secret="double" and \'single\' # $VALUE=a; $$; $$$; ${NAME}',
+            "DATABASE_URL": "must-not-be-exported",
+            "JWT_SECRET": "must-not-be-exported-either",
+        }
+        environment["BACKUP_S3_BUCKET"] += " with $, $$, $$$, and ${NAME}"
+
+        result, output = self._run_parser(environment)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        expected = "".join(f"{key}={environment[key]}\n" for key in sorted(self.ALLOWED))
+        self.assertEqual(output, expected)
+        self.assertEqual({line.split("=", 1)[0] for line in output.splitlines()}, self.ALLOWED)
+        self.assertNotIn("DATABASE_URL", output)
+        self.assertNotIn("JWT_SECRET", output)
+
+    def test_missing_empty_nonstring_and_multiline_values_fail_closed(self):
+        valid = {key: "synthetic-value" for key in self.ALLOWED}
+        invalid_environments = {
+            "missing": {key: value for key, value in valid.items() if key != "BACKUP_S3_BUCKET"},
+            "empty": {**valid, "BACKUP_S3_BUCKET": ""},
+            "non-string": {**valid, "BACKUP_S3_BUCKET": 42},
+            "carriage-return": {**valid, "BACKUP_S3_BUCKET": "value\rhidden"},
+            "line-feed": {**valid, "BACKUP_S3_BUCKET": "value\nhidden"},
+            "nul": {**valid, "BACKUP_S3_BUCKET": "value\0hidden"},
+        }
+
+        for label, environment in invalid_environments.items():
+            with self.subTest(label=label):
+                result, output = self._run_parser(environment)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIsNone(output)
+
+    def test_unpaired_dollar_in_compose_output_is_rejected(self):
+        environment = {key: "synthetic-value" for key in self.ALLOWED}
+        environment["BACKUP_S3_BUCKET"] = "literal ${UNESCAPED}"
+
+        result, output = self._run_parser(environment, compose_dollars=False)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIsNone(output)
 
 
 if __name__ == "__main__":
