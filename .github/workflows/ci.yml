@@ -98,6 +98,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes libpulse0
           [[ -c /dev/kvm ]] || { echo 'Hosted runner requires KVM for Android smoke'; exit 1; }
           sudo setfacl -m "u:$(id -un):rw" /dev/kvm
           printf 'no\n' | avdmanager create avd --force --name heartbeat-ci --package 'system-images;android-35;google_apis;x86_64' --device pixel_7
@@ -112,13 +114,14 @@ jobs:
           mkdir -p "$report_dir"
           emulator_log="$report_dir/emulator.log"
           emulator_pid=
+          exec 3>&2 # Keep EXIT diagnostics outside the preflight log redirects.
           cleanup() {
             status=$?
             trap - EXIT
             set +e
             timeout 5 "$adb_bin" devices -l > "$report_dir/adb-devices.txt" 2>&1
             timeout 10 "$adb_bin" -s emulator-5554 logcat -d -t 200 > "$report_dir/logcat.txt" 2>&1
-            tail -150 "$emulator_log"
+            tail -150 "$emulator_log" >&3 2>&3
             timeout 10 "$adb_bin" -s emulator-5554 emu kill > /dev/null 2>&1
             if [[ -n "$emulator_pid" ]]; then kill "$emulator_pid" 2>/dev/null; fi
             exit "$status"
@@ -126,6 +129,12 @@ jobs:
           trap cleanup EXIT
           {
             avdmanager list avd
+            LD_LIBRARY_PATH="$ANDROID_HOME/emulator/lib64:$ANDROID_HOME/emulator/lib64/qt/lib:$ANDROID_HOME/emulator/lib64/vulkan:$ANDROID_HOME/emulator/lib64/gles_swiftshader${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+              ldd "$ANDROID_HOME/emulator/qemu/linux-x86_64/qemu-system-x86_64" | tee "$report_dir/native-libraries.txt"
+            if grep -F 'not found' "$report_dir/native-libraries.txt"; then
+              echo 'Android emulator has missing native runtime libraries'
+              exit 1
+            fi
             "$emulator_bin" -version
             "$emulator_bin" -accel-check
             "$emulator_bin" -list-avds
