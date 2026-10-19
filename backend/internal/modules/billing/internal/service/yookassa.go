@@ -35,7 +35,7 @@ func (s *Service) GetOrder(ctx context.Context, account, id string) (contracts.O
 	return order, err
 }
 
-func (s *Service) createYooKassaOrder(ctx context.Context, account string, count int, key string) (contracts.Order, error) {
+func (s *Service) createYooKassaOrder(ctx context.Context, account string, count int, key string, version int64) (contracts.Order, error) {
 	if count < 1 || count > 1000 || !validID(key) {
 		return contracts.Order{}, ErrInvalid
 	}
@@ -68,6 +68,16 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return contracts.Order{}, err
 	}
+	pricing, err := s.PricingTx(ctx, tx, true)
+	if err != nil {
+		return contracts.Order{}, err
+	}
+	if version < 1 || version != pricing.Version {
+		return contracts.Order{}, ErrPriceChanged
+	}
+	if count*pricing.PricePerMonitorMinor > MaxOrderAmountMinor {
+		return contracts.Order{}, ErrOrderAmount
+	}
 	// An administrative grant is deliberately not sold or overwritten. The owner
 	// may still exercise checkout; finalization records blocked fulfillment.
 	if entitlement.Quota > 0 && entitlement.Source != "admin_grant" && entitlement.Quota != count {
@@ -88,7 +98,7 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 		return contracts.Order{}, err
 	}
 	body, err := json.Marshal(map[string]any{
-		"amount":       map[string]string{"value": moneyValue(count * PricePerMonitorMinor), "currency": "RUB"},
+		"amount":       map[string]string{"value": moneyValue(count * pricing.PricePerMonitorMinor), "currency": "RUB"},
 		"capture":      true,
 		"confirmation": map[string]string{"type": "redirect", "return_url": "https://heartbeat-checker.ru/app/billing?order=" + id},
 		"description":  "Heartbeat Checker: мониторинг",
@@ -97,7 +107,7 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	if err != nil {
 		return contracts.Order{}, err
 	}
-	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,provider_shop_id,provider_request,expires_at) VALUES($1,$2,$3,'yookassa',$4,$5,$6,$7,NULL) RETURNING `+orderColumns, id, account, key, count, count*PricePerMonitorMinor, s.shopID, body))
+	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,provider_shop_id,provider_request,expires_at) VALUES($1,$2,$3,'yookassa',$4,$5,$6,$7,NULL) RETURNING `+orderColumns, id, account, key, count, count*pricing.PricePerMonitorMinor, s.shopID, body))
 	if err != nil {
 		return contracts.Order{}, err
 	}

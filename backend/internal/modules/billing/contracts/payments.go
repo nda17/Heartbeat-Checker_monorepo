@@ -31,6 +31,7 @@ type Billing struct {
 	Test                 bool    `json:"test"`
 	AccessUnchanged      bool    `json:"accessUnchanged"`
 	PricePerMonitorMinor int     `json:"pricePerMonitorMinor"`
+	PriceVersion         int64   `json:"priceVersion"`
 	Orders               []Order `json:"orders"`
 }
 

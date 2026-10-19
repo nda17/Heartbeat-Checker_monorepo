@@ -29,10 +29,11 @@ WORKDIR /app
 ARG VCS_REF=unknown
 ARG ANDROID_MANIFEST_SHA256=none
 ARG WEB_MODE=app
+ARG GO_API_ORIGIN
 LABEL org.opencontainers.image.revision=$VCS_REF \
       org.heartbeat-checker.web-mode=$WEB_MODE \
       org.heartbeat-checker.android-manifest-sha256=$ANDROID_MANIFEST_SHA256
-ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0 WEB_MODE=$WEB_MODE
+ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0 WEB_MODE=$WEB_MODE GO_API_ORIGIN=$GO_API_ORIGIN
 COPY --from=build --chown=node:node /app/.next/standalone ./
 COPY --from=build --chown=node:node /app/.next/static ./.next/static
 COPY --from=build --chown=node:node /app/public ./public

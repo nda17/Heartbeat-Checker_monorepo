@@ -103,7 +103,7 @@ func (f *billingFixture) configureYooKassa(t *testing.T, owner billingActor, pro
 func createYooKassaOrder(t *testing.T, f *billingFixture, owner billingActor, key string, count int) contracts.Order {
 	t.Helper()
 	rec := f.request(t, owner, http.MethodPost, "/api/v1/billing/orders", map[string]any{
-		"monitorCount": count, "idempotencyKey": key,
+		"monitorCount": count, "idempotencyKey": key, "priceVersion": 1,
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create YooKassa order status=%d: %s", rec.Code, rec.Body.String())
@@ -143,7 +143,7 @@ func TestYooKassaOrderIsDurableBeforeProviderAndUsesImmutableProviderKey(t *test
 		t.Fatalf("same idempotency key returned a different order: %s != %s", retry.ID, order.ID)
 	}
 	conflict := f.request(t, owner, http.MethodPost, "/api/v1/billing/orders", map[string]any{
-		"monitorCount": 3, "idempotencyKey": key,
+		"monitorCount": 3, "idempotencyKey": key, "priceVersion": 1,
 	})
 	if conflict.Code != http.StatusConflict {
 		t.Fatalf("changed same-key request status=%d, want 409: %s", conflict.Code, conflict.Body.String())

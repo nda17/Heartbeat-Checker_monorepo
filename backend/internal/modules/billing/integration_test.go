@@ -206,7 +206,7 @@ func TestBillingMockOrderOwnershipAllowlistAndAuth(t *testing.T) {
 	other := f.newActor(t, "Other Billing Owner")
 	key := "b4a2d060-379b-4c95-9c7e-04db177835c7"
 	create := func(actor billingActor, count int, idem string) *httptest.ResponseRecorder {
-		return f.request(t, actor, http.MethodPost, "/api/v1/billing/orders", map[string]any{"monitorCount": count, "idempotencyKey": idem})
+		return f.request(t, actor, http.MethodPost, "/api/v1/billing/orders", map[string]any{"monitorCount": count, "idempotencyKey": idem, "priceVersion": 1})
 	}
 	if got := create(owner, 1, key); got.Code != http.StatusForbidden {
 		t.Fatalf("empty allowlist create status=%d, want 403: %s", got.Code, got.Body.String())
@@ -271,7 +271,7 @@ func TestBillingConcurrentIdempotencySingleExtensionAndReport(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			orders[i], errs[i] = module.service.CreateOrder(context.Background(), owner.id, 3, key)
+			orders[i], errs[i] = module.service.CreateOrder(context.Background(), owner.id, 3, key, 1)
 		}(i)
 	}
 	wg.Wait()
@@ -312,7 +312,7 @@ func TestBillingConcurrentIdempotencySingleExtensionAndReport(t *testing.T) {
 	if version != 1 || reportCount != 1 || orderCount != 1 {
 		t.Fatalf("after concurrent completion entitlement version=%d report rows=%d orders=%d; want 1/1/1", version, reportCount, orderCount)
 	}
-	if _, err := module.service.CreateOrder(context.Background(), owner.id, 4, key); !errors.Is(err, service.ErrConflict) {
+	if _, err := module.service.CreateOrder(context.Background(), owner.id, 4, key, 1); !errors.Is(err, service.ErrConflict) {
 		t.Fatalf("idempotency key with changed amount error=%v, want conflict", err)
 	}
 }
@@ -327,13 +327,13 @@ func TestBillingActiveAccountExpiredOrderAndLocalTestIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := module.service.CreateOrder(context.Background(), owner.id, 1, "a3afeb3c-3959-4f9b-96d1-9cb16c910f3f"); !errors.Is(err, service.ErrForbidden) {
+	if _, err := module.service.CreateOrder(context.Background(), owner.id, 1, "a3afeb3c-3959-4f9b-96d1-9cb16c910f3f", 1); !errors.Is(err, service.ErrForbidden) {
 		t.Fatalf("blocked account create error=%v, want forbidden", err)
 	}
 	if _, err := f.pool.Exec(context.Background(), `UPDATE accounts.accounts SET status='active' WHERE id=$1`, owner.id); err != nil {
 		t.Fatal(err)
 	}
-	order, err := module.service.CreateOrder(context.Background(), owner.id, 1, "a3afeb3c-3959-4f9b-96d1-9cb16c910f3f")
+	order, err := module.service.CreateOrder(context.Background(), owner.id, 1, "a3afeb3c-3959-4f9b-96d1-9cb16c910f3f", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +369,7 @@ func TestAdminGrantVersionAndPendingMockOrderCannotReplaceGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	order, err := module.service.CreateOrder(context.Background(), owner.id, 1, "cf8f7971-d583-4f06-9056-5a754de130cf")
+	order, err := module.service.CreateOrder(context.Background(), owner.id, 1, "cf8f7971-d583-4f06-9056-5a754de130cf", 1)
 	if err != nil {
 		t.Fatalf("create pending mock order before grant: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestAdminGrantVersionAndPendingMockOrderCannotReplaceGrant(t *testing.T) {
 	if orderStatus != "pending" || source != "admin_grant" || quota != 7 || reportCount != 0 {
 		t.Fatalf("stale payment changed state: order=%s source=%s quota=%d report rows=%d", orderStatus, source, quota, reportCount)
 	}
-	if _, err := module.service.CreateOrder(context.Background(), owner.id, 7, "09f96250-84ca-447a-9a67-27db06fb6750"); !errors.Is(err, service.ErrForbidden) {
+	if _, err := module.service.CreateOrder(context.Background(), owner.id, 7, "09f96250-84ca-447a-9a67-27db06fb6750", 1); !errors.Is(err, service.ErrForbidden) {
 		t.Fatalf("mock order while admin grant active error=%v, want forbidden", err)
 	}
 
@@ -467,6 +467,17 @@ func TestBillingPriceChangeKeepsHistoricalOrderAmountOnIdempotentReplay(t *testi
 	module.Register(mux, authProtect(t, f.pool, f.accounts))
 	f.module = module
 	f.handler = mux
+	publicPricing := httptest.NewRecorder()
+	f.handler.ServeHTTP(publicPricing, httptest.NewRequest(http.MethodGet, "/api/v1/billing/pricing", nil))
+	if publicPricing.Code != http.StatusOK || publicPricing.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("public pricing status=%d cache-control=%q body=%s", publicPricing.Code, publicPricing.Header().Get("Cache-Control"), publicPricing.Body.String())
+	}
+	var publicQuote struct {
+		Pricing contracts.Pricing `json:"pricing"`
+	}
+	if err := json.Unmarshal(publicPricing.Body.Bytes(), &publicQuote); err != nil || publicQuote.Pricing.PricePerMonitorMinor != 2900 || publicQuote.Pricing.Version != 1 || publicQuote.Pricing.Currency != "RUB" || publicQuote.Pricing.Period != "month" {
+		t.Fatalf("public pricing=%+v decode_error=%v", publicQuote.Pricing, err)
+	}
 
 	quoteResponse := f.request(t, quoteOwner, http.MethodGet, "/api/v1/billing", nil)
 	if quoteResponse.Code != http.StatusOK {
@@ -478,6 +489,9 @@ func TestBillingPriceChangeKeepsHistoricalOrderAmountOnIdempotentReplay(t *testi
 	}
 	if quote.PricePerMonitorMinor != 2900 {
 		t.Fatalf("price per monitor=%d, want 2900 minor units", quote.PricePerMonitorMinor)
+	}
+	if quote.PriceVersion != 1 {
+		t.Fatalf("initial price version=%d, want 1", quote.PriceVersion)
 	}
 
 	for _, tc := range []struct {
@@ -492,7 +506,7 @@ func TestBillingPriceChangeKeepsHistoricalOrderAmountOnIdempotentReplay(t *testi
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			response := f.request(t, tc.actor, http.MethodPost, "/api/v1/billing/orders", map[string]any{
-				"monitorCount": tc.count, "idempotencyKey": tc.key,
+				"monitorCount": tc.count, "idempotencyKey": tc.key, "priceVersion": quote.PriceVersion,
 			})
 			if response.Code != http.StatusCreated {
 				t.Fatalf("create order status=%d: %s", response.Code, response.Body.String())
@@ -507,6 +521,86 @@ func TestBillingPriceChangeKeepsHistoricalOrderAmountOnIdempotentReplay(t *testi
 				t.Fatalf("created order count=%d amount=%d, want count=%d amount=%d", body.Order.MonitorCount, body.Order.AmountMinor, tc.count, tc.amount)
 			}
 		})
+	}
+
+	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.pricing SET price_per_monitor_minor=2400,version=2,updated_at=clock_timestamp() WHERE singleton=1 AND version=1`); err != nil {
+		t.Fatalf("update test price to 2400 minor units: %v", err)
+	}
+	updatedPricing := httptest.NewRecorder()
+	f.handler.ServeHTTP(updatedPricing, httptest.NewRequest(http.MethodGet, "/api/v1/billing/pricing", nil))
+	if updatedPricing.Code != http.StatusOK {
+		t.Fatalf("read updated public price status=%d body=%s", updatedPricing.Code, updatedPricing.Body.String())
+	}
+	var currentQuote struct {
+		Pricing contracts.Pricing `json:"pricing"`
+	}
+	if err := json.Unmarshal(updatedPricing.Body.Bytes(), &currentQuote); err != nil || currentQuote.Pricing.PricePerMonitorMinor != 2400 || currentQuote.Pricing.Version != 2 {
+		t.Fatalf("updated public pricing=%+v decode_error=%v", currentQuote.Pricing, err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `DELETE FROM billing.pricing WHERE singleton=1`); err != nil {
+		t.Fatalf("remove current quote for unavailable-price overview test: %v", err)
+	}
+	retained := f.request(t, multipleMonitorOwner, http.MethodGet, "/api/v1/billing", nil)
+	if retained.Code != http.StatusOK {
+		t.Fatalf("billing overview without current pricing status=%d body=%s", retained.Code, retained.Body.String())
+	}
+	var unavailableOverview contracts.Billing
+	if err := json.Unmarshal(retained.Body.Bytes(), &unavailableOverview); err != nil {
+		t.Fatalf("decode overview without current quote: %v", err)
+	}
+	if unavailableOverview.PricePerMonitorMinor != 0 || unavailableOverview.PriceVersion != 0 || len(unavailableOverview.Orders) != 1 || unavailableOverview.Orders[0].AmountMinor != 8700 {
+		t.Fatalf("unavailable quote hid or changed the existing order: price=%d version=%d orders=%+v", unavailableOverview.PricePerMonitorMinor, unavailableOverview.PriceVersion, unavailableOverview.Orders)
+	}
+	if _, err := f.pool.Exec(context.Background(), `INSERT INTO billing.pricing(singleton,price_per_monitor_minor,version,updated_at) VALUES(1,2400,2,clock_timestamp())`); err != nil {
+		t.Fatalf("restore current quote after unavailable-price test: %v", err)
+	}
+	stale := f.request(t, quoteOwner, http.MethodPost, "/api/v1/billing/orders", map[string]any{
+		"monitorCount": 3, "idempotencyKey": "d19544b7-b4b5-4caa-88f0-d0ac45e90401", "priceVersion": quote.PriceVersion,
+	})
+	if stale.Code != http.StatusConflict || !strings.Contains(stale.Body.String(), `"error":"price_changed"`) {
+		t.Fatalf("new order with stale quote status=%d body=%s, want price_changed", stale.Code, stale.Body.String())
+	}
+	missingVersion := f.request(t, quoteOwner, http.MethodPost, "/api/v1/billing/orders", map[string]any{
+		"monitorCount": 1, "idempotencyKey": "d19544b7-b4b5-4caa-88f0-d0ac45e90402",
+	})
+	if missingVersion.Code != http.StatusConflict || !strings.Contains(missingVersion.Body.String(), `"error":"price_changed"`) {
+		t.Fatalf("new order without price version status=%d body=%s, want price_changed", missingVersion.Code, missingVersion.Body.String())
+	}
+	var staleKeyRows int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.orders WHERE idempotency_key IN ('d19544b7-b4b5-4caa-88f0-d0ac45e90401','d19544b7-b4b5-4caa-88f0-d0ac45e90402')`).Scan(&staleKeyRows); err != nil || staleKeyRows != 0 {
+		t.Fatalf("stale quote inserted orders=%d err=%v", staleKeyRows, err)
+	}
+	oldReplay := f.request(t, multipleMonitorOwner, http.MethodPost, "/api/v1/billing/orders", map[string]any{
+		"monitorCount": 3, "idempotencyKey": "53c944c3-0297-4090-84d2-9bbab3e635c2", "priceVersion": quote.PriceVersion,
+	})
+	if oldReplay.Code != http.StatusCreated {
+		t.Fatalf("replay old order with stale price version status=%d body=%s", oldReplay.Code, oldReplay.Body.String())
+	}
+	var oldOrder struct {
+		Order contracts.Order `json:"order"`
+	}
+	if err := json.Unmarshal(oldReplay.Body.Bytes(), &oldOrder); err != nil || oldOrder.Order.AmountMinor != 8700 || oldOrder.Order.MonitorCount != 3 {
+		t.Fatalf("old order replay=%+v decode_error=%v, want original 8700 minor units", oldOrder.Order, err)
+	}
+	canceled := f.request(t, multipleMonitorOwner, http.MethodPost, "/api/v1/billing/orders/"+oldOrder.Order.ID+"/simulate", map[string]any{"outcome": "canceled"})
+	if canceled.Code != http.StatusOK {
+		t.Fatalf("cancel old mock order status=%d body=%s", canceled.Code, canceled.Body.String())
+	}
+	newOrderResponse := f.request(t, multipleMonitorOwner, http.MethodPost, "/api/v1/billing/orders", map[string]any{
+		"monitorCount": 3, "idempotencyKey": "0af4294d-85c3-4d2c-9830-a4d2cd1964dc", "priceVersion": currentQuote.Pricing.Version,
+	})
+	if newOrderResponse.Code != http.StatusCreated {
+		t.Fatalf("new order with refreshed quote status=%d body=%s", newOrderResponse.Code, newOrderResponse.Body.String())
+	}
+	var newOrder struct {
+		Order contracts.Order `json:"order"`
+	}
+	if err := json.Unmarshal(newOrderResponse.Body.Bytes(), &newOrder); err != nil || newOrder.Order.AmountMinor != 7200 || newOrder.Order.MonitorCount != 3 {
+		t.Fatalf("new order=%+v decode_error=%v, want 7200 minor units", newOrder.Order, err)
+	}
+	var storedOldAmount int
+	if err := f.pool.QueryRow(context.Background(), `SELECT amount_minor FROM billing.orders WHERE id=$1`, oldOrder.Order.ID).Scan(&storedOldAmount); err != nil || storedOldAmount != 8700 {
+		t.Fatalf("historical order amount=%d err=%v, want unchanged 8700", storedOldAmount, err)
 	}
 
 	const historicalOrderID = "7b3435e4-6a73-4f47-9d14-9f9b19a33a0c"
@@ -528,7 +622,7 @@ func TestBillingPriceChangeKeepsHistoricalOrderAmountOnIdempotentReplay(t *testi
 	if err != nil || confirmedReplay.Status != "succeeded" || confirmedReplay.AmountMinor != 2400 {
 		t.Fatalf("idempotent confirmation replay=%+v error=%v, want succeeded/2400", confirmedReplay, err)
 	}
-	replayed, err := module.service.CreateOrder(context.Background(), quoteOwner.id, 1, historicalIdempotencyKey)
+	replayed, err := module.service.CreateOrder(context.Background(), quoteOwner.id, 1, historicalIdempotencyKey, 0)
 	if err != nil {
 		t.Fatalf("replay historical order: %v", err)
 	}
@@ -555,6 +649,69 @@ func TestBillingPriceChangeKeepsHistoricalOrderAmountOnIdempotentReplay(t *testi
 	}
 	if storedAmount != 2400 {
 		t.Fatalf("historical amount after replay=%d, want unchanged 2400", storedAmount)
+	}
+}
+
+func TestBillingPriceCapUsesIntegerAmountAndDoesNotRejectHistoricalReplay(t *testing.T) {
+	f := newBillingFixture(t)
+	atCap := f.newActor(t, "Maximum Billing Order")
+	overCap := f.newActor(t, "Over Maximum Billing Order")
+	legacy := f.newActor(t, "Legacy Oversized Billing Order")
+	module, err := NewConfigured(f.pool, false, Config{
+		Provider:       "mock",
+		MockAccountIDs: []string{atCap.id, overCap.id, legacy.id},
+	}, f.accounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	module.Register(mux, authProtect(t, f.pool, f.accounts))
+	f.module = module
+	f.handler = mux
+	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.pricing SET price_per_monitor_minor=1000000,version=2 WHERE singleton=1`); err != nil {
+		t.Fatalf("set maximum allowed quote: %v", err)
+	}
+	quote := f.request(t, atCap, http.MethodGet, "/api/v1/billing", nil)
+	if quote.Code != http.StatusOK || !strings.Contains(quote.Body.String(), `"priceVersion":2`) {
+		t.Fatalf("maximum quote status=%d body=%s", quote.Code, quote.Body.String())
+	}
+
+	allowedKey := "7db00000-0000-4000-8000-000000000001"
+	allowed := f.request(t, atCap, http.MethodPost, "/api/v1/billing/orders", map[string]any{"monitorCount": 35, "idempotencyKey": allowedKey, "priceVersion": 2})
+	if allowed.Code != http.StatusCreated {
+		t.Fatalf("maximum 350000 RUB order status=%d body=%s", allowed.Code, allowed.Body.String())
+	}
+	var allowedOrder struct {
+		Order contracts.Order `json:"order"`
+	}
+	if err := json.Unmarshal(allowed.Body.Bytes(), &allowedOrder); err != nil || allowedOrder.Order.AmountMinor != 35_000_000 {
+		t.Fatalf("maximum order=%+v decode_error=%v, want exact 35000000 minor units", allowedOrder.Order, err)
+	}
+
+	overKey := "7db00000-0000-4000-8000-000000000002"
+	over := f.request(t, overCap, http.MethodPost, "/api/v1/billing/orders", map[string]any{"monitorCount": 36, "idempotencyKey": overKey, "priceVersion": 2})
+	if over.Code != http.StatusBadRequest || !strings.Contains(over.Body.String(), `"error":"order_amount_exceeded"`) {
+		t.Fatalf("over-cap 360000 RUB order status=%d body=%s, want order_amount_exceeded", over.Code, over.Body.String())
+	}
+	var overRows int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.orders WHERE idempotency_key=$1`, overKey).Scan(&overRows); err != nil || overRows != 0 {
+		t.Fatalf("over-cap order inserted rows=%d err=%v", overRows, err)
+	}
+
+	const legacyOrderID = "7dc00000-0000-4000-8000-000000000003"
+	const legacyKey = "7dc00000-0000-4000-8000-000000000004"
+	if _, err := f.pool.Exec(context.Background(), `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor) VALUES($1,$2,$3,'mock',36,36000000)`, legacyOrderID, legacy.id, legacyKey); err != nil {
+		t.Fatalf("insert existing order outside current amount cap: %v", err)
+	}
+	replay := f.request(t, legacy, http.MethodPost, "/api/v1/billing/orders", map[string]any{"monitorCount": 36, "idempotencyKey": legacyKey, "priceVersion": 0})
+	if replay.Code != http.StatusCreated {
+		t.Fatalf("replay historical order above current cap status=%d body=%s", replay.Code, replay.Body.String())
+	}
+	var replayedOrder struct {
+		Order contracts.Order `json:"order"`
+	}
+	if err := json.Unmarshal(replay.Body.Bytes(), &replayedOrder); err != nil || replayedOrder.Order.ID != legacyOrderID || replayedOrder.Order.AmountMinor != 36_000_000 {
+		t.Fatalf("historical order replay=%+v decode_error=%v, want original 36000000 minor units", replayedOrder.Order, err)
 	}
 }
 
@@ -586,7 +743,7 @@ func TestBillingReportRetryLeaseAndTerminalExhaustion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	order, err := module.service.CreateOrder(context.Background(), owner.id, 1, "75393bd8-6d7f-4c21-8b18-a5d6d25e4552")
+	order, err := module.service.CreateOrder(context.Background(), owner.id, 1, "75393bd8-6d7f-4c21-8b18-a5d6d25e4552", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -627,7 +784,7 @@ func TestBillingReportRetryLeaseAndTerminalExhaustion(t *testing.T) {
 	if len(gotReports) != 2 || gotReports[0].OrderID != order.ID || !gotReports[0].Test {
 		t.Fatalf("retry sender calls=%+v", gotReports)
 	}
-	second, err := module.service.CreateOrder(context.Background(), owner.id, 1, "22453bd0-73b7-482d-abed-cb409ff5a390")
+	second, err := module.service.CreateOrder(context.Background(), owner.id, 1, "22453bd0-73b7-482d-abed-cb409ff5a390", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -681,7 +838,7 @@ func TestBillingRenewalAnchorClampsMonthEndInMoscow(t *testing.T) {
 	moscow := time.FixedZone("MSK", 3*60*60)
 	for index, wantDate := range wantDates {
 		key := fmt.Sprintf("a4c1a100-0000-4000-8000-%012d", index+1)
-		order, err := module.service.CreateOrder(context.Background(), owner.id, 1, key)
+		order, err := module.service.CreateOrder(context.Background(), owner.id, 1, key, 1)
 		if err != nil {
 			t.Fatalf("create renewal %d: %v", index+1, err)
 		}
@@ -702,7 +859,7 @@ func TestBillingReportRecordsBoundedFailureAndTerminatesAfterEighthAttempt(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	order, err := module.service.CreateOrder(context.Background(), owner.id, 1, "b6a5f902-d5b9-4f06-a083-01004733bac5")
+	order, err := module.service.CreateOrder(context.Background(), owner.id, 1, "b6a5f902-d5b9-4f06-a083-01004733bac5", 1)
 	if err != nil {
 		t.Fatal(err)
 	}

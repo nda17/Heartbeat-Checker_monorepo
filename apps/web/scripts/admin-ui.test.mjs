@@ -32,6 +32,8 @@ function loadComponent(relativePath, aliases, runtime = {}) {
     exports,
     require(id) {
       if (Object.hasOwn(aliases, id)) return aliases[id];
+      if (id === "@/features/admin-pricing")
+        return { AdminPricing: () => null };
       return requireWeb(id);
     },
     console,

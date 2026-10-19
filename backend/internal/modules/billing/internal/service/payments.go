@@ -20,8 +20,6 @@ var (
 	ErrConflict  = errors.New("billing order conflicts with current state")
 )
 
-const PricePerMonitorMinor = 2900
-
 var moscow = time.FixedZone("Europe/Moscow", 3*60*60)
 
 // nextMockMonth keeps the original billing day when a shorter month clamps it.
@@ -78,7 +76,12 @@ func scanOrder(row pgx.Row) (contracts.Order, error) {
 }
 
 func (s *Service) Overview(ctx context.Context, accountID string) (contracts.Billing, error) {
-	result := contracts.Billing{Provider: s.provider, CanSimulate: s.provider == "mock" && s.allowed[accountID], PricePerMonitorMinor: PricePerMonitorMinor, Orders: []contracts.Order{}, CanPay: s.provider == "yookassa" && s.allowed[accountID], Test: s.provider == "yookassa"}
+	result := contracts.Billing{Provider: s.provider, CanSimulate: s.provider == "mock" && s.allowed[accountID], Orders: []contracts.Order{}, CanPay: s.provider == "yookassa" && s.allowed[accountID], Test: s.provider == "yookassa"}
+	// A missing current quote must not hide previously created orders. Zero/zero
+	// means unavailable, never a free tariff; new orders still require PricingTx.
+	if pricing, err := s.Pricing(ctx); err == nil {
+		result.PricePerMonitorMinor, result.PriceVersion = pricing.PricePerMonitorMinor, pricing.Version
+	}
 	if result.CanPay {
 		if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM billing.entitlements WHERE account_id=$1 AND source='admin_grant' AND valid_until>now())`, accountID).Scan(&result.AccessUnchanged); err != nil {
 			return result, err
@@ -135,9 +138,9 @@ func (s *Service) beginMock(ctx context.Context, accountID string) (pgx.Tx, cont
 	return tx, entitlement, nil
 }
 
-func (s *Service) CreateOrder(ctx context.Context, accountID string, count int, key string) (contracts.Order, error) {
+func (s *Service) CreateOrder(ctx context.Context, accountID string, count int, key string, version int64) (contracts.Order, error) {
 	if s.provider == "yookassa" {
-		return s.createYooKassaOrder(ctx, accountID, count, key)
+		return s.createYooKassaOrder(ctx, accountID, count, key, version)
 	}
 	if count < 1 || count > 1000 || !validID(key) {
 		return contracts.Order{}, ErrInvalid
@@ -149,13 +152,23 @@ func (s *Service) CreateOrder(ctx context.Context, accountID string, count int, 
 	defer tx.Rollback(ctx)
 	existing, err := scanOrder(tx.QueryRow(ctx, `SELECT `+orderColumns+` FROM billing.orders WHERE account_id=$1 AND idempotency_key=$2`, accountID, key))
 	if err == nil {
-		if existing.MonitorCount != count {
+		if existing.Provider != "mock" || existing.MonitorCount != count {
 			return contracts.Order{}, ErrConflict
 		}
 		return existing, tx.Commit(ctx)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return contracts.Order{}, err
+	}
+	pricing, err := s.PricingTx(ctx, tx, true)
+	if err != nil {
+		return contracts.Order{}, err
+	}
+	if version < 1 || version != pricing.Version {
+		return contracts.Order{}, ErrPriceChanged
+	}
+	if count*pricing.PricePerMonitorMinor > MaxOrderAmountMinor {
+		return contracts.Order{}, ErrOrderAmount
 	}
 	// No proration: an active subscription can only be renewed at the same capacity.
 	if entitlement.Quota > 0 && entitlement.Quota != count {
@@ -175,7 +188,7 @@ func (s *Service) CreateOrder(ctx context.Context, accountID string, count int, 
 	if err != nil {
 		return contracts.Order{}, err
 	}
-	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor) VALUES($1,$2,$3,'mock',$4,$5) RETURNING `+orderColumns, id, accountID, key, count, count*PricePerMonitorMinor))
+	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor) VALUES($1,$2,$3,'mock',$4,$5) RETURNING `+orderColumns, id, accountID, key, count, count*pricing.PricePerMonitorMinor))
 	if err != nil {
 		return contracts.Order{}, err
 	}

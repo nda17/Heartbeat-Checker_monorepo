@@ -1,6 +1,12 @@
+import { Pricing } from "@/entities/billing";
+import { PublicPricing } from "@/features/public-pricing";
 import { LegalPage } from "./layout";
 
-export function TermsPage() {
+export function TermsPage({
+  initialPricing = null,
+}: {
+  initialPricing?: Pricing | null;
+}) {
   return (
     <LegalPage
       title="Условия использования и публичная оферта"
@@ -113,12 +119,7 @@ export function TermsPage() {
       </section>
       <section>
         <h2>4. Тариф, квота и оплаченный период</h2>
-        <p>
-          Цена — 29 рублей за один монитор за один календарный месяц. Квота из N
-          мониторов стоит 29 × N рублей за полный месяц. Например, 3 монитора —
-          87 рублей, 10 мониторов — 290 рублей. Пробного периода нет. Итоговая
-          сумма к оплате в рублях показывается до подтверждения заказа.
-        </p>
+        <PublicPricing variant="terms" initialPricing={initialPricing} />
         <p>
           Календарный месяц отсчитывается от даты и времени начала оплаченного
           периода до соответствующих даты и времени следующего месяца. Если

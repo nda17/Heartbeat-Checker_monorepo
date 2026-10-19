@@ -24,6 +24,7 @@ func (s *Server) Register(mux *http.ServeMux, protect func(http.Handler) http.Ha
 	} {
 		mux.Handle(route, protect(handler))
 	}
+	mux.HandleFunc("GET /api/v1/billing/pricing", s.pricing)
 	mux.HandleFunc("POST /webhooks/billing/yookassa", s.webhook)
 }
 func write(w http.ResponseWriter, status int, value any) {
@@ -37,12 +38,16 @@ func fail(w http.ResponseWriter, status int, code string) {
 }
 func failure(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, service.ErrOrderAmount):
+		fail(w, 400, "order_amount_exceeded")
 	case errors.Is(err, service.ErrInvalid):
 		fail(w, 400, "invalid_request")
 	case errors.Is(err, service.ErrForbidden):
 		fail(w, 403, "mock_billing_forbidden")
 	case errors.Is(err, service.ErrNotFound):
 		fail(w, 404, "not_found")
+	case errors.Is(err, service.ErrPriceChanged):
+		fail(w, 409, "price_changed")
 	case errors.Is(err, service.ErrConflict):
 		fail(w, 409, "billing_conflict")
 	default:
@@ -96,11 +101,12 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		MonitorCount   int    `json:"monitorCount"`
 		IdempotencyKey string `json:"idempotencyKey"`
+		PriceVersion   int64  `json:"priceVersion"`
 	}
 	if !decode(w, r, &input) {
 		return
 	}
-	order, err := s.service.CreateOrder(r.Context(), account, input.MonitorCount, input.IdempotencyKey)
+	order, err := s.service.CreateOrder(r.Context(), account, input.MonitorCount, input.IdempotencyKey, input.PriceVersion)
 	if err != nil {
 		failure(w, err)
 		return
@@ -160,4 +166,13 @@ func (s *Server) webhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, 200, map[string]bool{"ok": true})
+}
+
+func (s *Server) pricing(w http.ResponseWriter, r *http.Request) {
+	pricing, err := s.service.Pricing(r.Context())
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	write(w, 200, map[string]any{"pricing": pricing})
 }

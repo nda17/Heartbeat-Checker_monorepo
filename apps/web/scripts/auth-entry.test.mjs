@@ -9,6 +9,24 @@ import { createRoot } from "react-dom/client";
 import ts from "typescript";
 
 const requireWeb = createRequire(new URL("../package.json", import.meta.url));
+const billingEntity = (() => {
+  const source = fs.readFileSync(
+    new URL("../src/entities/billing/index.ts", import.meta.url),
+    "utf8",
+  );
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+  }).outputText;
+  const fixtureModule = { exports: {} };
+  vm.runInNewContext(compiled, {
+    module: fixtureModule,
+    exports: fixtureModule.exports,
+  });
+  return fixtureModule.exports;
+})();
 
 function deferred() {
   let resolve;
@@ -78,6 +96,11 @@ function compile(relativePath, aliases, runtime = {}) {
     exports,
     require(id) {
       if (Object.hasOwn(aliases, id)) return aliases[id];
+      if (id === "@/entities/billing") return billingEntity;
+      if (id === "@/features/public-pricing")
+        return { PublicPricing: () => null };
+      if (id === "@/features/admin-pricing")
+        return { AdminPricing: () => null };
       return requireWeb(id);
     },
     console,
@@ -820,6 +843,27 @@ function transientFailureApi(responses) {
   return { api, calls };
 }
 
+function billingPricingApi(api, fallbackPrice = 2900) {
+  return async (path, options = {}) => {
+    if (path === "/billing/pricing") {
+      return {
+        pricing: {
+          pricePerMonitorMinor: fallbackPrice,
+          currency: "RUB",
+          period: "month",
+          version: 1,
+          updatedAt: "2026-10-19T10:00:00Z",
+        },
+      };
+    }
+    if (path === "/billing") {
+      const result = await api(path, options);
+      return { ...result, priceVersion: result.priceVersion ?? 1 };
+    }
+    return api(path, options);
+  };
+}
+
 function settingsPage(api) {
   const link = ({ href, children, ...props }) =>
     React.createElement("a", { href, ...props }, children);
@@ -978,7 +1022,7 @@ test("billing recovers its initial data load and retries both required GETs", as
       }),
     },
     "@/shared/api": {
-      api,
+      api: billingPricingApi(api),
       errorMessage: (error) => String(error?.message ?? error),
     },
     "@/entities/monitor": {},
@@ -1081,7 +1125,7 @@ test("YooKassa checkout retries an ambiguous create with the same key and never 
         }),
       },
       "@/shared/api": {
-        api,
+        api: billingPricingApi(api),
         errorMessage: (error) => String(error?.message ?? error),
         paymentConfirmationUrl: shared.paymentConfirmationUrl,
       },
@@ -1139,6 +1183,15 @@ test("YooKassa checkout retries an ambiguous create with the same key and never 
     posts[0].options.body.monitorCount,
     posts[1].options.body.monitorCount,
   );
+  assert.equal(posts[0].options.body.priceVersion, 1);
+  assert.equal(posts[1].options.body.priceVersion, 1);
+  assert.equal(
+    harness.dom.window.sessionStorage.getItem(
+      "heartbeat-billing-request:yookassa-test-owner",
+    ),
+    null,
+    "a confirmed order clears its retry intent",
+  );
   assert.equal(posts[0].options.signal.aborted, true);
   assert.equal(posts[1].options.signal.aborted, false);
   assert.equal(
@@ -1156,6 +1209,174 @@ test("YooKassa checkout retries an ambiguous create with the same key and never 
   firstCreate.resolve({ order: { ...pendingOrder, id: "late-stale-order" } });
   await settle();
   assert.equal(harness.host.textContent.includes("late-stale-order"), false);
+  await harness.unmount();
+});
+
+test("YooKassa create preserves quote and idempotency key after a 5xx, while stale quote needs a fresh click", async () => {
+  const harness = createHarness("http://localhost/app/billing");
+  const calls = [];
+  let billingReads = 0;
+  let posts = 0;
+  const order = {
+    id: "a8b9d215-3d8a-44f0-a2a0-0fc3a8d2c8b4",
+    provider: "yookassa",
+    status: "pending",
+    reconciliationStatus: "pending",
+    monitorCount: 3,
+    amountMinor: 7200,
+    currency: "RUB",
+    confirmationUrl: "https://yookassa.ru/checkout/pricing",
+    createdAt: "2026-10-20T00:00:00Z",
+    expiresAt: null,
+    completedAt: null,
+    activeUntil: null,
+  };
+  class ApiError extends Error {
+    constructor(message, status) {
+      super(message);
+      this.status = status;
+    }
+  }
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/billing") {
+      billingReads += 1;
+      const current =
+        billingReads === 1
+          ? { pricePerMonitorMinor: 2900, priceVersion: 1 }
+          : { pricePerMonitorMinor: 2400, priceVersion: 2 };
+      return {
+        provider: "yookassa",
+        canSimulate: false,
+        canPay: true,
+        test: true,
+        ...current,
+        orders: [],
+      };
+    }
+    if (path === "/entitlement")
+      return { entitlement: { quota: 0, activeUntil: null, source: "none" } };
+    if (path === "/billing/orders" && options.method === "POST") {
+      posts += 1;
+      if (posts === 1) throw new ApiError("temporary_unavailable", 503);
+      if (posts === 2) throw new ApiError("price_changed", 409);
+      return { order };
+    }
+    if (path === `/billing/orders/${order.id}`) return { order };
+    throw new Error(`Unexpected billing API call: ${path}`);
+  };
+  const shared = compile("../src/shared/api/index.ts", {});
+  let idSequence = 0;
+  const page = compile(
+    "../src/_pages/billing/index.tsx",
+    {
+      "@/entities/session": {
+        useSession: () => ({
+          profile: { account: { id: "pricing-stale-owner" } },
+        }),
+      },
+      "@/shared/api": {
+        api: billingPricingApi(api),
+        ApiError,
+        errorMessage: (error) => String(error?.message ?? error),
+        paymentConfirmationUrl: shared.paymentConfirmationUrl,
+      },
+      "@/entities/monitor": {},
+      "@/shared/ui": {
+        Icon: () => null,
+        dateTime: (value) => value ?? "—",
+        Loading: ({ text }) =>
+          React.createElement("div", { role: "status" }, text),
+        Notice: ({ children }) =>
+          React.createElement("div", { role: "alert" }, children),
+      },
+    },
+    {
+      crypto: {
+        randomUUID: () =>
+          `44444444-4444-4444-8444-${String(++idSequence).padStart(12, "0")}`,
+      },
+    },
+  );
+  await harness.render(React.createElement(page.BillingPage));
+  await settle();
+  const count = harness.host.querySelector('input[name="monitorCount"]');
+  Object.getOwnPropertyDescriptor(
+    harness.dom.window.HTMLInputElement.prototype,
+    "value",
+  ).set.call(count, "3");
+  count.dispatchEvent(new harness.dom.window.Event("input", { bubbles: true }));
+  count.dispatchEvent(
+    new harness.dom.window.Event("change", { bubbles: true }),
+  );
+  const submit = async () => {
+    const form = harness.host.querySelector(".billing-checkout form");
+    assert.ok(form);
+    await act(async () => {
+      form.dispatchEvent(
+        new harness.dom.window.Event("submit", {
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await Promise.resolve();
+    });
+    await settle();
+  };
+
+  await submit();
+  assert.equal(posts, 1);
+  const uncertainIntent = JSON.parse(
+    harness.dom.window.sessionStorage.getItem(
+      "heartbeat-billing-request:pricing-stale-owner",
+    ),
+  );
+  assert.equal(uncertainIntent.priceVersion, 1);
+  assert.equal(uncertainIntent.pricePerMonitorMinor, 2900);
+  const retry = [...harness.host.querySelectorAll("button")].find((button) =>
+    button.textContent.includes("Повторить запрос заказа"),
+  );
+  assert.ok(retry, "5xx keeps the explicit same-intent retry available");
+  await act(async () => retry.click());
+  await settle();
+  assert.equal(posts, 2);
+  const postCalls = calls.filter(
+    (call) => call.path === "/billing/orders" && call.options.method === "POST",
+  );
+  assert.equal(
+    postCalls[0].options.body.idempotencyKey,
+    postCalls[1].options.body.idempotencyKey,
+  );
+  assert.equal(postCalls[0].options.body.priceVersion, 1);
+  assert.equal(postCalls[1].options.body.priceVersion, 1);
+
+  const form = harness.host.querySelector(".billing-checkout form");
+  assert.ok(form);
+  await act(async () => {
+    form.dispatchEvent(
+      new harness.dom.window.Event("submit", {
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await Promise.resolve();
+  });
+  await settle();
+  assert.equal(
+    posts,
+    3,
+    "the definitive stale-quote response is not retried automatically",
+  );
+  assert.match(harness.host.textContent, /24,00/);
+  const allPosts = calls.filter(
+    (call) => call.path === "/billing/orders" && call.options.method === "POST",
+  );
+  assert.notEqual(
+    allPosts[1].options.body.idempotencyKey,
+    allPosts[2].options.body.idempotencyKey,
+  );
+  assert.equal(allPosts[2].options.body.priceVersion, 2);
+
   await harness.unmount();
 });
 
@@ -1205,7 +1426,7 @@ test("YooKassa return only looks up the owner order and hides payment for manual
       }),
     },
     "@/shared/api": {
-      api,
+      api: billingPricingApi(api),
       errorMessage: (error) => String(error?.message ?? error),
       paymentConfirmationUrl: shared.paymentConfirmationUrl,
     },
@@ -1281,7 +1502,7 @@ test("YooKassa return hydrates pending count and amount from the owner order", a
       }),
     },
     "@/shared/api": {
-      api,
+      api: billingPricingApi(api, 3100),
       errorMessage: (error) => String(error?.message ?? error),
       paymentConfirmationUrl: shared.paymentConfirmationUrl,
     },
@@ -1309,6 +1530,203 @@ test("YooKassa return hydrates pending count and amount from the owner order", a
     calls.filter((call) => call.path === "/billing/orders").length,
     0,
   );
+  await harness.unmount();
+});
+
+test("an unavailable current quote does not hide an existing pending payment order", async () => {
+  const harness = createHarness("http://localhost/app/billing");
+  const calls = [];
+  const pendingOrder = {
+    id: "a15b6dc0-3b1e-4df3-9e98-1142fd775c62",
+    provider: "yookassa",
+    status: "pending",
+    reconciliationStatus: "pending",
+    monitorCount: 3,
+    amountMinor: 8700,
+    currency: "RUB",
+    confirmationUrl: "https://yookassa.ru/checkout/old-order",
+    createdAt: "2026-01-01T00:00:00Z",
+    expiresAt: null,
+    completedAt: null,
+    activeUntil: null,
+  };
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/billing")
+      return {
+        provider: "yookassa",
+        canSimulate: false,
+        canPay: true,
+        test: true,
+        pricePerMonitorMinor: 0,
+        priceVersion: 0,
+        orders: [pendingOrder],
+      };
+    if (path === "/entitlement")
+      return { entitlement: { quota: 0, activeUntil: null, source: "none" } };
+    if (path === `/billing/orders/${pendingOrder.id}`)
+      return { order: pendingOrder };
+    if (path === "/billing/pricing")
+      throw new Error("pricing temporarily unavailable");
+    throw new Error(`Unexpected billing API call: ${path}`);
+  };
+  const shared = compile("../src/shared/api/index.ts", {});
+  const page = compile("../src/_pages/billing/index.tsx", {
+    "@/entities/session": {
+      useSession: () => ({
+        profile: { account: { id: "pricing-unavailable-owner" } },
+      }),
+    },
+    "@/shared/api": {
+      api,
+      errorMessage: (error) => String(error?.message ?? error),
+      paymentConfirmationUrl: shared.paymentConfirmationUrl,
+    },
+    "@/entities/monitor": {},
+    "@/shared/ui": {
+      Icon: () => null,
+      dateTime: (value) => value ?? "—",
+      Loading: ({ text }) =>
+        React.createElement("div", { role: "status" }, text),
+      Notice: ({ children }) =>
+        React.createElement("div", { role: "alert" }, children),
+    },
+  });
+  await harness.render(React.createElement(page.BillingPage));
+  await settle();
+  assert.match(harness.host.textContent, /Цена временно недоступна/);
+  assert.match(harness.host.textContent, /87,00/);
+  const paymentLink = harness.host.querySelector(
+    'a[href="https://yookassa.ru/checkout/old-order"]',
+  );
+  assert.ok(
+    paymentLink,
+    "the previously issued provider URL remains available",
+  );
+  assert.equal(
+    harness.host.querySelector('input[name="monitorCount"]').disabled,
+    true,
+  );
+  assert.equal(
+    calls.filter((call) => call.path === "/billing/orders").length,
+    0,
+  );
+  await harness.unmount();
+});
+
+test("an older pricing response cannot roll back the billing overview quote", async () => {
+  const harness = createHarness("http://localhost/app/billing");
+  const oldQuote = deferred();
+  const calls = [];
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/billing")
+      return {
+        provider: "yookassa",
+        canSimulate: false,
+        canPay: true,
+        test: true,
+        pricePerMonitorMinor: 2400,
+        priceVersion: 2,
+        orders: [],
+      };
+    if (path === "/entitlement")
+      return { entitlement: { quota: 0, activeUntil: null, source: "none" } };
+    if (path === "/billing/pricing") return oldQuote.promise;
+    throw new Error(`Unexpected billing API call: ${path}`);
+  };
+  const shared = compile("../src/shared/api/index.ts", {});
+  const page = compile("../src/_pages/billing/index.tsx", {
+    "@/entities/session": {
+      useSession: () => ({
+        profile: { account: { id: "pricing-race-owner" } },
+      }),
+    },
+    "@/shared/api": {
+      api,
+      errorMessage: (error) => String(error?.message ?? error),
+      paymentConfirmationUrl: shared.paymentConfirmationUrl,
+    },
+    "@/entities/monitor": {},
+    "@/shared/ui": {
+      Icon: () => null,
+      dateTime: (value) => value ?? "—",
+      Loading: ({ text }) =>
+        React.createElement("div", { role: "status" }, text),
+      Notice: ({ children }) =>
+        React.createElement("div", { role: "alert" }, children),
+    },
+  });
+  await harness.render(React.createElement(page.BillingPage));
+  await settle();
+  assert.match(harness.host.textContent, /24,00/);
+  await act(async () =>
+    oldQuote.resolve({
+      pricing: {
+        pricePerMonitorMinor: 2900,
+        currency: "RUB",
+        period: "month",
+        version: 1,
+        updatedAt: "2026-10-01T00:00:00Z",
+      },
+    }),
+  );
+  await settle();
+  assert.match(harness.host.textContent, /24,00/);
+  assert.doesNotMatch(harness.host.textContent, /29,00/);
+
+  await harness.unmount();
+});
+
+test("a delayed pricing failure does not erase a newer overview quote", async () => {
+  const harness = createHarness("http://localhost/app/billing");
+  const priceRead = deferred();
+  void priceRead.promise.catch(() => {});
+  const api = async (path) => {
+    if (path === "/billing")
+      return {
+        provider: "yookassa",
+        canSimulate: false,
+        canPay: true,
+        test: true,
+        pricePerMonitorMinor: 2400,
+        priceVersion: 2,
+        orders: [],
+      };
+    if (path === "/entitlement")
+      return { entitlement: { quota: 0, activeUntil: null, source: "none" } };
+    if (path === "/billing/pricing") return priceRead.promise;
+    throw new Error(`Unexpected billing API call: ${path}`);
+  };
+  const shared = compile("../src/shared/api/index.ts", {});
+  const page = compile("../src/_pages/billing/index.tsx", {
+    "@/entities/session": {
+      useSession: () => ({
+        profile: { account: { id: "pricing-late-failure-owner" } },
+      }),
+    },
+    "@/shared/api": {
+      api,
+      errorMessage: (error) => String(error?.message ?? error),
+      paymentConfirmationUrl: shared.paymentConfirmationUrl,
+    },
+    "@/entities/monitor": {},
+    "@/shared/ui": {
+      Icon: () => null,
+      dateTime: (value) => value ?? "—",
+      Loading: ({ text }) =>
+        React.createElement("div", { role: "status" }, text),
+      Notice: ({ children }) =>
+        React.createElement("div", { role: "alert" }, children),
+    },
+  });
+  await harness.render(React.createElement(page.BillingPage));
+  await settle();
+  assert.match(harness.host.textContent, /24,00/);
+  await act(async () => priceRead.reject(new Error("late pricing failure")));
+  await settle();
+  assert.match(harness.host.textContent, /24,00/);
+  assert.doesNotMatch(harness.host.textContent, /Цена временно недоступна/);
   await harness.unmount();
 });
 
@@ -1373,7 +1791,7 @@ test("definitive YooKassa create rejections clear retry intent and refresh the c
           }),
         },
         "@/shared/api": {
-          api,
+          api: billingPricingApi(api),
           ApiError,
           errorMessage: (error) => String(error?.message ?? error),
           paymentConfirmationUrl: shared.paymentConfirmationUrl,

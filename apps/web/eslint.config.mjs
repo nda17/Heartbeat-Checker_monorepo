@@ -38,7 +38,16 @@ const boundaries = {
               "FSD imports must point to lower layers; use relative imports inside a slice.",
           });
         }
-        if (target.length > 2)
+        // App Router server pages may use a separate server-only public entry.
+        // Keeping it out of the client index prevents accidental server imports.
+        const serverEntry =
+          source[0] === ".." &&
+          source[1] === "app" &&
+          target[0] === "entities" &&
+          target[1] === "billing" &&
+          target.length === 3 &&
+          target[2] === "server";
+        if (target.length > 2 && !serverEntry)
           context.report({
             node,
             message: "Import a slice through its public index.",
