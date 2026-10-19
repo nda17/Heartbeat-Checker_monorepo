@@ -7,7 +7,7 @@ iptables -N DOCKER-USER 2>/dev/null || true
 iptables -S DOCKER-USER >/dev/null
 
 probe_ip=172.30.80.2/32
-forward_chain=HEARTBEAT_PROBE
+forward_chain=HEARTBEAT_PROBE_V2
 input_chain=HEARTBEAT_PROBE_INPUT
 
 iptables -N "$forward_chain" 2>/dev/null || true
@@ -46,11 +46,15 @@ done
 # namespace. All forwarded new traffic to non-public address space is denied.
 for cidr in \
   0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 \
-  172.16.0.0/12 192.0.0.0/24 192.0.2.0/24 192.168.0.0/16 \
-  198.18.0.0/15 198.51.100.0/24 203.0.113.0/24 224.0.0.0/4 240.0.0.0/4; do
+  172.16.0.0/12 192.0.0.0/24 192.0.2.0/24 192.31.196.0/24 192.52.193.0/24 \
+  192.88.99.0/24 192.168.0.0/16 192.175.48.0/24 198.18.0.0/15 \
+  198.51.100.0/24 203.0.113.0/24 224.0.0.0/3; do
   insert_before_reject "$forward_chain" -d "$cidr" -j REJECT
 done
-insert_before_reject "$forward_chain" -p tcp -m multiport --dports 80,443 -j RETURN
+# TCP checks establish and immediately close a connection; ICMP checks send only
+# Echo Requests. Reserved destinations above remain blocked for every protocol.
+insert_before_reject "$forward_chain" -p tcp --dport 1:65535 -j RETURN
+insert_before_reject "$forward_chain" -p icmp --icmp-type echo-request -j RETURN
 
 iptables -C DOCKER-USER -s "$probe_ip" -j "$forward_chain" 2>/dev/null ||
   iptables -I DOCKER-USER 1 -s "$probe_ip" -j "$forward_chain"
@@ -59,3 +63,9 @@ iptables -C INPUT -s "$probe_ip" -j "$input_chain" 2>/dev/null ||
 
 iptables -C DOCKER-USER -s "$probe_ip" -j "$forward_chain"
 iptables -C INPUT -s "$probe_ip" -j "$input_chain"
+
+# Switch away from the old HTTP-only policy only after the complete replacement
+# is installed and attached. On interruption either chain still fails closed.
+while iptables -C DOCKER-USER -s "$probe_ip" -j HEARTBEAT_PROBE 2>/dev/null; do
+  iptables -D DOCKER-USER -s "$probe_ip" -j HEARTBEAT_PROBE
+done

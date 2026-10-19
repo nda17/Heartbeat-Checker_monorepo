@@ -98,6 +98,10 @@ const messages: Record<string, string> = {
     "Сначала установите пароль через восстановление доступа.",
   invalid_url:
     "Укажите публичный HTTP или HTTPS адрес. Внутренние и служебные адреса запрещены.",
+  invalid_host: "Укажите домен или публичный IPv4 без протокола, пути и порта.",
+  invalid_port: "Укажите TCP-порт от 1 до 65535.",
+  address_family_unavailable:
+    "Для TCP и ICMP нужен публичный IPv4 или домен с IPv4-адресом. IPv6 пока не поддерживается.",
 };
 export function errorMessage(
   error: unknown,

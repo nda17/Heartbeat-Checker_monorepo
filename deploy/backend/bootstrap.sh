@@ -163,7 +163,7 @@ EOF
 install -m 0644 "$temp_dir/heartbeat-probe-firewall.conf" /etc/systemd/system/docker.service.d/heartbeat-probe-firewall.conf
 systemctl daemon-reload
 /usr/local/sbin/heartbeat-probe-firewall
-iptables -C DOCKER-USER -s 172.30.80.2/32 -j HEARTBEAT_PROBE || die 'probe forward firewall hook is absent'
+iptables -C DOCKER-USER -s 172.30.80.2/32 -j HEARTBEAT_PROBE_V2 || die 'probe forward firewall hook is absent'
 iptables -C INPUT -s 172.30.80.2/32 -j HEARTBEAT_PROBE_INPUT || die 'probe host firewall hook is absent'
 
 printf 'bootstrap: Docker, probe firewall and %s are ready; backend deploy path is /opt/heartbeat-checker/backend\n' "$deploy_user"

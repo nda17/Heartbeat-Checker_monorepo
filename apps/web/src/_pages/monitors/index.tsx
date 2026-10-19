@@ -10,6 +10,10 @@ import {
   Incident,
   Monitor,
   Status,
+  checkTiming,
+  checkTypeLabel,
+  monitorCheckType,
+  monitorTarget,
   resultErrorMessage,
 } from "@/entities/monitor";
 import { api, ApiError, errorMessage, safeAppReturnTo } from "@/shared/api";
@@ -248,7 +252,9 @@ export function MonitorsPage() {
   const down = monitors?.filter((m) => m.state === "DOWN").length ?? 0;
   const visible =
     monitors?.filter((m) =>
-      `${m.name} ${m.url}`.toLowerCase().includes(filter.toLowerCase()),
+      `${m.name} ${monitorTarget(m)}`
+        .toLowerCase()
+        .includes(filter.toLowerCase()),
     ) ?? [];
   const quotaActive =
     entitlement &&
@@ -266,7 +272,7 @@ export function MonitorsPage() {
           <h1>
             Обзор мониторов<span className="heading-dot">.</span>
           </h1>
-          <p>Проверки, состояние и история ваших HTTP-сервисов.</p>
+          <p>Проверки сайтов, портов и серверов, их состояние и история.</p>
         </div>
         <button
           className="primary"
@@ -433,7 +439,7 @@ export function MonitorsPage() {
                 <tr>
                   <th>Монитор / адрес</th>
                   <th>Состояние</th>
-                  <th>HTTP / время проверки</th>
+                  <th>Результат и время</th>
                   <th>Последняя проверка</th>
                   <th>
                     <span className="sr-only">Действия</span>
@@ -452,8 +458,11 @@ export function MonitorsPage() {
                         {m.name}
                         <span aria-hidden="true">↗</span>
                       </button>
-                      <span className="monitor-url" title={m.url}>
-                        {m.method} <span>{m.url}</span>
+                      <span className="monitor-url" title={monitorTarget(m)}>
+                        {monitorCheckType(m.checkType) === "http"
+                          ? m.method
+                          : checkTypeLabel(m.checkType)}{" "}
+                        <span>{monitorTarget(m)}</span>
                       </span>
                       <span className="cell-sub">
                         Интервал: {m.intervalMinutes} мин · Порог:{" "}
@@ -463,12 +472,19 @@ export function MonitorsPage() {
                     <td data-label="Состояние">
                       <Status state={m.state} />
                     </td>
-                    <td data-label="HTTP / время проверки">
-                      <span className="mono">{m.lastHttpStatus ?? "—"}</span>
+                    <td data-label="Результат и время">
+                      <span className="mono">
+                        {monitorCheckType(m.checkType) === "http"
+                          ? `HTTP ${m.lastHttpStatus ?? "—"}`
+                          : checkTypeLabel(m.checkType)}
+                      </span>
                       <span className="cell-sub">
-                        {m.lastLatencyMs === null
-                          ? "Нет данных"
-                          : `${m.lastLatencyMs} мс`}
+                        {checkTiming(
+                          m.checkType,
+                          m.state,
+                          m.lastLatencyMs,
+                          m.lastRoundTripMs,
+                        )}
                       </span>
                     </td>
                     <td data-label="Последняя проверка">
@@ -531,7 +547,7 @@ export function MonitorsPage() {
           </div>
         )}
         <div className="table-footnote">
-          <span>GET / HEAD · Интервал 1–10 мин для каждого монитора</span>
+          <span>HTTP/HTTPS · TCP · ICMP · Интервал 1–10 мин</span>
           <span>
             Неизвестное состояние означает отсутствие свежего результата.
           </span>
@@ -639,8 +655,13 @@ export function MonitorsPage() {
         >
           <div className="detail-summary">
             <Status state={detail.monitor.state} />
-            <span className="mono">{detail.monitor.method}</span>
-            <span className="detail-url">{detail.monitor.url}</span>
+            <span className="mono">
+              {checkTypeLabel(detail.monitor.checkType)}
+              {monitorCheckType(detail.monitor.checkType) === "http"
+                ? ` · ${detail.monitor.method}`
+                : ""}
+            </span>
+            <span className="detail-url">{monitorTarget(detail.monitor)}</span>
           </div>
           <p className="small muted">
             Интервал: {detail.monitor.intervalMinutes} мин · Сбоев подряд до
@@ -717,8 +738,8 @@ export function MonitorsPage() {
                     <tr>
                       <th>Время</th>
                       <th>Результат</th>
-                      <th>HTTP</th>
-                      <th>Время HTTP-проверки</th>
+                      <th>Тип проверки</th>
+                      <th>Время проверки</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -735,17 +756,27 @@ export function MonitorsPage() {
                                 ? "Ошибка исполнителя"
                                 : "Ошибка"}
                           </span>
+                          {monitorCheckType(r.checkType) === "http" && (
+                            <span className="cell-sub">
+                              HTTP {r.httpStatus ?? "—"}
+                            </span>
+                          )}
                           {r.errorCode && (
                             <span className="cell-sub">
                               {resultErrorMessage(r.errorCode)}
                             </span>
                           )}
                         </td>
-                        <td className="mono" data-label="HTTP">
-                          {r.httpStatus ?? "—"}
+                        <td className="mono" data-label="Тип проверки">
+                          {checkTypeLabel(r.checkType)}
                         </td>
-                        <td className="mono" data-label="Время HTTP-проверки">
-                          {r.latencyMs} мс
+                        <td data-label="Время проверки">
+                          {checkTiming(
+                            r.checkType,
+                            r.outcome,
+                            r.latencyMs,
+                            r.roundTripMs,
+                          )}
                         </td>
                       </tr>
                     ))}

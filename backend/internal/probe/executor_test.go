@@ -10,8 +10,12 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -157,6 +161,190 @@ func TestCheckSupportsHTTP(t *testing.T) {
 	result, err := e.Check(context.Background(), testRequest("http://http.example/health"))
 	if err != nil || result.Outcome != "UP" || result.HTTPStatus != http.StatusOK {
 		t.Fatalf("HTTP check = (%+v, %v), want successful HTTP response", result, err)
+	}
+	if result.CheckType != "http" || result.RoundTripMS != nil {
+		t.Fatalf("legacy HTTP result = (%+v), want effective http type without RTT", result)
+	}
+}
+
+func TestNetworkChecksValidateTargetShapeBeforeResolution(t *testing.T) {
+	for name, request := range map[string]contracts.Request{
+		"unknown type": func() contracts.Request { r := testRequest(""); r.CheckType = "dns"; return r }(),
+		"TCP with URL": func() contracts.Request {
+			r := testRequest("https://example.com/health")
+			r.CheckType, r.Host, r.Port = "tcp", "example.com", 443
+			return r
+		}(),
+		"TCP missing port": func() contracts.Request { r := testRequest(""); r.CheckType, r.Host = "tcp", "example.com"; return r }(),
+		"ICMP with port": func() contracts.Request {
+			r := testRequest("")
+			r.CheckType, r.Host, r.Port = "icmp", "example.com", 7
+			return r
+		}(),
+		"ICMP with HTTP method": func() contracts.Request { r := testRequest(""); r.CheckType, r.Host = "icmp", "example.com"; return r }(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			request.RunID, request.AttemptToken, request.ConfigVersion = "run-1", "attempt-1", 1
+			if err := validateRequest(request); !errors.Is(err, ErrUnsupportedTarget) {
+				t.Fatalf("validateRequest = %v, want ErrUnsupportedTarget", err)
+			}
+		})
+	}
+}
+
+func TestTCPConnectUsesOnlyValidatedIPv4TargetAndPort(t *testing.T) {
+	var network, address string
+	e := testExecutor(testResolver{"tcp.example": {netip.MustParseAddr("8.8.8.8")}}, func(_ context.Context, gotNetwork, gotAddress string) (net.Conn, error) {
+		network, address = gotNetwork, gotAddress
+		client, server := net.Pipe()
+		_ = server.Close()
+		return client, nil
+	})
+	req := contracts.Request{RunID: "run-1", AttemptToken: "attempt-1", ConfigVersion: 1, CheckType: "tcp", Host: "TCP.EXAMPLE.", Port: 443}
+	result, err := e.Check(context.Background(), req)
+	if err != nil || result.Outcome != "UP" || result.CheckType != "tcp" {
+		t.Fatalf("TCP check = (%+v, %v), want UP", result, err)
+	}
+	if network != "tcp4" || address != "8.8.8.8:443" {
+		t.Fatalf("dial = %s %s, want tcp4 to normalized pinned target", network, address)
+	}
+	if result.HTTPStatus != 0 || result.RoundTripMS != nil {
+		t.Fatalf("TCP check populated HTTP/ICMP-only fields: %+v", result)
+	}
+}
+
+func TestICMPStoresOnlySuccessfulRoundTripAndKeepsUNKNOWNOnPermissionFailure(t *testing.T) {
+	t.Run("success includes RTT", func(t *testing.T) {
+		e := testExecutor(testResolver{"ping.example": {netip.MustParseAddr("1.1.1.1")}}, nil)
+		var pingTarget netip.Addr
+		e.ping = func(_ context.Context, target netip.Addr) (int64, error) {
+			pingTarget = target
+			time.Sleep(4 * time.Millisecond)
+			return 2, nil
+		}
+		req := contracts.Request{RunID: "run-1", AttemptToken: "attempt-1", ConfigVersion: 1, CheckType: "icmp", Host: "ping.example"}
+		result, err := e.Check(context.Background(), req)
+		if err != nil || result.Outcome != "UP" || result.CheckType != "icmp" || result.RoundTripMS == nil || *result.RoundTripMS != 2 {
+			t.Fatalf("ICMP check = (%+v, %v), want UP with 2ms RTT", result, err)
+		}
+		if result.LatencyMS < *result.RoundTripMS || result.HTTPStatus != 0 {
+			t.Fatalf("ICMP timing/status fields = %+v", result)
+		}
+		if pingTarget != netip.MustParseAddr("1.1.1.1") {
+			t.Fatalf("ICMP target = %s, want the resolved public IPv4", pingTarget)
+		}
+		if !contracts.ValidResult(req, result) {
+			t.Fatalf("ValidResult rejected successful ICMP result: %+v", result)
+		}
+	})
+
+	t.Run("permission failure remains UNKNOWN", func(t *testing.T) {
+		e := testExecutor(testResolver{"ping.example": {netip.MustParseAddr("1.1.1.1")}}, nil)
+		e.ping = func(context.Context, netip.Addr) (int64, error) { return 0, syscall.EPERM }
+		req := contracts.Request{RunID: "run-2", AttemptToken: "attempt-2", ConfigVersion: 1, CheckType: "icmp", Host: "ping.example"}
+		result, err := e.Check(context.Background(), req)
+		if err != nil || result.Outcome != "UNKNOWN" || result.ErrorCode != "probe_unavailable" || result.RoundTripMS != nil {
+			t.Fatalf("ICMP permission result = (%+v, %v), want UNKNOWN without RTT", result, err)
+		}
+		if !contracts.ValidResult(req, result) {
+			t.Fatalf("ValidResult rejected permission-limited UNKNOWN result: %+v", result)
+		}
+	})
+}
+
+func TestICMPUnprivilegedSmoke(t *testing.T) {
+	if os.Getenv("HEARTBEAT_ICMP_SMOKE") != "yes" {
+		t.Skip("set HEARTBEAT_ICMP_SMOKE=yes in the isolated Linux probe test container")
+	}
+	if runtime.GOOS != "linux" {
+		t.Fatalf("ICMP smoke requires Linux, got %s", runtime.GOOS)
+	}
+	if uid := os.Getuid(); uid != 65532 {
+		t.Fatalf("ICMP smoke uid = %d, want unprivileged UID 65532", uid)
+	}
+	status, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Fatalf("read process capabilities: %v", err)
+	}
+	var effective uint64
+	for _, line := range strings.Split(string(status), "\n") {
+		if strings.HasPrefix(line, "CapEff:") {
+			value := strings.TrimSpace(strings.TrimPrefix(line, "CapEff:"))
+			effective, err = strconv.ParseUint(value, 16, 64)
+			if err != nil {
+				t.Fatalf("parse CapEff %q: %v", value, err)
+			}
+			break
+		}
+	}
+	if effective != 0 {
+		t.Fatalf("ICMP smoke has effective capabilities %#x, want none", effective)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := pingIPv4(ctx, netip.MustParseAddr("127.0.0.1")); err != nil {
+		t.Fatalf("unprivileged ICMP loopback echo failed: %v", err)
+	}
+}
+
+func TestValidResultRejectsProtocolTypeAndMeasurementMismatches(t *testing.T) {
+	rtt := int64(3)
+	tooSlowRTT := int64(8)
+	httpRequest := testRequest("https://example.com/health")
+	tcpRequest := contracts.Request{RunID: "run", AttemptToken: "attempt", ConfigVersion: 1, CheckType: "tcp", Host: "example.com", Port: 443}
+	icmpRequest := contracts.Request{RunID: "run", AttemptToken: "attempt", ConfigVersion: 1, CheckType: "icmp", Host: "example.com"}
+	tests := []struct {
+		name    string
+		request contracts.Request
+		result  contracts.Result
+	}{
+		{name: "HTTP result mislabeled as TCP", request: httpRequest, result: contracts.Result{CheckType: "tcp", Outcome: "UP", HTTPStatus: 200}},
+		{name: "HTTP cannot carry ICMP RTT", request: httpRequest, result: contracts.Result{CheckType: "http", Outcome: "UP", HTTPStatus: 200, RoundTripMS: &rtt}},
+		{name: "TCP cannot carry HTTP status", request: tcpRequest, result: contracts.Result{CheckType: "tcp", Outcome: "UP", HTTPStatus: 200}},
+		{name: "ICMP success requires RTT", request: icmpRequest, result: contracts.Result{CheckType: "icmp", Outcome: "UP", LatencyMS: 10}},
+		{name: "ICMP RTT cannot exceed total latency", request: icmpRequest, result: contracts.Result{CheckType: "icmp", Outcome: "UP", LatencyMS: 5, RoundTripMS: &tooSlowRTT}},
+		{name: "failed ICMP cannot carry a success RTT", request: icmpRequest, result: contracts.Result{CheckType: "icmp", Outcome: "DOWN", LatencyMS: 10, RoundTripMS: &rtt}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if contracts.ValidResult(tc.request, tc.result) {
+				t.Fatalf("ValidResult accepted mismatched result %+v for request %+v", tc.result, tc.request)
+			}
+		})
+	}
+}
+
+func TestNetworkChecksRejectPrivateOrMixedDNSAndClassifyLookupFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		resolver testResolver
+		wantErr  bool
+		wantCode string
+	}{
+		{name: "private answer", resolver: testResolver{"target.example": {netip.MustParseAddr("192.168.1.5")}}, wantErr: true},
+		{name: "mixed answers", resolver: testResolver{"target.example": {netip.MustParseAddr("8.8.8.8"), netip.MustParseAddr("10.0.0.8")}}, wantErr: true},
+		{name: "lookup failure", resolver: testResolver{}, wantCode: "dns_failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dials := 0
+			e := testExecutor(tc.resolver, func(context.Context, string, string) (net.Conn, error) {
+				dials++
+				return nil, errors.New("should not dial")
+			})
+			e.ping = func(context.Context, netip.Addr) (int64, error) { return 0, errors.New("should not ping") }
+			req := contracts.Request{RunID: "run-1", AttemptToken: "attempt-1", ConfigVersion: 1, CheckType: "icmp", Host: "target.example"}
+			result, err := e.Check(context.Background(), req)
+			if tc.wantErr {
+				if !errors.Is(err, ErrUnsupportedTarget) {
+					t.Fatalf("Check error = %v, want ErrUnsupportedTarget", err)
+				}
+			} else if err != nil || result.Outcome != "DOWN" || result.ErrorCode != tc.wantCode {
+				t.Fatalf("Check = (%+v, %v), want DOWN/%s", result, err, tc.wantCode)
+			}
+			if dials != 0 {
+				t.Fatalf("dial called %d times for ICMP lookup case", dials)
+			}
+		})
 	}
 }
 

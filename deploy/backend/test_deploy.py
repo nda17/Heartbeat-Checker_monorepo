@@ -15,6 +15,8 @@ IMAGES = [
     for name, digest in (("api", "1"), ("worker", "2"), ("probe", "3"), ("migrate", "4"))
 ]
 BACKUP_IMAGE = "ghcr.io/nda17/heartbeat-checker_monorepo/backup@sha256:" + "5" * 64
+FIREWALL_IMAGE = "ghcr.io/nda17/heartbeat-checker_monorepo/firewall@sha256:" + "6" * 64
+FIREWALL_POLICY_SHA = "7" * 64
 BASE_ENV = (
     "DATABASE_URL=test\n"
     "TELEGRAM_API_BASE_URL=https://api.telegram.org\n"
@@ -49,6 +51,10 @@ if args[:2] == ["login", "ghcr.io"]:
     raise SystemExit(0)
 if args[:2] == ["image", "inspect"]:
     print(os.environ["SOURCE_SHA"]); raise SystemExit(0)
+if args and args[0] == "run" and args[-1].startswith("ghcr.io/nda17/heartbeat-checker_monorepo/firewall@sha256:"):
+    if os.environ.get("FAIL_FIREWALL_INSTALL") == "1": raise SystemExit(43)
+    print(os.environ.get("FIREWALL_POLICY_OUTPUT", os.environ["FIREWALL_POLICY_SHA"]))
+    raise SystemExit(0)
 if args and args[0] == "compose" and "config" in args and os.environ.get("FAIL_COMPOSE_PREFLIGHT") == "1":
     raise SystemExit(42)
 if "--profile" in args and "migration" in args:
@@ -127,7 +133,7 @@ state_path = os.environ["IPTABLES_STATE"]
 try:
     state = json.load(open(state_path))
 except FileNotFoundError:
-    state = {"DOCKER-USER": [], "INPUT": []}
+    state = {"DOCKER-USER": [], "INPUT": [], "FORWARD": [["-j", "DOCKER-USER"]]}
 args = sys.argv[1:]
 def save():
     json.dump(state, open(state_path, "w"))
@@ -211,27 +217,17 @@ class BackendDeployTests(unittest.TestCase):
             "SOURCE_SHA": SOURCE_SHA,
             "REAL_PYTHON": os.sys.executable,
             "REAL_CP": "/bin/cp",
+            "FIREWALL_POLICY_SHA": FIREWALL_POLICY_SHA,
         })
         env.update(extra_env)
-        args = ["bash", str(self.script), SOURCE_SHA, *IMAGES, "nda17", BACKUP_IMAGE]
-        if activate_next_config is not None:
-            args.append("true" if activate_next_config else "false")
-        if activate_messenger_notifications is not None:
-            if activate_next_config is None:
-                args.append("false")
-            args.append("true" if activate_messenger_notifications else "false")
-        if provision_owner is not None:
-            while len(args) < 11:
-                args.append("false")
-            args.append("true" if provision_owner else "false")
-        if activate_admin_mfa is not None:
-            while len(args) < 12:
-                args.append("false")
-            args.append("true" if activate_admin_mfa else "false")
-        if activate_oauth is not None:
-            while len(args) < 13:
-                args.append("false")
-            args.append("true" if activate_oauth else "false")
+        args = [
+            "bash", str(self.script), SOURCE_SHA, *IMAGES, "nda17", BACKUP_IMAGE,
+            *["true" if value else "false" for value in (
+                activate_next_config, activate_messenger_notifications, provision_owner,
+                activate_admin_mfa, activate_oauth,
+            )],
+            FIREWALL_IMAGE, FIREWALL_POLICY_SHA,
+        ]
         return subprocess.run(
             args,
             input="test-token\n", cwd=self.root, env=env, text=True, capture_output=True,
@@ -532,6 +528,32 @@ class BackendDeployTests(unittest.TestCase):
         self.assertFalse(any("--profile" in call and "migration" in call for call in self.docker_calls()))
         self.assertEqual({name: (self.backend / name).read_bytes() for name in stable}, stable)
 
+    def test_firewall_policy_is_installed_and_verified_before_migration(self):
+        result = self.run_deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.docker_calls()
+        firewall_run = next(i for i, call in enumerate(calls) if call[0] == "run" and call[-1] == FIREWALL_IMAGE)
+        migration = next(i for i, call in enumerate(calls) if "--profile" in call and "migration" in call)
+        self.assertLess(firewall_run, migration)
+        install_call = calls[firewall_run]
+        self.assertIn("--network", install_call)
+        self.assertIn("host", install_call)
+        self.assertIn("--cap-add", install_call)
+        self.assertIn("NET_ADMIN", install_call)
+        receipt = json.loads((self.backend / "receipts" / f"{SOURCE_SHA}.json").read_text())
+        self.assertEqual(receipt["images"]["firewall"], FIREWALL_IMAGE)
+        self.assertEqual(receipt["firewall_policy_sha256"], FIREWALL_POLICY_SHA)
+
+    def test_firewall_install_or_receipt_mismatch_fails_before_migration(self):
+        for env in ({"FAIL_FIREWALL_INSTALL": "1"}, {"FIREWALL_POLICY_OUTPUT": "0" * 64}):
+            with self.subTest(env=env):
+                result = self.run_deploy(**env)
+                self.assertNotEqual(result.returncode, 0)
+                calls = self.docker_calls()
+                self.assertFalse(any("--profile" in call and "migration" in call for call in calls))
+                self.assertFalse((self.backend / "pending").exists())
+        self.assertFalse((self.backend / "receipts" / f"{SOURCE_SHA}.json").exists())
+
     def test_migration_failure_preserves_backup_journal_database_and_new_release(self):
         result = self.run_deploy(FAIL_MIGRATION="1")
         self.assertNotEqual(result.returncode, 0)
@@ -830,20 +852,20 @@ class ProbeFirewallTests(unittest.TestCase):
         first = self.run_firewall()
         self.assertEqual(first.returncode, 0, first.stderr)
         rules = self.load_rules()
-        forward = rules["HEARTBEAT_PROBE"]
+        forward = rules["HEARTBEAT_PROBE_V2"]
         self.assertEqual(self.target(forward[0]), "RETURN")
         self.assertIn("ESTABLISHED,RELATED", forward[0])
         self.assertEqual(self.target(forward[-1]), "REJECT")
         self.assertEqual(self.target(rules["HEARTBEAT_PROBE_INPUT"][0]), "RETURN")
         self.assertEqual(self.target(rules["HEARTBEAT_PROBE_INPUT"][-1]), "REJECT")
-        dns_rules = [rule for rule in forward if "--dport" in rule]
+        dns_rules = [rule for rule in forward if "--dport" in rule and rule[rule.index("--dport") + 1] == "53"]
         self.assertEqual(len(dns_rules), 4)
         self.assertTrue(all(self.target(rule) == "RETURN" for rule in dns_rules))
         self.assertTrue(all(forward.index(rule) < len(forward) - 1 for rule in dns_rules))
-        allow_index = next(i for i, rule in enumerate(forward) if "--dports" in rule)
+        allow_index = next(i for i, rule in enumerate(forward) if "--dport" in rule and rule[rule.index("--dport") + 1] == "1:65535")
         self.assertEqual(self.target(forward[allow_index]), "RETURN")
         self.assertTrue(all(self.target(rule) == "REJECT" for rule in forward[1:allow_index] if "--dport" not in rule))
-        self.assertIn(["-s", "172.30.80.2/32", "-j", "HEARTBEAT_PROBE"], rules["DOCKER-USER"])
+        self.assertIn(["-s", "172.30.80.2/32", "-j", "HEARTBEAT_PROBE_V2"], rules["DOCKER-USER"])
         self.assertIn(["-s", "172.30.80.2/32", "-j", "HEARTBEAT_PROBE_INPUT"], rules["INPUT"])
 
         snapshot = json.dumps(rules, sort_keys=True)
@@ -851,12 +873,12 @@ class ProbeFirewallTests(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(json.dumps(self.load_rules(), sort_keys=True), snapshot, "rerunning firewall setup must not duplicate or reorder rules")
 
-    def test_rule_order_rejects_private_and_non_http_traffic_but_allows_established_and_public_web(self):
+    def test_rule_order_rejects_private_and_unapproved_protocols_but_allows_public_tcp_and_icmp(self):
         result = self.run_firewall()
         self.assertEqual(result.returncode, 0, result.stderr)
-        forward = self.load_rules()["HEARTBEAT_PROBE"]
+        forward = self.load_rules()["HEARTBEAT_PROBE_V2"]
 
-        def verdict(destination, protocol, port, state="NEW"):
+        def verdict(destination, protocol, port, state="NEW", icmp_type="echo-request"):
             for rule in forward:
                 if "--ctstate" in rule:
                     accepted = rule[rule.index("--ctstate") + 1].split(",")
@@ -870,10 +892,18 @@ class ProbeFirewallTests(unittest.TestCase):
                         continue
                 if "-p" in rule and rule[rule.index("-p") + 1] != protocol:
                     continue
+                if "--icmp-type" in rule and rule[rule.index("--icmp-type") + 1] != icmp_type:
+                    continue
                 if "--dports" in rule and str(port) not in rule[rule.index("--dports") + 1].split(","):
                     continue
-                if "--dport" in rule and str(port) != rule[rule.index("--dport") + 1]:
-                    continue
+                if "--dport" in rule:
+                    allowed_port = rule[rule.index("--dport") + 1]
+                    if ":" in allowed_port:
+                        low, high = map(int, allowed_port.split(":"))
+                        if not low <= port <= high:
+                            continue
+                    elif str(port) != allowed_port:
+                        continue
                 if "--dports" in rule and protocol != "tcp":
                     continue
                 return self.target(rule)
@@ -881,10 +911,12 @@ class ProbeFirewallTests(unittest.TestCase):
 
         self.assertEqual(verdict("10.1.2.3", "tcp", 443), "REJECT")
         self.assertEqual(verdict("8.8.8.8", "tcp", 443), "RETURN")
-        self.assertEqual(verdict("8.8.8.8", "tcp", 8080), "REJECT")
+        self.assertEqual(verdict("8.8.8.8", "tcp", 8080), "RETURN")
         self.assertEqual(verdict("8.8.8.8", "tcp", 443, "ESTABLISHED"), "RETURN")
         self.assertEqual(verdict("1.1.1.1", "udp", 53), "RETURN")
         self.assertEqual(verdict("8.8.8.8", "udp", 53), "REJECT")
+        self.assertEqual(verdict("8.8.8.8", "icmp", 0), "RETURN")
+        self.assertEqual(verdict("8.8.8.8", "icmp", 0, icmp_type="destination-unreachable"), "REJECT")
         input_rules = self.load_rules()["HEARTBEAT_PROBE_INPUT"]
         self.assertEqual(self.target(input_rules[0]), "RETURN")
         self.assertIn("ESTABLISHED,RELATED", input_rules[0])

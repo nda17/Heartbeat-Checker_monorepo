@@ -67,6 +67,26 @@ func validate(in *contracts.MonitorInput) (string, error) {
 	}
 	in.Name = strings.TrimSpace(in.Name)
 	in.URL = strings.TrimSpace(in.URL)
+	if in.CheckType == "" {
+		in.CheckType = "http"
+	}
+	if in.CheckType != "http" && in.CheckType != "tcp" && in.CheckType != "icmp" {
+		return "", ErrInvalid
+	}
+	if in.CheckType != "http" {
+		if utf8.RuneCountInString(in.Name) < 1 || utf8.RuneCountInString(in.Name) > 100 || !utf8.ValidString(in.Name) || in.URL != "" || in.Method != "" || in.ExpectedStatus != 0 || in.BodyContains != "" {
+			return "", ErrInvalid
+		}
+		host, err := probe.NormalizeHost(in.Host, true)
+		if err != nil || (in.CheckType == "tcp" && (in.Port < 1 || in.Port > 65535)) || (in.CheckType == "icmp" && in.Port != 0) {
+			return "", ErrInvalid
+		}
+		in.Host = host
+		return net.JoinHostPort(host, "0"), nil
+	}
+	if in.Host != "" || in.Port != 0 {
+		return "", ErrInvalid
+	}
 	if utf8.RuneCountInString(in.Name) < 1 || utf8.RuneCountInString(in.Name) > 100 || !utf8.ValidString(in.Name) || len(in.URL) > 2048 || len(in.BodyContains) > 1000 || !utf8.ValidString(in.BodyContains) || (in.Method != "GET" && in.Method != "HEAD") || in.ExpectedStatus < 100 || in.ExpectedStatus > 599 || (in.Method == "HEAD" && in.BodyContains != "") {
 		return "", ErrInvalid
 	}
@@ -263,7 +283,23 @@ func (s *Service) PatchTx(ctx context.Context, tx pgx.Tx, owner, id string, e bi
 		return contracts.Monitor{}, ErrConflict
 	}
 	interval, threshold := m.IntervalMinutes, m.FailureThreshold
-	in := contracts.MonitorInput{Name: m.Name, URL: m.URL, Method: m.Method, ExpectedStatus: m.ExpectedStatus, BodyContains: m.BodyContains, IntervalMinutes: &interval, FailureThreshold: &threshold, Enabled: m.Enabled}
+	in := contracts.MonitorInput{CheckType: m.CheckType, Host: m.Host, Port: m.Port, Name: m.Name, URL: m.URL, Method: m.Method, ExpectedStatus: m.ExpectedStatus, BodyContains: m.BodyContains, IntervalMinutes: &interval, FailureThreshold: &threshold, Enabled: m.Enabled}
+	if p.CheckType != nil && *p.CheckType == "" {
+		return contracts.Monitor{}, ErrInvalid
+	}
+	if p.CheckType != nil && *p.CheckType != m.CheckType {
+		in.CheckType, in.Host, in.Port = *p.CheckType, "", 0
+		in.URL, in.Method, in.ExpectedStatus, in.BodyContains = "", "", 0, ""
+		if in.CheckType == "http" && (p.URL == nil || p.Method == nil || p.ExpectedStatus == nil) {
+			return contracts.Monitor{}, ErrInvalid
+		}
+	}
+	if p.Host != nil {
+		in.Host = *p.Host
+	}
+	if p.Port != nil {
+		in.Port = *p.Port
+	}
 	if p.Name != nil {
 		in.Name = *p.Name
 	}
@@ -304,7 +340,7 @@ func (s *Service) PatchTx(ctx context.Context, tx pgx.Tx, owner, id string, e bi
 			return contracts.Monitor{}, ErrQuota
 		}
 	}
-	checkChanged := in.URL != m.URL || in.Method != m.Method || in.ExpectedStatus != m.ExpectedStatus || in.BodyContains != m.BodyContains || *in.IntervalMinutes != m.IntervalMinutes || *in.FailureThreshold != m.FailureThreshold
+	checkChanged := in.CheckType != m.CheckType || in.Host != m.Host || in.Port != m.Port || in.URL != m.URL || in.Method != m.Method || in.ExpectedStatus != m.ExpectedStatus || in.BodyContains != m.BodyContains || *in.IntervalMinutes != m.IntervalMinutes || *in.FailureThreshold != m.FailureThreshold
 	resetCheck := checkChanged || in.Enabled != m.Enabled
 	if err = s.repo.Update(ctx, tx, owner, id, target, in, resetCheck); err != nil {
 		return contracts.Monitor{}, err
@@ -461,10 +497,10 @@ func (s *Service) claimOne(ctx context.Context, tx pgx.Tx, c postgres.Candidate)
 	if err = s.repo.Claim(ctx, tx, c.AccountID, c.ID, run, token); err != nil {
 		return nil, err
 	}
-	return &contracts.Attempt{AccountID: c.AccountID, MonitorID: c.ID, Request: probe.Request{RunID: run, AttemptToken: token, ConfigVersion: m.Version, URL: m.URL, Method: m.Method, ExpectedStatus: m.ExpectedStatus, BodyContains: m.BodyContains}}, nil
+	return &contracts.Attempt{AccountID: c.AccountID, MonitorID: c.ID, Request: probe.Request{RunID: run, AttemptToken: token, ConfigVersion: m.Version, CheckType: m.CheckType, Host: m.Host, Port: m.Port, URL: m.URL, Method: m.Method, ExpectedStatus: m.ExpectedStatus, BodyContains: m.BodyContains}}, nil
 }
 func (s *Service) Complete(ctx context.Context, a contracts.Attempt, r probe.Result) (bool, error) {
-	if r.RunID != a.Request.RunID || r.AttemptToken != a.Request.AttemptToken || r.ConfigVersion != a.Request.ConfigVersion || r.LatencyMS < 0 || r.LatencyMS > 12000 || (r.Outcome != "UP" && r.Outcome != "DOWN" && r.Outcome != "UNKNOWN") || r.CheckedAt.IsZero() || r.CheckedAt.After(time.Now().Add(5*time.Second)) || r.CheckedAt.Before(time.Now().Add(-30*time.Second)) || len(r.ErrorCode) > 100 || (r.HTTPStatus != 0 && (r.HTTPStatus < 100 || r.HTTPStatus > 599)) {
+	if !probe.ValidResult(a.Request, r) || r.RunID != a.Request.RunID || r.AttemptToken != a.Request.AttemptToken || r.ConfigVersion != a.Request.ConfigVersion || r.LatencyMS < 0 || r.LatencyMS > 12000 || (r.Outcome != "UP" && r.Outcome != "DOWN" && r.Outcome != "UNKNOWN") || r.CheckedAt.IsZero() || r.CheckedAt.After(time.Now().Add(5*time.Second)) || r.CheckedAt.Before(time.Now().Add(-30*time.Second)) || len(r.ErrorCode) > 100 || (r.HTTPStatus != 0 && (r.HTTPStatus < 100 || r.HTTPStatus > 599)) {
 		return false, ErrInvalid
 	}
 	tx, e, err := s.begin(ctx, a.AccountID)
@@ -479,7 +515,7 @@ func (s *Service) Complete(ctx context.Context, a contracts.Attempt, r probe.Res
 	if err != nil {
 		return false, err
 	}
-	if !m.Enabled || m.Version != a.Request.ConfigVersion || m.RunID == nil || *m.RunID != a.Request.RunID || m.AttemptToken == nil || *m.AttemptToken != a.Request.AttemptToken || m.LeaseUntil == nil || !m.LeaseUntil.After(time.Now()) {
+	if !m.Enabled || m.CheckType != probe.EffectiveCheckType(a.Request.CheckType) || m.Version != a.Request.ConfigVersion || m.RunID == nil || *m.RunID != a.Request.RunID || m.AttemptToken == nil || *m.AttemptToken != a.Request.AttemptToken || m.LeaseUntil == nil || !m.LeaseUntil.After(time.Now()) {
 		return false, nil
 	}
 	rank, err := s.repo.Rank(ctx, tx, a.AccountID, a.MonitorID)
@@ -497,14 +533,14 @@ func (s *Service) Complete(ctx context.Context, a contracts.Attempt, r probe.Res
 	if r.HTTPStatus != 0 {
 		status = &r.HTTPStatus
 	}
-	if err = s.repo.StoreResult(ctx, tx, m, eventID, r.RunID, r.AttemptToken, r.Outcome, r.CheckedAt, status, r.LatencyMS, r.ErrorCode); err != nil {
+	if err = s.repo.StoreResult(ctx, tx, m, eventID, r.RunID, r.AttemptToken, r.Outcome, r.CheckedAt, status, r.LatencyMS, r.ErrorCode, r.RoundTripMS); err != nil {
 		return false, err
 	}
-	if err = outbox.Append(ctx, tx, eventID, m.ID, m.AccountID, "CheckCompleted", map[string]any{"resultId": eventID, "sequence": m.Sequence + 1, "outcome": r.Outcome, "checkedAt": r.CheckedAt}, true); err != nil {
+	if err = outbox.Append(ctx, tx, eventID, m.ID, m.AccountID, "CheckCompleted", map[string]any{"resultId": eventID, "sequence": m.Sequence + 1, "checkType": m.CheckType, "outcome": r.Outcome, "checkedAt": r.CheckedAt}, true); err != nil {
 		return false, err
 	}
 	if err = s.incidents.Apply(ctx, tx, m.ID, m.AccountID, m.Sequence+1, r.Outcome, m.FailureThreshold, r.CheckedAt, incidents.Observation{
-		Name: m.Name, URL: m.URL, Outcome: r.Outcome, HTTPStatus: r.HTTPStatus,
+		Name: m.Name, CheckType: m.CheckType, Host: m.Host, Port: m.Port, URL: m.URL, Outcome: r.Outcome, HTTPStatus: r.HTTPStatus, RoundTripMS: r.RoundTripMS,
 		ErrorCode: r.ErrorCode, LatencyMS: r.LatencyMS, CheckedAt: r.CheckedAt, Sequence: m.Sequence + 1,
 	}); err != nil {
 		return false, err

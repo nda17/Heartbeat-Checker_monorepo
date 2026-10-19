@@ -1,8 +1,12 @@
+export type CheckType = "http" | "tcp" | "icmp";
 export type Monitor = {
   id: string;
+  checkType?: CheckType;
   name: string;
   url: string;
-  method: "GET" | "HEAD";
+  host?: string;
+  port?: number;
+  method: "GET" | "HEAD" | "";
   expectedStatus: number;
   bodyContains: string;
   intervalMinutes: number;
@@ -13,6 +17,7 @@ export type Monitor = {
   lastCheckedAt: string | null;
   lastHttpStatus: number | null;
   lastLatencyMs: number | null;
+  lastRoundTripMs?: number | null;
   nextCheckAt: string | null;
 };
 export type Entitlement = {
@@ -23,11 +28,13 @@ export type Entitlement = {
 };
 export type CheckResult = {
   id: string;
+  checkType?: CheckType;
   outcome: string;
   errorCode?: string;
   checkedAt: string;
   httpStatus?: number;
   latencyMs: number;
+  roundTripMs?: number | null;
 };
 export type Incident = {
   id: string;
@@ -54,6 +61,17 @@ export function Status({ state }: { state: string }) {
 }
 
 const resultErrors: Record<string, string> = {
+  tcp_connection_refused:
+    "Сервер отклонил TCP-соединение. Проверьте порт и сетевой экран.",
+  tcp_timeout: "Время ожидания TCP-соединения истекло.",
+  tcp_failed: "Не удалось установить TCP-соединение с указанным портом.",
+  icmp_timeout:
+    "Ответ ICMP не получен вовремя. Сервер или сетевой экран может блокировать ping.",
+  icmp_failed:
+    "Не удалось получить ответ ICMP. Проверьте адрес и доступность ICMP.",
+  dns_failed: "Не удалось определить IP-адрес домена.",
+  address_family_unavailable:
+    "У домена нет доступного IPv4-адреса. Проверка TCP/ICMP через IPv6 пока не поддерживается; результат не определён.",
   request_timeout:
     "Сервер не ответил вовремя. Возможна задержка соединения или ответа.",
   tls_certificate_invalid: "Не удалось проверить HTTPS-сертификат сервера.",
@@ -73,4 +91,36 @@ export function resultErrorMessage(code: string) {
     resultErrors[code] ??
     "Проверка завершилась ошибкой. Проверьте адрес и условия проверки."
   );
+}
+
+export function monitorCheckType(value?: string): CheckType {
+  return value === "tcp" || value === "icmp" ? value : "http";
+}
+export function checkTypeLabel(value?: string) {
+  const type = monitorCheckType(value);
+  return type === "http" ? "HTTP/HTTPS" : type.toUpperCase();
+}
+export function monitorTarget(monitor: Monitor) {
+  const type = monitorCheckType(monitor.checkType);
+  if (type === "http") return monitor.url;
+  return type === "tcp"
+    ? `${monitor.host}:${monitor.port}`
+    : (monitor.host ?? "");
+}
+export function checkTiming(
+  checkType: CheckType | undefined,
+  outcome: string,
+  latencyMs: number | null,
+  roundTripMs?: number | null,
+) {
+  if (latencyMs === null) return "Нет данных";
+  const type = monitorCheckType(checkType);
+  if (type === "icmp") {
+    if ((outcome === "UP" || outcome === "SUCCESS") && roundTripMs != null)
+      return `Пинг (ICMP): ${roundTripMs} мс`;
+    if (outcome === "DOWN" || outcome === "FAILURE")
+      return `Ответ ICMP не получен; ожидание ${latencyMs} мс`;
+    return `Длительность ICMP-проверки: ${latencyMs} мс`;
+  }
+  return `Длительность ${type.toUpperCase()}-проверки: ${latencyMs} мс`;
 }

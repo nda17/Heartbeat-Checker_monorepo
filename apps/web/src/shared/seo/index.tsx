@@ -13,9 +13,9 @@ export const publicPagePaths = [
 type PublicPagePath = (typeof publicPagePaths)[number];
 const pages: Record<PublicPagePath, { title: string; description: string }> = {
   "/": {
-    title: "Heartbeat Checker — мониторинг сайтов и API",
+    title: "Heartbeat Checker — мониторинг сайтов и серверов",
     description:
-      "Проверяйте доступность сайтов и HTTP API, отслеживайте сбои и восстановление, изучайте историю проверок и инцидентов в Heartbeat Checker.",
+      "Мониторинг сайтов и API по HTTP/HTTPS, открытых TCP-портов и серверов по ICMP. Отслеживайте сбои, восстановление и историю в Heartbeat Checker.",
   },
   "/android": {
     title: "Heartbeat Checker для Android — мониторинг сайтов",

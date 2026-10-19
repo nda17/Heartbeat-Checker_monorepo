@@ -7,7 +7,10 @@ type Request struct {
 	RunID          string `json:"runId"`
 	AttemptToken   string `json:"attemptToken"`
 	ConfigVersion  int64  `json:"configVersion"`
+	CheckType      string `json:"checkType"`
 	URL            string `json:"url"`
+	Host           string `json:"host"`
+	Port           int    `json:"port"`
 	Method         string `json:"method"`
 	ExpectedStatus int    `json:"expectedStatus"`
 	BodyContains   string `json:"bodyContains"`
@@ -18,9 +21,11 @@ type Result struct {
 	RunID         string    `json:"runId"`
 	AttemptToken  string    `json:"attemptToken"`
 	ConfigVersion int64     `json:"configVersion"`
+	CheckType     string    `json:"checkType"`
 	Outcome       string    `json:"outcome"`
 	CheckedAt     time.Time `json:"checkedAt"`
 	LatencyMS     int64     `json:"latencyMs"`
+	RoundTripMS   *int64    `json:"roundTripMs"`
 	HTTPStatus    int       `json:"httpStatus"`
 	ErrorCode     string    `json:"errorCode"`
 }

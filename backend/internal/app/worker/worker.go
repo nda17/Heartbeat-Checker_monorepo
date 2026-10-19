@@ -135,7 +135,7 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 					return
 				}
 				if err != nil {
-					result = probe.Result{RunID: attempt.Request.RunID, AttemptToken: attempt.Request.AttemptToken, ConfigVersion: attempt.Request.ConfigVersion, Outcome: "UNKNOWN", CheckedAt: time.Now().UTC(), ErrorCode: "probe_unavailable"}
+					result = probe.Result{CheckType: attempt.Request.CheckType, RunID: attempt.Request.RunID, AttemptToken: attempt.Request.AttemptToken, ConfigVersion: attempt.Request.ConfigVersion, Outcome: "UNKNOWN", CheckedAt: time.Now().UTC(), ErrorCode: "probe_unavailable"}
 				}
 				saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				_, err = monitorModule.Complete(saveCtx, *attempt, result)

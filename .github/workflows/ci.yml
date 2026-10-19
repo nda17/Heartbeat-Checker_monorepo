@@ -299,8 +299,8 @@ jobs:
       - name: Validate backend deployment files
         run: |
           set -euo pipefail
-          shellcheck deploy/backend/bootstrap.sh deploy/backend/probe-firewall.sh deploy/backend/deploy.sh deploy/backend/backup.sh
-          bash -n deploy/backend/bootstrap.sh deploy/backend/probe-firewall.sh deploy/backend/deploy.sh deploy/backend/backup.sh
+          shellcheck deploy/backend/bootstrap.sh deploy/backend/probe-firewall.sh deploy/backend/firewall/install.sh deploy/backend/deploy.sh deploy/backend/backup.sh
+          bash -n deploy/backend/bootstrap.sh deploy/backend/probe-firewall.sh deploy/backend/firewall/install.sh deploy/backend/deploy.sh deploy/backend/backup.sh
           export POSTGRES_PASSWORD=dummy DATABASE_URL='postgres://heartbeat:dummy@postgres:5432/heartbeat?sslmode=disable'
           export TURNSTILE_SECRET_KEY=dummy WEBHOOK_ENCRYPTION_KEY=dummy AUTH_MAIL_ENCRYPTION_KEY=dummy
           export PROBE_SHARED_SECRET=dummy SMTP_ADDR=smtp.example:465 SMTP_FROM=no-reply@example.com
@@ -333,11 +333,30 @@ jobs:
               --build-arg VCS_REF="$GITHUB_SHA" \
               -t "heartbeat-checker/$target:ci" backend
           done
+      - name: Verify unprivileged Linux ICMP sockets
+        run: |
+          set -euo pipefail
+          docker build -f backend/Dockerfile --target probe-test \
+            --build-arg VCS_REF="$GITHUB_SHA" -t heartbeat-checker/probe-test:ci backend
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges:true --user 65532:65532 \
+            --sysctl 'net.ipv4.ping_group_range=65532 65532' \
+            -e HEARTBEAT_ICMP_SMOKE=yes heartbeat-checker/probe-test:ci \
+            -test.v -test.run '^TestICMPUnprivilegedSmoke$'
       - name: Build backup image
         run: |
           docker build -f deploy/backend/backup/Dockerfile \
             --build-arg VCS_REF="$GITHUB_SHA" -t heartbeat-checker/backup:ci deploy/backend/backup
           [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' heartbeat-checker/backup:ci)" == "$GITHUB_SHA" ]]
+      - name: Build firewall helper image
+        run: |
+          docker build -f deploy/backend/firewall/Dockerfile \
+            --build-arg VCS_REF="$GITHUB_SHA" -t heartbeat-checker/firewall:ci deploy/backend
+          [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' heartbeat-checker/firewall:ci)" == "$GITHUB_SHA" ]]
+      - name: Verify firewall policy lifecycle in an isolated Linux namespace
+        env:
+          FIREWALL_TEST_IMAGE: heartbeat-checker/firewall:ci
+        run: python3 deploy/backend/firewall/test_firewall.py
       - name: Relay rollback and cleanup regression
         env:
           HEARTBEAT_RELAY_TEST_IMAGE: heartbeat-checker/backup:ci

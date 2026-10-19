@@ -9,7 +9,7 @@ export const metadata: Metadata = {
     template: "%s · Heartbeat Checker",
   },
   description:
-    "Проверяйте доступность HTTP-сервисов и разбирайте инциденты в одном кабинете.",
+    "Проверяйте сайты, TCP-порты и серверы по ICMP и разбирайте инциденты в одном кабинете.",
   robots: { index: false, follow: false },
 };
 export default function RootLayout({

@@ -105,7 +105,7 @@ export function MonitoringDemo() {
       data-running={running}
     >
       <div className="landing-demo-top">
-        <span className="landing-demo-label">ДЕМОНСТРАЦИЯ</span>
+        <span className="landing-demo-label">ДЕМОНСТРАЦИЯ HTTP</span>
       </div>
       <div className="landing-demo-monitor">
         <div>

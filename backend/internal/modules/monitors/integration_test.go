@@ -352,6 +352,104 @@ func TestMonitorHTTPQuotaIsolationCSRFAndLeaseInvalidation(t *testing.T) {
 	}
 }
 
+func TestMonitorCheckTypeDefaultsEditLeaseFenceAndHistorySnapshot(t *testing.T) {
+	f := newMonitorFixture(t)
+	owner := f.newActor(t, "Check Type Owner")
+	f.grant(t, owner, 3)
+
+	// Clients predating checkType continue to create an HTTP monitor.
+	legacy := f.request(t, owner, http.MethodPost, "/api/v1/monitors", monitorcontracts.MonitorInput{
+		Name: "legacy HTTP", URL: "https://legacy.example/health", Method: http.MethodGet,
+		ExpectedStatus: http.StatusOK, Enabled: true,
+	}, owner.csrf, monitorTestOrigin)
+	var legacyResponse struct {
+		Monitor monitorcontracts.Monitor `json:"monitor"`
+	}
+	if legacy.Code != http.StatusCreated || json.Unmarshal(legacy.Body.Bytes(), &legacyResponse) != nil || legacyResponse.Monitor.CheckType != "http" || legacyResponse.Monitor.Host != "" || legacyResponse.Monitor.Port != 0 {
+		t.Fatalf("legacy create = %d %s, want normalized HTTP monitor", legacy.Code, legacy.Body.String())
+	}
+	legacyAttempt, err := f.module.Claim(context.Background())
+	if err != nil || legacyAttempt == nil || legacyAttempt.Request.CheckType != "http" {
+		t.Fatalf("legacy claim = (%+v, %v), want HTTP request", legacyAttempt, err)
+	}
+	accepted, err := f.module.Complete(context.Background(), *legacyAttempt, probecontracts.Result{
+		RunID: legacyAttempt.Request.RunID, AttemptToken: legacyAttempt.Request.AttemptToken,
+		ConfigVersion: legacyAttempt.Request.ConfigVersion, CheckType: "http", Outcome: "UP",
+		CheckedAt: time.Now().UTC(), LatencyMS: 8, HTTPStatus: http.StatusOK,
+	})
+	if err != nil || !accepted {
+		t.Fatalf("legacy completion = (%v, %v), want accepted", accepted, err)
+	}
+
+	tcpCreate := f.request(t, owner, http.MethodPost, "/api/v1/monitors", monitorcontracts.MonitorInput{
+		CheckType: "tcp", Name: "SSH port", Host: "tcp.example", Port: 22, Enabled: true,
+	}, owner.csrf, monitorTestOrigin)
+	var tcpResponse struct {
+		Monitor monitorcontracts.Monitor `json:"monitor"`
+	}
+	if tcpCreate.Code != http.StatusCreated || json.Unmarshal(tcpCreate.Body.Bytes(), &tcpResponse) != nil || tcpResponse.Monitor.CheckType != "tcp" || tcpResponse.Monitor.Host != "tcp.example" || tcpResponse.Monitor.Port != 22 {
+		t.Fatalf("TCP create = %d %s, want normalized TCP monitor", tcpCreate.Code, tcpCreate.Body.String())
+	}
+	tcpAttempt, err := f.module.Claim(context.Background())
+	if err != nil || tcpAttempt == nil || tcpAttempt.MonitorID != tcpResponse.Monitor.ID || tcpAttempt.Request.CheckType != "tcp" || tcpAttempt.Request.Host != "tcp.example" || tcpAttempt.Request.Port != 22 {
+		t.Fatalf("TCP claim = (%+v, %v), want typed TCP target", tcpAttempt, err)
+	}
+
+	icmpType, host := "icmp", "8.8.8.8"
+	changed := f.request(t, owner, http.MethodPatch, "/api/v1/monitors/"+tcpResponse.Monitor.ID, monitorcontracts.Patch{
+		Version: tcpResponse.Monitor.Version, CheckType: &icmpType, Host: &host,
+	}, owner.csrf, monitorTestOrigin)
+	var changedResponse struct {
+		Monitor monitorcontracts.Monitor `json:"monitor"`
+	}
+	if changed.Code != http.StatusOK || json.Unmarshal(changed.Body.Bytes(), &changedResponse) != nil || changedResponse.Monitor.CheckType != "icmp" || changedResponse.Monitor.Host != host || changedResponse.Monitor.Port != 0 || changedResponse.Monitor.Version != tcpResponse.Monitor.Version+1 {
+		t.Fatalf("TCP to ICMP edit = %d %s, want reset ICMP target", changed.Code, changed.Body.String())
+	}
+	accepted, err = f.module.Complete(context.Background(), *tcpAttempt, probecontracts.Result{
+		RunID: tcpAttempt.Request.RunID, AttemptToken: tcpAttempt.Request.AttemptToken,
+		ConfigVersion: tcpAttempt.Request.ConfigVersion, CheckType: "tcp", Outcome: "UP",
+		CheckedAt: time.Now().UTC(), LatencyMS: 4,
+	})
+	if err != nil || accepted {
+		t.Fatalf("stale TCP completion = (%v, %v), want fenced result", accepted, err)
+	}
+
+	icmpAttempt, err := f.module.Claim(context.Background())
+	if err != nil || icmpAttempt == nil || icmpAttempt.MonitorID != tcpResponse.Monitor.ID || icmpAttempt.Request.CheckType != "icmp" || icmpAttempt.Request.Host != host || icmpAttempt.Request.Port != 0 {
+		t.Fatalf("ICMP claim = (%+v, %v), want typed ICMP target", icmpAttempt, err)
+	}
+	rtt := int64(2)
+	accepted, err = f.module.Complete(context.Background(), *icmpAttempt, probecontracts.Result{
+		RunID: icmpAttempt.Request.RunID, AttemptToken: icmpAttempt.Request.AttemptToken,
+		ConfigVersion: icmpAttempt.Request.ConfigVersion, CheckType: "icmp", Outcome: "UP",
+		CheckedAt: time.Now().UTC(), LatencyMS: 6, RoundTripMS: &rtt,
+	})
+	if err != nil || !accepted {
+		t.Fatalf("ICMP completion = (%v, %v), want accepted result with RTT", accepted, err)
+	}
+
+	newHost := "1.1.1.1"
+	updated := f.request(t, owner, http.MethodPatch, "/api/v1/monitors/"+tcpResponse.Monitor.ID, monitorcontracts.Patch{
+		Version: changedResponse.Monitor.Version, Host: &newHost,
+	}, owner.csrf, monitorTestOrigin)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("change ICMP target = %d %s", updated.Code, updated.Body.String())
+	}
+	var current struct {
+		Monitor monitorcontracts.Monitor `json:"monitor"`
+	}
+	if json.Unmarshal(updated.Body.Bytes(), &current) != nil || current.Monitor.LastRoundTripMS != nil {
+		t.Fatalf("updated monitor retained latest RTT after reset: %+v", current.Monitor)
+	}
+	history := f.request(t, owner, http.MethodGet, "/api/v1/monitors/"+tcpResponse.Monitor.ID+"/results", nil, "", "")
+	var results struct {
+		Results []monitorcontracts.Result `json:"results"`
+	}
+	if history.Code != http.StatusOK || json.Unmarshal(history.Body.Bytes(), &results) != nil || len(results.Results) != 1 || results.Results[0].CheckType != "icmp" || results.Results[0].RoundTripMS == nil || *results.Results[0].RoundTripMS != rtt {
+		t.Fatalf("ICMP history = %d %+v, want immutable type and RTT snapshot", history.Code, results.Results)
+	}
+}
+
 func TestMonitorCreateExpectedAccountFencePreservesLegacyCallsAndQuota(t *testing.T) {
 	f := newMonitorFixture(t)
 	actor := f.newActor(t, "Expected Account Owner")

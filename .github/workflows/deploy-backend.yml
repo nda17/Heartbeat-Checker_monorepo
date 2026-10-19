@@ -135,6 +135,28 @@ jobs:
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'No digest for backup'; exit 1; }
           echo "backup=$image@$digest" >> "$GITHUB_OUTPUT"
 
+      - name: Build and publish immutable firewall helper
+        id: firewall
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG
+          DOCKER_CONFIG=$(mktemp -d)
+          trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+          printf '%s\n' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/firewall"
+          docker build -f deploy/backend/firewall/Dockerfile --build-arg "VCS_REF=$SOURCE_SHA" \
+            -t "$image:$SOURCE_SHA" deploy/backend
+          [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image:$SOURCE_SHA")" == "$SOURCE_SHA" ]]
+          docker push "$image:$SOURCE_SHA"
+          digest=$(docker buildx imagetools inspect "$image:$SOURCE_SHA" | awk '$1 == "Digest:" { print $2; exit }')
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo 'No firewall image digest'; exit 1; }
+          echo "image=$image@$digest" >> "$GITHUB_OUTPUT"
+          policy_sha=$(sha256sum deploy/backend/probe-firewall.sh | awk '{print $1}')
+          echo "policy_sha=$policy_sha" >> "$GITHUB_OUTPUT"
+
       - name: Deploy and verify on backend VPS
         shell: bash
         env:
@@ -146,6 +168,8 @@ jobs:
           PROBE_IMAGE: ${{ steps.images.outputs.probe }}
           MIGRATE_IMAGE: ${{ steps.images.outputs.migrate }}
           BACKUP_IMAGE: ${{ steps.images.outputs.backup }}
+          FIREWALL_IMAGE: ${{ steps.firewall.outputs.image }}
+          FIREWALL_POLICY_SHA: ${{ steps.firewall.outputs.policy_sha }}
         run: |
           set -euo pipefail
           [[ -n "$SSH_PRIVATE_KEY" && -n "$SSH_KNOWN_HOSTS" ]] || { echo 'Missing scoped SSH credentials'; exit 1; }
@@ -166,7 +190,7 @@ jobs:
             scp "${ssh_opts[@]}" deploy/backend/import-owner.sql "$target:/opt/heartbeat-checker/backend/import-owner.sql.incoming"
           fi
           printf '%s\n' "$GH_TOKEN" | ssh "${ssh_opts[@]}" "$target" \
-            "bash /opt/heartbeat-checker/backend/deploy.sh.incoming '$SOURCE_SHA' '$API_IMAGE' '$WORKER_IMAGE' '$PROBE_IMAGE' '$MIGRATE_IMAGE' '$GITHUB_ACTOR' '$BACKUP_IMAGE' '$ACTIVATE_TELEGRAM_RELAY' '$ACTIVATE_MESSENGER_NOTIFICATIONS' '$PROVISION_OWNER' '$ACTIVATE_ADMIN_MFA' '$ACTIVATE_OAUTH'"
+            "bash /opt/heartbeat-checker/backend/deploy.sh.incoming '$SOURCE_SHA' '$API_IMAGE' '$WORKER_IMAGE' '$PROBE_IMAGE' '$MIGRATE_IMAGE' '$GITHUB_ACTOR' '$BACKUP_IMAGE' '$ACTIVATE_TELEGRAM_RELAY' '$ACTIVATE_MESSENGER_NOTIFICATIONS' '$PROVISION_OWNER' '$ACTIVATE_ADMIN_MFA' '$ACTIVATE_OAUTH' '$FIREWALL_IMAGE' '$FIREWALL_POLICY_SHA'"
 
       - name: Verify public backend denies runner traffic
         shell: bash
