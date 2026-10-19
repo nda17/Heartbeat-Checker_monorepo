@@ -713,7 +713,7 @@ test("MonitorForm sends one write and does not replay a committed write when ref
   );
 });
 
-test("MonitorForm creates HTTP, TCP, and ICMP targets with type-specific payloads", async (t) => {
+test("MonitorForm creates HTTP, TCP, and ICMP targets with type-specific payloads", async () => {
   for (const type of ["http", "tcp", "icmp"]) {
     const harness = createHarness();
     const calls = [];
@@ -767,7 +767,7 @@ test("MonitorForm creates HTTP, TCP, and ICMP targets with type-specific payload
   }
 });
 
-test("legacy monitor edit defaults to HTTP and changing TCP/ICMP to HTTP resets target fields", async (t) => {
+test("legacy monitor edit defaults to HTTP and changing TCP/ICMP to HTTP resets target fields", async () => {
   for (const type of ["legacy-http", "tcp", "icmp"]) {
     const harness = createHarness();
     const calls = [];
