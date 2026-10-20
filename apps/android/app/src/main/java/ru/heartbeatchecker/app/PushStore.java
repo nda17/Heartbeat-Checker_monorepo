@@ -47,12 +47,17 @@ final class PushStore {
         }); } catch (IOException ignored) { /* Diagnostics must never affect the push operation. */ }
     }
 
-    void deliveryStage(DeliveryStage stage) {
+    void deliveryStage(DeliveryStage stage) { deliveryStage(stage, null); }
+
+    void deliveryStage(DeliveryStage stage, PushContract.EnvelopeReason reason) {
         if (stage == null) return;
         try { update(state -> {
             long now = System.currentTimeMillis();
             if (stage == DeliveryStage.RECEIVED) state.put("lastReceivedAt", now);
-            state.put("deliveryDiagnostic", new JSONObject().put("code", stage.name()).put("at", now));
+            JSONObject diagnostic = new JSONObject().put("code", stage.name()).put("at", now);
+            if (stage == DeliveryStage.INVALID_ENVELOPE && reason != null)
+                diagnostic.put("reason", reason.name());
+            state.put("deliveryDiagnostic", diagnostic);
         }); } catch (IOException ignored) { /* Keep a single bounded snapshot, without payloads or identifiers. */ }
     }
 

@@ -13,12 +13,22 @@ import java.util.Set;
 import java.util.Iterator;
 import java.util.regex.Pattern;
 
+import com.vk.push.common.messaging.ClickActionType;
+import ru.rustore.sdk.pushclient.messaging.model.Notification;
+import ru.rustore.sdk.pushclient.messaging.model.RemoteMessage;
+
 final class PushContract {
     static final String ORIGIN = "https://heartbeat-checker.ru";
     static final int JSON_LIMIT = 8192;
     private static final Pattern UUID = Pattern.compile("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
     private static final Set<String> STATUSES = new HashSet<>(Arrays.asList("pending", "ready", "permission_denied",
             "session_expired", "session_revoked", "invalid_token", "provider_unavailable"));
+    enum EnvelopeReason { NULL_MESSAGE, NOTIFICATION_CONTENT, DATA_KEYS, VERSION, DELIVERY_ID,
+        INSTALLATION_ID, GENERATION, EXPIRY_FORMAT, EXPIRED, SDK_MESSAGE }
+    static final class EnvelopeException extends JSONException {
+        final EnvelopeReason reason;
+        EnvelopeException(EnvelopeReason reason) { super(reason.name()); this.reason = reason; }
+    }
 
     private PushContract() {}
 
@@ -86,18 +96,49 @@ final class PushContract {
         return new JSONObject(value.toString());
     }
 
-    static JSONObject envelope(Map<String, String> data, long now) throws JSONException {
+    static JSONObject envelope(RemoteMessage message, long now) throws EnvelopeException {
+        if (message == null) throw new EnvelopeException(EnvelopeReason.NULL_MESSAGE);
+        if (!emptyNotification(message.getNotification())) throw new EnvelopeException(EnvelopeReason.NOTIFICATION_CONTENT);
+        return envelope(message.getData(), now);
+    }
+
+    private static boolean empty(String value) { return value == null || value.isEmpty(); }
+
+    private static boolean emptyNotification(Notification value) {
+        return value == null || (empty(value.getTitle()) && empty(value.getBody()) && empty(value.getChannelId())
+                && (value.getImageUrl() == null || value.getImageUrl().toString().isEmpty())
+                && empty(value.getColor()) && empty(value.getIcon()) && empty(value.getClickAction())
+                && (value.getClickActionType() == null || value.getClickActionType() == ClickActionType.DEFAULT));
+    }
+
+    private static String envelopeField(Map<String, String> data, String key, EnvelopeReason reason) throws EnvelopeException {
+        Object value = data.get(key);
+        if (!(value instanceof String)) throw new EnvelopeException(reason);
+        return (String) value;
+    }
+
+    static JSONObject envelope(Map<String, String> data, long now) throws EnvelopeException {
         if (data == null || !data.keySet().equals(new HashSet<>(Arrays.asList(
                 "v", "deliveryId", "installationId", "bindingGeneration", "expiresAt"))))
-            throw new JSONException("Invalid envelope");
-        if (!"1".equals(data.get("v")) || !uuid(data.get("deliveryId")) || !uuid(data.get("installationId")))
-            throw new JSONException("Invalid envelope");
-        String generation = data.get("bindingGeneration");
-        if (generation == null || !generation.matches("[1-9][0-9]{0,18}")) throw new JSONException("Invalid generation");
-        long parsed = Long.parseLong(generation);
-        if (parsed < 1 || instant(data.get("expiresAt")) <= now) throw new JSONException("Expired envelope");
+            throw new EnvelopeException(EnvelopeReason.DATA_KEYS);
+        if (!"1".equals(envelopeField(data, "v", EnvelopeReason.VERSION)))
+            throw new EnvelopeException(EnvelopeReason.VERSION);
+        if (!uuid(envelopeField(data, "deliveryId", EnvelopeReason.DELIVERY_ID)))
+            throw new EnvelopeException(EnvelopeReason.DELIVERY_ID);
+        if (!uuid(envelopeField(data, "installationId", EnvelopeReason.INSTALLATION_ID)))
+            throw new EnvelopeException(EnvelopeReason.INSTALLATION_ID);
+        String generation = envelopeField(data, "bindingGeneration", EnvelopeReason.GENERATION);
+        if (!generation.matches("[1-9][0-9]{0,18}"))
+            throw new EnvelopeException(EnvelopeReason.GENERATION);
+        try { Long.parseLong(generation); }
+        catch (NumberFormatException invalid) { throw new EnvelopeException(EnvelopeReason.GENERATION); }
+        long expiry;
+        try { expiry = instant(envelopeField(data, "expiresAt", EnvelopeReason.EXPIRY_FORMAT)); }
+        catch (RuntimeException invalid) { throw new EnvelopeException(EnvelopeReason.EXPIRY_FORMAT); }
+        if (expiry <= now) throw new EnvelopeException(EnvelopeReason.EXPIRED);
         JSONObject value = new JSONObject(data);
-        if (value.toString().getBytes(StandardCharsets.UTF_8).length > JSON_LIMIT) throw new JSONException("Oversized envelope");
+        if (value.toString().getBytes(StandardCharsets.UTF_8).length > JSON_LIMIT)
+            throw new EnvelopeException(EnvelopeReason.DATA_KEYS);
         return value;
     }
 

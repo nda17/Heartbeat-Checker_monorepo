@@ -14,18 +14,16 @@ public final class HeartbeatMessagingService extends RuStoreMessagingService {
         // The server uses data-only messages. No payload-derived URL or content is displayed.
         PushStore store = new PushStore(this);
         store.deliveryStage(PushStore.DeliveryStage.RECEIVED);
-        if (message == null || message.getNotification() != null) {
-            store.deliveryStage(PushStore.DeliveryStage.INVALID_ENVELOPE); return;
-        }
         JSONObject envelope;
-        try { envelope = PushContract.envelope(message.getData(), System.currentTimeMillis()); }
+        try { envelope = PushContract.envelope(message, System.currentTimeMillis()); }
+        catch (PushContract.EnvelopeException invalid) {
+            if (invalid.reason == PushContract.EnvelopeReason.EXPIRED) store.deliveryStage(PushStore.DeliveryStage.EXPIRED);
+            else store.deliveryStage(PushStore.DeliveryStage.INVALID_ENVELOPE, invalid.reason);
+            return;
+        }
         catch (Exception ignored) {
-            PushStore.DeliveryStage stage = PushStore.DeliveryStage.INVALID_ENVELOPE;
-            try {
-                if (message.getData() != null && PushContract.instant(message.getData().get("expiresAt")) <= System.currentTimeMillis())
-                    stage = PushStore.DeliveryStage.EXPIRED;
-            } catch (RuntimeException invalid) { /* Preserve the original strict envelope rejection. */ }
-            store.deliveryStage(stage); return;
+            store.deliveryStage(PushStore.DeliveryStage.INVALID_ENVELOPE, PushContract.EnvelopeReason.SDK_MESSAGE);
+            return;
         }
         try { PushWork.delivery(this, envelope); }
         catch (Exception ignored) { store.deliveryStage(PushStore.DeliveryStage.QUEUE_FAILED); }
