@@ -77,7 +77,7 @@ class StagePushTests(unittest.TestCase):
         self.assertEqual(candidate.read_bytes(), b"reviewed candidate\n")
         self.assertEqual(self.env.read_bytes(), self.original)
 
-    def test_stages_fcm_and_huawei_without_changing_yookassa_production_bytes(self):
+    def test_stages_fcm_for_current_release_without_changing_yookassa_production_bytes(self):
         billing = (
             b"BILLING_PROVIDER=yookassa\n"
             b"YOOKASSA_MODE=production\n"
@@ -99,7 +99,6 @@ class StagePushTests(unittest.TestCase):
             "projectId": "synthetic-project",
             "serviceToken": "$synthetic-rustore-service-token-0123456789",
             "fcm": {"projectId": "synthetic-fcm-project", "serviceAccountBase64": encoded_account},
-            "huawei": {"projectId": "12345", "clientId": "67890", "clientSecret": "synthetic_huawei_secret_0123456789"},
         }
 
         result = self.run_stage(json.dumps(payload).encode("ascii"))
@@ -110,10 +109,6 @@ class StagePushTests(unittest.TestCase):
             b"FCM_PUSH_ENABLED=true",
             b"FCM_PROJECT_ID=synthetic-fcm-project",
             b"FCM_SERVICE_ACCOUNT_BASE64=" + encoded_account.encode(),
-            b"HUAWEI_PUSH_ENABLED=true",
-            b"HUAWEI_PROJECT_ID=12345",
-            b"HUAWEI_CLIENT_ID=67890",
-            b"HUAWEI_CLIENT_SECRET=synthetic_huawei_secret_0123456789",
             b"RUSTORE_PUSH_SERVICE_TOKEN='$synthetic-rustore-service-token-0123456789'",
         ):
             self.assertIn(expected, candidate)
@@ -144,8 +139,11 @@ class StagePushTests(unittest.TestCase):
         unknown_fcm["fcm"]["privateKey"] = "must-not-be-accepted"
         cases.append(("unknown fcm field", unknown_fcm))
         unknown_huawei = json.loads(json.dumps(valid))
-        unknown_huawei["huawei"]["region"] = "unknown"
+        unknown_huawei["huawei"] = {"projectId": "12345", "clientId": "67890", "region": "unknown"}
         cases.append(("unknown Huawei field", unknown_huawei))
+        partial_huawei = json.loads(json.dumps(valid))
+        partial_huawei["huawei"] = {"projectId": "12345", "clientId": "67890"}
+        cases.append(("partial Huawei configuration", partial_huawei))
         for name, payload in cases:
             with self.subTest(name=name):
                 result = self.run_stage(json.dumps(payload).encode("ascii"))

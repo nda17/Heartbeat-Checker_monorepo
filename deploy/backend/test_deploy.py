@@ -81,9 +81,9 @@ if args and args[0] == "compose":
         if os.environ.get("COMPOSE_PUSH_KEYS") == "1":
             api_environment.update({"ANDROID_PUSH_ENABLED": "true", "RUSTORE_PUSH_PROJECT_ID": "synthetic-project"})
             worker_environment.update({"ANDROID_PUSH_ENABLED": "true", "RUSTORE_PUSH_PROJECT_ID": "synthetic-project", "RUSTORE_PUSH_SERVICE_TOKEN": "synthetic-push-service-token-0123456789"})
-        if os.environ.get("COMPOSE_CLOUD_PUSH_KEYS") == "1":
-            api_environment.update({"FCM_PUSH_ENABLED": "true", "FCM_PROJECT_ID": "synthetic-fcm-project", "HUAWEI_PUSH_ENABLED": "true", "HUAWEI_PROJECT_ID": "12345"})
-            worker_environment.update({"FCM_PUSH_ENABLED": "true", "FCM_PROJECT_ID": "synthetic-fcm-project", "FCM_SERVICE_ACCOUNT_BASE64": "synthetic-fcm-service-account", "HUAWEI_PUSH_ENABLED": "true", "HUAWEI_PROJECT_ID": "12345", "HUAWEI_CLIENT_ID": "67890", "HUAWEI_CLIENT_SECRET": "synthetic-huawei-client-secret-012345"})
+        if os.environ.get("COMPOSE_FCM_PUSH_KEYS") == "1":
+            api_environment.update({"FCM_PUSH_ENABLED": "true", "FCM_PROJECT_ID": "synthetic-fcm-project"})
+            worker_environment.update({"FCM_PUSH_ENABLED": "true", "FCM_PROJECT_ID": "synthetic-fcm-project", "FCM_SERVICE_ACCOUNT_BASE64": "synthetic-fcm-service-account"})
         if os.environ.get("COMPOSE_YOOKASSA_KEYS") == "1":
             yookassa_environment = {"BILLING_PROVIDER": "yookassa", "BILLING_TEST_ACCOUNT_IDS": "51ec7d19-80c4-4fb6-8edb-79dc7abe3120", "YOOKASSA_MODE": "test", "YOOKASSA_TEST_SHOP_ID": "123456", "YOOKASSA_TEST_SECRET_KEY": "test_synthetic_secret_123"}
             api_environment.update(yookassa_environment)
@@ -330,7 +330,7 @@ class BackendDeployTests(unittest.TestCase):
     def push_payload(self, token="synthetic-service-token-0123456789-abcdefgh"):
         return "test-token\n" + json.dumps({"projectId": "synthetic-project", "serviceToken": token}) + "\n"
 
-    def cloud_push_payload(self, token="synthetic-service-token-0123456789-abcdefgh", fcm_secret="synthetic-fcm-service-account-v2", huawei_secret="synthetic-huawei-client-secret-012345-v2"):
+    def cloud_push_payload(self, token="synthetic-service-token-0123456789-abcdefgh", fcm_secret="synthetic-fcm-service-account-v2"):
         credentials = {
             "type": "service_account",
             "project_id": "synthetic-fcm-project",
@@ -343,7 +343,6 @@ class BackendDeployTests(unittest.TestCase):
             "projectId": "synthetic-project",
             "serviceToken": token,
             "fcm": {"projectId": "synthetic-fcm-project", "serviceAccountBase64": encoded_credentials},
-            "huawei": {"projectId": "12345", "clientId": "67890", "clientSecret": huawei_secret},
         }) + "\n"
 
     def test_android_push_activation_is_allowlisted_separate_and_receipted(self):
@@ -366,34 +365,37 @@ class BackendDeployTests(unittest.TestCase):
             "YOOKASSA_PRODUCTION_SHOP_ID=654321\n"
             "YOOKASSA_PRODUCTION_SECRET_KEY='production_synthetic_secret_123'\n"
         )
-        original = BASE_ENV + "ANDROID_PUSH_ENABLED=false\n" + billing
+        rustore = (
+            "RUSTORE_PUSH_PROJECT_ID=synthetic-project\n"
+            "RUSTORE_PUSH_SERVICE_TOKEN='synthetic-service-token-0123456789-abcdefgh'\n"
+        )
+        original = BASE_ENV + "ANDROID_PUSH_ENABLED=false\n" + rustore + billing
         (self.backend / ".env").write_text(original)
         (self.backend / ".env").chmod(0o600)
         result = self.run_deploy(
             activate_android_push=True,
             stdin_payload=self.cloud_push_payload(),
             COMPOSE_PUSH_KEYS="1",
-            COMPOSE_CLOUD_PUSH_KEYS="1",
+            COMPOSE_FCM_PUSH_KEYS="1",
             COMPOSE_YOOKASSA_PRODUCTION_KEYS="1",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         activated = (self.backend / ".env").read_text()
         for line in billing.splitlines():
             self.assertIn(line, activated.splitlines(), f"cloud activation changed unrelated billing bytes: {line!r}")
+        for line in rustore.splitlines():
+            self.assertIn(line, activated.splitlines(), f"FCM activation changed legacy RuStore bytes: {line!r}")
         for line in (
             "FCM_PUSH_ENABLED=true",
             "FCM_PROJECT_ID=synthetic-fcm-project",
             "FCM_SERVICE_ACCOUNT_BASE64=" + json.loads(self.cloud_push_payload().splitlines()[1])["fcm"]["serviceAccountBase64"],
-            "HUAWEI_PUSH_ENABLED=true",
-            "HUAWEI_PROJECT_ID=12345",
-            "HUAWEI_CLIENT_ID=67890",
-            "HUAWEI_CLIENT_SECRET=synthetic-huawei-client-secret-012345-v2",
         ):
             self.assertIn(line, activated)
+        self.assertNotIn("HUAWEI_PUSH_ENABLED=true", activated)
+        self.assertNotIn("HUAWEI_CLIENT_SECRET=", activated)
         receipt = json.loads((self.backend / "receipts" / f"{SOURCE_SHA}.json").read_text())
         self.assertTrue(receipt["android_push_activated"])
         self.assertNotIn("synthetic-fcm-service-account-v2", result.stdout + result.stderr + self.log.read_text())
-        self.assertNotIn("synthetic-huawei-client-secret", result.stdout + result.stderr + self.log.read_text())
 
     def test_cloud_push_activation_refuses_to_rotate_existing_credentials(self):
         original = BASE_ENV + (
@@ -403,10 +405,6 @@ class BackendDeployTests(unittest.TestCase):
             "FCM_PUSH_ENABLED=true\n"
             "FCM_PROJECT_ID=synthetic-fcm-project\n"
             "FCM_SERVICE_ACCOUNT_BASE64=old-fcm-service-account\n"
-            "HUAWEI_PUSH_ENABLED=true\n"
-            "HUAWEI_PROJECT_ID=12345\n"
-            "HUAWEI_CLIENT_ID=67890\n"
-            "HUAWEI_CLIENT_SECRET=old-huawei-client-secret-012345\n"
         )
         (self.backend / ".env").write_text(original)
         (self.backend / ".env").chmod(0o600)
@@ -414,7 +412,7 @@ class BackendDeployTests(unittest.TestCase):
             activate_android_push=True,
             stdin_payload=self.cloud_push_payload(),
             COMPOSE_PUSH_KEYS="1",
-            COMPOSE_CLOUD_PUSH_KEYS="1",
+            COMPOSE_FCM_PUSH_KEYS="1",
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Android push activation cannot rotate existing configuration", result.stderr)

@@ -583,13 +583,13 @@ func TestPushHTTPNativeAuthAndBrowserSafeResponses(t *testing.T) {
 		mux.ServeHTTP(out, req)
 		return out
 	}
-	f.push.cfg.Providers = []string{"rustore", "fcm", "huawei"}
+	f.push.cfg.Providers = []string{"rustore", "fcm"}
 	capabilities := call(http.MethodGet, "/api/v1/push/capabilities", nil, "", false)
 	var capabilityDTO struct {
 		ProtocolVersion int      `json:"protocolVersion"`
 		Providers       []string `json:"providers"`
 	}
-	if capabilities.Code != http.StatusOK || json.Unmarshal(capabilities.Body.Bytes(), &capabilityDTO) != nil || capabilityDTO.ProtocolVersion != 2 || strings.Join(capabilityDTO.Providers, ",") != "fcm,huawei,rustore" {
+	if capabilities.Code != http.StatusOK || json.Unmarshal(capabilities.Body.Bytes(), &capabilityDTO) != nil || capabilityDTO.ProtocolVersion != 2 || strings.Join(capabilityDTO.Providers, ",") != "fcm,rustore" {
 		t.Fatalf("public push capabilities = %d %s, want protocol 2 with configured providers", capabilities.Code, capabilities.Body.String())
 	}
 	verifier, challenge := newPushVerifier(t)
@@ -630,6 +630,9 @@ func TestPushHTTPNativeAuthAndBrowserSafeResponses(t *testing.T) {
 	repeatConfirm := call(http.MethodPost, "/api/v1/push/pairings/"+pairResult.Pairing.ID+"/confirm", map[string]any{}, "", true)
 	if repeatConfirm.Code != http.StatusConflict {
 		t.Fatalf("repeat HTTP confirmation = %d %s, want 409", repeatConfirm.Code, repeatConfirm.Body.String())
+	}
+	if _, err := f.push.ExchangePairing(context.Background(), pairResult.Installation.Credential, pairResult.Pairing.ID, PushExchangeInput{CodeVerifier: verifier, CompletionCode: confirmation.CompletionCode, Provider: "huawei", Token: "provider-private-token", Permission: "granted", AppVersion: "1.2.3"}); !errors.Is(err, ErrPushInvalid) {
+		t.Fatalf("Huawei pairing exchange with FCM/RuStore-only config = %v, want invalid provider", err)
 	}
 	if _, err := f.push.ExchangePairing(context.Background(), pairResult.Installation.Credential, pairResult.Pairing.ID, PushExchangeInput{CodeVerifier: verifier, CompletionCode: confirmation.CompletionCode, Provider: "rustore", Token: "provider-private-token", Permission: "granted", AppVersion: "1.2.3"}); err != nil {
 		t.Fatal(err)

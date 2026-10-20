@@ -237,7 +237,7 @@ public final class PushSetupActivity extends ComponentActivity {
         if (diagnostic == null) return "";
         String code = diagnostic.optString("code");
         // An old RuStore diagnostic, or a late callback from its SDK, must not
-        // describe a currently selected Firebase/Huawei route.
+        // describe a currently selected Firebase route.
         if (code.startsWith("DISTRIBUTOR_") && !"rustore".equals(PushSdk.provider(state))) return "";
         switch (code) {
             case "DISTRIBUTOR_MISSING": return "Установите или включите RuStore, затем повторите подключение.";

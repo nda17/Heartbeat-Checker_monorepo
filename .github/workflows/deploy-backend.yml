@@ -23,7 +23,7 @@ on:
         default: false
         type: boolean
       activate_android_push:
-        description: Enable reviewed RuStore push configuration from protected environment secrets
+        description: Enable reviewed Firebase and existing RuStore push configuration from protected environment secrets
         required: false
         default: false
         type: boolean
@@ -231,9 +231,6 @@ jobs:
           RUSTORE_PUSH_SERVICE_TOKEN: ${{ secrets.RUSTORE_PUSH_SERVICE_TOKEN }}
           FCM_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
           FCM_SERVICE_ACCOUNT_BASE64: ${{ secrets.FCM_SERVICE_ACCOUNT_BASE64 }}
-          HUAWEI_PROJECT_ID: ${{ vars.HUAWEI_PROJECT_ID }}
-          HUAWEI_CLIENT_ID: ${{ secrets.HUAWEI_CLIENT_ID }}
-          HUAWEI_CLIENT_SECRET: ${{ secrets.HUAWEI_CLIENT_SECRET }}
           YOOKASSA_TEST_SHOP_ID: ${{ secrets.YOOKASSA_TEST_SHOP_ID }}
           YOOKASSA_TEST_SECRET_KEY: ${{ secrets.YOOKASSA_TEST_SECRET_KEY }}
           YOOKASSA_PRODUCTION_SHOP_ID: ${{ secrets.YOOKASSA_PRODUCTION_SHOP_ID }}
@@ -289,14 +286,10 @@ jobs:
                   raise SystemExit("Missing protected RuStore push configuration")
               fcm_project = os.environ.get("FCM_PROJECT_ID", "")
               fcm_credentials = os.environ.get("FCM_SERVICE_ACCOUNT_BASE64", "")
-              huawei_project = os.environ.get("HUAWEI_PROJECT_ID", "")
-              huawei_client = os.environ.get("HUAWEI_CLIENT_ID", "")
-              huawei_secret = os.environ.get("HUAWEI_CLIENT_SECRET", "")
-              if not all((fcm_project, fcm_credentials, huawei_project, huawei_client, huawei_secret)):
-                  raise SystemExit("Missing protected Firebase/Huawei push configuration")
+              if not all((fcm_project, fcm_credentials)):
+                  raise SystemExit("Missing protected Firebase push configuration")
               payload = {"projectId": project, "serviceToken": service_token,
-                         "fcm": {"projectId": fcm_project, "serviceAccountBase64": fcm_credentials},
-                         "huawei": {"projectId": huawei_project, "clientId": huawei_client, "clientSecret": huawei_secret}}
+                         "fcm": {"projectId": fcm_project, "serviceAccountBase64": fcm_credentials}}
           sys.stdout.write(token + "\n")
           if payload is not None:
               json.dump(payload, sys.stdout, ensure_ascii=True)

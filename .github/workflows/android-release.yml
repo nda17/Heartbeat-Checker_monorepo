@@ -29,9 +29,6 @@ jobs:
       FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
       FIREBASE_API_KEY: ${{ vars.FIREBASE_API_KEY }}
       FIREBASE_SENDER_ID: ${{ vars.FIREBASE_SENDER_ID }}
-      HUAWEI_APP_ID: ${{ vars.HUAWEI_APP_ID }}
-      HUAWEI_PROJECT_ID: ${{ vars.HUAWEI_PROJECT_ID }}
-      HUAWEI_CP_ID: ${{ vars.HUAWEI_CP_ID }}
     steps:
       - name: Validate release inputs
         shell: bash

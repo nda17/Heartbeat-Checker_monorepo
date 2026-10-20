@@ -12,8 +12,6 @@ public final class PushSdkProviderTest {
     public void selectedProviderStaysStickyAndLegacy113TokenKeepsRuStoreRoute() throws Exception {
         assertEquals("fcm", PushSdk.provider(new JSONObject().put("provider", "fcm")
                 .put("token", "fcm-registration-id")));
-        assertEquals("huawei", PushSdk.provider(new JSONObject().put("provider", "huawei")
-                .put("token", "huawei-registration-token")));
         assertEquals("rustore", PushSdk.provider(new JSONObject().put("token", "legacy-1.1.3-token")));
         assertEquals("rustore", PushSdk.provider(new JSONObject().put("provider", "unknown")
                 .put("token", "legacy-1.1.3-token")));
@@ -21,8 +19,8 @@ public final class PushSdkProviderTest {
 
     @Test
     public void serverInstallationProviderIsUsedWhenLocalSelectionIsAbsent() throws Exception {
-        JSONObject installation = new JSONObject().put("provider", "huawei").put("bindingGeneration", 4);
-        assertEquals("huawei", PushSdk.provider(new JSONObject().put("installation", installation)));
+        JSONObject installation = new JSONObject().put("provider", "rustore").put("bindingGeneration", 4);
+        assertEquals("rustore", PushSdk.provider(new JSONObject().put("installation", installation)));
     }
 
     @Test
@@ -35,7 +33,7 @@ public final class PushSdkProviderTest {
     public void rustoreDistributorDiagnosticsAreScopedToTheSelectedProvider() throws Exception {
         JSONObject diagnostic = new JSONObject().put("providerDiagnostic",
                 new JSONObject().put("code", "DISTRIBUTOR_MISSING"));
-        for (String provider : new String[] {"fcm", "huawei"}) {
+        for (String provider : new String[] {"fcm"}) {
             String message = PushSetupActivity.providerDiagnosticMessage(
                     new JSONObject(diagnostic.toString()).put("provider", provider));
             assertEquals("stale RuStore diagnostics are hidden for " + provider, "", message);
@@ -44,6 +42,11 @@ public final class PushSdkProviderTest {
         String rustore = PushSetupActivity.providerDiagnosticMessage(
                 new JSONObject(diagnostic.toString()).put("provider", "rustore"));
         assertTrue(rustore.contains("RuStore"));
+    }
+
+    @Test
+    public void huaweiIsNotConfiguredInThisRelease() {
+        assertFalse(PushSdk.configured("huawei"));
     }
 
     @Test

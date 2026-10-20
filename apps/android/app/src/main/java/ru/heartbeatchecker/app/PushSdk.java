@@ -8,11 +8,6 @@ import com.google.firebase.FirebaseApp;
 import com.google.firebase.FirebaseOptions;
 import com.google.firebase.installations.FirebaseInstallations;
 import com.google.firebase.messaging.FirebaseMessaging;
-import com.huawei.agconnect.AGConnectInstance;
-import com.huawei.agconnect.AGConnectOptionsBuilder;
-import com.huawei.agconnect.config.AGConnectServicesConfig;
-import com.huawei.hms.aaid.HmsInstanceId;
-import com.huawei.hms.api.HuaweiApiAvailability;
 import org.json.JSONObject;
 
 import java.io.IOException;
@@ -40,35 +35,14 @@ final class PushSdk {
                 FirebaseMessaging.getInstance().setAutoInitEnabled(false);
             }
         } catch (RuntimeException ignored) { /* Missing/invalid configuration fails this provider closed. */ }
-        initializeHuawei(application);
 
         initialized = true;
-    }
-
-    // HMS's own service may run in :pushservice. This method must not touch our
-    // encrypted state, another push SDK, or WorkManager from that process.
-    static void initializeHuawei(Context context) {
-        try {
-            if (configured("huawei")) {
-                // Push Kit needs only public app/project identity. Sending secrets never enter this APK.
-                AGConnectServicesConfig config = AGConnectServicesConfig.fromContext(context);
-                config.setParam("client/app_id", BuildConfig.HUAWEI_APP_ID);
-                config.setParam("client/project_id", BuildConfig.HUAWEI_PROJECT_ID);
-                config.setParam("client/cp_id", BuildConfig.HUAWEI_CP_ID);
-                config.setParam("client/package_name", BuildConfig.APPLICATION_ID);
-                AGConnectInstance.initialize(context, new AGConnectOptionsBuilder()
-                        .setAppId(BuildConfig.HUAWEI_APP_ID).setCPId(BuildConfig.HUAWEI_CP_ID)
-                        .setPackageName(BuildConfig.APPLICATION_ID).setCustomValue("client/project_id", BuildConfig.HUAWEI_PROJECT_ID));
-            }
-        } catch (RuntimeException ignored) { /* A missing provider must not block the cabinet. */ }
     }
 
     static boolean configured(String provider) {
         switch (provider) {
             case "fcm": return !BuildConfig.FIREBASE_APP_ID.isEmpty() && !BuildConfig.FIREBASE_API_KEY.isEmpty()
                     && !BuildConfig.FIREBASE_PROJECT_ID.isEmpty() && !BuildConfig.FIREBASE_SENDER_ID.isEmpty();
-            case "huawei": return !BuildConfig.HUAWEI_APP_ID.isEmpty() && !BuildConfig.HUAWEI_PROJECT_ID.isEmpty()
-                    && !BuildConfig.HUAWEI_CP_ID.isEmpty();
             case "rustore": return !BuildConfig.RUSTORE_PUSH_PROJECT_ID.isEmpty();
             default: return false;
         }
@@ -87,7 +61,6 @@ final class PushSdk {
         if (!configured(provider)) return false;
         try {
             if ("fcm".equals(provider)) return GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context) == 0;
-            if ("huawei".equals(provider)) return HuaweiApiAvailability.getInstance().isHuaweiMobileServicesAvailable(context) == 0;
             return RuStorePushClient.INSTANCE.isInitialized();
         } catch (RuntimeException ignored) { return false; }
     }
@@ -99,7 +72,6 @@ final class PushSdk {
                 int status = GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context);
                 return status == 1 || status == 9;
             }
-            if ("huawei".equals(provider)) return HuaweiApiAvailability.getInstance().isHuaweiMobileServicesAvailable(context) == 1;
             return false; // RuStore owns distributor detection, including non-store hosts.
         } catch (RuntimeException ignored) { return false; }
     }
@@ -125,7 +97,7 @@ final class PushSdk {
     }
 
     private static void choose(Context context, PushStore store, String previous, int index, TokenResult result) {
-        String[] order = {"fcm", "huawei", "rustore"};
+        String[] order = {"fcm", "rustore"};
         if (index >= order.length) { store.providerIssue(PushStore.ProviderIssue.SDK_UNAVAILABLE); result.unavailable(); return; }
         String target = order[index];
         boolean allowed = false;
@@ -168,17 +140,7 @@ final class PushSdk {
                         FirebaseInstallations.getInstance().getId().addOnSuccessListener(value -> acquired(context, store, provider, value, revision, result))
                                 .addOnFailureListener(ignored -> result.unavailable()))
                         .addOnFailureListener(ignored -> result.unavailable());
-            } else if ("huawei".equals(provider)) {
-                // Synchronous HMS call is forbidden on the main thread. A blank return
-                // on older HMS is completed through onNewToken on a later retry.
-                PushWork.IO.execute(() -> {
-                    try {
-                        String value = HmsInstanceId.getInstance(context).getToken(BuildConfig.HUAWEI_APP_ID, "HCM");
-                        if (!PushContract.token(value)) value = store.read().optString("candidate_huawei");
-                        acquired(context, store, provider, value, revision, result);
-                    } catch (Exception ignored) { result.unavailable(); }
-                });
-            } else {
+            } else if ("rustore".equals(provider)) {
                 RuStorePushClient.INSTANCE.checkPushAvailability().addOnSuccessListener(available -> {
                     if (!(available instanceof FeatureAvailabilityResult.Available)) {
                         if (available instanceof FeatureAvailabilityResult.Unavailable
@@ -190,7 +152,7 @@ final class PushSdk {
                     RuStorePushClient.INSTANCE.getToken().addOnSuccessListener(value -> acquired(context, store, provider, value, revision, result))
                             .addOnFailureListener(ignored -> result.unavailable());
                 }).addOnFailureListener(ignored -> result.unavailable());
-            }
+            } else result.unavailable();
         } catch (IOException | RuntimeException ignored) { result.unavailable(); }
     }
 
