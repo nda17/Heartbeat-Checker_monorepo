@@ -1,5 +1,6 @@
 "use client";
 import { notify } from "@/shared/notifications";
+import { AndroidPushRoutes } from "./push";
 import { WebhookNotifications } from "./webhook";
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
@@ -474,6 +475,7 @@ export function MonitorNotifications({
           )}
         </div>
       )}
+      <AndroidPushRoutes monitorId={monitor.id} />
       <WebhookNotifications monitorId={monitor.id} />
     </Dialog>
   );

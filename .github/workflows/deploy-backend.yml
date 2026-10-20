@@ -22,6 +22,11 @@ on:
         required: false
         default: false
         type: boolean
+      activate_android_push:
+        description: Enable reviewed RuStore push configuration from protected environment secrets
+        required: false
+        default: false
+        type: boolean
       provision_owner:
         description: Import the reviewed create-only owner payload staged on the backend VPS
         required: false
@@ -63,6 +68,7 @@ jobs:
       ACTIVATE_TELEGRAM_RELAY: ${{ inputs.activate_telegram_relay }}
       ACTIVATE_MESSENGER_NOTIFICATIONS: ${{ inputs.activate_messenger_notifications }}
       ACTIVATE_EMAIL_NOTIFICATIONS: ${{ inputs.activate_email_notifications }}
+      ACTIVATE_ANDROID_PUSH: ${{ inputs.activate_android_push }}
       PROVISION_OWNER: ${{ inputs.provision_owner }}
       ACTIVATE_ADMIN_MFA: ${{ inputs.activate_admin_mfa }}
       ACTIVATE_OAUTH: ${{ inputs.activate_oauth }}
@@ -97,6 +103,14 @@ jobs:
           [[ "$ACTIVATE_EMAIL_NOTIFICATIONS" == true || "$ACTIVATE_EMAIL_NOTIFICATIONS" == false ]] || {
             echo 'Invalid email notification activation flag'; exit 1;
           }
+          [[ "$ACTIVATE_ANDROID_PUSH" == true || "$ACTIVATE_ANDROID_PUSH" == false ]] || {
+            echo 'Invalid Android push activation flag'; exit 1;
+          }
+          if [[ "$ACTIVATE_ANDROID_PUSH" == true ]]; then
+            [[ "$ACTIVATE_TELEGRAM_RELAY" == false && "$ACTIVATE_MESSENGER_NOTIFICATIONS" == false && "$ACTIVATE_ADMIN_MFA" == false && "$ACTIVATE_OAUTH" == false && "$PROVISION_OWNER" == false && "$ACTIVATE_YOOKASSA_TEST" == false && "$ACTIVATE_EMAIL_NOTIFICATIONS" == false ]] || {
+              echo 'Android push activation must be a separate configuration operation'; exit 1;
+            }
+          fi
           if [[ "$ACTIVATE_EMAIL_NOTIFICATIONS" == true ]]; then
             [[ "$ACTIVATE_TELEGRAM_RELAY" == false && "$ACTIVATE_MESSENGER_NOTIFICATIONS" == false && "$ACTIVATE_ADMIN_MFA" == false && "$ACTIVATE_OAUTH" == false && "$PROVISION_OWNER" == false && "$ACTIVATE_YOOKASSA_TEST" == false ]] || {
               echo 'Email activation must be a separate configuration operation'; exit 1;
@@ -199,6 +213,8 @@ jobs:
           BACKUP_IMAGE: ${{ steps.images.outputs.backup }}
           FIREWALL_IMAGE: ${{ steps.firewall.outputs.image }}
           FIREWALL_POLICY_SHA: ${{ steps.firewall.outputs.policy_sha }}
+          RUSTORE_PUSH_PROJECT_ID: ${{ vars.RUSTORE_PUSH_PROJECT_ID }}
+          RUSTORE_PUSH_SERVICE_TOKEN: ${{ secrets.RUSTORE_PUSH_SERVICE_TOKEN }}
           YOOKASSA_TEST_SHOP_ID: ${{ secrets.YOOKASSA_TEST_SHOP_ID }}
           YOOKASSA_TEST_SECRET_KEY: ${{ secrets.YOOKASSA_TEST_SECRET_KEY }}
         run: |
@@ -220,11 +236,14 @@ jobs:
           if [[ "$ACTIVATE_YOOKASSA_TEST" == true ]]; then
             scp "${ssh_opts[@]}" deploy/backend/stage-yookassa.py "$target:/opt/heartbeat-checker/backend/stage-yookassa.py.incoming"
           fi
+          if [[ "$ACTIVATE_ANDROID_PUSH" == true ]]; then
+            scp "${ssh_opts[@]}" deploy/backend/stage-push.py "$target:/opt/heartbeat-checker/backend/stage-push.py.incoming"
+          fi
           if [[ "$PROVISION_OWNER" == true ]]; then
             scp "${ssh_opts[@]}" deploy/backend/import-owner.sql "$target:/opt/heartbeat-checker/backend/import-owner.sql.incoming"
           fi
           python3 - <<'PY' | ssh "${ssh_opts[@]}" "$target" \
-            "bash /opt/heartbeat-checker/backend/deploy.sh.incoming '$SOURCE_SHA' '$API_IMAGE' '$WORKER_IMAGE' '$PROBE_IMAGE' '$MIGRATE_IMAGE' '$GITHUB_ACTOR' '$BACKUP_IMAGE' '$ACTIVATE_TELEGRAM_RELAY' '$ACTIVATE_MESSENGER_NOTIFICATIONS' '$PROVISION_OWNER' '$ACTIVATE_ADMIN_MFA' '$ACTIVATE_OAUTH' '$FIREWALL_IMAGE' '$FIREWALL_POLICY_SHA' '$ACTIVATE_YOOKASSA_TEST' '$ACTIVATE_EMAIL_NOTIFICATIONS'"
+            "bash /opt/heartbeat-checker/backend/deploy.sh.incoming '$SOURCE_SHA' '$API_IMAGE' '$WORKER_IMAGE' '$PROBE_IMAGE' '$MIGRATE_IMAGE' '$GITHUB_ACTOR' '$BACKUP_IMAGE' '$ACTIVATE_TELEGRAM_RELAY' '$ACTIVATE_MESSENGER_NOTIFICATIONS' '$PROVISION_OWNER' '$ACTIVATE_ADMIN_MFA' '$ACTIVATE_OAUTH' '$FIREWALL_IMAGE' '$FIREWALL_POLICY_SHA' '$ACTIVATE_YOOKASSA_TEST' '$ACTIVATE_EMAIL_NOTIFICATIONS' '$ACTIVATE_ANDROID_PUSH'"
           import json
           import os
           import re
@@ -240,6 +259,12 @@ jobs:
               if not shop or not secret:
                   raise SystemExit("Missing protected YooKassa test configuration")
               payload = {"shopId": shop, "secretKey": secret}
+          if os.environ["ACTIVATE_ANDROID_PUSH"] == "true":
+              project = os.environ.get("RUSTORE_PUSH_PROJECT_ID", "")
+              service_token = os.environ.get("RUSTORE_PUSH_SERVICE_TOKEN", "")
+              if not project or not service_token:
+                  raise SystemExit("Missing protected RuStore push configuration")
+              payload = {"projectId": project, "serviceToken": service_token}
           sys.stdout.write(token + "\n")
           if payload is not None:
               json.dump(payload, sys.stdout, ensure_ascii=True)

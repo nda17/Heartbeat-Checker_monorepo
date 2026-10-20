@@ -51,6 +51,12 @@ const shapes = {
       <path d="M12 11v6M12 7v.01" />
     </>
   ),
+  phone: (
+    <>
+      <rect x="6" y="2" width="12" height="20" rx="2" />
+      <path d="M11 18h2" />
+    </>
+  ),
   device: (
     <>
       <rect x="3" y="4" width="18" height="13" rx="2" />

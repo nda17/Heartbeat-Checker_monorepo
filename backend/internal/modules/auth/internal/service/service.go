@@ -256,7 +256,14 @@ func (s *Service) Verify(ctx context.Context, token, password string, client Cli
 	return nil
 }
 
-func (s *Service) Login(ctx context.Context, email, password, captchaToken string, client Client) (LoginResult, error) {
+func previousSessionHash(token string) []byte {
+	if len(token) != 43 {
+		return nil
+	}
+	return security.Digest(token)
+}
+
+func (s *Service) Login(ctx context.Context, email, password, captchaToken string, client Client, previousToken string) (LoginResult, error) {
 	email = security.NormalizeEmail(email)
 	if !security.ValidEmail(email) || len(password) == 0 || len(password) > 1024 {
 		return LoginResult{}, ErrInvalid
@@ -313,7 +320,7 @@ func (s *Service) Login(ctx context.Context, email, password, captchaToken strin
 	if len(agent) > 500 {
 		agent = agent[:500]
 	}
-	err = s.repo.LoginSession(ctx, c, id, security.Digest(token), time.Now().Add(s.cfg.SessionTTL), client.IP, string(agent))
+	err = s.repo.LoginSession(ctx, c, id, security.Digest(token), time.Now().Add(s.cfg.SessionTTL), client.IP, string(agent), previousSessionHash(previousToken))
 	if errors.Is(err, postgres.ErrConflict) {
 		return LoginResult{}, ErrCredentials
 	}

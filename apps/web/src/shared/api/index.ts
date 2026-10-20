@@ -104,7 +104,7 @@ const messages: Record<string, string> = {
     "Заказ конфликтует с текущей квотой или уже начатым заказом. Обновите статус текущего заказа.",
   invalid_credentials: "Неверный email или пароль.",
   unauthorized: "Сессия завершена. Войдите снова.",
-  account_changed: "Аккаунт изменился. Черновик не сохранён.",
+  account_changed: "Аккаунт изменился. Данные не сохранены.",
   invalid_request:
     "Проверьте введённые данные. Ссылка также могла истечь или уже быть использована.",
   challenge_failed:
@@ -245,6 +245,19 @@ export function paymentConfirmationUrl(value: string | undefined) {
 export function safeAppReturnTo(value: string | null) {
   if (value === "/app" || value === "/app/admin" || value === "/app/settings")
     return value;
+  if (value?.startsWith("/app/settings?")) {
+    const params = new URLSearchParams(value.slice("/app/settings?".length));
+    const pairingId = params.get("pushPair");
+    if (
+      params.size === 1 &&
+      pairingId?.length === 36 &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        pairingId,
+      )
+    )
+      return `/app/settings?pushPair=${pairingId.toLowerCase()}`;
+    return null;
+  }
   if (!value?.startsWith("/app?")) return null;
   try {
     const url = new URL(value, "https://heartbeat-checker.invalid");

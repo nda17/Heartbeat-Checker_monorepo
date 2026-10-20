@@ -69,7 +69,7 @@ function createHarness() {
   };
 }
 
-function loadAccountDeletion({ api, session, router, clearedDrafts }) {
+function loadAccountDeletion({ api, session, router }) {
   const source = fs.readFileSync(
     new URL("../src/features/account-deletion/index.tsx", import.meta.url),
     "utf8",
@@ -100,9 +100,6 @@ function loadAccountDeletion({ api, session, router, clearedDrafts }) {
       api,
       ApiError,
       errorMessage: (error) => error?.message ?? "Не удалось выполнить запрос.",
-    },
-    "@/shared/android": {
-      clearMonitorDraft: () => clearedDrafts.push(true),
     },
     "@/shared/dialog": {
       Dialog: ({ title, children, onClose }) =>
@@ -198,7 +195,6 @@ test("account deletion latches account id and makes one DELETE even on double su
   const harness = createHarness();
   const request = deferred();
   const calls = [];
-  const clearedDrafts = [];
   const destinations = [];
   const router = { replace: (path) => destinations.push(path) };
   const transitions = { value: 0 };
@@ -212,7 +208,6 @@ test("account deletion latches account id and makes one DELETE even on double su
     },
     session,
     router,
-    clearedDrafts,
   });
   await harness.render(React.createElement(AccountDeletion));
   const form = await openAndConfirm(harness);
@@ -230,7 +225,6 @@ test("account deletion latches account id and makes one DELETE even on double su
   assert.equal(transitions.value, 1);
   request.resolve(undefined);
   await act(async () => request.promise);
-  assert.deepEqual(clearedDrafts, [true]);
   assert.deepEqual(destinations, ["/login?account=deleted"]);
   await harness.unmount();
 });
@@ -250,7 +244,6 @@ test("an ambiguous deletion response leaves a terminal result and cannot retry D
     },
     session,
     router: { replace: (path) => destinations.push(path) },
-    clearedDrafts: [],
   });
   await harness.render(React.createElement(AccountDeletion));
   const form = await openAndConfirm(harness);
@@ -263,11 +256,10 @@ test("an ambiguous deletion response leaves a terminal result and cannot retry D
   assert.equal(transitions.value, 0);
 });
 
-test("wrong password reports an inline error without redirecting or clearing draft", async () => {
+test("wrong password reports an inline error without redirecting", async () => {
   const harness = createHarness();
   const calls = [];
   const destinations = [];
-  const clearedDrafts = [];
   const transitions = { value: 0 };
   const session = {
     current: sessionState("account-a", "a@example.test", transitions),
@@ -279,14 +271,12 @@ test("wrong password reports an inline error without redirecting or clearing dra
     },
     session,
     router: { replace: (path) => destinations.push(path) },
-    clearedDrafts,
   });
   await harness.render(React.createElement(AccountDeletion));
   const form = await openAndConfirm(harness);
   await submit(form);
   assert.equal(calls.length, 1);
   assert.deepEqual(destinations, []);
-  assert.deepEqual(clearedDrafts, []);
   assert.match(harness.host.textContent, /Неверный текущий пароль/);
   assert.equal(form.elements.namedItem("currentPassword").value, "");
   assert.equal(transitions.value, 0);

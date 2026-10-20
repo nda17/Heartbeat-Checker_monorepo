@@ -8,7 +8,6 @@ import { Dialog } from "@/shared/dialog";
 import { Notice, Spinner } from "@/shared/ui";
 export function MonitorForm({
   monitor,
-  draft,
   onClose,
   onSaved,
   basePath = "/monitors",
@@ -16,7 +15,6 @@ export function MonitorForm({
   successMessage = "Монитор сохранён.",
 }: {
   monitor?: Monitor;
-  draft?: { name?: string; url: string; accountId: string };
   onClose: () => void;
   onSaved: () => Promise<void>;
   basePath?: string;
@@ -29,7 +27,7 @@ export function MonitorForm({
     monitorCheckType(monitor?.checkType),
   );
   const [httpUrl, setHttpUrl] = useState(
-    httpMonitor ? (monitor?.url ?? draft?.url ?? "") : "",
+    httpMonitor ? (monitor?.url ?? "") : "",
   );
   const [host, setHost] = useState(monitor?.host ?? "");
   const [port, setPort] = useState(monitor?.port ? String(monitor.port) : "");
@@ -97,7 +95,6 @@ export function MonitorForm({
         ? { reason: String(data.get("reason") ?? "").trim() }
         : {}),
       ...(monitor ? { version: monitor.version } : {}),
-      ...(draft && !monitor ? { expectedAccountId: draft.accountId } : {}),
     };
     if (
       checkType === "http" &&
@@ -214,7 +211,7 @@ export function MonitorForm({
               <input
                 name="name"
                 autoFocus
-                defaultValue={monitor?.name ?? draft?.name}
+                defaultValue={monitor?.name}
                 required
                 minLength={1}
                 maxLength={100}

@@ -1,226 +1,208 @@
 package ru.heartbeatchecker.app;
 
-import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.text.InputFilter;
-import android.text.InputType;
-import android.view.View;
+import android.os.Handler;
+import android.os.Looper;
+import android.view.Gravity;
 import android.view.WindowInsets;
 import android.widget.Button;
-import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-import androidx.browser.customtabs.CustomTabsCallback;
-import androidx.browser.trusted.TrustedWebActivityIntentBuilder;
 import androidx.activity.ComponentActivity;
 import androidx.activity.OnBackPressedCallback;
+import androidx.browser.customtabs.CustomTabsCallback;
+import androidx.browser.customtabs.CustomTabsService;
+import androidx.browser.trusted.TrustedWebActivityIntentBuilder;
 
 import com.google.androidbrowserhelper.trusted.TwaLauncher;
 
-import org.json.JSONException;
+public class MainActivity extends ComponentActivity {
+    interface BrowserLauncher {
+        void launch(String url, Runnable completed, Runnable unavailable);
+        void destroy();
+    }
 
-import java.io.IOException;
-import java.util.List;
-
-public final class MainActivity extends ComponentActivity {
-    private DraftStore store;
-    private TwaLauncher launcher;
-    private LinearLayout content;
-    private EditText nameInput;
-    private String previewUrl;
-    private Draft savedDraft;
+    private BrowserLauncher launcher;
+    private String targetUrl;
+    private boolean launching;
+    private boolean handedOff;
+    private boolean knownFailed;
+    private boolean destroyed;
+    private int attempt;
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        store = new DraftStore(getNoBackupFilesDir());
-        launcher = new TwaLauncher(this);
-        if (state != null && state.getString("previewUrl") != null) {
-            previewUrl = state.getString("previewUrl");
-            String savedId = state.getString("savedId");
-            if (savedId != null) {
-                try {
-                    for (Draft draft : store.load()) if (draft.id.equals(savedId)) savedDraft = draft;
-                } catch (IOException ignored) {
-                    // The list reports storage errors; do not overwrite a damaged file.
-                }
-            }
-            showPreview(previewUrl, state.getString("previewName", ""));
-        } else {
-            showDrafts(null);
-            if (state == null) handleIntent(getIntent());
-        }
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
             public void handleOnBackPressed() {
-                goBack();
+                // Cancel the native launch instead of retaining it in a background task.
+                finish();
             }
         });
+        if (state != null && state.getBoolean("handedOff")) {
+            handedOff = true;
+            finish();
+            return;
+        }
+        targetUrl = target(getIntent());
+        if (targetUrl == null) {
+            finish();
+            return;
+        }
+        knownFailed = state != null && state.getBoolean("knownFailed");
+        if (knownFailed) showStatus(true);
+        else launch();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        try { PushWork.permissionsChanged(getApplicationContext()); }
+        catch (RuntimeException ignored) { /* Push availability must not block the cabinet. */ }
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        String next = target(intent);
+        if (next == null) {
+            finish();
+            return;
+        }
+        if (launching || handedOff || destroyed) return;
         setIntent(intent);
-        handleIntent(intent);
+        targetUrl = next;
+        launch();
     }
 
-    private void handleIntent(Intent intent) {
-        previewUrl = null;
-        savedDraft = null;
-        if (Intent.ACTION_SEND.equals(intent.getAction())) {
-            try {
-                CharSequence shared = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
-                String url = shared == null || shared.length() > 8192 ? "" : shared.toString();
-                if (!"text/plain".equals(intent.getType()) || intent.hasExtra(Intent.EXTRA_STREAM)
-                        || !Draft.validUrl(url)) {
-                    showDrafts("Поделитесь одним полным адресом http:// или https:// без текста, логина и фрагмента #.");
-                    return;
-                }
-                showPreview(url, "");
-            } catch (RuntimeException e) {
-                showDrafts("Не удалось прочитать переданный адрес.");
-            }
-            return;
-        }
-        if (Intent.ACTION_VIEW.equals(intent.getAction())) {
-            String url = LinkPolicy.appLink(intent.getDataString());
-            showDrafts(url == null ? "Эта ссылка не открывается внутри приложения." : null);
-            if (url != null) openBrowser(url);
-            return;
-        }
-        showDrafts(null);
-        if (Intent.ACTION_MAIN.equals(intent.getAction())) openBrowser(LinkPolicy.HOME);
-        // A launcher shortcut or an unknown explicit intent only opens the local list.
+    private String target(Intent intent) {
+        if (intent == null) return null;
+        if (Intent.ACTION_MAIN.equals(intent.getAction())) return LinkPolicy.HOME;
+        if (Intent.ACTION_VIEW.equals(intent.getAction())) return LinkPolicy.appLink(intent.getDataString());
+        // Removed share/shortcut intents are rejected without reading their payload.
+        return null;
     }
 
-    private void showDrafts(String message) {
-        previewUrl = null;
-        savedDraft = null;
-        screen("Heartbeat Checker");
-        text("Кабинет мониторинга работает через установленный браузер. Для него нужен интернет.", 16);
-        button("Открыть кабинет", () -> openBrowser(LinkPolicy.HOME));
-        text("Черновики адресов", 24);
-        text("Из браузера выберите «Поделиться» → Heartbeat Checker. Адрес можно сохранить без интернета. Сохранение не создаёт монитор.", 16);
-        if (message != null) text(message, 16).setTextColor(Color.rgb(152, 40, 40));
-        try {
-            List<Draft> drafts = store.load();
-            text("Сохранено: " + drafts.size() + " из " + DraftStore.LIMIT, 16);
-            if (drafts.isEmpty()) text("Черновиков пока нет.", 16);
-            for (Draft draft : drafts) {
-                text(draft.name.isEmpty() ? "Адрес для мониторинга" : draft.name, 20);
-                text(draft.url, 16).setTextIsSelectable(true);
-                button("Открыть черновик", () -> {
-                    savedDraft = draft;
-                    showPreview(draft.url, draft.name);
-                });
-                button("Удалить этот черновик", () -> confirmDelete(draft));
-            }
-        } catch (IOException e) {
-            text("Не удалось прочитать черновики. Сохранённые данные не изменены. При необходимости очистите хранилище.", 16);
-        }
-        button("Очистить все черновики", () -> new AlertDialog.Builder(this)
-                .setTitle("Удалить все черновики с устройства?")
-                .setMessage("Мониторы в кабинете и данные браузера не изменятся.")
-                .setNegativeButton("Отмена", null)
-                .setPositiveButton("Удалить", (dialog, which) -> {
-                    try {
-                        store.clear();
-                        showDrafts("Черновики удалены.");
-                    } catch (IOException e) {
-                        showError("Не удалось очистить черновики. Повторите попытку.");
-                    }
-                }).show());
-        text("Черновики хранятся только в приложении на этом устройстве, без резервного копирования. Они не удаляются после открытия сайта: удалите их сами после создания монитора. Удаление приложения удаляет черновики. Вход и cookies хранит браузер.", 14);
+    private void launch() {
+        if (launching || handedOff || destroyed || isFinishing()) return;
+        cleanupLauncher();
+        launching = true;
+        knownFailed = false;
+        int request = ++attempt;
+        showStatus(false);
+        prepareBrowserTarget(targetUrl, url -> {
+            if (current(request)) launchBrowser(request, url);
+        });
     }
 
-    private void showPreview(String url, String name) {
-        previewUrl = url;
-        screen(savedDraft == null ? "Сохранить адрес" : "Черновик адреса");
-        text(url, 18).setTextIsSelectable(true);
-        text("Приложение не запрашивает этот адрес и не проверяет его доступность.", 16);
-        if (savedDraft == null) {
-            TextView nameLabel = text("Название монитора (необязательно, до 100 символов)", 16);
-            nameInput = new EditText(this);
-            nameInput.setId(View.generateViewId());
-            nameLabel.setLabelFor(nameInput.getId());
-            nameInput.setSingleLine(true);
-            nameInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
-            nameInput.setFilters(new InputFilter[]{new InputFilter.LengthFilter(200)});
-            nameInput.setText(name);
-            nameInput.setHint("Например, сайт компании");
-            content.addView(nameInput);
-            button("Сохранить на устройстве", () -> {
-                try {
-                    Draft draft = Draft.create(url, nameInput.getText().toString());
-                    store.add(draft);
-                    savedDraft = draft;
-                    showPreview(url, draft.name);
-                } catch (IllegalArgumentException e) {
-                    showError("Проверьте адрес и название: не более 100 символов, без управляющих символов.");
-                } catch (IOException e) {
-                    showError("Не удалось сохранить черновик. Лимит — 20 адресов; удалите ненужные и повторите попытку.");
-                }
+    void prepareBrowserTarget(String url, java.util.function.Consumer<String> ready) {
+        if (!Intent.ACTION_MAIN.equals(getIntent().getAction())) { ready.accept(url); return; }
+        Handler handler = new Handler(Looper.getMainLooper());
+        java.util.concurrent.atomic.AtomicBoolean delivered = new java.util.concurrent.atomic.AtomicBoolean();
+        Runnable fallback = () -> { if (delivered.compareAndSet(false, true)) ready.accept(url); };
+        handler.postDelayed(fallback, 8000);
+        PushWork.IO.execute(() -> {
+            String next = PushPairing.bootstrap(getApplicationContext(), url);
+            handler.post(() -> {
+                if (!delivered.compareAndSet(false, true)) return;
+                handler.removeCallbacks(fallback);
+                ready.accept(next);
             });
-        } else {
-            if (!name.isEmpty()) text(name, 20);
-            text("Сохранено на устройстве. Для продолжения откройте кабинет. На сайте подтвердите перенос черновика, проверьте поля и самостоятельно сохраните монитор.", 16);
-            button("Продолжить в кабинете", () -> {
-                try {
-                    openBrowser(savedDraft.launchUrl());
-                } catch (JSONException | IllegalArgumentException e) {
-                    showError("Не удалось передать черновик. Сохранённый адрес остаётся на устройстве.");
-                }
-            });
-            button("Удалить этот черновик", () -> confirmDelete(savedDraft));
-        }
-        button("К списку черновиков", () -> showDrafts(null));
+        });
     }
 
-    private void confirmDelete(Draft draft) {
-        new AlertDialog.Builder(this).setTitle("Удалить черновик?")
-                .setMessage("Это удалит только сохранённый адрес на устройстве.")
-                .setNegativeButton("Отмена", null)
-                .setPositiveButton("Удалить", (dialog, which) -> {
-                    try {
-                        store.delete(draft.id);
-                        showDrafts(null);
-                    } catch (IOException e) {
-                        showError("Не удалось удалить черновик. Повторите попытку.");
-                    }
-                }).show();
-    }
-
-    private void openBrowser(String url) {
+    private void launchBrowser(int request, String url) {
         try {
-            launcher.launch(new TrustedWebActivityIntentBuilder(Uri.parse(url))
-                            .setToolbarColor(Color.rgb(0, 127, 115)),
-                    new CustomTabsCallback(), null, null,
-                    (context, builder, provider, complete) -> {
-                        if (provider == null) {
-                            showError("Установите или включите браузер с поддержкой Custom Tabs. Черновики доступны без браузера.");
-                            return;
-                        }
-                        TwaLauncher.CCT_FALLBACK_STRATEGY.launch(context, builder, provider, complete);
-                    });
+            launcher = createBrowserLauncher();
+            launcher.launch(url, () -> {
+                if (!current(request)) return;
+                handedOff = true;
+                launching = false;
+                // Completion confirms browser dispatch, not successful page loading.
+                finish();
+            }, () -> unavailable(request));
         } catch (ActivityNotFoundException | SecurityException e) {
-            showError("Установите или включите браузер с поддержкой Custom Tabs. Черновики доступны без браузера.");
+            unavailable(request);
         }
     }
 
-    private void screen(String title) {
-        nameInput = null;
+    private boolean current(int request) {
+        return request == attempt && launching && !handedOff && !destroyed && !isFinishing();
+    }
+
+    private void unavailable(int request) {
+        if (!current(request)) return;
+        launching = false;
+        knownFailed = true;
+        showStatus(true);
+    }
+
+    BrowserLauncher createBrowserLauncher() {
+        return new BrowserLauncher() {
+            private final TwaLauncher twa = new TwaLauncher(MainActivity.this);
+
+            @Override
+            public void launch(String url, Runnable completed, Runnable unavailable) {
+                twa.launch(new TrustedWebActivityIntentBuilder(Uri.parse(url))
+                                .setToolbarColor(Color.rgb(0, 127, 115)),
+                        new CustomTabsCallback(), null, completed,
+                        (context, builder, provider, complete) -> {
+                            if (launcher != this || !launching || isFinishing() || destroyed) return;
+                            if (provider == null) {
+                                unavailable.run();
+                                return;
+                            }
+                            try {
+                                if (getPackageManager().resolveService(
+                                        new Intent(CustomTabsService.ACTION_CUSTOM_TABS_CONNECTION)
+                                                .setPackage(provider), 0) == null) {
+                                    unavailable.run();
+                                    return;
+                                }
+                                TwaLauncher.CCT_FALLBACK_STRATEGY.launch(context, builder, provider, complete);
+                            } catch (ActivityNotFoundException | SecurityException e) {
+                                unavailable.run();
+                            }
+                        });
+            }
+
+            @Override
+            public void destroy() {
+                twa.destroy();
+            }
+        };
+    }
+
+    private void cleanupLauncher() {
+        BrowserLauncher previous = launcher;
+        launcher = null;
+        if (previous == null) return;
+        try {
+            previous.destroy();
+        } catch (IllegalArgumentException ignored) {
+            // ABH may unbind a service whose initial bind was unsuccessful.
+        }
+    }
+
+    private void showStatus(boolean failed) {
         ScrollView scroll = new ScrollView(this);
-        content = new LinearLayout(this);
+        scroll.setFillViewport(true);
+        LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(24), dp(24), dp(24), dp(24));
+        content.setGravity(Gravity.CENTER);
+        content.setPadding(dp(28), dp(32), dp(28), dp(32));
         scroll.addView(content);
         scroll.setOnApplyWindowInsetsListener((view, insets) -> {
             if (Build.VERSION.SDK_INT >= 30) {
@@ -232,61 +214,71 @@ public final class MainActivity extends ComponentActivity {
             }
             return insets;
         });
+        ImageView logo = new ImageView(this);
+        logo.setImageResource(R.drawable.ic_heartbeat);
+        logo.setImportantForAccessibility(android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        content.addView(logo, new LinearLayout.LayoutParams(dp(64), dp(64)));
+        text(content, getString(R.string.app_name), 24, true);
+        text(content, failed ? "Не удалось открыть кабинет" : "Открываем кабинет…", 18, false);
+        if (failed) {
+            text(content, "Установите или включите браузер с поддержкой Custom Tabs и повторите попытку.", 16, false);
+            Button retry = button(content, "Повторить", this::launch);
+            retry.setBackgroundTintList(ColorStateList.valueOf(Color.rgb(0, 127, 115)));
+            retry.setTextColor(Color.WHITE);
+            button(content, "Закрыть", this::finish);
+        } else {
+            ProgressBar progress = new ProgressBar(this);
+            progress.setIndeterminateTintList(ColorStateList.valueOf(Color.rgb(0, 127, 115)));
+            content.addView(progress, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        }
         setContentView(scroll);
         scroll.requestApplyInsets();
-        text(title, 28).setAccessibilityHeading(true);
     }
 
-    private TextView text(String value, int size) {
-        TextView view = new TextView(this);
-        view.setText(value);
-        view.setTextSize(size);
-        view.setTextColor(Color.rgb(25, 48, 44));
-        view.setPadding(0, dp(10), 0, dp(10));
-        content.addView(view);
-        return view;
+    private void text(LinearLayout parent, String value, int size, boolean heading) {
+        TextView text = new TextView(this);
+        text.setText(value);
+        text.setTextSize(size);
+        text.setGravity(Gravity.CENTER);
+        text.setPadding(0, dp(16), 0, dp(12));
+        if (heading) {
+            text.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            text.setAccessibilityHeading(true);
+        }
+        parent.addView(text);
     }
 
-    private void button(String label, Runnable action) {
+    private Button button(LinearLayout parent, String label, Runnable action) {
         Button button = new Button(this);
         button.setText(label);
+        button.setTextSize(16);
         button.setAllCaps(false);
+        button.setSingleLine(false);
         button.setMinHeight(dp(48));
         button.setOnClickListener(view -> action.run());
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         params.setMargins(0, dp(6), 0, dp(6));
-        content.addView(button, params);
-    }
-
-    private void showError(String message) {
-        new AlertDialog.Builder(this).setTitle("Не удалось выполнить действие")
-                .setMessage(message).setPositiveButton("Понятно", null).show();
+        parent.addView(button, params);
+        return button;
     }
 
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
-    private void goBack() {
-        if (previewUrl != null) showDrafts(null);
-        else finish();
-    }
-
     @Override
     protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state);
-        if (previewUrl != null) {
-            state.putString("previewUrl", previewUrl);
-            state.putString("previewName", savedDraft != null ? savedDraft.name
-                    : nameInput == null ? "" : nameInput.getText().toString());
-            if (savedDraft != null) state.putString("savedId", savedDraft.id);
-        }
+        state.putBoolean("handedOff", handedOff);
+        state.putBoolean("knownFailed", knownFailed);
     }
 
     @Override
     protected void onDestroy() {
-        if (launcher != null) launcher.destroy();
+        destroyed = true;
+        ++attempt;
+        cleanupLauncher();
         super.onDestroy();
     }
 }

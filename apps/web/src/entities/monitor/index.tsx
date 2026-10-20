@@ -1,5 +1,6 @@
 export type CheckType = "http" | "tcp" | "icmp";
-export type NotificationChannel = "telegram" | "max" | "email" | "webhook";
+export type NotificationChannel =
+  "telegram" | "max" | "email" | "webhook" | "push";
 export type Monitor = {
   id: string;
   checkType?: CheckType;

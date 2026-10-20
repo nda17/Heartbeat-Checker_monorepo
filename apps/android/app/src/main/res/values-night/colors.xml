@@ -1,0 +1,10 @@
+<resources>
+    <color name="native_background">#101A23</color>
+    <color name="native_surface">#192A32</color>
+    <color name="native_ink">#E8EFF2</color>
+    <color name="native_muted">#AFBEC7</color>
+    <color name="native_border">#3B4E58</color>
+    <color name="native_accent_text">#76DBCB</color>
+    <color name="native_danger">#FFB4AB</color>
+    <color name="native_ripple">#5576DBCB</color>
+</resources>

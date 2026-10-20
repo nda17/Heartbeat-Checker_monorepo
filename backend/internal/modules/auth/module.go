@@ -22,6 +22,8 @@ type OAuthIdentityProfile = service.OAuthIdentityProfile
 type AccountDeletion = postgres.AccountDeletion
 
 var ErrEmailUnverified = authcontracts.ErrEmailUnverified
+var ErrSessionExpired = authcontracts.ErrSessionExpired
+var ErrSessionRevoked = authcontracts.ErrSessionRevoked
 
 type Config struct {
 	OAuthProviders    map[string]OAuthProvider
@@ -146,6 +148,12 @@ func (m *Module) RequireRole(role string, next http.Handler) http.Handler {
 
 func (m *Module) Protect(next http.Handler) http.Handler { return m.server.Protect(next) }
 
+// SessionLeaseTx fences an ordinary authenticated session without extending it
+// or requiring administrator MFA. Locks remain held until the caller ends tx.
+func SessionLeaseTx(ctx context.Context, tx pgx.Tx, accountID, sessionID string) (time.Time, error) {
+	return postgres.SessionLeaseTx(ctx, tx, accountID, sessionID)
+}
+
 func (m *Module) VerifyAdminTx(ctx context.Context, tx pgx.Tx, p authcontracts.Principal, mutation bool) error {
 	err := m.repo.VerifyAdminTx(ctx, tx, p, mutation)
 	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, postgres.ErrConflict) {
@@ -164,6 +172,14 @@ func (m *Module) AdminSessionCount(ctx context.Context, tx pgx.Tx, accountID str
 }
 
 func Cleanup(ctx context.Context, tx pgx.Tx) error { return postgres.Cleanup(ctx, tx) }
+
+func LockExpiredSessionBatchTx(ctx context.Context, tx pgx.Tx) ([]string, error) {
+	return postgres.LockExpiredSessionBatchTx(ctx, tx)
+}
+
+func DeleteExpiredSessionBatchTx(ctx context.Context, tx pgx.Tx, ids []string) error {
+	return postgres.DeleteExpiredSessionBatchTx(ctx, tx, ids)
+}
 
 func (m *Module) StartNotificationEmailTx(ctx context.Context, tx pgx.Tx, input authcontracts.NotificationEmailInput, ip string) (authcontracts.EmailCodeChallenge, error) {
 	return m.service.StartNotificationEmailTx(ctx, tx, input, ip)

@@ -18,7 +18,7 @@ final class LinkPolicy {
     private LinkPolicy() {}
 
     static String appLink(String value) {
-        if (value == null || value.length() > 4096 || Draft.hasControl(value)) return null;
+        if (value == null || value.length() > 4096 || value.codePoints().anyMatch(c -> c < 32 || c == 127)) return null;
         try {
             URI uri = new URI(value);
             if (!"https".equals(uri.getScheme())

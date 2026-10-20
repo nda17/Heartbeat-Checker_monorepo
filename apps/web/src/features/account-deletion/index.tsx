@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { useSession } from "@/entities/session";
 import { api, ApiError, errorMessage } from "@/shared/api";
-import { clearMonitorDraft } from "@/shared/android";
 import { Dialog } from "@/shared/dialog";
 import { Notice, PasswordInput, Spinner } from "@/shared/ui";
 
@@ -69,7 +68,6 @@ export function AccountDeletion() {
         body: { currentPassword, expectedAccountId: target.id },
       });
       form.reset();
-      clearMonitorDraft();
       leaving = true;
       finish("deleted");
     } catch (cause) {
@@ -211,7 +209,8 @@ export function AccountDeletion() {
                 Доставка, начатая до удаления, может завершиться. Переписка
                 поддержки и ранее отправленные сообщения обрабатываются
                 отдельно. Зашифрованные резервные копии хранятся до 14 дней.
-                Локальные черновики в Android-приложении удалите вручную.{" "}
+                Данные старых версий Android-приложения удаляются через
+                настройки устройства.{" "}
                 <Link className="text-link" href="/privacy#account-deletion">
                   Подробнее о данных
                 </Link>

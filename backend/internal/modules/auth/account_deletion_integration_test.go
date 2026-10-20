@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,9 +20,10 @@ import (
 )
 
 type testAccountDeletion struct {
-	accounts *accounts.Module
-	billing  *billing.Module
-	monitors *monitors.Module
+	accounts   *accounts.Module
+	billing    *billing.Module
+	monitors   *monitors.Module
+	afterFence func()
 }
 
 func newTestAccountDeletion(pool *pgxpool.Pool) testAccountDeletion {
@@ -39,6 +41,16 @@ func (d testAccountDeletion) LockAccountTx(ctx context.Context, tx pgx.Tx, accou
 		return accountcontracts.Account{}, err
 	}
 	return d.accounts.LockAdminAccount(ctx, tx, accountID)
+}
+
+func (d testAccountDeletion) FenceAccountDeletionTx(ctx context.Context, tx pgx.Tx, accountID string) error {
+	if err := notifications.FenceAccountDeletionTx(ctx, tx, accountID); err != nil {
+		return err
+	}
+	if d.afterFence != nil {
+		d.afterFence()
+	}
+	return nil
 }
 
 func (d testAccountDeletion) ScrubAccountTx(ctx context.Context, tx pgx.Tx, accountID string) error {
@@ -316,6 +328,26 @@ func TestDeleteAccountPurgesWorkspaceAndAllowsFreshRegistration(t *testing.T) {
 		VALUES ('10000000-0000-4000-8000-000000000028',$1,'telegram','private',$2,now()+interval '1 hour')`, accountID, make([]byte, 32)); err != nil {
 		t.Fatal(err)
 	}
+	pushCredentialHash := sha256.Sum256([]byte("synthetic account deletion installation credential"))
+	pushTokenFingerprint := sha256.Sum256([]byte("synthetic account deletion provider token"))
+	if _, err := f.pool.Exec(context.Background(), `INSERT INTO notifications.push_installations
+		(id,credential_hash,account_id,device_label,app_version,encrypted_token,token_fingerprint,permission,status)
+		VALUES ('10000000-0000-4000-8000-000000000031',$1,$2,'Deletion test phone','1.0.0','encrypted token',$3,'granted','ready')`,
+		pushCredentialHash[:], accountID, pushTokenFingerprint[:]); err != nil {
+		t.Fatalf("insert push installation: %v", err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `INSERT INTO notifications.push_pairings
+		(id,installation_id,code_challenge,client_state,completion_code_hash,request_fingerprint,account_id,expires_at)
+		VALUES ('10000000-0000-4000-8000-000000000032','10000000-0000-4000-8000-000000000031',repeat('A',43),repeat('A',43),$1,$1,$2,now()+interval '1 hour')`,
+		make([]byte, 32), accountID); err != nil {
+		t.Fatalf("insert push pairing: %v", err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `INSERT INTO notifications.push_account_settings(account_id,default_enabled) VALUES($1,true)`, accountID); err != nil {
+		t.Fatalf("insert push account setting: %v", err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `INSERT INTO notifications.push_monitor_settings(monitor_id,account_id,enabled) VALUES($1,$2,false)`, monitorID, accountID); err != nil {
+		t.Fatalf("insert push monitor override: %v", err)
+	}
 	if _, err := f.pool.Exec(context.Background(), `INSERT INTO monitors.results
 		(id,monitor_id,account_id,run_id,attempt_token,config_version,sequence,outcome,checked_at,latency_ms)
 		VALUES ('10000000-0000-4000-8000-000000000014',$1,$2,'10000000-0000-4000-8000-000000000015',
@@ -385,6 +417,7 @@ func TestDeleteAccountPurgesWorkspaceAndAllowsFreshRegistration(t *testing.T) {
 		"monitors.monitors", "monitors.results", "monitors.daily_statistics", "incidents.incidents",
 		"notifications.webhooks", "notifications.deliveries", "notifications.messenger_links",
 		"notifications.messenger_destinations", "notifications.messenger_routes", "notifications.messenger_deliveries",
+		"notifications.push_installations", "notifications.push_pairings", "notifications.push_account_settings", "notifications.push_monitor_settings",
 		"outbox.events",
 	} {
 		if err := f.pool.QueryRow(context.Background(), "SELECT count(*) FROM "+table+" WHERE account_id=$1", accountID).Scan(&surviving); err != nil {
@@ -455,6 +488,148 @@ func TestDeleteAccountPurgesWorkspaceAndAllowsFreshRegistration(t *testing.T) {
 	var linkedAccount string
 	if err := f.pool.QueryRow(context.Background(), `SELECT account_id FROM auth.oauth_identities WHERE provider='yandex' AND subject='linked-provider-subject'`).Scan(&linkedAccount); err != nil || linkedAccount != newAccountID {
 		t.Fatalf("old OAuth subject was not attachable to new account: account=%q err=%v", linkedAccount, err)
+	}
+}
+
+func TestDeleteAccountFencesConfirmedPairingBeforeBootstrapCanRebindIt(t *testing.T) {
+	fenced := make(chan struct{})
+	release := make(chan struct{})
+	f := newAuthFixtureWithPoolSizeAndPrefixAndDeletionFence(t, 8, "hc_auth_push_delete_race_", func() {
+		close(fenced)
+		<-release
+	})
+
+	const accountAEmail = "push-pair-owner-delete@example.test"
+	const accountBEmail = "push-installation-owner@example.test"
+	f.signup(t, accountAEmail)
+	f.signup(t, accountBEmail)
+	cookieA, csrfA, loginA := f.login(t, accountAEmail, integrationPass)
+	cookieB, _, loginB := f.login(t, accountBEmail, integrationPass)
+	if loginA.Code != http.StatusOK || loginB.Code != http.StatusOK {
+		t.Fatalf("account logins failed: A=%d B=%d", loginA.Code, loginB.Code)
+	}
+	accountA := deletionAccountID(t, f, accountAEmail)
+	accountB := deletionAccountID(t, f, accountBEmail)
+	var sessionA, sessionB string
+	if err := f.pool.QueryRow(context.Background(), `SELECT id::text FROM auth.sessions WHERE account_id=$1 AND revoked_at IS NULL`, accountA).Scan(&sessionA); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT id::text FROM auth.sessions WHERE account_id=$1 AND revoked_at IS NULL`, accountB).Scan(&sessionB); err != nil {
+		t.Fatal(err)
+	}
+
+	const installationID = "10000000-0000-4000-8000-000000000031"
+	const confirmedPairingID = "10000000-0000-4000-8000-000000000032"
+	const secret = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	credential := installationID + "." + secret
+	credentialHash := sha256.Sum256([]byte(credential))
+	tokenFingerprint := sha256.Sum256([]byte("synthetic provider token"))
+	if _, err := f.pool.Exec(context.Background(), `INSERT INTO notifications.push_installations
+		(id,credential_hash,account_id,session_id,device_label,app_version,encrypted_token,token_fingerprint,
+		 registration_version,binding_generation,permission,status)
+		VALUES($1,$2,$3,$4,'Synthetic device','1.0.0','encrypted token',$5,2,1,'granted','ready')`,
+		installationID, credentialHash[:], accountB, sessionB, tokenFingerprint[:]); err != nil {
+		t.Fatalf("insert account B installation: %v", err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `INSERT INTO notifications.push_pairings
+		(id,installation_id,code_challenge,client_state,completion_code_hash,request_fingerprint,
+		 account_id,session_id,expires_at)
+		VALUES($1,$2,$3,$3,$4,$4,$5,$6,now()+interval '5 minutes')`,
+		confirmedPairingID, installationID, secret, tokenFingerprint[:], accountA, sessionA); err != nil {
+		t.Fatalf("insert pending account A confirmation for account B installation: %v", err)
+	}
+
+	pushService, err := notifications.NewPush(f.pool, "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", notifications.PushConfig{
+		Enabled:   true,
+		ProjectID: "account-deletion-race-test",
+		Origin:    integrationOrigin,
+		SessionLease: func(ctx context.Context, tx pgx.Tx, accountID, sessionID string) (time.Time, error) {
+			return SessionLeaseTx(ctx, tx, accountID, sessionID)
+		},
+	}, billing.New(f.pool, true))
+	if err != nil {
+		t.Fatalf("create push service: %v", err)
+	}
+
+	deleteDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		deleteDone <- f.concurrentRequest(http.MethodDelete, "/api/v1/me", map[string]string{
+			"currentPassword": integrationPass, "expectedAccountId": accountA,
+		}, cookieA, csrfA)
+	}()
+	select {
+	case <-fenced:
+	case <-time.After(10 * time.Second):
+		close(release)
+		t.Fatal("account deletion did not reach the push installation fence")
+	}
+
+	bootstrapDone := make(chan struct {
+		pair notifications.PushPairingResult
+		err  error
+	}, 1)
+	go func() {
+		challenge := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+		pair, createErr := pushService.CreatePairing(context.Background(), credential, "198.51.100.121", notifications.PushPairingInput{
+			CodeChallenge: challenge,
+			ClientState:   challenge,
+			DeviceLabel:   "Synthetic device",
+			AppVersion:    "1.0.0",
+		})
+		bootstrapDone <- struct {
+			pair notifications.PushPairingResult
+			err  error
+		}{pair, createErr}
+	}()
+	select {
+	case result := <-bootstrapDone:
+		close(release)
+		t.Fatalf("bootstrap passed the account deletion installation fence: pair=%+v err=%v", result.pair, result.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+
+	var deleteResponse *httptest.ResponseRecorder
+	select {
+	case deleteResponse = <-deleteDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("account deletion did not finish after releasing the test fence")
+	}
+	if deleteResponse.Code != http.StatusNoContent {
+		t.Fatalf("account A deletion status=%d body=%s", deleteResponse.Code, deleteResponse.Body.String())
+	}
+	var created struct {
+		pair notifications.PushPairingResult
+		err  error
+	}
+	select {
+	case created = <-bootstrapDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("bootstrap did not resume after account deletion committed")
+	}
+	if created.err != nil || created.pair.Pairing.ID == "" || created.pair.Installation.ID != installationID {
+		t.Fatalf("post-delete bootstrap = (%+v, %v), want a fresh pending pairing on account B installation", created.pair, created.err)
+	}
+
+	var installationOwner, installationSession string
+	if err := f.pool.QueryRow(context.Background(), `SELECT account_id::text,session_id::text FROM notifications.push_installations WHERE id=$1`, installationID).Scan(&installationOwner, &installationSession); err != nil || installationOwner != accountB || installationSession != sessionB {
+		t.Fatalf("account B installation changed during account A deletion: owner=%q session=%q err=%v", installationOwner, installationSession, err)
+	}
+	var oldPairings, newOwner, accountASessions int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM notifications.push_pairings WHERE id=$1`, confirmedPairingID).Scan(&oldPairings); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM notifications.push_pairings WHERE id=$1 AND account_id IS NULL AND session_id IS NULL`, created.pair.Pairing.ID).Scan(&newOwner); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM auth.sessions WHERE account_id=$1`, accountA).Scan(&accountASessions); err != nil {
+		t.Fatal(err)
+	}
+	if oldPairings != 0 || newOwner != 1 || accountASessions != 0 {
+		t.Fatalf("deletion/bootstrap race left unsafe state: oldConfirmedPairings=%d newPairingWithoutOwner=%d deletedAccountSessions=%d", oldPairings, newOwner, accountASessions)
+	}
+	if me := f.request(t, http.MethodGet, "/api/v1/me", nil, cookieB, "", "", ""); me.Code != http.StatusOK {
+		t.Fatalf("account B session was affected by account A deletion: status=%d", me.Code)
 	}
 }
 

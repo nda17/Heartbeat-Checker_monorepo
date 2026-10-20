@@ -1,0 +1,15 @@
+<resources>
+    <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">@color/native_accent_text</item>
+        <item name="android:textColorPrimary">@color/native_ink</item>
+        <item name="android:textColorSecondary">@color/native_muted</item>
+        <item name="android:colorBackground">@color/native_surface</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowBackground">@color/native_background</item>
+        <item name="android:statusBarColor">@color/native_background</item>
+        <item name="android:navigationBarColor">@color/native_background</item>
+    </style>
+</resources>

@@ -283,7 +283,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	result, err := s.service.Login(r.Context(), in.Email, in.Password, in.TurnstileToken, client(r))
+	result, err := s.service.Login(r.Context(), in.Email, in.Password, in.TurnstileToken, client(r), s.sessionToken(r))
 	if err != nil {
 		failService(w, err)
 		return

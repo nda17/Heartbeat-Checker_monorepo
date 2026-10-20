@@ -77,6 +77,9 @@ if args and args[0] == "compose":
         if os.environ.get("COMPOSE_EMAIL_KEYS") == "1":
             api_environment["EMAIL_NOTIFICATIONS_ENABLED"] = "true"
             worker_environment["EMAIL_NOTIFICATIONS_ENABLED"] = "true"
+        if os.environ.get("COMPOSE_PUSH_KEYS") == "1":
+            api_environment.update({"ANDROID_PUSH_ENABLED": "true", "RUSTORE_PUSH_PROJECT_ID": "synthetic-project"})
+            worker_environment.update({"ANDROID_PUSH_ENABLED": "true", "RUSTORE_PUSH_PROJECT_ID": "synthetic-project", "RUSTORE_PUSH_SERVICE_TOKEN": "synthetic-push-service-token-0123456789"})
         if os.environ.get("COMPOSE_YOOKASSA_KEYS") == "1":
             yookassa_environment = {"BILLING_PROVIDER": "yookassa", "BILLING_TEST_ACCOUNT_IDS": "51ec7d19-80c4-4fb6-8edb-79dc7abe3120", "YOOKASSA_MODE": "test", "YOOKASSA_TEST_SHOP_ID": "123456", "YOOKASSA_TEST_SECRET_KEY": "test_synthetic_secret_123"}
             api_environment.update(yookassa_environment)
@@ -197,6 +200,9 @@ class BackendDeployTests(unittest.TestCase):
         (self.backend / "stage-yookassa.py.incoming").write_bytes(
             Path(__file__).with_name("stage-yookassa.py").read_bytes()
         )
+        (self.backend / "stage-push.py.incoming").write_bytes(
+            Path(__file__).with_name("stage-push.py").read_bytes()
+        )
         self.write_mock("docker", DOCKER_MOCK)
         self.write_mock("curl", CURL_MOCK)
         self.write_mock("sleep", "#!/bin/sh\nexit 0\n")
@@ -226,6 +232,7 @@ class BackendDeployTests(unittest.TestCase):
     def run_deploy(self, activate_next_config=None, activate_messenger_notifications=None,
                    provision_owner=None, activate_admin_mfa=None, activate_oauth=None,
                    activate_yookassa_test=None, activate_email_notifications=None,
+                   activate_android_push=None,
                    stdin_payload="test-token\n", **extra_env):
         env = os.environ.copy()
         env.update({
@@ -253,6 +260,13 @@ class BackendDeployTests(unittest.TestCase):
             if activate_yookassa_test is None:
                 args.append("false")
             args.append("true" if activate_email_notifications else "false")
+        if activate_android_push is not None:
+            if activate_yookassa_test is None and activate_email_notifications is None:
+                args.append("false")
+                args.append("false")
+            elif activate_yookassa_test is not None and activate_email_notifications is None:
+                args.append("false")
+            args.append("true" if activate_android_push else "false")
         return subprocess.run(
             args,
             input=stdin_payload, cwd=self.root, env=env, text=True, capture_output=True,
@@ -294,6 +308,60 @@ class BackendDeployTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Resolve the existing staged configuration", result.stderr)
         self.assertEqual(self.docker_calls(), [])
+
+    def push_payload(self, token="synthetic-service-token-0123456789-abcdefgh"):
+        return "test-token\n" + json.dumps({"projectId": "synthetic-project", "serviceToken": token}) + "\n"
+
+    def test_android_push_activation_is_allowlisted_separate_and_receipted(self):
+        result = self.run_deploy(activate_android_push=True, stdin_payload=self.push_payload(), COMPOSE_PUSH_KEYS="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        activated = (self.backend / ".env").read_text()
+        self.assertIn("ANDROID_PUSH_ENABLED=true", activated)
+        self.assertIn("RUSTORE_PUSH_PROJECT_ID=synthetic-project", activated)
+        self.assertIn("RUSTORE_PUSH_SERVICE_TOKEN='synthetic-service-token-0123456789-abcdefgh'", activated)
+        self.assertIn("DATABASE_URL=test", activated)
+        self.assertFalse((self.backend / ".env.next").exists())
+        receipt = json.loads((self.backend / "receipts" / f"{SOURCE_SHA}.json").read_text())
+        self.assertTrue(receipt["android_push_activated"])
+        self.assertNotIn("synthetic-service-token", result.stdout + result.stderr + self.log.read_text())
+
+    def test_android_push_rejects_rotation_and_restores_env_on_preflight_failure(self):
+        original = BASE_ENV + (
+            "ANDROID_PUSH_ENABLED=false\n"
+            "RUSTORE_PUSH_PROJECT_ID=previous-project\n"
+            "RUSTORE_PUSH_SERVICE_TOKEN='previous-service-token-0123456789-abcdefgh'\n"
+        )
+        (self.backend / ".env").write_text(original)
+        (self.backend / ".env").chmod(0o600)
+        result = self.run_deploy(activate_android_push=True, stdin_payload=self.push_payload(), COMPOSE_PUSH_KEYS="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Android push activation cannot rotate existing configuration", result.stderr)
+        self.assertEqual((self.backend / ".env").read_text(), original)
+        self.assertEqual(self.docker_calls(), [])
+        self.assertFalse((self.backend / "receipts" / f"{SOURCE_SHA}.json").exists())
+
+        (self.backend / ".env").write_text(BASE_ENV)
+        (self.backend / ".env").chmod(0o600)
+        result = self.run_deploy(activate_android_push=True, stdin_payload=self.push_payload(), FAIL_COMPOSE_PREFLIGHT="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.backend / ".env").read_text(), BASE_ENV)
+        self.assertFalse((self.backend / ".env.next").exists())
+        self.assertFalse((self.backend / "receipts" / f"{SOURCE_SHA}.json").exists())
+
+    def test_android_push_activation_rejects_mixed_flags_and_bad_input_framing(self):
+        result = self.run_deploy(activate_android_push=True, activate_email_notifications=True, stdin_payload=self.push_payload())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Android push activation must be a separate configuration operation", result.stderr)
+        self.assertEqual(self.docker_calls(), [])
+
+        for payload in ("test-token\n", "test-token\n{}\n", "test-token\n" + json.dumps({"projectId": "bad/project", "serviceToken": "x" * 32})):
+            with self.subTest(payload_length=len(payload)):
+                (self.backend / ".env").write_text(BASE_ENV)
+                (self.backend / ".env").chmod(0o600)
+                result = self.run_deploy(activate_android_push=True, stdin_payload=payload)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual((self.backend / ".env").read_text(), BASE_ENV)
+                self.assertFalse((self.backend / "receipts" / f"{SOURCE_SHA}.json").exists())
 
     def write_next_config(self, contents, mode=0o600):
         path = self.backend / ".env.next"

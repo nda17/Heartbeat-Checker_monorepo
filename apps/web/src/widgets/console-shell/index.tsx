@@ -6,16 +6,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Profile, SessionContext } from "@/entities/session";
 import { ThemeToggle } from "@/features/theme-toggle";
 import { api, ApiError, errorMessage, safeAppReturnTo } from "@/shared/api";
-import {
-  captureMonitorDraft,
-  clearMonitorDraft,
-  readMonitorDraft,
-} from "@/shared/android";
 import { Brand, Loading, Notice, Icon } from "@/shared/ui";
 export function ConsoleShell({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [error, setError] = useState("");
-  const [draftError, setDraftError] = useState("");
   const [leaving, setLeaving] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const sidebar = useRef<HTMLElement>(null);
@@ -40,7 +34,6 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
       const current = await api<Profile>("/me");
       if (request !== profileRequest.current)
         throw new DOMException("Session request superseded", "AbortError");
-      readMonitorDraft(current.account.id);
       setProfile(current);
       setError("");
     } catch (e) {
@@ -65,9 +58,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
   }, [router]);
   // Bootstrap browser-only session data; state changes after asynchronous API requests.
   useEffect(() => {
-    const problem = captureMonitorDraft();
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (problem) setDraftError(problem);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Session state follows the asynchronous API response.
     void refresh().catch(() => undefined);
     const visible = () => {
       if (document.visibilityState === "visible")
@@ -83,14 +74,6 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
       window.removeEventListener("focus", focused);
     };
   }, [refresh]);
-  useEffect(() => {
-    const capture = () => {
-      const problem = captureMonitorDraft(profile?.account.id);
-      if (problem) setDraftError(problem);
-    };
-    window.addEventListener("hashchange", capture);
-    return () => window.removeEventListener("hashchange", capture);
-  }, [profile?.account.id]);
   useEffect(() => {
     const header = sidebar.current;
     if (!menuOpen || !header) return;
@@ -108,7 +91,6 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
     setLeaving(true);
     try {
       await api("/auth/logout", { method: "POST", authenticated: true });
-      clearMonitorDraft();
       setProfile(null);
       router.replace("/login");
     } catch (e) {
@@ -238,7 +220,6 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
           </header>
           <main id="main" className="workspace">
             {error && <Notice>{error}</Notice>}
-            {draftError && <Notice>{draftError}</Notice>}
             {children}
           </main>
           <footer className="console-footer">

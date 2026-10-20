@@ -20,7 +20,7 @@ const pages: Record<PublicPagePath, { title: string; description: string }> = {
   "/android": {
     title: "Heartbeat Checker для Android — мониторинг сайтов",
     description:
-      "Приложение Heartbeat Checker для Android: кабинет мониторинга сайтов и API, приём ссылок через «Поделиться» и локальные черновики адресов без сети.",
+      "Приложение Heartbeat Checker для Android: кабинет мониторинга сайтов и API, история проверок и инцидентов, настройки мониторов и уведомлений.",
   },
   "/contacts": {
     title: "Контакты и реквизиты · Heartbeat Checker",

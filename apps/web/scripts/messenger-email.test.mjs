@@ -58,6 +58,9 @@ function loadComponent(relativePath, aliases, runtime = {}) {
     require(id) {
       if (Object.hasOwn(aliases, id)) return aliases[id];
       if (id === "@/shared/notifications") return toastMock;
+      if (id === "@/features/android-push")
+        return { AndroidPushSettings: () => null };
+      if (id === "./push") return { AndroidPushRoutes: () => null };
       return requireWeb(id);
     },
     console,

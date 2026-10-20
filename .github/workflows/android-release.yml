@@ -24,6 +24,7 @@ jobs:
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
       SIGNING_FINGERPRINT: ${{ vars.ANDROID_SIGNING_CERTIFICATE_SHA256 }}
+      RUSTORE_PUSH_PROJECT_ID: ${{ vars.RUSTORE_PUSH_PROJECT_ID }}
     steps:
       - name: Validate release inputs
         shell: bash
@@ -31,6 +32,7 @@ jobs:
           set -euo pipefail
           [[ "$GITHUB_REF" == refs/heads/master && "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$SIGNING_FINGERPRINT" =~ ^([0-9A-F]{2}:){31}[0-9A-F]{2}$ ]] || { echo 'Configure the permanent public release certificate fingerprint'; exit 1; }
+          [[ "$RUSTORE_PUSH_PROJECT_ID" =~ ^[a-zA-Z0-9_-]{8,128}$ ]] || { echo 'Configure the public RuStore Push project ID'; exit 1; }
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.source_sha }}
@@ -90,7 +92,7 @@ jobs:
           assert fingerprint == os.environ['SIGNING_FINGERPRINT'], 'Release signing certificate mismatch'
           badging = Path(os.environ['RUNNER_TEMP'], 'android-badging.txt').read_text()
           match = re.search(r"^package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'", badging, re.M)
-          assert match and match.groups() == ('ru.heartbeatchecker.app', '1', '1.0.0'), 'Unexpected application/version'
+          assert match and match.groups() == ('ru.heartbeatchecker.app', '2', '1.1.0'), 'Unexpected application/version'
           assert 'application-debuggable' not in badging, 'Release APK must not be debuggable'
           apk = Path('android-release/Heartbeat-Checker.apk')
           value = dict(schemaVersion=1, packageName=match[1], versionCode=int(match[2]), versionName=match[3], sourceSha=os.environ['SOURCE_SHA'],

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Session, useSession } from "@/entities/session";
 import { MessengerLinks } from "@/features/messenger-links";
 import { OAuthIdentities } from "@/features/oauth-identities";
+import { AndroidPushSettings } from "@/features/android-push";
 import { AccountDeletion } from "@/features/account-deletion";
 import { api, ApiError, errorMessage } from "@/shared/api";
 import { dateTime, Loading, Notice, PasswordInput, Icon } from "@/shared/ui";
@@ -534,6 +535,7 @@ export function SettingsPage() {
         email={profile.email}
         emailVerified={profile.emailVerified}
       />
+      <AndroidPushSettings />
       <AccountDeletion />
     </>
   );

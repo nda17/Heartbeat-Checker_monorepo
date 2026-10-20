@@ -25,6 +25,10 @@ func (d accountDeletion) LockAccountTx(ctx context.Context, tx pgx.Tx, accountID
 	return d.accounts.LockAdminAccount(ctx, tx, accountID)
 }
 
+func (d accountDeletion) FenceAccountDeletionTx(ctx context.Context, tx pgx.Tx, accountID string) error {
+	return notifications.FenceAccountDeletionTx(ctx, tx, accountID)
+}
+
 func (d accountDeletion) ScrubAccountTx(ctx context.Context, tx pgx.Tx, accountID string) error {
 	if err := d.billing.DeleteAccountTx(ctx, tx, accountID); err != nil {
 		return err

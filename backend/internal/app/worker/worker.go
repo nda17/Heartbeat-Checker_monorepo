@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth"
 	authcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
@@ -69,7 +70,18 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 	if err != nil {
 		return err
 	}
-	incidentModule := incidents.New(pool, notifications.NewRecorder(messengerModule))
+	var pushSender notifications.PushSender
+	if cfg.AndroidPushEnabled {
+		pushSender, err = notifications.NewRuStorePushSender(cfg.RuStorePushProjectID, cfg.RuStorePushServiceToken)
+		if err != nil {
+			return err
+		}
+	}
+	pushModule, err := notifications.NewPush(pool, cfg.WebhookEncryptionKey, notifications.PushConfig{Enabled: cfg.AndroidPushEnabled, ProjectID: cfg.RuStorePushProjectID, Origin: "https://heartbeat-checker.ru", SessionLease: auth.SessionLeaseTx, Sender: pushSender}, billingModule)
+	if err != nil {
+		return err
+	}
+	incidentModule := incidents.New(pool, notifications.NewRecorder(messengerModule).WithPush(pushModule))
 	monitorModule := monitors.New(pool, billingModule, incidentModule, accountModule)
 	var supportModule *support.Module
 	if cfg.SupportEnabled {
@@ -86,6 +98,11 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 		}
 	}
 	var wg sync.WaitGroup
+	if cfg.AndroidPushEnabled {
+		for range 2 {
+			startDeliveryLoop(ctx, &wg, logger, "Android push", pushModule.ProcessDelivery)
+		}
+	}
 	if cfg.BillingProvider == "yookassa" {
 		startDeliveryLoop(ctx, &wg, logger, "payment reconciliation", billingModule.ProcessOnePayment)
 	}
@@ -222,7 +239,28 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 		defer ticker.Stop()
 		for {
 			cleanupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			tx, err := pool.Begin(cleanupCtx)
+			// Session FK updates must take account/session/installation locks in
+			// their own batch and release them before general monitor retention.
+			sessionTx, err := pool.Begin(cleanupCtx)
+			if err == nil {
+				var ids []string
+				ids, err = auth.LockExpiredSessionBatchTx(cleanupCtx, sessionTx)
+				if err == nil {
+					err = notifications.FenceSessionDeletionTx(cleanupCtx, sessionTx, ids)
+				}
+				if err == nil {
+					err = auth.DeleteExpiredSessionBatchTx(cleanupCtx, sessionTx, ids)
+				}
+				if err == nil {
+					err = sessionTx.Commit(cleanupCtx)
+				} else {
+					sessionTx.Rollback(cleanupCtx)
+				}
+			}
+			var tx pgx.Tx
+			if err == nil {
+				tx, err = pool.Begin(cleanupCtx)
+			}
 			if err == nil {
 				// Each module owns its retention SQL; the transaction bounds one cleanup batch.
 				if err = auth.Cleanup(cleanupCtx, tx); err == nil {
@@ -247,6 +285,20 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 					err = tx.Commit(cleanupCtx)
 				} else {
 					tx.Rollback(cleanupCtx)
+				}
+			}
+			if err == nil {
+				// Push retention takes installation locks before delivery locks.
+				// Keep it separate from earlier auth/incident retention cascades.
+				pushTx, beginErr := pool.Begin(cleanupCtx)
+				err = beginErr
+				if err == nil {
+					err = pushModule.Cleanup(cleanupCtx, pushTx)
+					if err == nil {
+						err = pushTx.Commit(cleanupCtx)
+					} else {
+						pushTx.Rollback(cleanupCtx)
+					}
 				}
 			}
 			cancel()
