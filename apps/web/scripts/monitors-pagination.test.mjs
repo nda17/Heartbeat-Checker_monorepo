@@ -408,6 +408,7 @@ test("monitor timezone picker filters, selects by keyboard, and does not submit 
         ),
     },
     "@/shared/ui": {
+      Icon: ({ name }) => React.createElement("span", null, name),
       Notice: ({ children }) =>
         React.createElement("div", { role: "alert" }, children),
       Spinner: () => React.createElement("span", null, "…"),

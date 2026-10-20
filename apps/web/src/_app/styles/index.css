@@ -476,7 +476,8 @@ label {
 }
 input,
 select,
-textarea {
+textarea,
+.monitor-timezone-trigger {
   width: 100%;
   min-width: 0;
   border: 1px solid #dce2e7;
@@ -516,7 +517,8 @@ input::placeholder {
 }
 input:focus,
 select:focus,
-textarea:focus {
+textarea:focus,
+.monitor-timezone-trigger:focus {
   border-color: #64a99e;
   box-shadow: 0 0 0 3px #007f7310;
 }
@@ -2877,12 +2879,14 @@ html[data-installed-app="true"] .landing-footer-inner {
 [data-theme="dark"] .button.secondary,
 [data-theme="dark"] input,
 [data-theme="dark"] select,
-[data-theme="dark"] textarea {
+[data-theme="dark"] textarea,
+[data-theme="dark"] .monitor-timezone-trigger {
   border-color: #617986;
 }
 [data-theme="dark"] input,
 [data-theme="dark"] select,
 [data-theme="dark"] textarea,
+[data-theme="dark"] .monitor-timezone-trigger,
 [data-theme="dark"] .search {
   background-color: #14212a;
 }
@@ -2897,7 +2901,8 @@ html[data-installed-app="true"] .landing-footer-inner {
 }
 [data-theme="dark"] input:focus,
 [data-theme="dark"] select:focus,
-[data-theme="dark"] textarea:focus {
+[data-theme="dark"] textarea:focus,
+[data-theme="dark"] .monitor-timezone-trigger:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px #7ae0ce20;
 }
@@ -4734,7 +4739,9 @@ html[data-installed-app="true"] .android-hero {
 
 /* Readable cabinet controls and compact administrative workflows. */
 .console :is(input, select, textarea),
-.auth-page :is(input, select, textarea) {
+.auth-page :is(input, select, textarea),
+.console .monitor-timezone-trigger,
+.auth-page .monitor-timezone-trigger {
   font-size: 16px;
 }
 .console :is(.field-hint, .cell-sub, .small, .eyebrow, .badge, small) {
@@ -4743,6 +4750,7 @@ html[data-installed-app="true"] .android-hero {
 }
 .console
   :is(.page-heading p:not(.eyebrow), .panel-heading p, .form-stack label),
+.console .monitor-timezone-label,
 .sidebar nav a {
   font-size: 16px;
   line-height: 1.5;
@@ -5448,7 +5456,8 @@ html[data-installed-app="true"] .android-hero {
   :is(
     input:not(:disabled):not([readonly]),
     select:not(:disabled),
-    textarea:not(:disabled):not([readonly])
+    textarea:not(:disabled):not([readonly]),
+    .monitor-timezone-trigger:not(:disabled)
   ) {
   background-color: var(--glass-input) !important;
 }
@@ -5578,8 +5587,10 @@ html[data-installed-app="true"] .android-hero {
 }
 
 .monitor-timezone {
-  position: relative;
   min-width: 0;
+}
+.monitor-timezone-control {
+  position: relative;
 }
 .monitor-timezone-label {
   display: block;
@@ -5594,17 +5605,26 @@ html[data-installed-app="true"] .android-hero {
   min-width: 0;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 11px 13px;
-  border: 1px solid color-mix(in srgb, var(--muted) 30%, transparent);
-  border-radius: 10px;
-  background: var(--surface);
-  color: var(--ink);
+  gap: 14px;
+  padding-inline-end: 14px;
+  font-weight: 500;
   text-align: left;
+}
+.monitor-timezone-trigger:focus {
+  outline: none;
+}
+@media (forced-colors: active) {
+  .monitor-timezone-trigger:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
 }
 .monitor-timezone-trigger > span:first-child {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+.monitor-timezone-trigger > .ui-icon {
+  color: var(--muted);
 }
 .monitor-timezone-trigger .field-hint {
   display: block;
@@ -5613,7 +5633,7 @@ html[data-installed-app="true"] .android-hero {
 .monitor-timezone-popover {
   position: absolute;
   z-index: 5;
-  top: 79px;
+  top: calc(100% + 6px);
   left: 0;
   right: 0;
   padding: 8px;
