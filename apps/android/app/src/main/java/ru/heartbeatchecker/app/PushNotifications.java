@@ -37,7 +37,11 @@ final class PushNotifications {
     static void clear(Context context) { context.getSystemService(NotificationManager.class).cancelAll(); }
 
     static void display(Context context, JSONObject delivery) throws JSONException {
-        if (PushWork.locallyBlocked || !permitted(context)) return;
+        if (PushWork.locallyBlocked || !permitted(context)) {
+            new PushStore(context).deliveryStage(PushWork.locallyBlocked ? PushStore.DeliveryStage.LOCALLY_BLOCKED
+                    : PushStore.DeliveryStage.PERMISSION_DENIED);
+            return;
+        }
         String url = PushContract.incidentUrl(delivery);
         Intent intent = new Intent(context, MainActivity.class).setAction(Intent.ACTION_VIEW).setData(Uri.parse(url))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
@@ -51,5 +55,6 @@ final class PushNotifications {
                 .setVisibility(Notification.VISIBILITY_PRIVATE).setPublicVersion(publicVersion)
                 .setContentIntent(click).setAutoCancel(true).build();
         context.getSystemService(NotificationManager.class).notify("push:" + delivery.getString("monitorId"), 0, notification);
+        new PushStore(context).deliveryStage(PushStore.DeliveryStage.DISPLAY_SUBMITTED);
     }
 }

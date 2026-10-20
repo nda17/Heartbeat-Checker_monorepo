@@ -173,7 +173,11 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 				destination = "/app/settings"
 			}
 		}
-		http.Redirect(w, r, s.origin+destination+"?oauthError="+oauthErrorCode(err), http.StatusSeeOther)
+		query := url.Values{"oauthError": {oauthErrorCode(err)}}
+		if out.Consumed && out.Mode == "login" && out.RetryReturnTo != "" {
+			query.Set("returnTo", out.RetryReturnTo)
+		}
+		http.Redirect(w, r, s.origin+destination+"?"+query.Encode(), http.StatusSeeOther)
 		return
 	}
 	if out.Login != nil {

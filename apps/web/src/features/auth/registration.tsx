@@ -28,7 +28,13 @@ import { Turnstile } from "@/shared/turnstile";
 import { dateTime, Loading, Notice, PasswordInput, Spinner } from "@/shared/ui";
 
 type RegistrationResponse = { challenge: unknown };
-export function RegistrationForm({ oauth }: { oauth?: ReactNode }) {
+export function RegistrationForm({
+  oauth,
+  loginHref = "/login",
+}: {
+  oauth?: ReactNode;
+  loginHref?: string;
+}) {
   const router = useRouter();
   const appMode = (process.env.WEB_MODE ?? "app") === "app";
   const [ready, setReady] = useState(!appMode);
@@ -344,7 +350,7 @@ export function RegistrationForm({ oauth }: { oauth?: ReactNode }) {
           <button type="button" className="secondary" onClick={changeEmail}>
             Начать заново
           </button>
-          <Link className="button" href="/login">
+          <Link className="button" href={loginHref} replace>
             Войти
           </Link>
         </div>
@@ -497,7 +503,9 @@ export function RegistrationForm({ oauth }: { oauth?: ReactNode }) {
           >
             {reading ? "Проверяем…" : "Проверить состояние"}
           </button>
-          <Link href="/login">Войти в аккаунт</Link>
+          <Link href={loginHref} replace>
+            Войти в аккаунт
+          </Link>
           {!challenge && (
             <button type="button" className="quiet" onClick={changeEmail}>
               Начать заново
@@ -507,7 +515,10 @@ export function RegistrationForm({ oauth }: { oauth?: ReactNode }) {
       )}
       {!challenge && !uncertain && oauth}
       <p className="auth-switch">
-        Уже есть аккаунт? <Link href="/login">Войти</Link>
+        Уже есть аккаунт?{" "}
+        <Link href={loginHref} replace>
+          Войти
+        </Link>
       </p>
     </>
   );

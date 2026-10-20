@@ -5,7 +5,13 @@ import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Profile, SessionContext } from "@/entities/session";
 import { ThemeToggle } from "@/features/theme-toggle";
-import { api, ApiError, errorMessage, safeAppReturnTo } from "@/shared/api";
+import {
+  api,
+  ApiError,
+  boundedRequest,
+  errorMessage,
+  safeAppReturnTo,
+} from "@/shared/api";
 import { Brand, Loading, Notice, Icon } from "@/shared/ui";
 export function ConsoleShell({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -17,10 +23,12 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
   const router = useRouter();
   const profileRequest = useRef(0);
+  const profileController = useRef<AbortController | null>(null);
   const sessionTransitions = useRef(0);
   const beginSessionTransition = useCallback(() => {
     ++sessionTransitions.current;
     ++profileRequest.current;
+    profileController.current?.abort();
   }, []);
   const endSessionTransition = useCallback(() => {
     sessionTransitions.current = Math.max(0, sessionTransitions.current - 1);
@@ -30,17 +38,19 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
     if (sessionTransitions.current > 0)
       throw new DOMException("Session transition in progress", "AbortError");
     const request = ++profileRequest.current;
+    profileController.current?.abort();
+    const controller = new AbortController();
+    profileController.current = controller;
     try {
-      const current = await api<Profile>("/me");
+      const current = await boundedRequest(controller, (signal) =>
+        api<Profile>("/me", { signal }),
+      );
       if (request !== profileRequest.current)
         throw new DOMException("Session request superseded", "AbortError");
       setProfile(current);
       setError("");
     } catch (e) {
-      if (
-        request !== profileRequest.current ||
-        (e instanceof DOMException && e.name === "AbortError")
-      )
+      if (request !== profileRequest.current)
         throw new DOMException("Session request superseded", "AbortError");
       if (e instanceof ApiError && e.status === 401) {
         setProfile(null);
@@ -52,8 +62,16 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
             ? `/login?returnTo=${encodeURIComponent(returnTo)}`
             : "/login",
         );
-      } else setError(errorMessage(e));
+      } else
+        setError(
+          controller.signal.aborted
+            ? "Проверка входа заняла слишком много времени. Повторите попытку."
+            : errorMessage(e),
+        );
       throw e;
+    } finally {
+      if (profileController.current === controller)
+        profileController.current = null;
     }
   }, [router]);
   // Bootstrap browser-only session data; state changes after asynchronous API requests.
@@ -65,13 +83,24 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
         void refresh().catch(() => undefined);
     };
     const focused = () => void refresh().catch(() => undefined);
+    const restored = (event: PageTransitionEvent) => {
+      if (!event.persisted || sessionTransitions.current > 0) return;
+      setProfile(null);
+      setError("");
+      setLeaving(false);
+      void refresh().catch(() => undefined);
+    };
     document.addEventListener("visibilitychange", visible);
     window.addEventListener("focus", focused);
+    window.addEventListener("pageshow", restored);
     return () => {
       // eslint-disable-next-line react-hooks/exhaustive-deps -- Invalidate any latest in-flight request on cleanup.
       ++profileRequest.current;
+      profileController.current?.abort();
+      profileController.current = null;
       document.removeEventListener("visibilitychange", visible);
       window.removeEventListener("focus", focused);
+      window.removeEventListener("pageshow", restored);
     };
   }, [refresh]);
   useEffect(() => {
@@ -88,7 +117,9 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
     return () => header.removeEventListener("keydown", escape);
   }, [menuOpen, profile?.account.id]);
   async function logout() {
+    if (leaving || sessionTransitions.current > 0) return;
     setLeaving(true);
+    beginSessionTransition();
     try {
       await api("/auth/logout", { method: "POST", authenticated: true });
       setProfile(null);
@@ -96,6 +127,8 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
     } catch (e) {
       notify.error(errorMessage(e));
       setLeaving(false);
+    } finally {
+      endSessionTransition();
     }
   }
   if (!profile)

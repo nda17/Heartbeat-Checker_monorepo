@@ -14,11 +14,13 @@ final class PushSdk {
     private PushSdk() {}
 
     static void initialize(Application application) {
-        if (BuildConfig.RUSTORE_PUSH_PROJECT_ID.isEmpty()) return;
+        if (BuildConfig.RUSTORE_PUSH_PROJECT_ID.isEmpty()) {
+            new PushStore(application).providerIssue(PushStore.ProviderIssue.SDK_UNAVAILABLE); return;
+        }
         try {
             RuStorePushClient.INSTANCE.init(application, BuildConfig.RUSTORE_PUSH_PROJECT_ID, new QuietLogger());
         } catch (RuntimeException ignored) {
-            // Missing distributor/configuration must not prevent cabinet startup.
+            new PushStore(application).providerIssue(PushStore.ProviderIssue.SDK_UNAVAILABLE);
         }
     }
 
@@ -27,14 +29,17 @@ final class PushSdk {
             PushStore store = new PushStore(context);
             long revision = store.read().optLong("tokenRevision");
             if (BuildConfig.RUSTORE_PUSH_PROJECT_ID.isEmpty() || !RuStorePushClient.INSTANCE.isInitialized()) {
+                store.providerIssue(PushStore.ProviderIssue.SDK_UNAVAILABLE);
                 result.unavailable(); return;
             }
             RuStorePushClient.INSTANCE.checkPushAvailability().addOnSuccessListener(availability -> {
-                if (!(availability instanceof FeatureAvailabilityResult.Available)) { result.unavailable(); return; }
+                if (!(availability instanceof FeatureAvailabilityResult.Available)) {
+                    store.providerIssue(PushStore.ProviderIssue.SDK_UNAVAILABLE); result.unavailable(); return;
+                }
                 fetchToken(store, revision, result);
             })
-                    .addOnFailureListener(ignored -> result.unavailable());
-        } catch (RuntimeException | IOException ignored) { result.unavailable(); }
+                    .addOnFailureListener(ignored -> unavailable(store, result));
+        } catch (RuntimeException | IOException ignored) { unavailable(new PushStore(context), result); }
     }
 
     private static void fetchToken(PushStore store, long revision, TokenResult result) {
@@ -53,8 +58,13 @@ final class PushSdk {
                     }
                     result.ready(current);
                 } catch (IOException ignored) { result.unavailable(); }
-            }).addOnFailureListener(ignored -> result.unavailable());
-        } catch (RuntimeException ignored) { result.unavailable(); }
+            }).addOnFailureListener(ignored -> unavailable(store, result));
+        } catch (RuntimeException ignored) { unavailable(store, result); }
+    }
+
+    private static void unavailable(PushStore store, TokenResult result) {
+        store.providerIssue(PushStore.ProviderIssue.SDK_UNAVAILABLE);
+        result.unavailable();
     }
 
     static void rotated(Context context, String token) {

@@ -14,8 +14,10 @@ import androidx.test.core.app.ActivityScenario;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.work.ListenableWorker;
 
 import org.json.JSONObject;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -25,6 +27,9 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.*;
 
@@ -53,6 +58,11 @@ public final class PushSetupActivityTest {
             while (keys.hasNext()) remove.add(keys.next());
             for (String key : remove) state.remove(key);
         });
+    }
+
+    @After
+    public void restoreLocalBlock() {
+        PushWork.locallyBlocked = false;
     }
 
     @Test
@@ -228,10 +238,18 @@ public final class PushSetupActivityTest {
         exchange.exchangeFailure = new IOException("simulated lost exchange response");
 
         PushPairing.exchange(context, PAIRING, exchange);
+        assertEquals("an ambiguous POST is reconciled by one authoritative GET", 2, exchange.calls.size());
+        assertTrue(exchange.calls.get(0).startsWith("POST "));
+        assertTrue(exchange.calls.get(1).startsWith("GET "));
 
         JSONObject attempted = store.read();
         assertTrue(attempted.optBoolean("everExchangeAttempted"));
         assertTrue(attempted.getJSONObject("pair").optBoolean("exchangeAttempted"));
+
+        FakeTransport retry = new FakeTransport();
+        PushPairing.exchange(context, PAIRING, retry);
+        assertEquals("a later worker retry reconciles with GET and never repeats the consumed POST", 1, retry.calls.size());
+        assertTrue(retry.calls.get(0).startsWith("GET "));
 
         store.update(state -> state.getJSONObject("pair").put("expiresAt",
                 Instant.ofEpochMilli(System.currentTimeMillis() - 1000).toString()));
@@ -245,6 +263,163 @@ public final class PushSetupActivityTest {
     }
 
     @Test
+    public void canceledOrSupersededWorkerCannotExchangeThePersistedProof() throws Exception {
+        seedPair(System.currentTimeMillis() + 300_000, false, CODE);
+        store.update(state -> state.put("token", "a-valid-native-token-1234567890"));
+        grantNotificationPermission();
+        FakeTransport api = new FakeTransport();
+
+        PushPairing.exchange(context, PAIRING, api, PushWork.localRevocation, () -> false);
+        assertTrue("a stopped worker sends no request", api.calls.isEmpty());
+        assertFalse(store.read().getJSONObject("pair").optBoolean("exchangeAttempted"));
+        assertFalse(store.read().optBoolean("everExchangeAttempted"));
+
+        PushPairing.exchange(context, PAIRING, api, PushWork.localRevocation + 1, () -> true);
+        assertTrue("a pairing invalidated by local revocation sends no request", api.calls.isEmpty());
+        PushPairing.exchange(context, FRESH_PAIRING, api);
+        assertTrue("a worker for a replaced pairing sends no request", api.calls.isEmpty());
+    }
+
+    @Test
+    public void immediateLocalDisableFencesAnAlreadyQueuedPairingWorker() throws Exception {
+        seedPair(System.currentTimeMillis() + 300_000, false, CODE);
+        PushWork.locallyBlocked = true;
+        AtomicInteger sdkCalls = new AtomicInteger();
+        AtomicInteger exchangeCalls = new AtomicInteger();
+        PushWorker.PairingServices forbidden = new PushWorker.PairingServices() {
+            @Override public void token(PushSdk.TokenResult result) { sdkCalls.incrementAndGet(); }
+            @Override public void exchange(String id, long revocation, java.util.function.BooleanSupplier active) {
+                exchangeCalls.incrementAndGet();
+            }
+        };
+
+        ListenableWorker.Result result = PushWorker.runPairing(context, PAIRING, () -> false, forbidden, 1000);
+
+        assertEquals(ListenableWorker.Result.success().getClass(), result.getClass());
+        assertEquals("disabled state blocks provider calls", 0, sdkCalls.get());
+        assertEquals("disabled state blocks network calls", 0, exchangeCalls.get());
+        assertEquals("the durable proof remains available for explicit reconnect", CODE,
+                store.read().getJSONObject("pair").getString("completionCode"));
+    }
+
+    @Test
+    public void delayedProviderTokenAfterSetupDeadlineLeavesDurableProofForWorkerRetry() throws Exception {
+        seedPair(System.currentTimeMillis() + 300_000, false, CODE);
+        AtomicReference<PushSdk.TokenResult> delayedCallback = new AtomicReference<>();
+
+        assertFalse("a stalled provider token must not hold setup open",
+                PushWorker.awaitToken(10, () -> true, delayedCallback::set));
+        assertNotNull(delayedCallback.get());
+        delayedCallback.get().ready("a-valid-native-token-1234567890");
+
+        JSONObject afterLateCallback = store.read();
+        assertEquals("the completion proof remains persisted after the UI deadline", CODE,
+                afterLateCallback.getJSONObject("pair").getString("completionCode"));
+        assertFalse("a token arriving after timeout cannot mark an exchange as attempted",
+                afterLateCallback.getJSONObject("pair").optBoolean("exchangeAttempted"));
+        assertFalse("the sticky exchange fence remains clear until a request is actually sent",
+                afterLateCallback.optBoolean("everExchangeAttempted"));
+
+        assertTrue("a resumed worker can still use a later token",
+                PushWorker.awaitToken(1000, () -> true, callback -> callback.ready("a-valid-native-token-1234567890")));
+        assertEquals(CODE, store.read().getJSONObject("pair").getString("completionCode"));
+    }
+
+    @Test
+    public void pairingWorkerKeepsProofAcrossTokenTimeoutAndNeverRepostsAmbiguousExchange() throws Exception {
+        seedPair(System.currentTimeMillis() + 300_000, false, CODE);
+        grantNotificationPermission();
+        AtomicReference<PushSdk.TokenResult> delayedToken = new AtomicReference<>();
+        AtomicInteger exchangesBeforeRetry = new AtomicInteger();
+        PushWorker.PairingServices stalled = new PushWorker.PairingServices() {
+            @Override public void token(PushSdk.TokenResult result) { delayedToken.set(result); }
+            @Override public void exchange(String id, long revocation, java.util.function.BooleanSupplier active) {
+                exchangesBeforeRetry.incrementAndGet();
+            }
+        };
+
+        ListenableWorker.Result timedOut = PushWorker.runPairing(context, PAIRING, () -> false, stalled, 25);
+        assertEquals(ListenableWorker.Result.retry().getClass(), timedOut.getClass());
+        assertEquals(0, exchangesBeforeRetry.get());
+        assertEquals("the pairing proof survives a worker token timeout", CODE,
+                store.read().getJSONObject("pair").getString("completionCode"));
+        assertEquals(1, store.read().getJSONObject("pair").getInt("workerAttempts"));
+        assertFalse(store.read().optBoolean("everExchangeAttempted"));
+
+        assertNotNull(delayedToken.get());
+        delayedToken.get().ready("native-token-1234567890ABCDEF");
+        assertEquals("a late SDK callback cannot start an exchange after the worker has timed out", 0,
+                exchangesBeforeRetry.get());
+
+        FakeTransport first = new FakeTransport();
+        AtomicBoolean uiDeadlineElapsed = new AtomicBoolean();
+        PushWorker.PairingServices delayedButAvailable = new PushWorker.PairingServices() {
+            @Override public void token(PushSdk.TokenResult result) {
+                new Thread(() -> {
+                    try { Thread.sleep(25); }
+                    catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); return; }
+                    uiDeadlineElapsed.set(true);
+                    try { store.update(state -> state.put("token", "native-token-1234567890ABCDEF")); }
+                    catch (IOException error) { throw new AssertionError(error); }
+                    result.ready("native-token-1234567890ABCDEF");
+                }).start();
+            }
+            @Override public void exchange(String id, long revocation, java.util.function.BooleanSupplier active) throws Exception {
+                PushPairing.exchange(context, id, first, revocation, active);
+            }
+        };
+        ListenableWorker.Result ambiguous = PushWorker.runPairing(context, PAIRING, () -> false,
+                delayedButAvailable, 9000);
+        assertEquals(ListenableWorker.Result.retry().getClass(), ambiguous.getClass());
+        assertTrue("the background worker remains active after the UI deadline", uiDeadlineElapsed.get());
+        assertEquals("the first worker attempt makes exactly one exchange POST", 1, first.calls.size());
+        assertTrue(first.calls.get(0).startsWith("POST "));
+        assertTrue(store.read().optBoolean("everExchangeAttempted"));
+        assertTrue(store.read().getJSONObject("pair").optBoolean("exchangeAttempted"));
+
+        FakeTransport retry = new FakeTransport();
+        PushWorker.PairingServices reconcileOnly = new PushWorker.PairingServices() {
+            @Override public void token(PushSdk.TokenResult result) { fail("consumed proof must not request a new token"); }
+            @Override public void exchange(String id, long revocation, java.util.function.BooleanSupplier active) throws Exception {
+                PushPairing.exchange(context, id, retry, revocation, active);
+            }
+        };
+        ListenableWorker.Result exhausted = PushWorker.runPairing(context, PAIRING, () -> false, reconcileOnly, 1000);
+        assertEquals(ListenableWorker.Result.failure().getClass(), exhausted.getClass());
+        assertEquals("restart reconciliation uses GET and cannot repeat the consumed POST", 1, retry.calls.size());
+        assertTrue(retry.calls.get(0).startsWith("GET "));
+    }
+
+    @Test
+    public void expiredAmbiguousExchangeRemainsGetOnlyAcrossDurableWorkerRetries() throws Exception {
+        seedPair(System.currentTimeMillis() - 1000, true, CODE);
+        store.update(state -> state.put("everExchangeAttempted", true));
+        grantNotificationPermission();
+
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            FakeTransport reconcile = new FakeTransport();
+            PushWorker.PairingServices services = new PushWorker.PairingServices() {
+                @Override public void token(PushSdk.TokenResult result) { fail("an attempted exchange needs no token retry"); }
+                @Override public void exchange(String id, long revocation, java.util.function.BooleanSupplier active) throws Exception {
+                    PushPairing.exchange(context, id, reconcile, revocation, active);
+                }
+            };
+            ListenableWorker.Result result = PushWorker.runPairing(context, PAIRING, () -> false, services, 1000);
+            assertEquals("expired proof is reconciled with GET on every run", 1, reconcile.calls.size());
+            assertTrue(reconcile.calls.get(0).startsWith("GET "));
+            assertEquals(attempt < 3 ? ListenableWorker.Result.retry().getClass()
+                    : ListenableWorker.Result.failure().getClass(), result.getClass());
+            assertEquals(attempt, store.read().getJSONObject("pair").getInt("workerAttempts"));
+        }
+
+        JSONObject state = store.read();
+        assertEquals("consumed proof remains available for server reconciliation", CODE,
+                state.getJSONObject("pair").getString("completionCode"));
+        assertTrue(state.optBoolean("everExchangeAttempted"));
+        assertEquals("connection_failed", state.optString("lastConnectionStatus"));
+    }
+
+    @Test
     public void persistedOptOutWithAmbiguousProofPreventsAnyAutomaticRequest() throws Exception {
         seedPair(System.currentTimeMillis() - 1000, true, CODE);
         store.update(state -> state.put("optedOut", true).put("everExchangeAttempted", true));
@@ -252,6 +427,8 @@ public final class PushSetupActivityTest {
 
         assertEquals(RETURN_URL, PushPairing.bootstrap(context, RETURN_URL, api));
         assertTrue("sticky opt-out must short-circuit before any unsafe automatic recovery", api.calls.isEmpty());
+        PushPairing.exchange(context, PAIRING, api);
+        assertTrue("opt-out also fences an already queued exchange", api.calls.isEmpty());
         assertTrue(store.read().optBoolean("optedOut"));
         assertTrue(store.read().optBoolean("everExchangeAttempted"));
     }

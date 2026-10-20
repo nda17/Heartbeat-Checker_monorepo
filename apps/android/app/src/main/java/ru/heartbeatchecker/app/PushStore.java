@@ -29,10 +29,32 @@ final class PushStore {
     private static final int LIMIT = 1024 * 1024;
     private final AtomicFile file;
     interface Change { void apply(JSONObject state) throws JSONException; }
+    enum ProviderIssue { DISTRIBUTOR_MISSING, DISTRIBUTOR_AUTH_REQUIRED, DISTRIBUTOR_BACKGROUND_RESTRICTED, SDK_UNAVAILABLE, OTHER }
+    enum DeliveryStage { RECEIVED, INVALID_ENVELOPE, LOCALLY_BLOCKED, PERMISSION_DENIED, BINDING_MISMATCH, EXPIRED,
+        QUEUED, QUEUE_FAILED, FETCH_STARTED, FETCHED, DISPLAY_SUBMITTED, FETCH_UNAUTHORIZED, FETCH_NOT_FOUND, FETCH_TRANSIENT,
+        FETCH_FAILED, DISPLAY_FAILED }
 
     PushStore(Context context) { file = new AtomicFile(new File(context.getNoBackupFilesDir(), "push-state.enc")); }
 
     boolean nearLimit() { return file.getBaseFile().length() > LIMIT - 8192; }
+
+    void providerIssue(ProviderIssue issue) {
+        if (issue == null) return;
+        try { update(state -> {
+            JSONObject previous = state.optJSONObject("providerDiagnostic");
+            if (previous != null && (issue == ProviderIssue.SDK_UNAVAILABLE || issue == ProviderIssue.OTHER)) return;
+            state.put("providerDiagnostic", new JSONObject().put("code", issue.name()).put("at", System.currentTimeMillis()));
+        }); } catch (IOException ignored) { /* Diagnostics must never affect the push operation. */ }
+    }
+
+    void deliveryStage(DeliveryStage stage) {
+        if (stage == null) return;
+        try { update(state -> {
+            long now = System.currentTimeMillis();
+            if (stage == DeliveryStage.RECEIVED) state.put("lastReceivedAt", now);
+            state.put("deliveryDiagnostic", new JSONObject().put("code", stage.name()).put("at", now));
+        }); } catch (IOException ignored) { /* Keep a single bounded snapshot, without payloads or identifiers. */ }
+    }
 
     JSONObject read() throws IOException {
         synchronized (LOCK) {
