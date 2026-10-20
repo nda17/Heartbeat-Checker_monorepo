@@ -32,7 +32,8 @@ CREATE TABLE notifications.push_pairings (
     id uuid PRIMARY KEY,
     installation_id uuid NOT NULL REFERENCES notifications.push_installations(id) ON DELETE CASCADE,
     code_challenge text NOT NULL CHECK (length(code_challenge)=43),
-    verification_code text NOT NULL CHECK (verification_code ~ '^[0-9]{6}$'),
+    client_state text NOT NULL CHECK (length(client_state)=43),
+    completion_code_hash bytea CHECK (octet_length(completion_code_hash)=32),
     request_fingerprint bytea NOT NULL,
     read_count integer NOT NULL DEFAULT 0,
     exchange_attempts integer NOT NULL DEFAULT 0,
@@ -45,19 +46,23 @@ CREATE TABLE notifications.push_pairings (
 CREATE INDEX push_pairings_expiry_idx ON notifications.push_pairings(expires_at);
 CREATE INDEX push_pairings_installation_idx ON notifications.push_pairings(installation_id,created_at DESC);
 
-CREATE TABLE notifications.push_routes (
-    id uuid PRIMARY KEY,
+-- A missing monitor override inherits the account default. That default becomes
+-- true only after the first successful session-bound exchange with permission.
+CREATE TABLE notifications.push_account_settings (
+    account_id uuid PRIMARY KEY REFERENCES accounts.accounts(id) ON DELETE CASCADE,
+    default_enabled boolean NOT NULL DEFAULT false
+);
+
+CREATE TABLE notifications.push_monitor_settings (
+    monitor_id uuid PRIMARY KEY REFERENCES monitors.monitors(id) ON DELETE CASCADE,
     account_id uuid NOT NULL REFERENCES accounts.accounts(id) ON DELETE CASCADE,
-    monitor_id uuid NOT NULL REFERENCES monitors.monitors(id) ON DELETE CASCADE,
-    installation_id uuid NOT NULL REFERENCES notifications.push_installations(id) ON DELETE CASCADE,
-    enabled boolean NOT NULL DEFAULT false,
+    enabled boolean NOT NULL,
     settings_version bigint NOT NULL DEFAULT 1 CHECK (settings_version>0),
     delivery_generation bigint NOT NULL DEFAULT 1 CHECK (delivery_generation>0),
     created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE(monitor_id,installation_id)
+    updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX push_routes_account_idx ON notifications.push_routes(account_id,monitor_id);
+CREATE INDEX push_monitor_settings_account_idx ON notifications.push_monitor_settings(account_id,monitor_id);
 
 CREATE TABLE notifications.push_deliveries (
     id uuid PRIMARY KEY,
@@ -65,13 +70,10 @@ CREATE TABLE notifications.push_deliveries (
     account_id uuid NOT NULL REFERENCES accounts.accounts(id) ON DELETE CASCADE,
     monitor_id uuid NOT NULL REFERENCES monitors.monitors(id) ON DELETE CASCADE,
     incident_id uuid NOT NULL REFERENCES incidents.incidents(id) ON DELETE CASCADE,
-    -- Keep installation before route: FK checks during incident recording must
-    -- acquire installation key-share before a route key-share, as rebinding does.
     installation_id uuid NOT NULL REFERENCES notifications.push_installations(id) ON DELETE CASCADE,
-    route_id uuid NOT NULL REFERENCES notifications.push_routes(id) ON DELETE CASCADE,
     kind text NOT NULL CHECK (kind IN ('down','up')),
     sequence bigint NOT NULL,
-    route_generation bigint NOT NULL,
+    policy_generation bigint NOT NULL,
     binding_generation bigint NOT NULL,
     registration_version bigint NOT NULL,
     encrypted_snapshot bytea NOT NULL,
@@ -84,8 +86,8 @@ CREATE TABLE notifications.push_deliveries (
     error_code text NOT NULL DEFAULT '' CHECK (length(error_code)<=64),
     created_at timestamptz NOT NULL DEFAULT now(),
     completed_at timestamptz,
-    UNIQUE(event_id,route_id)
+    UNIQUE(event_id,installation_id)
 );
 CREATE INDEX push_deliveries_ready_idx ON notifications.push_deliveries(next_attempt_at,id) WHERE status IN ('pending','leased');
-CREATE INDEX push_deliveries_order_idx ON notifications.push_deliveries(route_id,sequence) WHERE status IN ('pending','leased');
+CREATE INDEX push_deliveries_order_idx ON notifications.push_deliveries(monitor_id,installation_id,sequence) WHERE status IN ('pending','leased');
 CREATE INDEX push_deliveries_retention_idx ON notifications.push_deliveries(completed_at,id) WHERE completed_at IS NOT NULL;

@@ -44,6 +44,8 @@ public final class MainActivitySmokeTest {
     public void mainLaunchesCabinetOnceAndBackExits() {
         try (ActivityScenario<TestMainActivity> scenario = ActivityScenario.launch(mainIntent())) {
             assertEquals(1, TestMainActivity.launchers.size());
+            assertEquals("the debug fixture bypasses production bootstrap without network access",
+                    java.util.Collections.singletonList(LinkPolicy.HOME), TestMainActivity.preparedTargets);
             RecordingLauncher first = TestMainActivity.launchers.get(0);
             assertEquals(java.util.Collections.singletonList(LinkPolicy.HOME), first.urls);
             scenario.onActivity(activity -> {
@@ -143,6 +145,8 @@ public final class MainActivitySmokeTest {
             RecordingLauncher second = TestMainActivity.launchers.get(1);
             assertTrue("recreated activity must release the old launcher", first.destroyed);
             assertEquals(java.util.Collections.singletonList(LinkPolicy.HOME), second.urls);
+            assertEquals("recreation re-enters the deterministic browser-target seam",
+                    java.util.Arrays.asList(LinkPolicy.HOME, LinkPolicy.HOME), TestMainActivity.preparedTargets);
 
             scenario.onActivity(activity -> {
                 first.complete();

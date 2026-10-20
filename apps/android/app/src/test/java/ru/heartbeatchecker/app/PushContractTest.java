@@ -20,9 +20,9 @@ public final class PushContractTest {
     @Test
     public void setupUrlsAcceptOnlyTheTwoExpectedNativeHandoffs() {
         assertEquals("", PushContract.setupPair("https://heartbeat-checker.ru/android/push/connect"));
-        assertEquals(PAIRING, PushContract.setupPair("https://heartbeat-checker.ru/android/push/complete?pairingId=" + PAIRING));
+        assertEquals("complete", PushContract.setupPair("https://heartbeat-checker.ru/android/push/complete"));
         assertNull(PushContract.setupPair("https://heartbeat-checker.ru/android/push/connect?pairingId=" + PAIRING));
-        assertNull(PushContract.setupPair("https://heartbeat-checker.ru/android/push/complete"));
+        assertNull(PushContract.setupPair("https://heartbeat-checker.ru/android/push/complete?pairingId=" + PAIRING));
         assertNull(PushContract.setupPair("https://heartbeat-checker.ru/android/push/complete?pairingId=" + PAIRING + "&token=secret"));
         assertNull(PushContract.setupPair("https://heartbeat-checker.ru/android/push/complete?pairingId=" + PAIRING.toUpperCase()));
         assertNull(PushContract.setupPair("https://heartbeat-checker.ru/android/push/complete?pairingId=%" + PAIRING));

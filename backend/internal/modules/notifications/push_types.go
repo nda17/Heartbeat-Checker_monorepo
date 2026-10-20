@@ -15,13 +15,19 @@ type PushInstallationStatus struct {
 }
 
 type PushPairing struct {
-	ID               string    `json:"id"`
-	ExpiresAt        time.Time `json:"expiresAt"`
-	VerificationCode string    `json:"verificationCode"`
-	ConfirmationURL  string    `json:"confirmationUrl"`
-	Status           string    `json:"status"`
-	DeviceLabel      string    `json:"deviceLabel,omitempty"`
-	AppVersion       string    `json:"appVersion,omitempty"`
+	ID              string    `json:"id"`
+	ExpiresAt       time.Time `json:"expiresAt"`
+	ConfirmationURL string    `json:"confirmationUrl"`
+	Status          string    `json:"status"`
+	DeviceLabel     string    `json:"deviceLabel,omitempty"`
+	AppVersion      string    `json:"appVersion,omitempty"`
+}
+
+type PushPairingConfirmation struct {
+	PairingID      string    `json:"pairingId"`
+	CompletionCode string    `json:"completionCode"`
+	ClientState    string    `json:"clientState"`
+	ExpiresAt      time.Time `json:"expiresAt"`
 }
 
 type PushPairingInstallation struct {
@@ -34,14 +40,12 @@ type PushPairingResult struct {
 	Installation PushPairingInstallation `json:"installation"`
 }
 
-type PushRoute struct {
-	InstallationID string `json:"installationId"`
-	Enabled        bool   `json:"enabled"`
-	Ready          bool   `json:"ready"`
-	Version        int64  `json:"version"`
+type PushMonitorSettings struct {
+	Enabled bool  `json:"enabled"`
+	Version int64 `json:"version"`
 }
 
-type PutPushRoute struct {
+type PutPushMonitorSettings struct {
 	Enabled bool  `json:"enabled"`
 	Version int64 `json:"version"`
 }
@@ -60,16 +64,18 @@ type PushDeliveryContent struct {
 
 type PushPairingInput struct {
 	CodeChallenge string `json:"codeChallenge"`
+	ClientState   string `json:"clientState"`
 	DeviceLabel   string `json:"deviceLabel"`
 	AppVersion    string `json:"appVersion"`
 }
 
 type PushExchangeInput struct {
-	CodeVerifier string `json:"codeVerifier"`
-	Provider     string `json:"provider"`
-	Token        string `json:"token"`
-	Permission   string `json:"permission"`
-	AppVersion   string `json:"appVersion"`
+	CodeVerifier   string `json:"codeVerifier"`
+	CompletionCode string `json:"completionCode"`
+	Provider       string `json:"provider"`
+	Token          string `json:"token"`
+	Permission     string `json:"permission"`
+	AppVersion     string `json:"appVersion"`
 }
 
 type PushRegistrationInput struct {

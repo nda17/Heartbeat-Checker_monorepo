@@ -32,14 +32,18 @@ export interface PushInstallation {
 export interface PushPairing {
   id: string;
   deviceLabel: string;
-  verificationCode: string;
   status: "pending" | "confirmed";
   expiresAt: string;
 }
 
-export interface PushRoute {
-  installationId: string;
+export interface PushPairingConfirmation {
+  pairingId: string;
+  completionCode: string;
+  clientState: string;
+  expiresAt: string;
+}
+
+export interface PushMonitorSettings {
   enabled: boolean;
-  ready: boolean;
   version: number;
 }

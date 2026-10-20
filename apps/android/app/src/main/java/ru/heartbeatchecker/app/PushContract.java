@@ -31,6 +31,8 @@ final class PushContract {
 
     static boolean token(String value) { return value != null && !value.isEmpty() && bounded(value, 4096); }
 
+    static boolean secret(String value) { return value != null && value.matches("[A-Za-z0-9_-]{43}"); }
+
     static boolean credential(String value, String id) {
         return uuid(id) && value != null && value.matches(Pattern.quote(id) + "\\.[A-Za-z0-9_-]{43}");
     }
@@ -53,11 +55,8 @@ final class PushContract {
             if (!"https".equals(uri.getScheme()) || !"heartbeat-checker.ru".equals(uri.getRawAuthority())
                     || uri.getRawFragment() != null) return null;
             if ("/android/push/connect".equals(uri.getRawPath()) && uri.getRawQuery() == null) return "";
-            String query = uri.getRawQuery();
-            if (!"/android/push/complete".equals(uri.getRawPath()) || query == null
-                    || !query.startsWith("pairingId=")) return null;
-            String id = query.substring("pairingId=".length());
-            return uuid(id) ? id : null;
+            if ("/android/push/complete".equals(uri.getRawPath()) && uri.getRawQuery() == null) return "complete";
+            return null;
         } catch (Exception ignored) { return null; }
     }
 

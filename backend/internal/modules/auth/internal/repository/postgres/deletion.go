@@ -12,6 +12,7 @@ var ErrAdminTransferRequired = errors.New("administrator must transfer role befo
 
 type AccountDeletion interface {
 	LockAccountTx(context.Context, pgx.Tx, string) (contracts.Account, error)
+	FenceAccountDeletionTx(context.Context, pgx.Tx, string) error
 	ScrubAccountTx(context.Context, pgx.Tx, string) error
 }
 
@@ -39,6 +40,12 @@ func (r *Repository) DeleteAccount(ctx context.Context, c Credential, sessionID 
 		return ErrAdminTransferRequired
 	}
 	if err = r.VerifyDeletionTx(ctx, tx, c, sessionID, tokenHash); err != nil {
+		return err
+	}
+	// Session deletion updates dependent rows through foreign keys. Fence those
+	// modules only after the exact credential/session guards and before the FKs
+	// can take their locks in an order different from ordinary module mutations.
+	if err = deletion.FenceAccountDeletionTx(ctx, tx, c.AccountID); err != nil {
 		return err
 	}
 	if err = r.DeleteAccountTx(ctx, tx, c); err != nil {

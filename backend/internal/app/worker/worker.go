@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth"
 	authcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
@@ -238,7 +239,28 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 		defer ticker.Stop()
 		for {
 			cleanupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			tx, err := pool.Begin(cleanupCtx)
+			// Session FK updates must take account/session/installation locks in
+			// their own batch and release them before general monitor retention.
+			sessionTx, err := pool.Begin(cleanupCtx)
+			if err == nil {
+				var ids []string
+				ids, err = auth.LockExpiredSessionBatchTx(cleanupCtx, sessionTx)
+				if err == nil {
+					err = notifications.FenceSessionDeletionTx(cleanupCtx, sessionTx, ids)
+				}
+				if err == nil {
+					err = auth.DeleteExpiredSessionBatchTx(cleanupCtx, sessionTx, ids)
+				}
+				if err == nil {
+					err = sessionTx.Commit(cleanupCtx)
+				} else {
+					sessionTx.Rollback(cleanupCtx)
+				}
+			}
+			var tx pgx.Tx
+			if err == nil {
+				tx, err = pool.Begin(cleanupCtx)
+			}
 			if err == nil {
 				// Each module owns its retention SQL; the transaction bounds one cleanup batch.
 				if err = auth.Cleanup(cleanupCtx, tx); err == nil {

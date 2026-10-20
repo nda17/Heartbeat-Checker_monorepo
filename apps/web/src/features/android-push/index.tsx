@@ -3,7 +3,11 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "@/entities/session";
-import type { PushInstallation, PushPairing } from "@/entities/push";
+import type {
+  PushInstallation,
+  PushPairing,
+  PushPairingConfirmation,
+} from "@/entities/push";
 import { pushStatusLabels } from "@/entities/push";
 import { api, ApiError, boundedRequest, errorMessage } from "@/shared/api";
 import { androidPushIntent, pushPairingId } from "@/shared/android";
@@ -23,14 +27,10 @@ function PushSettings() {
   const [enabled, setEnabled] = useState(false);
   const [android, setAndroid] = useState(false);
   const [pairingId, setPairingId] = useState<string | null>(null);
-  const [pairing, setPairing] = useState<PushPairing | null>(null);
-  const [pairingLoading, setPairingLoading] = useState(false);
-  const [pairingError, setPairingError] = useState("");
+  const [invalidPairing, setInvalidPairing] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const [disconnect, setDisconnect] = useState<string | null>(null);
-  const [compared, setCompared] = useState(false);
-  const [now, setNow] = useState(0);
   const [attempt, setAttempt] = useState(0);
   const [uncertain, setUncertain] = useState(false);
   const mutation = useRef<AbortController | null>(null);
@@ -49,20 +49,15 @@ function PushSettings() {
   }, []);
 
   useEffect(() => {
-    // Browser-only capability and public pairing id. Viewing never confirms a pairing.
+    // Capability affects presentation only. Pairing authorization uses the code,
+    // PKCE and local native state, never the user-agent or public query id.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setAndroid(/Android/i.test(navigator.userAgent));
     const params = new URLSearchParams(window.location.search);
     const id = pushPairingId(params);
     setPairingId(id);
-    if (params.has("pushPair") && !id)
-      setPairingError(
-        "Ссылка подключения некорректна. Начните подключение в Android-приложении заново.",
-      );
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    setInvalidPairing(params.has("pushPair") && !id);
     return () => {
-      window.clearInterval(timer);
       const controller = mutation.current;
       mutation.current = null;
       controller?.abort();
@@ -91,96 +86,30 @@ function PushSettings() {
     };
   }, [attempt, load]);
 
-  useEffect(() => {
-    if (!pairingId) return;
-    const controller = new AbortController();
-    let alive = true;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPairingLoading(true);
-    void boundedRequest(controller, (signal) =>
-      api<PushPairing>(`/push/pairings/${pairingId}`, { signal }),
-    )
-      .then((result) => {
-        if (!alive || controller.signal.aborted) return;
-        if (
-          result.id !== pairingId ||
-          typeof result.verificationCode !== "string" ||
-          result.verificationCode.length !== 6 ||
-          !/^\d{6}$/.test(result.verificationCode) ||
-          !["pending", "confirmed"].includes(result.status) ||
-          !Number.isFinite(Date.parse(result.expiresAt))
-        )
-          throw new Error("Invalid pairing response");
-        setPairing(result);
-        setPairingError("");
-      })
-      .catch((cause) => {
-        if (!alive) return;
-        setPairingError(
-          cause instanceof ApiError && cause.status === 404
-            ? "Подключение не найдено или срок ссылки истёк. Начните подключение в приложении заново."
-            : controller.signal.aborted
-              ? "Не удалось загрузить подключение вовремя. Повторите загрузку."
-              : errorMessage(cause),
-        );
-      })
-      .finally(() => {
-        if (alive) setPairingLoading(false);
-      });
-    return () => {
-      alive = false;
-      controller.abort();
-    };
-  }, [pairingId, attempt]);
-
-  async function change(kind: "confirm" | "disconnect", id: string) {
+  async function disconnectPhone(id: string) {
     if (mutation.current || uncertain) return;
-    if (
-      kind === "confirm" &&
-      (!pairing ||
-        pairingLoading ||
-        pairing.status !== "pending" ||
-        !compared ||
-        Date.parse(pairing.expiresAt) <= Date.now())
-    )
-      return;
     const controller = new AbortController();
     mutation.current = controller;
     const previousRead = read.current;
     read.current = null;
     previousRead?.abort();
     ++sequence.current;
-    setBusy(kind === "confirm" ? "confirm" : id);
+    setBusy(id);
     setError("");
     try {
       await boundedRequest(controller, (signal) =>
-        api(
-          kind === "confirm"
-            ? `/push/pairings/${encodeURIComponent(id)}/confirm`
-            : `/push/installations/${encodeURIComponent(id)}`,
-          {
-            method: kind === "confirm" ? "POST" : "DELETE",
-            body: kind === "confirm" ? {} : undefined,
-            authenticated: true,
-            signal,
-          },
-        ),
+        api(`/push/installations/${encodeURIComponent(id)}`, {
+          method: "DELETE",
+          authenticated: true,
+          signal,
+        }),
       );
       if (mutation.current !== controller || controller.signal.aborted) return;
-      if (kind === "confirm") {
-        setPairing((current) =>
-          current ? { ...current, status: "confirmed" } : null,
-        );
-        notify.success(
-          "Телефон подтверждён. Вернитесь в приложение для завершения подключения.",
-        );
-      } else {
-        setInstallations(
-          (current) => current?.filter((item) => item.id !== id) ?? null,
-        );
-        setDisconnect(null);
-        notify.success("Телефон отключён от уведомлений.");
-      }
+      setInstallations(
+        (current) => current?.filter((item) => item.id !== id) ?? null,
+      );
+      setDisconnect(null);
+      notify.success("Телефон отключён от уведомлений.");
       setAttempt((value) => value + 1);
     } catch (cause) {
       if (mutation.current !== controller) return;
@@ -192,12 +121,10 @@ function PushSettings() {
       if (ambiguous) setUncertain(true);
       setError(
         ambiguous
-          ? "Ответ на действие не получен. Обновите состояние перед повтором; запрос не повторяется автоматически."
+          ? "Ответ на отключение не получен. Обновите состояние перед повтором; запрос не повторяется автоматически."
           : cause instanceof ApiError && cause.status === 404
-            ? "Подключение недоступно или уже завершено. Обновите состояние."
-            : cause instanceof ApiError && cause.code === "pairing_consumed"
-              ? "Подключение уже завершено. Обновите состояние телефона."
-              : errorMessage(cause),
+            ? "Телефон уже отключён или недоступен. Обновите состояние."
+            : errorMessage(cause),
       );
     } finally {
       if (mutation.current === controller) {
@@ -207,7 +134,6 @@ function PushSettings() {
     }
   }
 
-  const expired = pairing && Date.parse(pairing.expiresAt) <= now;
   return (
     <section className="panel android-push-panel">
       <div className="panel-heading">
@@ -215,126 +141,53 @@ function PushSettings() {
           <Icon name="phone" />
         </span>
         <div>
-          <h2>Android push</h2>
-          <p>Уведомления об инцидентах и восстановлении на ваши телефоны.</p>
+          <h2>Push на телефоны</h2>
+          <p>Уведомления об инцидентах и восстановлении.</p>
         </div>
       </div>
-      {(pairingId || pairingError) && (
-        <div className="push-pairing form-stack">
-          <h3>Подтверждение телефона</h3>
-          <p className="small">
-            Аккаунт: <strong>{profile.account.name}</strong> · {profile.email}
-          </p>
-          {pairingError ? (
-            <Notice>{pairingError}</Notice>
-          ) : !pairing || pairingLoading ? (
-            <Loading text="Загружаем подключение…" />
-          ) : (
-            <>
-              <p className="small">
-                Телефон: <strong>{pairing.deviceLabel}</strong>
-              </p>
-              {pairing.status === "confirmed" && !expired ? (
-                <>
-                  <p className="small" role="status">
-                    Подтверждение принято. Завершите настройку в приложении на
-                    подключаемом телефоне.
-                  </p>
-                  <a
-                    className="primary"
-                    href={androidPushIntent("complete", pairing.id)}
-                  >
-                    Вернуться в приложение <Icon name="arrow-right" />
-                  </a>
-                </>
-              ) : (
-                <>
-                  <p className="small">
-                    Сверьте код с кодом в приложении на вашем телефоне:
-                  </p>
-                  <strong className="push-comparison-code">
-                    {pairing.verificationCode}
-                  </strong>
-                  <p className="small muted">
-                    Ссылка действует до {dateTime(pairing.expiresAt)}.
-                    Подтверждайте только подключение, которое начали сами.
-                  </p>
-                  {expired ? (
-                    <Notice>
-                      Срок подтверждения истёк. Начните подключение в приложении
-                      заново.
-                    </Notice>
-                  ) : (
-                    <>
-                      <label className="checkbox-label">
-                        <input
-                          type="checkbox"
-                          checked={compared}
-                          disabled={!!busy}
-                          onChange={(event) =>
-                            setCompared(event.target.checked)
-                          }
-                        />
-                        <span>
-                          Код совпадает, подключить телефон к этому аккаунту
-                        </span>
-                      </label>
-                      <button
-                        className="primary"
-                        disabled={!compared || !!busy || uncertain}
-                        onClick={() => void change("confirm", pairing.id)}
-                      >
-                        {busy === "confirm"
-                          ? "Подтверждаем…"
-                          : "Подтвердить подключение"}
-                      </button>
-                    </>
-                  )}
-                </>
-              )}
-            </>
-          )}
-        </div>
+      {invalidPairing && (
+        <Notice>
+          Ссылка подключения некорректна. Откройте Android-приложение заново.
+        </Notice>
+      )}
+      {pairingId && (
+        <PairingConnection
+          key={pairingId}
+          pairingId={pairingId}
+          accountId={profile.account.id}
+          accountName={profile.account.name}
+          email={profile.email}
+        />
       )}
       {error && <Notice>{error}</Notice>}
       <div className="push-actions">
         {android && enabled && (
           <a className="secondary" href={androidPushIntent("connect")}>
-            Подключить этот телефон <Icon name="arrow-right" />
+            Настроить этот телефон <Icon name="arrow-right" />
           </a>
         )}
         <button
           type="button"
           className="quiet"
           disabled={!!busy}
-          onClick={() => {
-            if (pairingId) setPairingError("");
-            setAttempt((value) => value + 1);
-          }}
+          onClick={() => setAttempt((value) => value + 1)}
         >
           Обновить состояние
         </button>
       </div>
-      {android && enabled && (
-        <p className="small muted">
-          Для push-уведомлений нужна версия приложения 1.1.0 или новее. Если у
-          вас версия 1.0, <a href="/apps/android/download">обновите APK</a>{" "}
-          перед подключением телефона.
-        </p>
-      )}
-      {!android && (
-        <p className="small muted">
-          Для подключения откройте настройки на Android-телефоне с установленным{" "}
-          <Link href="/android">приложением Heartbeat Checker</Link>.
-        </p>
-      )}
+      <p className="small muted">
+        Войдите в{" "}
+        <Link href="/android">Android-приложение Heartbeat Checker</Link> и
+        разрешите уведомления — телефон подключится автоматически. Если вы
+        отключили телефон, включите уведомления в приложении.
+      </p>
       {installations === null ? (
         !error && <Loading text="Загружаем телефоны…" />
       ) : (
         <>
           {!enabled && (
             <Notice>
-              Android push сейчас недоступен. Настройки подключённых телефонов
+              Push сейчас недоступен. Настройки подключённых телефонов
               сохранены.
             </Notice>
           )}
@@ -361,12 +214,15 @@ function PushSettings() {
                       "permission_denied",
                     ].includes(item.status) && (
                       <p className="small muted">
-                        Откройте приложение на этом телефоне и повторите
-                        подключение. Проверьте разрешение на уведомления.{" "}
+                        Откройте приложение на этом телефоне и проверьте
+                        разрешение на уведомления.
                         {android && enabled && (
-                          <a href={androidPushIntent("connect")}>
-                            Переподключить текущий телефон
-                          </a>
+                          <>
+                            {" "}
+                            <a href={androidPushIntent("connect")}>
+                              Настроить текущий телефон
+                            </a>
+                          </>
                         )}
                       </p>
                     )}
@@ -380,7 +236,7 @@ function PushSettings() {
                           <button
                             className="secondary danger-text"
                             disabled={!!busy || uncertain}
-                            onClick={() => void change("disconnect", item.id)}
+                            onClick={() => void disconnectPhone(item.id)}
                           >
                             {busy === item.id ? "Отключаем…" : "Да, отключить"}
                           </button>
@@ -411,11 +267,185 @@ function PushSettings() {
         </>
       )}
       <p className="small muted push-explanation">
-        После подключения включите Android push отдельно для каждого монитора в
-        его настройках уведомлений. Можно выбрать несколько телефонов. Статус
-        настройки не означает, что телефон сейчас в сети; доставка зависит от
-        разрешений Android, сети и RuStore Push. Напоминания не отправляются.
+        Push включается по умолчанию после первого подключения. Переключатель
+        Push у монитора действует на все текущие и будущие телефоны; явно
+        выключенный монитор остаётся выключенным. Доставка зависит от разрешений
+        Android, сети и RuStore Push. Напоминания не отправляются.
       </p>
     </section>
+  );
+}
+
+function PairingConnection({
+  pairingId,
+  accountId,
+  accountName,
+  email,
+}: {
+  pairingId: string;
+  accountId: string;
+  accountName: string;
+  email: string;
+}) {
+  const [pairing, setPairing] = useState<PushPairing | null>(null);
+  const [completion, setCompletion] = useState<PushPairingConfirmation | null>(
+    null,
+  );
+  const [error, setError] = useState("");
+  const [restart, setRestart] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [attempt, setAttempt] = useState(0);
+  const [now, setNow] = useState(0);
+  const panel = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let alive = true;
+    let issued = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoading(true);
+    setNow(Date.now());
+    panel.current?.scrollIntoView?.({ block: "start" });
+    panel.current?.focus({ preventScroll: true });
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    void boundedRequest(controller, async (signal) => {
+      const result = await api<PushPairing>(`/push/pairings/${pairingId}`, {
+        signal,
+      });
+      if (!alive || signal.aborted) return;
+      if (
+        result.id !== pairingId ||
+        !["pending", "confirmed"].includes(result.status) ||
+        !Number.isFinite(Date.parse(result.expiresAt))
+      )
+        throw new Error("Invalid pairing response");
+      setPairing(result);
+      if (Date.parse(result.expiresAt) <= Date.now()) {
+        setRestart(true);
+        throw new Error("Срок подключения истёк. Откройте приложение заново.");
+      }
+      // Persist only a non-secret attempt marker. A remount or lost response
+      // must not issue the one-time code twice; the code itself stays in memory.
+      const marker = `heartbeat.push.confirm:${accountId}:${pairingId}`;
+      if (
+        result.status !== "pending" ||
+        window.sessionStorage.getItem(marker)
+      ) {
+        setRestart(true);
+        throw new Error(
+          "Подтверждение уже запрошено. Если возврат в приложение недоступен, начните подключение заново.",
+        );
+      }
+      window.sessionStorage.setItem(marker, "attempted");
+      issued = true;
+      const confirmed = await api<PushPairingConfirmation>(
+        `/push/pairings/${pairingId}/confirm`,
+        {
+          method: "POST",
+          body: {},
+          authenticated: true,
+          signal,
+        },
+      );
+      if (!alive || signal.aborted) return;
+      if (
+        confirmed.pairingId !== pairingId ||
+        Date.parse(confirmed.expiresAt) !== Date.parse(result.expiresAt) ||
+        Date.parse(confirmed.expiresAt) <= Date.now()
+      )
+        throw new Error("Invalid pairing confirmation");
+      const intent = androidPushIntent("complete", confirmed);
+      setCompletion(confirmed);
+      setError("");
+      panel.current?.scrollIntoView?.({ block: "start" });
+      panel.current?.focus({ preventScroll: true });
+      // Browsers may require a gesture. The same explicit Return link remains
+      // available below; neither confirmation nor navigation runs in a loop.
+      try {
+        window.location.assign(intent);
+      } catch {
+        /* Manual Return remains available. */
+      }
+    })
+      .catch((cause) => {
+        if (!alive) return;
+        if (issued || (cause instanceof ApiError && cause.status === 404))
+          setRestart(true);
+        setError(
+          issued
+            ? "Ответ на подключение не получен. Начните подключение в приложении заново; подтверждение не повторяется автоматически."
+            : cause instanceof ApiError && cause.status === 404
+              ? "Подключение не найдено или срок ссылки истёк. Откройте приложение заново."
+              : controller.signal.aborted
+                ? "Не удалось загрузить подключение вовремя. Повторите загрузку."
+                : errorMessage(cause),
+        );
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [accountId, pairingId, attempt]);
+
+  const expired = completion && Date.parse(completion.expiresAt) <= now;
+  return (
+    <div
+      className="push-pairing form-stack"
+      ref={panel}
+      tabIndex={-1}
+      aria-label="Подключение телефона"
+    >
+      <h3>Подключаем телефон</h3>
+      <p className="small">
+        Аккаунт: <strong>{accountName}</strong> · {email}
+      </p>
+      {pairing && (
+        <p className="small">
+          Телефон: <strong>{pairing.deviceLabel}</strong>
+        </p>
+      )}
+      {loading ? (
+        <Loading text="Подключаем приложение…" />
+      ) : completion && !expired ? (
+        <>
+          <p className="small" role="status">
+            Продолжите в приложении и разрешите уведомления. Если приложение не
+            открылось автоматически, нажмите кнопку.
+          </p>
+          <a
+            className="primary"
+            href={androidPushIntent("complete", completion)}
+          >
+            Вернуться в приложение <Icon name="arrow-right" />
+          </a>
+        </>
+      ) : (
+        <>
+          {error && <Notice>{error}</Notice>}
+          {expired && (
+            <Notice>
+              Срок подключения истёк. Начните подключение в приложении заново.
+            </Notice>
+          )}
+          {restart || expired ? (
+            <a className="secondary" href={androidPushIntent("connect")}>
+              Начать подключение заново
+            </a>
+          ) : (
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => setAttempt((value) => value + 1)}
+            >
+              Повторить загрузку подключения
+            </button>
+          )}
+        </>
+      )}
+    </div>
   );
 }

@@ -456,8 +456,87 @@ func (r *Repository) ChangePassword(ctx context.Context, c Credential, newHash s
 	return tx.Commit(ctx)
 }
 
-// Cleanup removes only unusable auth data, in bounded batches. Live sessions and
-// credentials remain untouched, including when cleanup races login or reset.
+// LockExpiredSessionBatchTx fences at most 500 unusable sessions. Account guards
+// precede session locks so account deletion cannot hold an installation while
+// waiting for a session owned by retention. The caller must fence dependent
+// installations before deleting this exact batch in the same transaction.
+func LockExpiredSessionBatchTx(ctx context.Context, tx pgx.Tx) ([]string, error) {
+	rows, err := tx.Query(ctx, `SELECT id::text,account_id::text FROM auth.sessions
+		WHERE expires_at<=now() OR revoked_at IS NOT NULL
+		ORDER BY expires_at,id LIMIT 500`)
+	if err != nil {
+		return nil, err
+	}
+	candidates, accounts := []string{}, []string{}
+	for rows.Next() {
+		var id, accountID string
+		if err = rows.Scan(&id, &accountID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		candidates = append(candidates, id)
+		accounts = append(accounts, accountID)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil || len(candidates) == 0 {
+		return []string{}, err
+	}
+	rows, err = tx.Query(ctx, `SELECT id::text FROM accounts.accounts
+		WHERE id=ANY($1::uuid[]) ORDER BY id FOR SHARE SKIP LOCKED`, accounts)
+	if err != nil {
+		return nil, err
+	}
+	lockedAccounts := []string{}
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		lockedAccounts = append(lockedAccounts, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil || len(lockedAccounts) == 0 {
+		return []string{}, err
+	}
+	rows, err = tx.Query(ctx, `SELECT id::text FROM auth.sessions
+		WHERE id=ANY($1::uuid[]) AND account_id=ANY($2::uuid[])
+			AND (expires_at<=now() OR revoked_at IS NOT NULL)
+		ORDER BY expires_at,id FOR UPDATE SKIP LOCKED`, candidates, lockedAccounts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// DeleteExpiredSessionBatchTx accepts only the batch already locked and fenced
+// by the caller. Recheck usability so a live session is never a retention target.
+func DeleteExpiredSessionBatchTx(ctx context.Context, tx pgx.Tx, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	if len(ids) > 500 {
+		return ErrInvalid
+	}
+	_, err := tx.Exec(ctx, `DELETE FROM auth.sessions WHERE id=ANY($1::uuid[])
+		AND (expires_at<=now() OR revoked_at IS NOT NULL)`, ids)
+	return err
+}
+
+// Cleanup removes unusable auth data except sessions, whose dependent push
+// records require a separate transaction with account/session/installation locks.
+// Credentials and live auth data remain untouched.
 func Cleanup(ctx context.Context, tx pgx.Tx) error {
 	for _, query := range []string{
 		`UPDATE auth.mail_jobs SET status='expired',finished_at=now(),payload=decode('','hex'),lease_token=NULL,lease_until=NULL,last_error='token_expired'
@@ -470,7 +549,6 @@ func Cleanup(ctx context.Context, tx pgx.Tx) error {
             OR (purpose='reset' AND NOT EXISTS (SELECT 1 FROM auth.password_reset_tokens t JOIN auth.credentials c ON c.account_id=t.account_id WHERE t.token_hash=auth.mail_jobs.token_hash AND t.consumed_at IS NULL AND t.expires_at>now() AND t.credential_version=c.version)))
 			ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.mail_jobs WHERE id IN (SELECT id FROM auth.mail_jobs WHERE status IN ('sent','failed','expired') AND finished_at<now()-interval '30 days' ORDER BY finished_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
-		`DELETE FROM auth.sessions WHERE id IN (SELECT id FROM auth.sessions WHERE expires_at<=now() OR revoked_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.registration_challenges WHERE id IN (SELECT id FROM auth.registration_challenges WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.email_code_challenges WHERE id IN (SELECT id FROM auth.email_code_challenges WHERE expires_at<now()-interval '1 day' OR consumed_at<now()-interval '1 day' ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.email_verification_tokens WHERE token_hash IN (SELECT token_hash FROM auth.email_verification_tokens WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,

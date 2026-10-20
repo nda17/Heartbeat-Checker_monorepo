@@ -110,6 +110,10 @@ func newAuthFixtureWithPoolSize(t *testing.T, maxConns int32) *authFixture {
 }
 
 func newAuthFixtureWithPoolSizeAndPrefix(t *testing.T, maxConns int32, dbPrefix string) *authFixture {
+	return newAuthFixtureWithPoolSizeAndPrefixAndDeletionFence(t, maxConns, dbPrefix, nil)
+}
+
+func newAuthFixtureWithPoolSizeAndPrefixAndDeletionFence(t *testing.T, maxConns int32, dbPrefix string, afterFence func()) *authFixture {
 	t.Helper()
 	baseURL := os.Getenv("HEARTBEAT_TEST_DATABASE_URL")
 	if baseURL == "" {
@@ -150,12 +154,14 @@ func newAuthFixtureWithPoolSizeAndPrefix(t *testing.T, maxConns int32, dbPrefix 
 		t.Fatalf("apply auth test migrations: %v", err)
 	}
 	mailer := &integrationMailer{}
+	deletion := newTestAccountDeletion(pool)
+	deletion.afterFence = afterFence
 	module, err := New(pool, accounts.New(pool), integrationCaptcha{}, mailer, Config{
 		Origin:          integrationOrigin,
 		ChallengeTTL:    time.Hour,
 		ResetTTL:        time.Hour,
 		RateLimitWindow: time.Hour,
-		AccountDeletion: newTestAccountDeletion(pool),
+		AccountDeletion: deletion,
 	})
 	if err != nil {
 		t.Fatalf("create auth module: %v", err)

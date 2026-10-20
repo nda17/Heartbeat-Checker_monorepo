@@ -173,6 +173,14 @@ func (m *Module) AdminSessionCount(ctx context.Context, tx pgx.Tx, accountID str
 
 func Cleanup(ctx context.Context, tx pgx.Tx) error { return postgres.Cleanup(ctx, tx) }
 
+func LockExpiredSessionBatchTx(ctx context.Context, tx pgx.Tx) ([]string, error) {
+	return postgres.LockExpiredSessionBatchTx(ctx, tx)
+}
+
+func DeleteExpiredSessionBatchTx(ctx context.Context, tx pgx.Tx, ids []string) error {
+	return postgres.DeleteExpiredSessionBatchTx(ctx, tx, ids)
+}
+
 func (m *Module) StartNotificationEmailTx(ctx context.Context, tx pgx.Tx, input authcontracts.NotificationEmailInput, ip string) (authcontracts.EmailCodeChallenge, error) {
 	return m.service.StartNotificationEmailTx(ctx, tx, input, ip)
 }

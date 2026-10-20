@@ -8,6 +8,8 @@ import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Gravity;
 import android.view.WindowInsets;
 import android.widget.Button;
@@ -100,9 +102,31 @@ public class MainActivity extends ComponentActivity {
         knownFailed = false;
         int request = ++attempt;
         showStatus(false);
+        prepareBrowserTarget(targetUrl, url -> {
+            if (current(request)) launchBrowser(request, url);
+        });
+    }
+
+    void prepareBrowserTarget(String url, java.util.function.Consumer<String> ready) {
+        if (!Intent.ACTION_MAIN.equals(getIntent().getAction())) { ready.accept(url); return; }
+        Handler handler = new Handler(Looper.getMainLooper());
+        java.util.concurrent.atomic.AtomicBoolean delivered = new java.util.concurrent.atomic.AtomicBoolean();
+        Runnable fallback = () -> { if (delivered.compareAndSet(false, true)) ready.accept(url); };
+        handler.postDelayed(fallback, 8000);
+        PushWork.IO.execute(() -> {
+            String next = PushPairing.bootstrap(getApplicationContext(), url);
+            handler.post(() -> {
+                if (!delivered.compareAndSet(false, true)) return;
+                handler.removeCallbacks(fallback);
+                ready.accept(next);
+            });
+        });
+    }
+
+    private void launchBrowser(int request, String url) {
         try {
             launcher = createBrowserLauncher();
-            launcher.launch(targetUrl, () -> {
+            launcher.launch(url, () -> {
                 if (!current(request)) return;
                 handedOff = true;
                 launching = false;

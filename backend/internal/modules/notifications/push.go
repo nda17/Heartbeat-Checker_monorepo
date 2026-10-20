@@ -9,7 +9,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -229,11 +228,6 @@ func pushContextID(id string) error {
 		return ErrPushNotFound
 	}
 	return nil
-}
-func pushVerificationCode(secret string) string {
-	sum := sha256.Sum256([]byte(secret))
-	value := uint32(sum[0])<<24 | uint32(sum[1])<<16 | uint32(sum[2])<<8 | uint32(sum[3])
-	return fmt.Sprintf("%06d", value%1_000_000)
 }
 func pushSessionStatus(err error) string {
 	if errors.Is(err, authcontracts.ErrSessionExpired) {

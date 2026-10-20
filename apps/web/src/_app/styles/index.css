@@ -5527,14 +5527,10 @@ html[data-installed-app="true"] .android-hero {
   margin-bottom: 20px;
   background: var(--soft);
   overflow-wrap: anywhere;
+  scroll-margin-top: 28px;
 }
 .push-pairing h3 {
   font-size: 16px;
-}
-.push-comparison-code {
-  font-family: ui-monospace, monospace;
-  font-size: 30px;
-  letter-spacing: 0.15em;
 }
 .push-pairing > .primary {
   align-self: flex-start;

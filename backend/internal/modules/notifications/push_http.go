@@ -65,12 +65,12 @@ func pushBearer(r *http.Request) string {
 
 func (p *Push) RegisterAPI(mux *http.ServeMux, protect func(http.Handler) http.Handler) {
 	for pattern, handler := range map[string]http.HandlerFunc{
-		"GET /api/v1/push/installations":                         p.listPushInstallations,
-		"DELETE /api/v1/push/installations/{id}":                 p.disconnectPushInstallation,
-		"GET /api/v1/push/pairings/{id}":                         p.getPushPairing,
-		"POST /api/v1/push/pairings/{id}/confirm":                p.confirmPushPairing,
-		"GET /api/v1/monitors/{id}/push-routes":                  p.listPushRoutes,
-		"PUT /api/v1/monitors/{id}/push-routes/{installationId}": p.putPushRoute,
+		"GET /api/v1/push/installations":          p.listPushInstallations,
+		"DELETE /api/v1/push/installations/{id}":  p.disconnectPushInstallation,
+		"GET /api/v1/push/pairings/{id}":          p.getPushPairing,
+		"POST /api/v1/push/pairings/{id}/confirm": p.confirmPushPairing,
+		"GET /api/v1/monitors/{id}/push":          p.getMonitorPush,
+		"PUT /api/v1/monitors/{id}/push":          p.putMonitorPush,
 	} {
 		mux.Handle(pattern, protect(handler))
 	}
@@ -114,7 +114,7 @@ func (p *Push) createPushPairing(w http.ResponseWriter, r *http.Request) {
 		pushFailure(w, err)
 		return
 	}
-	messengerWrite(w, 201, map[string]any{"pairing": map[string]any{"id": result.Pairing.ID, "expiresAt": result.Pairing.ExpiresAt, "verificationCode": result.Pairing.VerificationCode, "confirmationUrl": result.Pairing.ConfirmationURL}, "installation": result.Installation})
+	messengerWrite(w, 201, map[string]any{"pairing": map[string]any{"id": result.Pairing.ID, "expiresAt": result.Pairing.ExpiresAt, "confirmationUrl": result.Pairing.ConfirmationURL}, "installation": result.Installation})
 }
 func (p *Push) getPushPairing(w http.ResponseWriter, r *http.Request) {
 	owner, ok := messengerOwner(w, r)
@@ -126,7 +126,7 @@ func (p *Push) getPushPairing(w http.ResponseWriter, r *http.Request) {
 		pushFailure(w, err)
 		return
 	}
-	messengerWrite(w, 200, map[string]any{"id": pair.ID, "deviceLabel": pair.DeviceLabel, "verificationCode": pair.VerificationCode, "status": pair.Status, "expiresAt": pair.ExpiresAt})
+	messengerWrite(w, 200, map[string]any{"id": pair.ID, "deviceLabel": pair.DeviceLabel, "status": pair.Status, "expiresAt": pair.ExpiresAt})
 }
 func (p *Push) confirmPushPairing(w http.ResponseWriter, r *http.Request) {
 	principal, ok := authcontracts.FromContext(r.Context())
@@ -138,12 +138,13 @@ func (p *Push) confirmPushPairing(w http.ResponseWriter, r *http.Request) {
 	if !pushDecode(w, r, &in) {
 		return
 	}
-	if err := p.ConfirmPairing(r.Context(), principal.AccountID, principal.SessionID, r.PathValue("id")); err != nil {
+	result, err := p.ConfirmPairing(r.Context(), principal.AccountID, principal.SessionID, r.PathValue("id"))
+	if err != nil {
 		pushFailure(w, err)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(204)
+	messengerWrite(w, 200, result)
 }
 func (p *Push) exchangePushPairing(w http.ResponseWriter, r *http.Request) {
 	bearer, ok := p.nativeCredential(w, r)
@@ -237,32 +238,32 @@ func (p *Push) disconnectPushInstallation(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(204)
 }
-func (p *Push) listPushRoutes(w http.ResponseWriter, r *http.Request) {
+func (p *Push) getMonitorPush(w http.ResponseWriter, r *http.Request) {
 	owner, ok := messengerOwner(w, r)
 	if !ok {
 		return
 	}
-	items, err := p.ListPushRoutes(r.Context(), owner, r.PathValue("id"))
+	result, err := p.MonitorPush(r.Context(), owner, r.PathValue("id"))
 	if err != nil {
 		pushFailure(w, err)
 		return
 	}
-	messengerWrite(w, 200, map[string]any{"routes": items})
+	messengerWrite(w, 200, result)
 }
-func (p *Push) putPushRoute(w http.ResponseWriter, r *http.Request) {
+func (p *Push) putMonitorPush(w http.ResponseWriter, r *http.Request) {
 	principal, ok := authcontracts.FromContext(r.Context())
 	if !ok {
 		pushFailure(w, ErrPushUnauthorized)
 		return
 	}
-	var in PutPushRoute
+	var in PutPushMonitorSettings
 	if !pushDecode(w, r, &in) {
 		return
 	}
-	result, err := p.PutPushRoute(r.Context(), principal.AccountID, principal.SessionID, r.PathValue("id"), r.PathValue("installationId"), in)
+	result, err := p.PutMonitorPush(r.Context(), principal.AccountID, principal.SessionID, r.PathValue("id"), in)
 	if err != nil {
 		pushFailure(w, err)
 		return
 	}
-	messengerWrite(w, 200, map[string]any{"route": result})
+	messengerWrite(w, 200, result)
 }

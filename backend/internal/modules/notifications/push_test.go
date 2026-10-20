@@ -96,20 +96,6 @@ func TestPushAppVersionAndTokenBoundaries(t *testing.T) {
 	}
 }
 
-func TestPushVerificationCodeUsesNativeSixDigitContract(t *testing.T) {
-	for _, secret := range []string{"test-secret", "another-test-secret"} {
-		code := pushVerificationCode(secret)
-		if len(code) != 6 {
-			t.Fatalf("verification code length = %d (%q), want 6 digits", len(code), code)
-		}
-		for _, digit := range code {
-			if digit < '0' || digit > '9' {
-				t.Fatalf("verification code contains non-digit: %q", code)
-			}
-		}
-	}
-}
-
 func TestPushSealedTokenIsBoundToInstallationAndField(t *testing.T) {
 	block, err := aes.NewCipher(make([]byte, 32))
 	if err != nil {

@@ -6,24 +6,25 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
-import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
-import android.view.WindowInsets;
 import android.view.Gravity;
-import android.widget.ImageView;
-import android.widget.ProgressBar;
+import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
 import androidx.activity.ComponentActivity;
+import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.browser.customtabs.CustomTabsCallback;
@@ -34,267 +35,223 @@ import com.google.androidbrowserhelper.trusted.TwaLauncher;
 
 import org.json.JSONObject;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.SecureRandom;
-import java.util.Base64;
-
+/** Narrow browser return handler; login stays in the browser and device proof stays encrypted. */
 public final class PushSetupActivity extends ComponentActivity {
+    private final Handler handler = new Handler(Looper.getMainLooper());
     private PushStore store;
-    private LinearLayout content;
     private TwaLauncher browser;
+    private volatile boolean destroyed;
     private boolean busy;
-    private boolean destroyed;
-    private boolean browserOpening;
-    private String incomingPair;
+    private volatile boolean opening;
+    private boolean awaitingPermission;
+    private volatile int operation;
+    private String pairingId;
+    private String returnUrl = LinkPolicy.HOME;
     private String problem = "";
     private final ActivityResultLauncher<String> permission = registerForActivityResult(
             new ActivityResultContracts.RequestPermission(), granted -> {
-                if (granted) prepareToken();
-                else { busy = false; problem = "Разрешите уведомления в настройках Android, чтобы подключить устройство."; render(); }
+                awaitingPermission = false;
+                if (granted) tokenAndExchange();
+                else { recordStatus("permission_denied"); openCabinet(); }
             });
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         store = new PushStore(this);
-        if (!readIntent(getIntent())) { finish(); return; }
-        render();
-        if (!incomingPair.isEmpty()) completePending(incomingPair, false);
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override public void handleOnBackPressed() { finish(); }
+        });
+        waiting();
+        if (state != null && state.getBoolean("awaitingPermission")) {
+            pairingId = state.getString("pairingId");
+            returnUrl = state.getString("returnUrl", LinkPolicy.HOME);
+            if (!PushContract.uuid(pairingId) || LinkPolicy.appLink(returnUrl) == null) { finish(); return; }
+            awaitingPermission = true; busy = true;
+            return;
+        }
+        handle(getIntent());
     }
 
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
-        if (!readIntent(intent)) { finish(); return; }
+        if (busy || opening) return;
         setIntent(intent);
-        if (!busy && !incomingPair.isEmpty()) completePending(incomingPair, false);
-        else render();
-    }
-
-    private boolean readIntent(Intent intent) {
-        if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) return false;
-        String id = PushContract.setupPair(intent.getDataString());
-        if (id == null) return false;
-        incomingPair = id; return true;
+        handle(intent);
     }
 
     @Override protected void onResume() {
         super.onResume();
-        if (store != null) {
-            try { PushWork.permissionsChanged(this); } catch (RuntimeException ignored) { }
-            if (!busy) render();
-        }
+        try { PushWork.permissionsChanged(getApplicationContext()); } catch (RuntimeException ignored) { }
     }
 
-    private void connect() {
-        if (busy) return;
-        busy = true; problem = ""; render();
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
-            permission.launch(Manifest.permission.POST_NOTIFICATIONS);
-        else prepareToken();
-    }
-
-    private void prepareToken() {
-        if (destroyed || isFinishing()) return;
-        if (!PushNotifications.permitted(this)) { finishOperation("Включите уведомления приложения и канал «Инциденты» в настройках Android."); return; }
-        PushSdk.token(this, new PushSdk.TokenResult() {
-            @Override public void ready(String token) {
-                if (destroyed || isFinishing()) return;
-                PushWork.IO.execute(PushSetupActivity.this::createOrResume);
-            }
-            @Override public void unavailable() {
-                finishOperation("RuStore Push сейчас недоступен на устройстве. Проверьте приложение RuStore и разрешение его работы в фоне.");
-            }
-        });
-    }
-
-    private void createOrResume() {
-        long revocation = PushWork.localRevocation;
+    private void handle(Intent intent) {
+        if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) { finish(); return; }
+        String action = PushContract.setupPair(intent.getDataString());
+        if (action == null) { finish(); return; }
+        if (action.isEmpty()) { controls(); return; }
         try {
-            if (!PushWork.revokePending(this, true)) {
-                finishOperation("Не удалось отозвать прежнее подключение. Проверьте интернет и повторите подключение."); return;
-            }
-            JSONObject state = store.read(); JSONObject pending = state.optJSONObject("pair");
-            if (pending != null && PushContract.instant(pending.getString("expiresAt")) > System.currentTimeMillis()) {
-                finishOperation(""); return;
-            }
-            String credential = state.optString("credential");
-            byte[] random = new byte[32]; new SecureRandom().nextBytes(random);
-            String verifier = Base64.getUrlEncoder().withoutPadding().encodeToString(random);
-            String challenge = Base64.getUrlEncoder().withoutPadding().encodeToString(
-                    MessageDigest.getInstance("SHA-256").digest(verifier.getBytes(StandardCharsets.US_ASCII)));
-            String label = Build.MANUFACTURER + " " + Build.MODEL;
-            if (!PushContract.bounded(label, 256) || label.codePointCount(0, label.length()) > 64) label = "Android";
-            JSONObject request = new JSONObject().put("codeChallenge", challenge).put("deviceLabel", label).put("appVersion", BuildConfig.VERSION_NAME);
-            JSONObject result = new PushApi().request("POST", "/api/v1/push/pairings", credential, request);
-            JSONObject pairing = result.getJSONObject("pairing"); JSONObject installation = result.getJSONObject("installation");
-            String id = pairing.getString("id"); String installationId = installation.getString("id");
-            String nextCredential = credential.isEmpty() ? installation.getString("credential") : credential;
-            if (!PushContract.uuid(id) || !PushContract.credential(nextCredential, installationId)
-                    || (!credential.isEmpty() && installation.has("credential"))
-                    || !pairing.getString("verificationCode").matches("[0-9]{6}")
-                    || !PushContract.confirmation(pairing.getString("confirmationUrl"), id)) throw new IllegalArgumentException();
-            long expires = PushContract.instant(pairing.getString("expiresAt"));
-            if (expires <= System.currentTimeMillis() || expires > System.currentTimeMillis() + 330000) throw new IllegalArgumentException();
-            JSONObject saved = new JSONObject().put("id", id).put("verifier", verifier)
-                    .put("expiresAt", pairing.getString("expiresAt")).put("verificationCode", pairing.getString("verificationCode"))
-                    .put("confirmationUrl", pairing.getString("confirmationUrl"));
-            synchronized (PushStore.LOCK) {
-                if (revocation != PushWork.localRevocation) throw new IllegalArgumentException();
-                store.update(value -> value.put("credential", nextCredential).put("pair", saved));
-            }
-            // Show the comparison code before explicit browser handoff can bind an account.
-            finishOperation("");
-        } catch (PushApi.Failure failure) {
-            if (failure.status == 401) {
-                try { PushWork.disable(this); } catch (Exception ignored) { }
-                finishOperation("Прежнее подключение отозвано. Нажмите «Подключить», чтобы создать новое.");
-            } else finishOperation("Не удалось начать подключение. Повторите действие позже.");
-        } catch (Exception ignored) {
-            finishOperation("Результат подключения неизвестен. Подтверждение не открыто; можно повторить действие.");
-        }
+            Bundle extras = intent.getExtras();
+            if (extras == null) throw new IllegalArgumentException();
+            Object id = extras.get("pairingId"); Object code = extras.get("completionCode"); Object state = extras.get("clientState");
+            if (!(id instanceof String) || !(code instanceof String) || !(state instanceof String)
+                    || !PushContract.uuid((String) id) || !PushContract.secret((String) code) || !PushContract.secret((String) state))
+                throw new IllegalArgumentException();
+            pairingId = (String) id; busy = true; int request = ++operation;
+            handler.postDelayed(() -> { if (current(request) && !awaitingPermission) openCabinet(); }, 8000);
+            PushWork.IO.execute(() -> {
+                try {
+                    String target = PushPairing.receive(this, (String) id, (String) code, (String) state);
+                    handler.post(() -> {
+                        if (!current(request)) return;
+                        returnUrl = target;
+                        recordStatus("connecting");
+                        requestPermission();
+                    });
+                } catch (Exception ignored) { handler.post(() -> { if (current(request)) openCabinet(); }); }
+            });
+        } catch (RuntimeException invalid) { finish(); }
     }
 
-    private void completePending(String id, boolean explicitRetry) {
-        if (busy) return;
-        try {
-            JSONObject state = store.read(); JSONObject pending = state.optJSONObject("pair");
-            if (pending == null && completed(state, id)) { problem = ""; render(); return; }
-            if (pending == null || !id.equals(pending.optString("id"))
-                    || (PushContract.instant(pending.getString("expiresAt")) <= System.currentTimeMillis()
-                    && !pending.optBoolean("exchangeAttempted"))) {
-                problem = "Запрос подключения истёк или не относится к этому устройству."; render(); return;
-            }
-        } catch (Exception ignored) { problem = "Не удалось прочитать защищённые данные подключения."; render(); return; }
-        if (!PushNotifications.permitted(this)) { problem = "Для подключения разрешите уведомления в настройках Android."; render(); return; }
-        busy = true; problem = ""; render();
-        PushSdk.token(this, new PushSdk.TokenResult() {
-            @Override public void ready(String token) {
-                if (destroyed || isFinishing()) return;
-                PushWork.IO.execute(() -> exchange(id, explicitRetry));
-            }
-            @Override public void unavailable() { finishOperation("RuStore Push недоступен. Подключение ещё не завершено."); }
-        });
-    }
-
-    private void exchange(String id, boolean explicitRetry) {
-        long revocation = PushWork.localRevocation;
+    private void requestPermission() {
         try {
             JSONObject state = store.read();
-            if (!state.has("pair") && completed(state, id)) { finishOperation(""); return; }
-            JSONObject pending = state.getJSONObject("pair");
-            boolean expired = PushContract.instant(pending.getString("expiresAt")) <= System.currentTimeMillis();
-            if (!id.equals(pending.getString("id")) || (expired && !pending.optBoolean("exchangeAttempted")))
-                throw new IllegalArgumentException();
-            String credential = state.getString("credential");
-            String token = state.getString("token");
-            if (!PushContract.token(token)) throw new IllegalArgumentException();
-            JSONObject result;
-            try {
-                result = pending.optBoolean("exchangeAttempted")
-                        ? new PushApi().request("GET", "/api/v1/push/installation", credential, null) : null;
-                boolean reconciled = result != null && "ready".equals(result.optString("status")) && id.equals(result.optString("lastPairingId"));
-                if (!reconciled) {
-                    if (expired || (pending.optBoolean("exchangeAttempted") && !explicitRetry)) throw new IllegalArgumentException();
-                    store.update(value -> {
-                        JSONObject current = value.getJSONObject("pair");
-                        if (!id.equals(current.getString("id")) || !credential.equals(value.optString("credential")))
-                            throw new org.json.JSONException("Pairing superseded");
-                        current.put("exchangeAttempted", true);
-                    });
-                    JSONObject body = new JSONObject().put("codeVerifier", pending.getString("verifier")).put("provider", "rustore")
-                            .put("token", token).put("permission", "granted").put("appVersion", BuildConfig.VERSION_NAME);
-                    result = new PushApi().request("POST", "/api/v1/push/pairings/" + id + "/exchange", credential, body);
-                }
-            } catch (java.io.IOException unknown) {
-                // An exchange is single use. Reconcile an unknown/consumed result instead of blindly posting again.
-                result = new PushApi().request("GET", "/api/v1/push/installation", credential, null);
-            }
-            JSONObject installation = PushContract.installation(result);
-            if (!"ready".equals(installation.getString("status")) || !id.equals(installation.optString("lastPairingId")))
-                throw new IllegalArgumentException();
-            synchronized (PushStore.LOCK) {
-                if (revocation != PushWork.localRevocation) throw new IllegalArgumentException();
-                JSONObject currentState = store.read();
-                JSONObject currentPair = currentState.optJSONObject("pair");
-                if (!credential.equals(currentState.optString("credential")) || currentPair == null
-                        || !id.equals(currentPair.optString("id"))) throw new IllegalArgumentException();
-                PushWork.accept(this, installation, credential);
-                store.update(value -> {
-                    JSONObject current = value.optJSONObject("pair");
-                    if (credential.equals(value.optString("credential")) && current != null && id.equals(current.optString("id"))) {
-                        value.put("enabled", true); value.remove("pair");
-                        // A reconciled response cannot prove which token reached the server.
-                        value.remove("registeredToken"); value.remove("registeredPermission");
-                    }
+            if (state.optBoolean("optedOut")) { openCabinet(); return; }
+            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                if (state.optBoolean("permissionPrompted")) { recordStatus("permission_denied"); openCabinet(); return; }
+                store.update(value -> value.put("permissionPrompted", true));
+                awaitingPermission = true;
+                permission.launch(Manifest.permission.POST_NOTIFICATIONS);
+            } else tokenAndExchange();
+        } catch (Exception ignored) { openCabinet(); }
+    }
+
+    private void tokenAndExchange() {
+        if (destroyed || isFinishing() || opening) return;
+        if (!PushNotifications.permitted(this)) { recordStatus("permission_denied"); openCabinet(); return; }
+        int request = ++operation;
+        // Missing provider, a stalled SDK or network must not trap the user outside the cabinet.
+        handler.postDelayed(() -> { if (current(request)) { recordStatus("connection_failed"); openCabinet(); } }, 8000);
+        PushWork.IO.execute(() -> PushSdk.token(getApplicationContext(), new PushSdk.TokenResult() {
+            @Override public void ready(String token) {
+                if (!current(request)) return;
+                PushWork.IO.execute(() -> {
+                    try {
+                        PushPairing.exchange(getApplicationContext(), pairingId);
+                        JSONObject latest = store.read(); JSONObject installation = latest.optJSONObject("installation");
+                        recordStatus(PushStore.ready(latest, System.currentTimeMillis()) && installation != null
+                                && pairingId.equals(installation.optString("lastPairingId")) ? "ready" : "connection_failed");
+                    } catch (Exception ignored) { recordStatus("connection_failed"); }
+                    handler.post(() -> { if (current(request)) openCabinet(); });
                 });
-                PushWork.locallyBlocked = false;
             }
-            PushWork.registration(this);
-            finishOperation("");
-        } catch (Exception ignored) { finishOperation("Подключение не завершено. Подтвердите его в кабинете и повторите проверку до истечения запроса."); }
+            @Override public void unavailable() {
+                recordStatus("provider_unavailable");
+                handler.post(() -> { if (current(request)) openCabinet(); });
+            }
+        }));
     }
 
-    private boolean completed(JSONObject state, String id) {
-        JSONObject installation = state.optJSONObject("installation");
-        return PushStore.ready(state, System.currentTimeMillis()) && installation != null
-                && id.equals(installation.optString("lastPairingId"));
-    }
+    private boolean current(int request) { return request == operation && !destroyed && !isFinishing() && !opening; }
 
-    private void openConfirmation(JSONObject pending) {
-        runOnUiThread(() -> {
-            if (destroyed || isFinishing()) return;
-            try {
-                String id = pending.getString("id"); String url = pending.getString("confirmationUrl");
-                JSONObject currentPair = store.read().optJSONObject("pair");
-                if (!PushContract.confirmation(url, id) || currentPair == null || !id.equals(currentPair.optString("id"))
-                        || PushContract.instant(currentPair.getString("expiresAt")) <= System.currentTimeMillis()) throw new IllegalArgumentException();
-                if (browser != null) {
-                    TwaLauncher previous = browser; browser = null;
-                    try { previous.destroy(); } catch (IllegalArgumentException ignored) { }
+    private void controls() {
+        busy = false;
+        LinearLayout page = page();
+        text(page, "Уведомления на этом устройстве");
+        if (!problem.isEmpty()) text(page, problem);
+        try {
+            JSONObject state = store.read();
+            String status = state.optString("lastConnectionStatus");
+            if (state.optBoolean("optedOut")) text(page, "Уведомления отключены. Включите их, чтобы подключить устройство заново.");
+            else if ("permission_denied".equals(status)) text(page, "Уведомления запрещены в Android. Разрешите их в настройках приложения.");
+            else if ("provider_unavailable".equals(status)) text(page, "RuStore Push недоступен. Проверьте RuStore и повторите подключение.");
+            else if ("connection_failed".equals(status) || "connecting".equals(status)) text(page, "Подключение не завершено. Проверьте интернет и повторите подключение.");
+            else if (PushStore.ready(state, System.currentTimeMillis())) text(page, "Устройство подключено");
+            else text(page, "Устройство не подключено");
+        } catch (Exception ignored) { text(page, "Защищённые данные подключения недоступны."); }
+        button(page, "Включить уведомления", () -> {
+            if (busy) return;
+            busy = true; waiting(); int request = ++operation;
+            handler.postDelayed(() -> { if (current(request)) openCabinet(); }, 8000);
+            PushWork.IO.execute(() -> {
+                try {
+                    // Only this local action may recover a remotely revoked bound identity.
+                    String next = PushPairing.enable(this, LinkPolicy.HOME);
+                    handler.post(() -> { if (current(request)) openBrowser(next); });
+                } catch (Exception ignored) { handler.post(() -> { if (current(request)) openCabinet(); }); }
+            });
+        });
+        button(page, "Отключить уведомления", () -> {
+            if (busy) return;
+            busy = true; PushWork.blockLocally(this); waiting();
+            PushWork.IO.execute(() -> {
+                try { PushWork.disable(this); handler.post(this::openCabinet); }
+                catch (Exception ignored) {
+                    handler.post(() -> {
+                        if (destroyed || isFinishing()) return;
+                        problem = "Не удалось сохранить отключение. Запретите уведомления в настройках Android и повторите действие.";
+                        controls();
+                    });
                 }
-                browserOpening = true;
-                TwaLauncher current = new TwaLauncher(this); browser = current;
-                Runnable completed = () -> { if (browser == current && !destroyed && browserOpening && !isFinishing()) finish(); };
-                current.launch(new TrustedWebActivityIntentBuilder(Uri.parse(url)).setToolbarColor(Color.rgb(0, 127, 115)),
-                        new CustomTabsCallback(), null, completed, (context, builder, provider, complete) -> {
-                            if (browser != current || destroyed || !browserOpening || isFinishing()) return;
-                            try {
-                                if (provider == null || getPackageManager().resolveService(
-                                        new Intent(CustomTabsService.ACTION_CUSTOM_TABS_CONNECTION).setPackage(provider), 0) == null) {
-                                    finishOperation("Установите браузер с поддержкой Custom Tabs для подтверждения в кабинете."); return;
-                                }
-                                TwaLauncher.CCT_FALLBACK_STRATEGY.launch(context, builder, provider, complete);
-                            } catch (ActivityNotFoundException | SecurityException error) {
-                                finishOperation("Не удалось открыть подтверждение в браузере. Повторите действие.");
-                            }
-                        });
-            } catch (Exception ignored) { finishOperation("Не удалось открыть подтверждение. Повторите действие."); }
+            });
         });
+        button(page, "Открыть кабинет", this::openCabinet);
+        button(page, "Настройки уведомлений", () -> {
+            try { startActivity(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName())); }
+            catch (ActivityNotFoundException | SecurityException ignored) { }
+        });
+        setPage(page);
     }
 
-    private void refreshStatus() {
-        if (busy) return; busy = true; render();
-        PushWork.IO.execute(() -> {
+    private void openCabinet() { openBrowser(returnUrl); }
+
+    private void recordStatus(String status) {
+        try { store.update(value -> value.put("lastConnectionStatus", status)); } catch (Exception ignored) { }
+    }
+
+    private void openBrowser(String url) {
+        if (destroyed || isFinishing() || opening) return;
+        if (LinkPolicy.appLink(url) == null) {
             try {
-                String credential = store.read().optString("credential");
-                if (!credential.isEmpty()) PushWork.accept(this, new PushApi().request("GET", "/api/v1/push/installation", credential, null), credential);
-                finishOperation("");
-            } catch (Exception ignored) { finishOperation("Не удалось обновить статус. Повторите действие позже."); }
-        });
+                JSONObject pending = store.read().getJSONObject("pair");
+                if (!PushContract.confirmation(url, pending.getString("id"))) url = LinkPolicy.HOME;
+            } catch (Exception ignored) { url = LinkPolicy.HOME; }
+        }
+        opening = true; busy = false; awaitingPermission = false; ++operation; waiting();
+        if (browser != null) try { browser.destroy(); } catch (IllegalArgumentException ignored) { }
+        try {
+            TwaLauncher current = new TwaLauncher(this); browser = current;
+            current.launch(new TrustedWebActivityIntentBuilder(Uri.parse(url)).setToolbarColor(Color.rgb(0, 127, 115)),
+                    new CustomTabsCallback(), null, () -> { if (!destroyed && browser == current) finish(); },
+                    (context, builder, provider, complete) -> {
+                        if (destroyed || isFinishing() || browser != current) return;
+                        try {
+                            if (provider == null || getPackageManager().resolveService(
+                                    new Intent(CustomTabsService.ACTION_CUSTOM_TABS_CONNECTION).setPackage(provider), 0) == null) {
+                                browserUnavailable(); return;
+                            }
+                            TwaLauncher.CCT_FALLBACK_STRATEGY.launch(context, builder, provider, complete);
+                        } catch (ActivityNotFoundException | SecurityException ignored) { browserUnavailable(); }
+                    });
+        } catch (ActivityNotFoundException | SecurityException ignored) { browserUnavailable(); }
     }
 
-    private void finishOperation(String message) {
-        runOnUiThread(() -> {
-            if (destroyed || isFinishing()) return;
-            busy = false; browserOpening = false; problem = message; render();
-        });
+    private void browserUnavailable() {
+        opening = false;
+        LinearLayout page = page(); text(page, "Установите или включите браузер с поддержкой Custom Tabs.");
+        button(page, "Повторить", this::openCabinet); button(page, "Закрыть", this::finish); setPage(page);
     }
 
-    private void render() {
-        if (destroyed || isFinishing()) return;
-        ScrollView scroll = new ScrollView(this); LinearLayout page = new LinearLayout(this); content = page;
-        scroll.setFillViewport(true); scroll.setBackgroundColor(getColor(R.color.native_background));
-        page.setOrientation(LinearLayout.VERTICAL); page.setPadding(dp(20), dp(24), dp(20), dp(24)); scroll.addView(page);
+    private LinearLayout page() {
+        LinearLayout page = new LinearLayout(this); page.setOrientation(LinearLayout.VERTICAL); page.setGravity(Gravity.CENTER);
+        int pad = Math.round(24 * getResources().getDisplayMetrics().density); page.setPadding(pad, pad, pad, pad);
+        return page;
+    }
+    private void waiting() {
+        LinearLayout page = page(); text(page, "Открываем кабинет…"); page.addView(new ProgressBar(this)); setPage(page);
+    }
+    private void setPage(LinearLayout page) {
+        ScrollView scroll = new ScrollView(this); scroll.setFillViewport(true);
+        scroll.setBackgroundColor(getColor(R.color.native_background)); scroll.addView(page);
         scroll.setOnApplyWindowInsetsListener((view, insets) -> {
             if (Build.VERSION.SDK_INT >= 30) {
                 android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.ime());
@@ -303,103 +260,16 @@ public final class PushSetupActivity extends ComponentActivity {
                     insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
             return insets;
         });
-        LinearLayout brand = new LinearLayout(this); brand.setGravity(Gravity.CENTER_VERTICAL);
-        ImageView logo = new ImageView(this); logo.setImageResource(R.drawable.ic_heartbeat);
-        logo.setImportantForAccessibility(android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        LinearLayout.LayoutParams logoParams = new LinearLayout.LayoutParams(dp(36), dp(36)); logoParams.setMargins(0, 0, dp(12), 0);
-        brand.addView(logo, logoParams);
-        TextView name = new TextView(this); name.setText(R.string.app_name); name.setTextSize(18);
-        name.setTextColor(getColor(R.color.native_ink)); name.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        brand.addView(name, new LinearLayout.LayoutParams(0, -2, 1)); page.addView(brand);
-        TextView title = text("Push-уведомления", 26); title.setTypeface(Typeface.DEFAULT, Typeface.BOLD); title.setAccessibilityHeading(true);
-        text("Подключите это устройство к своему аккаунту и выберите уведомления для мониторов в кабинете.", 16);
-        LinearLayout card = new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(20), dp(16), dp(20), dp(16)); card.setBackground(surface(getColor(R.color.native_surface), getColor(R.color.native_border), 1));
-        card.setElevation(dp(2)); LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(-1, -2);
-        cardParams.setMargins(0, dp(12), 0, dp(16)); page.addView(card, cardParams); content = card;
-        if (!problem.isEmpty()) { TextView error = text(problem, 16); error.setTextColor(getColor(R.color.native_danger)); }
-        if (busy) {
-            LinearLayout waiting = new LinearLayout(this); waiting.setGravity(Gravity.CENTER_VERTICAL);
-            ProgressBar progress = new ProgressBar(this); progress.setIndeterminateTintList(ColorStateList.valueOf(getColor(R.color.native_accent_text)));
-            LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(dp(24), dp(24)); progressParams.setMargins(0, 0, dp(12), 0);
-            waiting.addView(progress, progressParams); TextView label = new TextView(this); label.setText("Подождите…"); label.setTextSize(16);
-            label.setTextColor(getColor(R.color.native_muted)); waiting.addView(label); card.addView(waiting);
-        }
-        try {
-            JSONObject state = store.read(); JSONObject installation = state.optJSONObject("installation");
-            if (store.nearLimit()) text("Хранилище уведомлений заполнено. Отключите и заново подключите устройство.", 16);
-            String status = installation == null ? "pending" : installation.optString("status");
-            text(state.optBoolean("enabled")
-                    ? (PushNotifications.permitted(this) ? statusLabel(status) : "Уведомления запрещены в Android")
-                    : "Устройство не подключено", 18);
-            JSONObject pending = state.optJSONObject("pair");
-            boolean expired = pending != null && PushContract.instant(pending.getString("expiresAt")) <= System.currentTimeMillis();
-            if (pending != null && (!expired || pending.optBoolean("exchangeAttempted"))) {
-                if (!expired) {
-                    text("Код для сверки в кабинете: " + pending.getString("verificationCode"), 20);
-                    primaryButton("Продолжить подтверждение", () -> { if (!busy) { busy = true; render(); openConfirmation(pending); } });
-                } else {
-                    text("Срок подтверждения истёк. Проверьте результат предыдущей попытки или начните подключение заново.", 16);
-                    primaryButton("Начать заново", () -> {
-                        if (busy) return;
-                        try { store.update(value -> value.remove("pair")); connect(); }
-                        catch (Exception ignored) { finishOperation("Не удалось сохранить новый запрос. Данные не изменены."); }
-                    });
-                }
-                button("Проверить подключение", () -> completePending(pending.optString("id"), true));
-            } else if (state.optBoolean("enabled") && "ready".equals(status) && PushNotifications.permitted(this)) {
-                primaryButton("Готово", this::finish); button("Переподключить", this::connect);
-            } else primaryButton(state.optBoolean("enabled") ? "Переподключить" : "Подключить", this::connect);
-            if (state.has("credential")) {
-                button("Обновить статус", this::refreshStatus);
-                button("Отключить", () -> {
-                    if (busy) return; busy = true; render();
-                    // Stop display before queued storage/network work can run.
-                    try { PushWork.blockLocally(this); } catch (RuntimeException ignored) { }
-                    PushWork.IO.execute(() -> {
-                        try { PushWork.disable(this); finishOperation(""); }
-                        catch (Exception ignored) { finishOperation("Не удалось сохранить отключение. Запретите уведомления в настройках Android и повторите действие."); }
-                    });
-                });
-            }
-        } catch (Exception ignored) { text("Защищённое хранилище недоступно. Данные не изменены.", 16); }
-        content = page;
-        button("Настройки уведомлений", () -> {
-            try { startActivity(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName())); }
-            catch (ActivityNotFoundException | SecurityException ignored) { finishOperation("Откройте разрешения приложения в настройках Android."); }
-        });
-        button("Закрыть", this::finish);
         setContentView(scroll); scroll.requestApplyInsets();
     }
-
-    private static String statusLabel(String status) {
-        switch (status) {
-            case "ready": return "Устройство подключено";
-            case "permission_denied": return "Уведомления запрещены в Android";
-            case "session_expired": case "session_revoked": return "Переподключить устройство";
-            case "invalid_token": return "Подключите уведомления заново";
-            case "provider_unavailable": return "RuStore Push недоступен";
-            default: return "Подключение не завершено";
-        }
+    private void text(LinearLayout page, String value) {
+        TextView text = new TextView(this); text.setText(value); text.setTextSize(18); text.setGravity(Gravity.CENTER);
+        text.setTextColor(getColor(R.color.native_ink)); text.setPadding(0, dp(12), 0, dp(12)); page.addView(text);
     }
-
-    private TextView text(String value, int size) {
-        TextView view = new TextView(this); view.setText(value); view.setTextSize(size); view.setLineSpacing(dp(3), 1);
-        view.setTextColor(getColor(size >= 18 ? R.color.native_ink : R.color.native_muted));
-        view.setPadding(0, dp(10), 0, dp(10)); content.addView(view); return view;
-    }
-    private void button(String label, Runnable action) {
-        styledButton(label, action, false);
-    }
-    private void primaryButton(String label, Runnable action) { styledButton(label, action, true); }
-    private GradientDrawable surface(int fill, int border, int stroke) {
-        GradientDrawable drawable = new GradientDrawable(); drawable.setColor(fill); drawable.setCornerRadius(dp(12));
-        drawable.setStroke(dp(stroke), border); return drawable;
-    }
-    private void styledButton(String label, Runnable action, boolean primary) {
+    private void button(LinearLayout page, String label, Runnable action) {
         Button button = new Button(this); button.setText(label); button.setTextSize(16); button.setAllCaps(false);
-        button.setSingleLine(false); button.setMinHeight(dp(48)); button.setEnabled(!busy || "Закрыть".equals(label));
-        button.setPadding(dp(16), dp(12), dp(16), dp(12));
+        button.setSingleLine(false); button.setMinHeight(dp(48)); button.setPadding(dp(16), dp(12), dp(16), dp(12));
+        boolean primary = "Включить уведомления".equals(label);
         int fill = getColor(primary ? R.color.native_accent : R.color.native_surface);
         int border = getColor(primary ? R.color.native_accent : R.color.native_border);
         StateListDrawable background = new StateListDrawable();
@@ -408,15 +278,25 @@ public final class PushSetupActivity extends ComponentActivity {
         background.addState(new int[]{}, surface(fill, border, 1));
         button.setBackground(new RippleDrawable(ColorStateList.valueOf(getColor(R.color.native_ripple)), background, surface(Color.WHITE, Color.WHITE, 0)));
         button.setBackgroundTintList(null);
-        int ink = primary ? Color.WHITE : getColor("Отключить".equals(label) ? R.color.native_danger : R.color.native_ink);
+        int ink = primary ? Color.WHITE : getColor("Отключить уведомления".equals(label) ? R.color.native_danger : R.color.native_ink);
         button.setTextColor(new ColorStateList(new int[][]{{-android.R.attr.state_enabled}, {}}, new int[]{getColor(R.color.native_muted), ink}));
         button.setOnClickListener(view -> action.run()); LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
-        params.setMargins(0, dp(6), 0, dp(6)); content.addView(button, params);
+        params.setMargins(0, dp(6), 0, dp(6)); page.addView(button, params);
+    }
+    private GradientDrawable surface(int fill, int border, int stroke) {
+        GradientDrawable drawable = new GradientDrawable(); drawable.setColor(fill); drawable.setCornerRadius(dp(12));
+        drawable.setStroke(dp(stroke), border); return drawable;
     }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
 
+    @Override protected void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        state.putBoolean("awaitingPermission", awaitingPermission);
+        state.putString("pairingId", pairingId); state.putString("returnUrl", returnUrl);
+    }
     @Override protected void onDestroy() {
-        destroyed = true;
+        destroyed = true; ++operation;
+        handler.removeCallbacksAndMessages(null);
         if (browser != null) try { browser.destroy(); } catch (IllegalArgumentException ignored) { }
         super.onDestroy();
     }

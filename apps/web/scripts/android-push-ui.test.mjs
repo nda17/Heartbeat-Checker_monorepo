@@ -37,11 +37,23 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function harness(url = "http://localhost/app/settings") {
+function harness(url = "http://localhost/app/settings", initialStorage = {}) {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { url });
+  for (const [key, value] of Object.entries(initialStorage))
+    dom.window.sessionStorage.setItem(key, value);
   dom.window.setInterval = () => 1;
   dom.window.clearInterval = () => {};
-  globalThis.window = dom.window;
+  const assigned = [];
+  const appWindow = {
+    location: {
+      search: dom.window.location.search,
+      assign: (value) => assigned.push(value),
+    },
+    sessionStorage: dom.window.sessionStorage,
+    setInterval: dom.window.setInterval.bind(dom.window),
+    clearInterval: dom.window.clearInterval.bind(dom.window),
+  };
+  globalThis.window = appWindow;
   globalThis.document = dom.window.document;
   Object.defineProperty(globalThis, "navigator", {
     configurable: true,
@@ -58,6 +70,7 @@ function harness(url = "http://localhost/app/settings") {
   const root = createRoot(host);
   return {
     host,
+    assigned,
     async render(element) {
       await act(async () => root.render(element));
       await act(async () => Promise.resolve());
@@ -133,10 +146,18 @@ function pairing(id = "pair-1", overrides = {}) {
   return {
     id,
     deviceLabel: "Pixel 9",
-    verificationCode: "042681",
     status: "pending",
     expiresAt: new Date(Date.now() + 300_000).toISOString(),
     ...overrides,
+  };
+}
+
+function confirmation(id = "pair-1", expiresAt = pairing(id).expiresAt) {
+  return {
+    pairingId: id,
+    completionCode: "A".repeat(43),
+    clientState: `${"A".repeat(42)}Q`,
+    expiresAt,
   };
 }
 
@@ -161,6 +182,7 @@ function loadSettings(
     account: { id: "account-1", name: "Команда 1" },
     email: "owner@example.test",
   }),
+  androidPushIntent = () => "intent://complete",
 ) {
   const aliases = {
     "next/link": ({ href, children }) =>
@@ -169,7 +191,7 @@ function loadSettings(
     "@/entities/push": { pushStatusLabels: labels },
     "@/shared/api": apiTools(api),
     "@/shared/android": {
-      androidPushIntent: () => "#intent",
+      androidPushIntent,
       pushPairingId: (params) => params.get("pushPair"),
     },
     "@/shared/ui": {
@@ -206,7 +228,64 @@ function loadRoutes(api) {
     .AndroidPushRoutes;
 }
 
-test("pairing code is shown before confirmation and viewing sends no mutation", async (t) => {
+test("pairing confirmation is browser-only, single-issue, and offers the same app return link", async (t) => {
+  const view = harness("http://localhost/app/settings?pushPair=pair-1");
+  t.after(() => view.unmount());
+  const calls = [];
+  const intents = [];
+  const pairResponse = pairing();
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/push/installations")
+      return { enabled: true, installations: [] };
+    if (path === "/push/pairings/pair-1") return pairResponse;
+    if (path.endsWith("/confirm"))
+      return confirmation("pair-1", pairResponse.expiresAt);
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const Settings = loadSettings(api, undefined, (action, payload) => {
+    intents.push({ action, payload });
+    return "intent://complete";
+  });
+  await view.render(React.createElement(Settings));
+  assert.match(view.host.textContent, /Продолжите в приложении/);
+  assert.match(view.host.textContent, /Вернуться в приложение/);
+  assert.doesNotMatch(view.host.textContent, /042681|Подтвердить подключение/);
+  assert.equal(view.host.querySelector('input[type="checkbox"]'), null);
+  assert.deepEqual(
+    calls.map(({ path, options }) => [path, options.method ?? "GET"]),
+    [
+      ["/push/installations", "GET"],
+      ["/push/pairings/pair-1", "GET"],
+      ["/push/pairings/pair-1/confirm", "POST"],
+    ],
+  );
+  assert.equal(Object.keys(calls.at(-1).options.body).length, 0);
+  assert.equal(
+    intents.length,
+    2,
+    "automatic and manual return use the same completion",
+  );
+  assert.deepEqual(view.assigned, ["intent://complete"]);
+  for (const intent of intents) {
+    assert.equal(intent.action, "complete");
+    assert.deepEqual(
+      intent.payload,
+      confirmation("pair-1", pairResponse.expiresAt),
+    );
+  }
+  assert.equal(
+    calls.some(
+      ({ path, options }) =>
+        path.includes("completionCode") ||
+        options.url?.includes("completionCode"),
+    ),
+    false,
+    "completion proof never enters an HTTP URL",
+  );
+});
+
+test("expired pairing never issues a completion code", async (t) => {
   const view = harness("http://localhost/app/settings?pushPair=pair-1");
   t.after(() => view.unmount());
   const calls = [];
@@ -214,66 +293,19 @@ test("pairing code is shown before confirmation and viewing sends no mutation", 
     calls.push({ path, options });
     if (path === "/push/installations")
       return { enabled: true, installations: [] };
-    if (path === "/push/pairings/pair-1") return pairing();
-    if (path.endsWith("/confirm")) return {};
+    if (path === "/push/pairings/pair-1")
+      return pairing("pair-1", {
+        expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      });
     throw new Error(`Unexpected request: ${path}`);
   };
   const Settings = loadSettings(api);
   await view.render(React.createElement(Settings));
-  assert.match(view.host.textContent, /042681/);
-  const confirm = [...view.host.querySelectorAll("button")].find((button) =>
-    button.textContent.includes("Подтвердить подключение"),
-  );
-  assert.ok(confirm);
+  assert.match(view.host.textContent, /Срок подключения истёк/);
   assert.equal(
-    confirm.disabled,
-    true,
-    "the account owner must explicitly acknowledge the displayed code",
-  );
-  assert.equal(
-    calls.some(({ options }) => options.method),
+    calls.some(({ options }) => options.method === "POST"),
     false,
-    "opening a pairing link is read-only",
   );
-
-  const checkbox = view.host.querySelector('input[type="checkbox"]');
-  await act(async () => {
-    checkbox.click();
-  });
-  await act(async () => confirm.click());
-  assert.deepEqual(
-    calls
-      .filter(({ options }) => options.method)
-      .map(({ path, options }) => [path, options.method]),
-    [["/push/pairings/pair-1/confirm", "POST"]],
-  );
-});
-
-test("expired pairing never enables confirmation", async (t) => {
-  await t.test("expired", async () => {
-    const view = harness("http://localhost/app/settings?pushPair=pair-1");
-    const calls = [];
-    const api = async (path, options = {}) => {
-      calls.push({ path, options });
-      if (path === "/push/installations")
-        return { enabled: true, installations: [] };
-      if (path === "/push/pairings/pair-1") {
-        return pairing("pair-1", {
-          expiresAt: new Date(Date.now() - 60_000).toISOString(),
-        });
-      }
-      throw new Error(`Unexpected request: ${path}`);
-    };
-    const Settings = loadSettings(api);
-    await view.render(React.createElement(Settings));
-    assert.match(view.host.textContent, /Срок подтверждения истёк/);
-    assert.equal(view.host.querySelector('input[type="checkbox"]'), null);
-    assert.equal(
-      calls.some(({ options }) => options.method),
-      false,
-    );
-    await view.unmount();
-  });
 });
 
 test("foreign pairing 404 remains read-only", async (t) => {
@@ -294,14 +326,13 @@ test("foreign pairing 404 remains read-only", async (t) => {
     /Подключение не найдено или срок ссылки истёк/,
   );
   assert.equal(
-    calls.some(({ options }) => options.method),
+    calls.some(({ options }) => options.method === "POST"),
     false,
   );
 });
 
-test("ambiguous pairing confirmation requires a manual read before any retry", async (t) => {
+test("ambiguous confirmation is never retried after remount", async (t) => {
   const view = harness("http://localhost/app/settings?pushPair=pair-1");
-  t.after(() => view.unmount());
   const calls = [];
   const api = async (path, options = {}) => {
     calls.push({ path, options });
@@ -313,24 +344,31 @@ test("ambiguous pairing confirmation requires a manual read before any retry", a
   };
   const Settings = loadSettings(api);
   await view.render(React.createElement(Settings));
-  await act(async () =>
-    view.host.querySelector('input[type="checkbox"]').click(),
+  assert.match(
+    view.host.textContent,
+    /подтверждение не повторяется автоматически/,
   );
-  await act(async () => {
-    [...view.host.querySelectorAll("button")]
-      .find((button) => button.textContent.includes("Подтвердить подключение"))
-      .click();
-  });
-  assert.match(view.host.textContent, /Обновите состояние перед повтором/);
   assert.equal(
     calls.filter(({ options }) => options.method === "POST").length,
     1,
   );
-  await act(async () => {
-    [...view.host.querySelectorAll("button")]
-      .find((button) => button.textContent.includes("Обновить состояние"))
-      .click();
-  });
+  const storage = view.host.ownerDocument.defaultView.sessionStorage;
+  const savedMarker = Object.fromEntries(
+    Array.from({ length: storage.length }, (_, index) => {
+      const key = storage.key(index);
+      return [key, storage.getItem(key)];
+    }),
+  );
+  await view.unmount();
+
+  const remounted = harness(
+    "http://localhost/app/settings?pushPair=pair-1",
+    savedMarker,
+  );
+  t.after(() => remounted.unmount());
+  const RemountedSettings = loadSettings(api);
+  await remounted.render(React.createElement(RemountedSettings));
+  assert.match(remounted.host.textContent, /Подтверждение уже запрошено/);
   assert.equal(
     calls.filter(({ options }) => options.method === "POST").length,
     1,
@@ -341,7 +379,7 @@ test("ambiguous pairing confirmation requires a manual read before any retry", a
   );
 });
 
-test("a monitor route stays off by default and a 409 preserves the draft without retry", async (t) => {
+test("monitor push stays off by default and preserves the draft after a CAS conflict", async (t) => {
   const view = harness("http://localhost/app/monitors/monitor-1");
   t.after(() => view.unmount());
   const calls = [];
@@ -349,54 +387,88 @@ test("a monitor route stays off by default and a 409 preserves the draft without
     calls.push({ path, options });
     if (path === "/push/installations")
       return { enabled: true, installations: [installation()] };
-    if (path === "/monitors/monitor-1/push-routes") return { routes: [] };
-    if (options.method === "PUT") throw new ApiError(409, "version_conflict");
+    if (path === "/monitors/monitor-1/push") {
+      if (options.method === "PUT") throw new ApiError(409, "version_conflict");
+      return { enabled: false, version: 0 };
+    }
     throw new Error(`Unexpected request: ${path}`);
   };
   const Routes = loadRoutes(api);
   await view.render(React.createElement(Routes, { monitorId: "monitor-1" }));
   const checkbox = view.host.querySelector('input[type="checkbox"]');
   assert.equal(checkbox.checked, false);
-  assert.equal(view.host.querySelector("form button").disabled, true);
+  assert.equal(view.host.querySelector("form button").disabled, false);
   assert.equal(
     calls.some(({ options }) => options.method),
     false,
-    "loading monitor settings must not enable a route",
   );
-
   await act(async () => checkbox.click());
   await act(async () => view.host.querySelector("form button").click());
   assert.equal(
     checkbox.checked,
     true,
-    "the user's pending selection stays visible after a conflict",
+    "the user's pending selection stays visible after conflict",
   );
   assert.match(view.host.textContent, /Настройки уже изменены/);
-  assert.equal(
-    calls.filter(({ options }) => options.method === "PUT").length,
-    1,
-  );
+  const puts = calls.filter(({ options }) => options.method === "PUT");
+  assert.equal(puts.length, 1, "a 409 does not trigger an automatic retry");
+  assert.equal(puts[0].options.body.enabled, true);
+  assert.equal(puts[0].options.body.version, 0);
   assert.ok(
     [...view.host.querySelectorAll("button")].some((button) =>
-      button.textContent.includes("Обновить настройки Android push"),
+      button.textContent.includes("Обновить настройки Push"),
     ),
   );
 });
 
-test("account change and unmount discard a late pairing read", async (t) => {
+test("explicit off can be saved before the first phone is connected", async (t) => {
+  const view = harness("http://localhost/app/monitors/monitor-1");
+  t.after(() => view.unmount());
+  const calls = [];
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/push/installations")
+      return { enabled: true, installations: [] };
+    if (path === "/monitors/monitor-1/push") {
+      if (options.method === "PUT") return { enabled: false, version: 1 };
+      return { enabled: false, version: 0 };
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const Routes = loadRoutes(api);
+  await view.render(React.createElement(Routes, { monitorId: "monitor-1" }));
+  assert.equal(
+    view.host.querySelector('input[type="checkbox"]').checked,
+    false,
+  );
+  await act(async () => view.host.querySelector("form button").click());
+  const puts = calls.filter(({ options }) => options.method === "PUT");
+  assert.equal(puts.length, 1);
+  assert.equal(puts[0].options.body.enabled, false);
+  assert.equal(puts[0].options.body.version, 0);
+  assert.equal(view.host.querySelector("form button").disabled, true);
+});
+
+test("account change and unmount discard a late pairing response", async (t) => {
   const view = harness("http://localhost/app/settings?pushPair=pair-1");
   t.after(() => view.unmount());
   const firstPairing = deferred();
   let account = "account-1";
-  const pairingReads = [];
+  let lastPairing;
+  const reads = [];
+  const confirmations = [];
   const api = async (path) => {
     if (path === "/push/installations")
       return { enabled: true, installations: [] };
     if (path === "/push/pairings/pair-1") {
-      pairingReads.push(account);
-      return account === "account-1"
-        ? firstPairing.promise
-        : pairing("pair-1", { deviceLabel: "New account phone" });
+      reads.push(account);
+      if (account === "account-1") return firstPairing.promise;
+      lastPairing = pairing("pair-1", { deviceLabel: "New account phone" });
+      return lastPairing;
+    }
+    if (path.endsWith("/confirm")) {
+      confirmations.push(account);
+      return confirmation("pair-1", lastPairing.expiresAt);
     }
     throw new Error(`Unexpected request: ${path}`);
   };
@@ -407,10 +479,15 @@ test("account change and unmount discard a late pairing read", async (t) => {
   await view.render(React.createElement(Settings));
   account = "account-2";
   await view.render(React.createElement(Settings));
-  assert.deepEqual(pairingReads, ["account-1", "account-2"]);
+  assert.deepEqual(reads, ["account-1", "account-2"]);
   firstPairing.resolve(pairing("pair-1", { deviceLabel: "Old account phone" }));
   await act(async () => Promise.resolve());
   await act(async () => Promise.resolve());
   assert.match(view.host.textContent, /New account phone/);
   assert.doesNotMatch(view.host.textContent, /Old account phone/);
+  assert.deepEqual(
+    confirmations,
+    ["account-2"],
+    "the stale account response cannot confirm",
+  );
 });

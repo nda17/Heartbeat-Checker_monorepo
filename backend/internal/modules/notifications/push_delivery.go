@@ -25,18 +25,18 @@ func (p *Push) Enqueue(ctx context.Context, tx pgx.Tx, n incidentcontracts.Notif
 	}
 	// The monitor is already locked by incident acceptance. Do not acquire auth
 	// or installation locks here; the worker and native fetch recheck all guards.
-	rows, err := tx.Query(ctx, `SELECT r.id::text,r.installation_id::text,r.delivery_generation,i.binding_generation,i.registration_version FROM notifications.push_routes r JOIN notifications.push_installations i ON i.id=r.installation_id AND i.account_id=r.account_id WHERE r.account_id=$1 AND r.monitor_id=$2 AND r.enabled AND i.status='ready' AND i.permission='granted' AND i.token_valid`, n.AccountID, n.MonitorID)
+	rows, err := tx.Query(ctx, `SELECT i.id::text,COALESCE(s.delivery_generation,0),i.binding_generation,i.registration_version FROM notifications.push_installations i JOIN monitors.monitors m ON m.account_id=i.account_id LEFT JOIN notifications.push_monitor_settings s ON s.monitor_id=m.id AND s.account_id=m.account_id LEFT JOIN notifications.push_account_settings a ON a.account_id=m.account_id WHERE m.account_id=$1 AND m.id=$2 AND COALESCE(s.enabled,a.default_enabled,false) AND i.status='ready' AND i.permission='granted' AND i.token_valid`, n.AccountID, n.MonitorID)
 	if err != nil {
 		return err
 	}
-	type route struct {
-		id, installation             string
+	type recipient struct {
+		installation                 string
 		generation, binding, version int64
 	}
-	items := []route{}
+	items := []recipient{}
 	for rows.Next() {
-		var r route
-		if err = rows.Scan(&r.id, &r.installation, &r.generation, &r.binding, &r.version); err != nil {
+		var r recipient
+		if err = rows.Scan(&r.installation, &r.generation, &r.binding, &r.version); err != nil {
 			rows.Close()
 			return err
 		}
@@ -72,7 +72,7 @@ func (p *Push) Enqueue(ctx context.Context, tx pgx.Tx, n incidentcontracts.Notif
 		if e != nil {
 			return e
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO notifications.push_deliveries(id,event_id,account_id,monitor_id,incident_id,route_id,installation_id,kind,sequence,route_generation,binding_generation,registration_version,encrypted_snapshot,deadline_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT(event_id,route_id) DO NOTHING`, id, n.EventID, n.AccountID, n.MonitorID, n.IncidentID, r.id, r.installation, kind, n.Sequence, r.generation, r.binding, r.version, sealed, content.ExpiresAt)
+		_, err = tx.Exec(ctx, `INSERT INTO notifications.push_deliveries(id,event_id,account_id,monitor_id,incident_id,installation_id,kind,sequence,policy_generation,binding_generation,registration_version,encrypted_snapshot,deadline_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(event_id,installation_id) DO NOTHING`, id, n.EventID, n.AccountID, n.MonitorID, n.IncidentID, r.installation, kind, n.Sequence, r.generation, r.binding, r.version, sealed, content.ExpiresAt)
 		if err != nil {
 			return err
 		}
@@ -81,10 +81,10 @@ func (p *Push) Enqueue(ctx context.Context, tx pgx.Tx, n incidentcontracts.Notif
 }
 
 type PushAttempt struct {
-	ID, AccountID, MonitorID, RouteID, InstallationID, SessionID, Token, RegistrationToken string
-	BindingGeneration, RouteGeneration, RegistrationVersion, Sequence                      int64
-	Attempts                                                                               int
-	Deadline                                                                               time.Time
+	ID, AccountID, MonitorID, InstallationID, SessionID, Token, RegistrationToken string
+	BindingGeneration, PolicyGeneration, RegistrationVersion, Sequence            int64
+	Attempts                                                                      int
+	Deadline                                                                      time.Time
 }
 
 type pushDeliveryState struct {
@@ -96,10 +96,11 @@ type pushDeliveryState struct {
 }
 
 // deliveryGuard follows billing -> account/auth -> monitor -> installation ->
-// route -> delivery. It never trusts an earlier unlocked installation snapshot.
+// delivery. The monitor lock also protects its push policy. It never trusts an
+// earlier unlocked installation snapshot.
 func (p *Push) deliveryGuard(ctx context.Context, tx pgx.Tx, id, installationID string) (pushDeliveryState, bool, error) {
 	var d pushDeliveryState
-	err := tx.QueryRow(ctx, `SELECT d.account_id::text,d.monitor_id::text,d.route_id::text,d.installation_id::text,COALESCE(i.session_id::text,'') FROM notifications.push_deliveries d JOIN notifications.push_installations i ON i.id=d.installation_id WHERE d.id=$1 AND ($2='' OR d.installation_id=NULLIF($2,'')::uuid)`, id, installationID).Scan(&d.AccountID, &d.MonitorID, &d.RouteID, &d.InstallationID, &d.SessionID)
+	err := tx.QueryRow(ctx, `SELECT d.account_id::text,d.monitor_id::text,d.installation_id::text,COALESCE(i.session_id::text,'') FROM notifications.push_deliveries d JOIN notifications.push_installations i ON i.id=d.installation_id WHERE d.id=$1 AND ($2='' OR d.installation_id=NULLIF($2,'')::uuid)`, id, installationID).Scan(&d.AccountID, &d.MonitorID, &d.InstallationID, &d.SessionID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return d, false, nil
 	}
@@ -115,9 +116,9 @@ func (p *Push) deliveryGuard(ctx context.Context, tx pgx.Tx, id, installationID 
 	} else if err != nil {
 		return d, false, err
 	}
-	var enabled bool
-	var monitorSequence int64
-	err = tx.QueryRow(ctx, `SELECT enabled,sequence FROM monitors.monitors WHERE id=$1 AND account_id=$2 FOR SHARE`, d.MonitorID, d.AccountID).Scan(&enabled, &monitorSequence)
+	var enabled, policyEnabled bool
+	var monitorSequence, generation int64
+	err = tx.QueryRow(ctx, `SELECT m.enabled,m.sequence,COALESCE(s.enabled,a.default_enabled,false),COALESCE(s.delivery_generation,0) FROM monitors.monitors m LEFT JOIN notifications.push_monitor_settings s ON s.monitor_id=m.id AND s.account_id=m.account_id LEFT JOIN notifications.push_account_settings a ON a.account_id=m.account_id WHERE m.id=$1 AND m.account_id=$2 FOR SHARE OF m`, d.MonitorID, d.AccountID).Scan(&enabled, &monitorSequence, &policyEnabled, &generation)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return d, false, nil
 	}
@@ -135,25 +136,16 @@ func (p *Push) deliveryGuard(ctx context.Context, tx pgx.Tx, id, installationID 
 	if err != nil {
 		return d, false, err
 	}
-	var routeEnabled bool
-	var generation int64
-	err = tx.QueryRow(ctx, `SELECT enabled,delivery_generation FROM notifications.push_routes WHERE id=$1 AND account_id=$2 AND installation_id=$3 AND monitor_id=$4 FOR SHARE`, d.RouteID, d.AccountID, d.InstallationID, d.MonitorID).Scan(&routeEnabled, &generation)
+	var binding, policyGeneration int64
+	err = tx.QueryRow(ctx, `SELECT id::text,status,attempts,next_attempt_at,lease_until,COALESCE(attempt_token::text,''),deadline_at,sequence,binding_generation,policy_generation,registration_version,encrypted_snapshot FROM notifications.push_deliveries WHERE id=$1 FOR UPDATE`, id).Scan(&d.ID, &d.Status, &d.Attempts, &d.Next, &d.Lease, &d.Token, &d.Deadline, &d.Sequence, &binding, &policyGeneration, &d.RegistrationVersion, &d.Snapshot)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return d, false, nil
 	}
 	if err != nil {
 		return d, false, err
 	}
-	var binding, routeGeneration int64
-	err = tx.QueryRow(ctx, `SELECT id::text,status,attempts,next_attempt_at,lease_until,COALESCE(attempt_token::text,''),deadline_at,sequence,binding_generation,route_generation,registration_version,encrypted_snapshot FROM notifications.push_deliveries WHERE id=$1 FOR UPDATE`, id).Scan(&d.ID, &d.Status, &d.Attempts, &d.Next, &d.Lease, &d.Token, &d.Deadline, &d.Sequence, &binding, &routeGeneration, &d.RegistrationVersion, &d.Snapshot)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return d, false, nil
-	}
-	if err != nil {
-		return d, false, err
-	}
-	d.BindingGeneration, d.RouteGeneration = binding, routeGeneration
-	valid := enabled && rank > 0 && entitlement.Quota >= rank && monitorSequence >= d.Sequence && i.AccountID == d.AccountID && i.SessionID == d.SessionID && i.Status == "ready" && i.Permission == "granted" && i.TokenValid && i.Generation == binding && routeEnabled && generation == routeGeneration && d.Deadline.After(time.Now())
+	d.BindingGeneration, d.PolicyGeneration = binding, policyGeneration
+	valid := enabled && rank > 0 && entitlement.Quota >= rank && monitorSequence >= d.Sequence && i.AccountID == d.AccountID && i.SessionID == d.SessionID && i.Status == "ready" && i.Permission == "granted" && i.TokenValid && i.Generation == binding && policyEnabled && generation == policyGeneration && d.Deadline.After(time.Now())
 	if valid {
 		token, e := p.open(i.ID, "token", i.Token)
 		if e != nil {
@@ -169,7 +161,7 @@ func (p *Push) ClaimPush(ctx context.Context) (*PushAttempt, error) {
 	if !p.cfg.Enabled || p.cfg.Sender == nil {
 		return nil, nil
 	}
-	rows, err := p.pool.Query(ctx, `SELECT d.id::text FROM notifications.push_deliveries d WHERE d.status IN ('pending','leased') AND (d.status='pending' AND d.next_attempt_at<=now() OR d.status='leased' AND d.lease_until<=now()) AND NOT EXISTS(SELECT 1 FROM notifications.push_deliveries prior WHERE prior.route_id=d.route_id AND prior.sequence<d.sequence AND prior.status IN ('pending','leased')) ORDER BY d.next_attempt_at,d.id LIMIT 100`)
+	rows, err := p.pool.Query(ctx, `SELECT d.id::text FROM notifications.push_deliveries d WHERE d.status IN ('pending','leased') AND (d.status='pending' AND d.next_attempt_at<=now() OR d.status='leased' AND d.lease_until<=now()) AND NOT EXISTS(SELECT 1 FROM notifications.push_deliveries prior WHERE prior.monitor_id=d.monitor_id AND prior.installation_id=d.installation_id AND prior.sequence<d.sequence AND prior.status IN ('pending','leased')) ORDER BY d.next_attempt_at,d.id LIMIT 100`)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +211,7 @@ func (p *Push) ClaimPush(ctx context.Context) (*PushAttempt, error) {
 			_, e = tx.Exec(ctx, `UPDATE notifications.push_deliveries SET status='failed',attempt_token=NULL,lease_until=NULL,completed_at=now(),error_code='deadline_exceeded' WHERE id=$1`, id)
 		} else {
 			var prior bool
-			e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM notifications.push_deliveries WHERE route_id=$1 AND sequence<$2 AND status IN ('pending','leased'))`, d.RouteID, d.Sequence).Scan(&prior)
+			e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM notifications.push_deliveries WHERE monitor_id=$1 AND installation_id=$2 AND sequence<$3 AND status IN ('pending','leased'))`, d.MonitorID, d.InstallationID, d.Sequence).Scan(&prior)
 			if e == nil && prior {
 				tx.Rollback(ctx)
 				continue

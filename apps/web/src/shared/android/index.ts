@@ -13,19 +13,28 @@ export function pushPairingId(params: URLSearchParams) {
     : null;
 }
 
-// Only these two reviewed native actions are allowed; no private material is put in URLs.
+// Completion secrets stay in Intent String extras inside the fragment. They
+// never become an HTTP query, browser history URL or referrer.
 export function androidPushIntent(
   action: "connect" | "complete",
-  pairingId?: string,
+  completion?: {
+    pairingId: string;
+    completionCode: string;
+    clientState: string;
+  },
 ) {
-  if (action === "connect" && pairingId === undefined)
+  if (action === "connect" && completion === undefined)
     return "intent://heartbeat-checker.ru/android/push/connect#Intent;scheme=https;package=ru.heartbeatchecker.app;end";
+  const secret = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
   if (
     action === "complete" &&
-    pairingId?.length === 36 &&
-    publicUUID.test(pairingId)
+    completion &&
+    completion.pairingId.length === 36 &&
+    publicUUID.test(completion.pairingId) &&
+    secret.test(completion.completionCode) &&
+    secret.test(completion.clientState)
   )
-    return `intent://heartbeat-checker.ru/android/push/complete?pairingId=${pairingId.toLowerCase()}#Intent;scheme=https;package=ru.heartbeatchecker.app;end`;
+    return `intent://heartbeat-checker.ru/android/push/complete#Intent;scheme=https;package=ru.heartbeatchecker.app;S.pairingId=${completion.pairingId.toLowerCase()};S.completionCode=${completion.completionCode};S.clientState=${completion.clientState};end`;
   throw new Error("Invalid Android push action");
 }
 

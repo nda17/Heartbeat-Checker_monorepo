@@ -121,9 +121,9 @@ final class PushWork {
                 if (!credential.isEmpty()) {
                     retired.put(new JSONObject().put("credential", credential).put("attempts", 0));
                 }
-                state.put("retired", retired).put("enabled", false);
+                state.put("retired", retired).put("enabled", false).put("optedOut", true);
                 for (String key : new String[]{"credential", "installation", "pair", "token", "pending", "seen", "sequences",
-                        "registeredToken", "registeredPermission"}) state.remove(key);
+                        "registeredToken", "registeredPermission", "everExchangeAttempted"}) state.remove(key);
             }); } finally {
                 blockLocally(context);
                 // Server revocation owns account access. Deleting the SDK token asynchronously

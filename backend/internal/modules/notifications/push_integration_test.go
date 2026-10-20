@@ -103,6 +103,7 @@ func (f *pushIntegrationFixture) createPairing(t *testing.T, bearer, ip string) 
 	verifier, challenge := newPushVerifier(t)
 	result, err := f.push.CreatePairing(context.Background(), bearer, ip, PushPairingInput{
 		CodeChallenge: challenge,
+		ClientState:   verifier,
 		DeviceLabel:   "Pixel test device",
 		AppVersion:    "1.2.3",
 	})
@@ -115,20 +116,37 @@ func (f *pushIntegrationFixture) createPairing(t *testing.T, bearer, ip string) 
 func (f *pushIntegrationFixture) confirmAndExchange(t *testing.T, actor pushTestActor, pair PushPairingResult, verifier, token string) PushInstallationStatus {
 	t.Helper()
 	ctx := context.Background()
-	if err := f.push.ConfirmPairing(ctx, actor.accountID, actor.sessionID, pair.Pairing.ID); err != nil {
+	confirmation, err := f.push.ConfirmPairing(ctx, actor.accountID, actor.sessionID, pair.Pairing.ID)
+	if err != nil {
 		t.Fatalf("confirm push pairing: %v", err)
 	}
+	if confirmation.ClientState != verifier || confirmation.PairingID != pair.Pairing.ID || confirmation.CompletionCode == "" {
+		t.Fatalf("confirmation payload = %+v, want matching state, pairing and completion code", confirmation)
+	}
 	result, err := f.push.ExchangePairing(ctx, pair.Installation.Credential, pair.Pairing.ID, PushExchangeInput{
-		CodeVerifier: verifier,
-		Provider:     "rustore",
-		Token:        token,
-		Permission:   "granted",
-		AppVersion:   "1.2.3",
+		CodeVerifier:   verifier,
+		CompletionCode: confirmation.CompletionCode,
+		Provider:       "rustore",
+		Token:          token,
+		Permission:     "granted",
+		AppVersion:     "1.2.3",
 	})
 	if err != nil {
 		t.Fatalf("exchange push pairing: %v", err)
 	}
 	return result
+}
+
+func (f *pushIntegrationFixture) confirmPairing(t *testing.T, actor pushTestActor, pair PushPairingResult) PushPairingConfirmation {
+	t.Helper()
+	confirmation, err := f.push.ConfirmPairing(context.Background(), actor.accountID, actor.sessionID, pair.Pairing.ID)
+	if err != nil {
+		t.Fatalf("confirm push pairing: %v", err)
+	}
+	if confirmation.PairingID != pair.Pairing.ID || confirmation.ClientState == "" || len(confirmation.CompletionCode) != 43 {
+		t.Fatalf("invalid confirmation result: %+v", confirmation)
+	}
+	return confirmation
 }
 
 func TestPushPairingPKCEOwnershipExpiryAndReplay(t *testing.T) {
@@ -138,27 +156,43 @@ func TestPushPairingPKCEOwnershipExpiryAndReplay(t *testing.T) {
 	ctx := context.Background()
 
 	pair, verifier := f.createPairing(t, "", "198.51.100.10")
-	if _, err := f.push.ExchangePairing(ctx, pair.Installation.Credential, pair.Pairing.ID, PushExchangeInput{CodeVerifier: verifier, Provider: "rustore", Token: "push-token", Permission: "granted", AppVersion: "1.2.3"}); !errors.Is(err, ErrPushConflict) {
+	unknownCode, _ := newPushVerifier(t)
+	if _, err := f.push.ExchangePairing(ctx, pair.Installation.Credential, pair.Pairing.ID, PushExchangeInput{CodeVerifier: verifier, CompletionCode: unknownCode, Provider: "rustore", Token: "push-token", Permission: "granted", AppVersion: "1.2.3"}); !errors.Is(err, ErrPushConflict) {
 		t.Fatalf("unconfirmed exchange error = %v, want conflict", err)
 	}
-	if err := f.push.ConfirmPairing(ctx, owner.accountID, owner.sessionID, pair.Pairing.ID); err != nil {
-		t.Fatalf("owner confirm: %v", err)
+	confirmation := f.confirmPairing(t, owner, pair)
+	if _, err := f.push.ConfirmPairing(ctx, owner.accountID, owner.sessionID, pair.Pairing.ID); !errors.Is(err, ErrPushConflict) {
+		t.Fatalf("repeated confirmation error = %v, want conflict", err)
 	}
 	if _, err := f.push.Pairing(ctx, foreign.accountID, pair.Pairing.ID); !errors.Is(err, ErrPushNotFound) {
 		t.Fatalf("foreign account pairing read error = %v, want not found after owner confirmation", err)
 	}
-	if err := f.push.ConfirmPairing(ctx, foreign.accountID, foreign.sessionID, pair.Pairing.ID); !errors.Is(err, ErrPushNotFound) {
+	if _, err := f.push.ConfirmPairing(ctx, foreign.accountID, foreign.sessionID, pair.Pairing.ID); !errors.Is(err, ErrPushNotFound) {
 		t.Fatalf("foreign account confirm error = %v, want not found after owner confirmation", err)
 	}
 	wrong := verifier[:len(verifier)-1] + "x"
-	if _, err := f.push.ExchangePairing(ctx, pair.Installation.Credential, pair.Pairing.ID, PushExchangeInput{CodeVerifier: wrong, Provider: "rustore", Token: "push-token", Permission: "granted", AppVersion: "1.2.3"}); !errors.Is(err, ErrPushInvalid) {
+	if _, err := f.push.ExchangePairing(ctx, pair.Installation.Credential, pair.Pairing.ID, PushExchangeInput{CodeVerifier: wrong, CompletionCode: confirmation.CompletionCode, Provider: "rustore", Token: "push-token", Permission: "granted", AppVersion: "1.2.3"}); !errors.Is(err, ErrPushInvalid) {
 		t.Fatalf("wrong PKCE verifier error = %v, want invalid", err)
 	}
-	result, err := f.push.ExchangePairing(ctx, pair.Installation.Credential, pair.Pairing.ID, PushExchangeInput{CodeVerifier: verifier, Provider: "rustore", Token: "push-token", Permission: "granted", AppVersion: "1.2.3"})
+	var defaultEnabled bool
+	if err := f.webhook.pool.QueryRow(ctx, `SELECT default_enabled FROM notifications.push_account_settings WHERE account_id=$1`, owner.accountID).Scan(&defaultEnabled); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("failed proof wrote account default: enabled=%t err=%v", defaultEnabled, err)
+	}
+	wrongCode, _ := newPushVerifier(t)
+	for wrongCode == confirmation.CompletionCode {
+		wrongCode, _ = newPushVerifier(t)
+	}
+	if _, err := f.push.ExchangePairing(ctx, pair.Installation.Credential, pair.Pairing.ID, PushExchangeInput{CodeVerifier: verifier, CompletionCode: wrongCode, Provider: "rustore", Token: "push-token", Permission: "granted", AppVersion: "1.2.3"}); !errors.Is(err, ErrPushInvalid) {
+		t.Fatalf("wrong completion code error = %v, want invalid", err)
+	}
+	if err := f.webhook.pool.QueryRow(ctx, `SELECT default_enabled FROM notifications.push_account_settings WHERE account_id=$1`, owner.accountID).Scan(&defaultEnabled); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("wrong completion code wrote account default: enabled=%t err=%v", defaultEnabled, err)
+	}
+	result, err := f.push.ExchangePairing(ctx, pair.Installation.Credential, pair.Pairing.ID, PushExchangeInput{CodeVerifier: verifier, CompletionCode: confirmation.CompletionCode, Provider: "rustore", Token: "push-token", Permission: "granted", AppVersion: "1.2.3"})
 	if err != nil || result.Status != "ready" || result.BindingGeneration != 1 || result.RegistrationVersion != 2 {
 		t.Fatalf("valid exchange = (%+v, %v), want ready generation=1 registration=2", result, err)
 	}
-	if _, err := f.push.ExchangePairing(ctx, pair.Installation.Credential, pair.Pairing.ID, PushExchangeInput{CodeVerifier: verifier, Provider: "rustore", Token: "push-token", Permission: "granted", AppVersion: "1.2.3"}); !errors.Is(err, ErrPushPairingConsumed) {
+	if _, err := f.push.ExchangePairing(ctx, pair.Installation.Credential, pair.Pairing.ID, PushExchangeInput{CodeVerifier: verifier, CompletionCode: confirmation.CompletionCode, Provider: "rustore", Token: "push-token", Permission: "granted", AppVersion: "1.2.3"}); !errors.Is(err, ErrPushPairingConsumed) {
 		t.Fatalf("replay exchange error = %v, want consumed", err)
 	}
 
@@ -166,10 +200,11 @@ func TestPushPairingPKCEOwnershipExpiryAndReplay(t *testing.T) {
 	if _, err := f.webhook.pool.Exec(ctx, `UPDATE notifications.push_pairings SET expires_at=now()-interval '1 second' WHERE id=$1`, expired.Pairing.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.push.ConfirmPairing(ctx, owner.accountID, owner.sessionID, expired.Pairing.ID); !errors.Is(err, ErrPushNotFound) {
+	if _, err := f.push.ConfirmPairing(ctx, owner.accountID, owner.sessionID, expired.Pairing.ID); !errors.Is(err, ErrPushNotFound) {
 		t.Fatalf("expired confirm error = %v, want not found", err)
 	}
-	if _, err := f.push.ExchangePairing(ctx, expired.Installation.Credential, expired.Pairing.ID, PushExchangeInput{CodeVerifier: expiredVerifier, Provider: "rustore", Token: "push-token", Permission: "granted", AppVersion: "1.2.3"}); !errors.Is(err, ErrPushConflict) {
+	expiredCode, _ := newPushVerifier(t)
+	if _, err := f.push.ExchangePairing(ctx, expired.Installation.Credential, expired.Pairing.ID, PushExchangeInput{CodeVerifier: expiredVerifier, CompletionCode: expiredCode, Provider: "rustore", Token: "push-token", Permission: "granted", AppVersion: "1.2.3"}); !errors.Is(err, ErrPushConflict) {
 		t.Fatalf("expired exchange error = %v, want conflict", err)
 	}
 }
@@ -276,25 +311,26 @@ func TestPushSessionLeaseRejectsStaleSourceWithoutExtendingSession(t *testing.T)
 func authcontractsErrSessionRevoked() error { return authcontracts.ErrSessionRevoked }
 func authcontractsErrSessionExpired() error { return authcontracts.ErrSessionExpired }
 
-func TestPushRegistrationAndRouteCASAndForeignOwnership(t *testing.T) {
+func TestPushRegistrationAndMonitorSettingsCASAndForeignOwnership(t *testing.T) {
 	f := newPushIntegrationFixture(t)
 	owner := f.addActor(t, "route-owner", false)
 	foreign := f.addActor(t, "route-foreign", false)
 	pair, verifier := f.createPairing(t, "", "198.51.100.20")
 	status := f.confirmAndExchange(t, owner, pair, verifier, "first-token")
 	ctx := context.Background()
-	if _, err := f.push.PutPushRoute(ctx, foreign.accountID, foreign.sessionID, foreign.monitorID, status.ID, PutPushRoute{Enabled: true, Version: 0}); !errors.Is(err, ErrPushNotFound) {
-		t.Fatalf("foreign route mutation error = %v, want not found", err)
+	if _, err := f.push.PutMonitorPush(ctx, foreign.accountID, foreign.sessionID, owner.monitorID, PutPushMonitorSettings{Enabled: false, Version: 0}); !errors.Is(err, ErrPushNotFound) {
+		t.Fatalf("foreign monitor settings mutation error = %v, want not found", err)
 	}
-	if _, err := f.push.PutPushRoute(ctx, owner.accountID, owner.sessionID, owner.monitorID, status.ID, PutPushRoute{Enabled: true, Version: 0}); err != nil {
-		t.Fatalf("create first push route: %v", err)
+	initial, err := f.push.MonitorPush(ctx, owner.accountID, owner.monitorID)
+	if err != nil || !initial.Enabled || initial.Version != 0 {
+		t.Fatalf("inherited account setting = (%+v, %v), want enabled version 0", initial, err)
 	}
-	routes, err := f.push.ListPushRoutes(ctx, owner.accountID, owner.monitorID)
-	if err != nil || len(routes) != 1 || !routes[0].Enabled || !routes[0].Ready || routes[0].Version != 1 {
-		t.Fatalf("route list = (%+v, %v), want one ready enabled version 1", routes, err)
+	created, err := f.push.PutMonitorPush(ctx, owner.accountID, owner.sessionID, owner.monitorID, PutPushMonitorSettings{Enabled: true, Version: 0})
+	if err != nil || !created.Enabled || created.Version != 1 {
+		t.Fatalf("create explicit monitor override = (%+v, %v), want enabled version 1", created, err)
 	}
-	if _, err := f.push.PutPushRoute(ctx, owner.accountID, owner.sessionID, owner.monitorID, status.ID, PutPushRoute{Enabled: false, Version: 0}); !errors.Is(err, ErrPushConflict) {
-		t.Fatalf("stale route version error = %v, want conflict", err)
+	if _, err := f.push.PutMonitorPush(ctx, owner.accountID, owner.sessionID, owner.monitorID, PutPushMonitorSettings{Enabled: false, Version: 0}); !errors.Is(err, ErrPushConflict) {
+		t.Fatalf("stale monitor settings version error = %v, want conflict", err)
 	}
 	newToken := "rotated-token"
 	rotated, err := f.push.UpdateRegistration(ctx, pair.Installation.Credential, PushRegistrationInput{RegistrationVersion: status.RegistrationVersion, Token: &newToken, Permission: "granted"})
@@ -324,19 +360,16 @@ func TestPushRegistrationAndRouteCASAndForeignOwnership(t *testing.T) {
 	}
 }
 
-func TestPushMonitorListReportsOnlyCurrentlyReadyEnabledRoutes(t *testing.T) {
+func TestPushMonitorListReportsOnlyCurrentlyReadyEnabledSettings(t *testing.T) {
 	f := newPushIntegrationFixture(t)
 	owner := f.addActor(t, "monitor-channels", false)
 	pair, verifier := f.createPairing(t, "", "198.51.100.74")
-	status := f.confirmAndExchange(t, owner, pair, verifier, "monitor-list-token")
+	f.confirmAndExchange(t, owner, pair, verifier, "monitor-list-token")
 	ctx := context.Background()
-	if _, err := f.push.PutPushRoute(ctx, owner.accountID, owner.sessionID, owner.monitorID, status.ID, PutPushRoute{Enabled: true, Version: 0}); err != nil {
-		t.Fatal(err)
-	}
 	module := monitors.New(f.webhook.pool, billing.New(f.webhook.pool, true), incidents.New(f.webhook.pool), accounts.New(f.webhook.pool), f.push)
 	page, err := module.ListPage(ctx, owner.accountID, monitorcontracts.ListOptions{Page: 1, PageSize: 20, Sort: "created_desc"})
 	if err != nil || len(page.Monitors) != 1 || len(page.Monitors[0].NotificationChannels) != 1 || page.Monitors[0].NotificationChannels[0] != "push" {
-		t.Fatalf("monitor notification channels = (%+v, %v), want current ready push route", page.Monitors, err)
+		t.Fatalf("monitor notification channels = (%+v, %v), want inherited enabled push channel", page.Monitors, err)
 	}
 	if _, err := f.webhook.pool.Exec(ctx, `UPDATE auth.sessions SET revoked_at=now() WHERE id=$1`, owner.sessionID); err != nil {
 		t.Fatal(err)
@@ -347,16 +380,144 @@ func TestPushMonitorListReportsOnlyCurrentlyReadyEnabledRoutes(t *testing.T) {
 	}
 }
 
+func TestPushAccountDefaultAndExplicitMonitorOffCoverFutureMonitorsAndDevices(t *testing.T) {
+	f := newPushIntegrationFixture(t)
+	actor := f.addActor(t, "account-default-fanout", false)
+	ctx := context.Background()
+	initial, err := f.push.MonitorPush(ctx, actor.accountID, actor.monitorID)
+	if err != nil || initial.Enabled || initial.Version != 0 {
+		t.Fatalf("initial missing account setting = (%+v, %v), want disabled/version 0", initial, err)
+	}
+
+	first, firstVerifier := f.createPairing(t, "", "198.51.100.75")
+	firstStatus := f.confirmAndExchange(t, actor, first, firstVerifier, "default-first-device")
+	var accountDefault bool
+	if err := f.webhook.pool.QueryRow(ctx, `SELECT default_enabled FROM notifications.push_account_settings WHERE account_id=$1`, actor.accountID).Scan(&accountDefault); err != nil || !accountDefault {
+		t.Fatalf("successful authorized exchange default = (%t, %v), want true", accountDefault, err)
+	}
+	inherited, err := f.push.MonitorPush(ctx, actor.accountID, actor.monitorID)
+	if err != nil || !inherited.Enabled || inherited.Version != 0 {
+		t.Fatalf("existing monitor inherited setting = (%+v, %v), want enabled/version 0", inherited, err)
+	}
+
+	explicitOff, err := f.push.PutMonitorPush(ctx, actor.accountID, actor.sessionID, actor.monitorID, PutPushMonitorSettings{Enabled: false, Version: inherited.Version})
+	if err != nil || explicitOff.Enabled || explicitOff.Version != 1 {
+		t.Fatalf("first explicit off = (%+v, %v), want false/version 1", explicitOff, err)
+	}
+	var generation int64
+	if err := f.webhook.pool.QueryRow(ctx, `SELECT delivery_generation FROM notifications.push_monitor_settings WHERE monitor_id=$1`, actor.monitorID).Scan(&generation); err != nil || generation != 1 {
+		t.Fatalf("first override generation = (%d, %v), want 1", generation, err)
+	}
+	unchangedOff, err := f.push.PutMonitorPush(ctx, actor.accountID, actor.sessionID, actor.monitorID, PutPushMonitorSettings{Enabled: false, Version: explicitOff.Version})
+	if err != nil || unchangedOff.Enabled || unchangedOff.Version != 2 {
+		t.Fatalf("same-value explicit off update = (%+v, %v), want false/version 2", unchangedOff, err)
+	}
+	if err := f.webhook.pool.QueryRow(ctx, `SELECT delivery_generation FROM notifications.push_monitor_settings WHERE monitor_id=$1`, actor.monitorID).Scan(&generation); err != nil || generation != 1 {
+		t.Fatalf("same-value override changed generation = (%d, %v), want 1", generation, err)
+	}
+
+	futureMonitorID, err := outbox.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.webhook.pool.Exec(ctx, `INSERT INTO monitors.monitors(id,account_id,name,url,target_key,method,expected_status) VALUES($1,$2,'Future monitor','https://future.example.test/health','future.example.test:443','GET',200)`, futureMonitorID, actor.accountID); err != nil {
+		t.Fatalf("create future monitor: %v", err)
+	}
+	future, err := f.push.MonitorPush(ctx, actor.accountID, futureMonitorID)
+	if err != nil || !future.Enabled || future.Version != 0 {
+		t.Fatalf("future monitor inherited setting = (%+v, %v), want enabled/version 0", future, err)
+	}
+
+	second, secondVerifier := f.createPairing(t, "", "198.51.100.76")
+	secondStatus := f.confirmAndExchange(t, actor, second, secondVerifier, "default-second-device")
+	if secondStatus.Status != "ready" || firstStatus.Status != "ready" {
+		t.Fatalf("authorized devices are not ready: first=%+v second=%+v", firstStatus, secondStatus)
+	}
+	stillOff, err := f.push.MonitorPush(ctx, actor.accountID, actor.monitorID)
+	if err != nil || stillOff.Enabled || stillOff.Version != unchangedOff.Version {
+		t.Fatalf("explicit off after future device exchange = (%+v, %v), want unchanged false override", stillOff, err)
+	}
+
+	var futureEventID string
+	for _, monitorID := range []string{actor.monitorID, futureMonitorID} {
+		incidentID, e := outbox.ID()
+		if e != nil {
+			t.Fatal(e)
+		}
+		eventID, e := outbox.ID()
+		if e != nil {
+			t.Fatal(e)
+		}
+		if _, e = f.webhook.pool.Exec(ctx, `INSERT INTO incidents.incidents(id,monitor_id,account_id,opened_at,confirmed_at) VALUES($1,$2,$3,now(),now())`, incidentID, monitorID, actor.accountID); e != nil {
+			t.Fatal(e)
+		}
+		tx, e := f.webhook.pool.Begin(ctx)
+		if e != nil {
+			t.Fatal(e)
+		}
+		e = f.push.Enqueue(ctx, tx, incidentcontracts.Notification{EventID: eventID, AccountID: actor.accountID, MonitorID: monitorID, IncidentID: incidentID, Kind: "incident_opened", Sequence: 1, At: time.Now().UTC(), Observation: incidentcontracts.Observation{Name: "Policy fanout"}})
+		if e != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatal(e)
+		}
+		if e = tx.Commit(ctx); e != nil {
+			t.Fatal(e)
+		}
+		var deliveries int
+		if e = f.webhook.pool.QueryRow(ctx, `SELECT count(*) FROM notifications.push_deliveries WHERE event_id=$1`, eventID).Scan(&deliveries); e != nil {
+			t.Fatal(e)
+		}
+		want := 2
+		if monitorID == actor.monitorID {
+			want = 0
+		}
+		if deliveries != want {
+			t.Errorf("monitor %s delivery fanout = %d, want %d", monitorID, deliveries, want)
+		}
+		if monitorID == futureMonitorID {
+			futureEventID = eventID
+			var policyGeneration int64
+			if e = f.webhook.pool.QueryRow(ctx, `SELECT min(policy_generation) FROM notifications.push_deliveries WHERE event_id=$1`, eventID).Scan(&policyGeneration); e != nil || policyGeneration != 0 {
+				t.Errorf("inherited account policy snapshot generation = (%d, %v), want 0", policyGeneration, e)
+			}
+		}
+	}
+	changed, err := f.push.PutMonitorPush(ctx, actor.accountID, actor.sessionID, futureMonitorID, PutPushMonitorSettings{Enabled: false, Version: future.Version})
+	if err != nil || changed.Enabled || changed.Version != 1 {
+		t.Fatalf("disable future monitor with pending deliveries = (%+v, %v), want false/version 1", changed, err)
+	}
+	var cancelled int
+	if err := f.webhook.pool.QueryRow(ctx, `SELECT count(*) FROM notifications.push_deliveries WHERE event_id=$1 AND status='cancelled' AND error_code='policy_changed'`, futureEventID).Scan(&cancelled); err != nil || cancelled != 2 {
+		t.Fatalf("policy change retained old-generation deliveries: cancelled=%d err=%v, want 2", cancelled, err)
+	}
+}
+
+func TestPushSameAccountSessionReauthenticationPreservesBindingGeneration(t *testing.T) {
+	f := newPushIntegrationFixture(t)
+	actor := f.addActor(t, "same-session-reauth", false)
+	firstPair, firstVerifier := f.createPairing(t, "", "198.51.100.77")
+	first := f.confirmAndExchange(t, actor, firstPair, firstVerifier, "first-device-token")
+
+	secondPair, secondVerifier := f.createPairing(t, firstPair.Installation.Credential, "198.51.100.78")
+	stillReady, err := f.push.Installation(context.Background(), firstPair.Installation.Credential)
+	if err != nil || stillReady.Status != "ready" || stillReady.BindingGeneration != first.BindingGeneration {
+		t.Fatalf("same-account bootstrap changed existing binding: %+v, %v", stillReady, err)
+	}
+	confirmation := f.confirmPairing(t, actor, secondPair)
+	second, err := f.push.ExchangePairing(context.Background(), firstPair.Installation.Credential, secondPair.Pairing.ID, PushExchangeInput{CodeVerifier: secondVerifier, CompletionCode: confirmation.CompletionCode, Provider: "rustore", Token: "rotated-same-session-token", Permission: "granted", AppVersion: "1.2.3"})
+	if err != nil || second.Status != "ready" || second.BindingGeneration != first.BindingGeneration || second.RegistrationVersion != first.RegistrationVersion+1 {
+		t.Fatalf("same-session reauthorization = (%+v, %v), want unchanged binding generation and rotated registration", second, err)
+	}
+}
+
 func TestPushDuplicateProviderTokenCannotRebindAnotherInstallation(t *testing.T) {
 	f := newPushIntegrationFixture(t)
 	owner := f.addActor(t, "duplicate-token", false)
 	first, firstVerifier := f.createPairing(t, "", "198.51.100.70")
 	firstStatus := f.confirmAndExchange(t, owner, first, firstVerifier, "provider-token-unique")
 	second, secondVerifier := f.createPairing(t, "", "198.51.100.71")
-	if err := f.push.ConfirmPairing(context.Background(), owner.accountID, owner.sessionID, second.Pairing.ID); err != nil {
-		t.Fatal(err)
-	}
-	_, err := f.push.ExchangePairing(context.Background(), second.Installation.Credential, second.Pairing.ID, PushExchangeInput{CodeVerifier: secondVerifier, Provider: "rustore", Token: "provider-token-unique", Permission: "granted", AppVersion: "1.2.3"})
+	confirmation := f.confirmPairing(t, owner, second)
+	_, err := f.push.ExchangePairing(context.Background(), second.Installation.Credential, second.Pairing.ID, PushExchangeInput{CodeVerifier: secondVerifier, CompletionCode: confirmation.CompletionCode, Provider: "rustore", Token: "provider-token-unique", Permission: "granted", AppVersion: "1.2.3"})
 	if !errors.Is(err, ErrPushConflict) {
 		t.Fatalf("duplicate provider token exchange error = %v, want 409 conflict", err)
 	}
@@ -427,7 +588,7 @@ func TestPushHTTPNativeAuthAndBrowserSafeResponses(t *testing.T) {
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("invalid native bearer status = %d, want 401", unauthorized.Code)
 	}
-	created := call(http.MethodPost, "/api/v1/push/pairings", PushPairingInput{CodeChallenge: challenge, DeviceLabel: "HTTP Pixel", AppVersion: "1.2.3"}, "", false)
+	created := call(http.MethodPost, "/api/v1/push/pairings", PushPairingInput{CodeChallenge: challenge, ClientState: verifier, DeviceLabel: "HTTP Pixel", AppVersion: "1.2.3"}, "", false)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create pairing status = %d body=%s", created.Code, created.Body.String())
 	}
@@ -442,10 +603,26 @@ func TestPushHTTPNativeAuthAndBrowserSafeResponses(t *testing.T) {
 	if strings.Contains(browserPair.Body.String(), pairResult.Installation.Credential) || strings.Contains(browserPair.Body.String(), "provider-private-token") {
 		t.Fatalf("browser pairing response exposed native secret material: %s", browserPair.Body.String())
 	}
-	if err := f.push.ConfirmPairing(context.Background(), actor.accountID, actor.sessionID, pairResult.Pairing.ID); err != nil {
-		t.Fatal(err)
+	if strings.Contains(browserPair.Body.String(), "completionCode") || strings.Contains(browserPair.Body.String(), "clientState") {
+		t.Fatalf("pairing metadata exposed completion material: %s", browserPair.Body.String())
 	}
-	if _, err := f.push.ExchangePairing(context.Background(), pairResult.Installation.Credential, pairResult.Pairing.ID, PushExchangeInput{CodeVerifier: verifier, Provider: "rustore", Token: "provider-private-token", Permission: "granted", AppVersion: "1.2.3"}); err != nil {
+	confirmed := call(http.MethodPost, "/api/v1/push/pairings/"+pairResult.Pairing.ID+"/confirm", map[string]any{}, "", true)
+	if confirmed.Code != http.StatusOK {
+		t.Fatalf("confirm pairing status = %d body=%s", confirmed.Code, confirmed.Body.String())
+	}
+	var confirmation PushPairingConfirmation
+	if err := json.Unmarshal(confirmed.Body.Bytes(), &confirmation); err != nil || confirmation.PairingID != pairResult.Pairing.ID || confirmation.ClientState != verifier || len(confirmation.CompletionCode) != 43 {
+		t.Fatalf("decode browser-only confirmation = (%+v, %v)", confirmation, err)
+	}
+	pollAfterConfirm := call(http.MethodGet, "/api/v1/push/pairings/"+pairResult.Pairing.ID, nil, "", true)
+	if pollAfterConfirm.Code != http.StatusOK || strings.Contains(pollAfterConfirm.Body.String(), confirmation.CompletionCode) || strings.Contains(pollAfterConfirm.Body.String(), "completionCode") {
+		t.Fatalf("pairing poll exposed or changed the one-time completion code: %d %s", pollAfterConfirm.Code, pollAfterConfirm.Body.String())
+	}
+	repeatConfirm := call(http.MethodPost, "/api/v1/push/pairings/"+pairResult.Pairing.ID+"/confirm", map[string]any{}, "", true)
+	if repeatConfirm.Code != http.StatusConflict {
+		t.Fatalf("repeat HTTP confirmation = %d %s, want 409", repeatConfirm.Code, repeatConfirm.Body.String())
+	}
+	if _, err := f.push.ExchangePairing(context.Background(), pairResult.Installation.Credential, pairResult.Pairing.ID, PushExchangeInput{CodeVerifier: verifier, CompletionCode: confirmation.CompletionCode, Provider: "rustore", Token: "provider-private-token", Permission: "granted", AppVersion: "1.2.3"}); err != nil {
 		t.Fatal(err)
 	}
 	installation := call(http.MethodGet, "/api/v1/push/installation", nil, pairResult.Installation.Credential, false)
@@ -456,6 +633,14 @@ func TestPushHTTPNativeAuthAndBrowserSafeResponses(t *testing.T) {
 		if !strings.Contains(installation.Body.String(), required) {
 			t.Errorf("native installation omitted %s: %s", required, installation.Body.String())
 		}
+	}
+	monitorSettings := call(http.MethodGet, "/api/v1/monitors/"+actor.monitorID+"/push", nil, "", true)
+	if monitorSettings.Code != http.StatusOK || strings.TrimSpace(monitorSettings.Body.String()) != `{"enabled":true,"version":0}` {
+		t.Fatalf("monitor push GET = %d %s, want direct inherited {enabled:true,version:0}", monitorSettings.Code, monitorSettings.Body.String())
+	}
+	monitorSaved := call(http.MethodPut, "/api/v1/monitors/"+actor.monitorID+"/push", map[string]any{"enabled": false, "version": 0}, "", true)
+	if monitorSaved.Code != http.StatusOK || strings.TrimSpace(monitorSaved.Body.String()) != `{"enabled":false,"version":1}` {
+		t.Fatalf("monitor push PUT = %d %s, want direct {enabled:false,version:1}", monitorSaved.Code, monitorSaved.Body.String())
 	}
 	browserList := call(http.MethodGet, "/api/v1/push/installations", nil, "", true)
 	if browserList.Code != http.StatusOK {
@@ -468,19 +653,15 @@ func TestPushHTTPNativeAuthAndBrowserSafeResponses(t *testing.T) {
 	}
 }
 
-func TestPushCrossAccountRebindRemovesOldRoutesAndDeliveries(t *testing.T) {
+func TestPushCrossAccountRebindKeepsAccountPolicyAndRemovesOldDeliveries(t *testing.T) {
 	f := newPushIntegrationFixture(t)
 	first := f.addActor(t, "rebind-first", false)
 	second := f.addActor(t, "rebind-second", false)
 	pair, verifier := f.createPairing(t, "", "198.51.100.30")
 	status := f.confirmAndExchange(t, first, pair, verifier, "old-token")
 	ctx := context.Background()
-	if _, err := f.push.PutPushRoute(ctx, first.accountID, first.sessionID, first.monitorID, status.ID, PutPushRoute{Enabled: true, Version: 0}); err != nil {
-		t.Fatalf("create old account route: %v", err)
-	}
-	route, err := f.push.ListPushRoutes(ctx, first.accountID, first.monitorID)
-	if err != nil || len(route) != 1 {
-		t.Fatalf("load old route: %+v, %v", route, err)
+	if initialPolicy, err := f.push.MonitorPush(ctx, first.accountID, first.monitorID); err != nil || !initialPolicy.Enabled {
+		t.Fatalf("load inherited old account policy: %+v, %v", initialPolicy, err)
 	}
 	incidentID, err := outbox.ID()
 	if err != nil {
@@ -514,22 +695,26 @@ func TestPushCrossAccountRebindRemovesOldRoutesAndDeliveries(t *testing.T) {
 	if rebind.Pairing.ID == "" || rebind.Installation.Credential != "" {
 		t.Fatalf("existing installation pairing returned unexpected credential: %+v", rebind.Installation)
 	}
-	if err := f.push.ConfirmPairing(ctx, second.accountID, second.sessionID, rebind.Pairing.ID); err != nil {
-		t.Fatalf("confirm rebind under second account: %v", err)
+	stillReady, err := f.push.Installation(ctx, pair.Installation.Credential)
+	if err != nil || stillReady.Status != "ready" || stillReady.BindingGeneration != status.BindingGeneration {
+		t.Fatalf("bootstrap demoted existing binding before confirmation: state=%+v err=%v", stillReady, err)
 	}
-	result, err := f.push.ExchangePairing(ctx, pair.Installation.Credential, rebind.Pairing.ID, PushExchangeInput{CodeVerifier: rebindVerifier, Provider: "rustore", Token: "new-account-token", Permission: "granted", AppVersion: "1.2.3"})
-	if err != nil || result.BindingGeneration != status.BindingGeneration+2 {
-		t.Fatalf("rebind exchange = (%+v, %v), want generation increment for pairing and binding", result, err)
+	var pendingDeliveries int
+	if err := f.webhook.pool.QueryRow(ctx, `SELECT count(*) FROM notifications.push_deliveries WHERE installation_id=$1 AND status='pending'`, status.ID).Scan(&pendingDeliveries); err != nil || pendingDeliveries != 1 {
+		t.Fatalf("bootstrap cancelled existing delivery: pending=%d err=%v", pendingDeliveries, err)
 	}
-	var oldRoutes, oldDeliveries int
-	if err := f.webhook.pool.QueryRow(ctx, `SELECT count(*) FROM notifications.push_routes WHERE installation_id=$1`, status.ID).Scan(&oldRoutes); err != nil {
+	confirmation := f.confirmPairing(t, second, rebind)
+	result, err := f.push.ExchangePairing(ctx, pair.Installation.Credential, rebind.Pairing.ID, PushExchangeInput{CodeVerifier: rebindVerifier, CompletionCode: confirmation.CompletionCode, Provider: "rustore", Token: "new-account-token", Permission: "granted", AppVersion: "1.2.3"})
+	if err != nil || result.BindingGeneration != status.BindingGeneration+1 {
+		t.Fatalf("rebind exchange = (%+v, %v), want one binding generation increment", result, err)
+	}
+	var oldDeliveries, cancelledDeliveries int
+	if err := f.webhook.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status IN ('pending','leased')),count(*) FILTER (WHERE status='cancelled') FROM notifications.push_deliveries WHERE installation_id=$1`, status.ID).Scan(&oldDeliveries, &cancelledDeliveries); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.webhook.pool.QueryRow(ctx, `SELECT count(*) FROM notifications.push_deliveries WHERE installation_id=$1`, status.ID).Scan(&oldDeliveries); err != nil {
-		t.Fatal(err)
-	}
-	if oldRoutes != 0 || oldDeliveries != 0 {
-		t.Fatalf("cross-account rebind retained old state: routes=%d deliveries=%d", oldRoutes, oldDeliveries)
+	oldPolicy, err := f.push.MonitorPush(ctx, first.accountID, first.monitorID)
+	if err != nil || !oldPolicy.Enabled || oldPolicy.Version != 0 || oldDeliveries != 0 || cancelledDeliveries != 1 {
+		t.Fatalf("cross-account rebind changed old account state: policy=%+v err=%v pending=%d cancelled=%d", oldPolicy, err, oldDeliveries, cancelledDeliveries)
 	}
 }
 
@@ -567,6 +752,113 @@ func TestPushSessionLeaseStatusesAndCredentialFence(t *testing.T) {
 		t.Fatalf("revoked installation credential error = %v, want unauthorized", err)
 	}
 	_ = status
+}
+
+func TestPushSessionRetentionFencesBoundAndConfirmedPairingsBeforeBootstrap(t *testing.T) {
+	f := newPushIntegrationFixture(t)
+	actor := f.addActor(t, "retention-race", false)
+	firstPair, firstVerifier := f.createPairing(t, "", "198.51.100.121")
+	installation := f.confirmAndExchange(t, actor, firstPair, firstVerifier, "retention-token")
+
+	confirmedSessionID, err := outbox.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmedHash := sha256.Sum256([]byte("retention-confirmed-session-token"))
+	if _, err := f.webhook.pool.Exec(context.Background(), `INSERT INTO auth.sessions(id,account_id,token_hash,credential_version,expires_at,user_agent)
+		VALUES($1,$2,$3,1,now()+interval '1 hour','retention pairing test')`, confirmedSessionID, actor.accountID, confirmedHash[:]); err != nil {
+		t.Fatalf("insert second active session: %v", err)
+	}
+	confirmedPair, confirmedVerifier := f.createPairing(t, firstPair.Installation.Credential, "198.51.100.122")
+	confirmation, err := f.push.ConfirmPairing(context.Background(), actor.accountID, confirmedSessionID, confirmedPair.Pairing.ID)
+	if err != nil || confirmation.PairingID != confirmedPair.Pairing.ID {
+		t.Fatalf("confirm pairing from second session = (%+v, %v)", confirmation, err)
+	}
+	if confirmation.ClientState != confirmedVerifier {
+		t.Fatalf("confirmed pair client state=%q, want %q", confirmation.ClientState, confirmedVerifier)
+	}
+	if _, err = f.webhook.pool.Exec(context.Background(), `UPDATE auth.sessions SET expires_at=now()-interval '1 second' WHERE id=ANY($1::uuid[])`, []string{actor.sessionID, confirmedSessionID}); err != nil {
+		t.Fatalf("expire the installation and confirmation sessions: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	retention, err := f.webhook.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := auth.LockExpiredSessionBatchTx(ctx, retention)
+	if err != nil {
+		_ = retention.Rollback(context.Background())
+		t.Fatalf("lock expired session batch: %v", err)
+	}
+	if len(ids) != 2 {
+		_ = retention.Rollback(context.Background())
+		t.Fatalf("retention selected %d sessions, want both installation and confirmed-pair sessions", len(ids))
+	}
+	if err = FenceSessionDeletionTx(ctx, retention, ids); err != nil {
+		_ = retention.Rollback(context.Background())
+		t.Fatalf("fence installation referenced by expired sessions: %v", err)
+	}
+	if err = auth.DeleteExpiredSessionBatchTx(ctx, retention, ids); err != nil {
+		_ = retention.Rollback(context.Background())
+		t.Fatalf("delete expired, fenced sessions: %v", err)
+	}
+
+	bootstrapStarted := make(chan struct{})
+	bootstrapDone := make(chan struct {
+		result PushPairingResult
+		err    error
+	}, 1)
+	verifier, challenge := newPushVerifier(t)
+	go func() {
+		close(bootstrapStarted)
+		result, createErr := f.push.CreatePairing(ctx, firstPair.Installation.Credential, "198.51.100.123", PushPairingInput{
+			CodeChallenge: challenge,
+			ClientState:   verifier,
+			DeviceLabel:   "Pixel retention race",
+			AppVersion:    "1.2.3",
+		})
+		bootstrapDone <- struct {
+			result PushPairingResult
+			err    error
+		}{result: result, err: createErr}
+	}()
+	<-bootstrapStarted
+	select {
+	case outcome := <-bootstrapDone:
+		_ = retention.Rollback(context.Background())
+		t.Fatalf("bootstrap crossed session-retention installation fence: (%+v, %v)", outcome.result, outcome.err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err = retention.Commit(ctx); err != nil {
+		t.Fatalf("commit fenced session retention: %v", err)
+	}
+	var bootstrapped struct {
+		result PushPairingResult
+		err    error
+	}
+	select {
+	case bootstrapped = <-bootstrapDone:
+	case <-ctx.Done():
+		t.Fatal("bootstrap did not resume after session-retention commit")
+	}
+	if bootstrapped.err != nil || bootstrapped.result.Pairing.ID == "" {
+		t.Fatalf("bootstrap after retention = (%+v, %v)", bootstrapped.result, bootstrapped.err)
+	}
+	var remainingSessions, pendingPairings, currentBinding int
+	if err = f.webhook.pool.QueryRow(ctx, `SELECT count(*) FROM auth.sessions WHERE id=ANY($1::uuid[])`, ids).Scan(&remainingSessions); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.webhook.pool.QueryRow(ctx, `SELECT count(*) FROM notifications.push_pairings WHERE installation_id=$1 AND id=$2 AND expires_at>now() AND consumed_at IS NULL AND account_id IS NULL AND session_id IS NULL`, installation.ID, bootstrapped.result.Pairing.ID).Scan(&pendingPairings); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.webhook.pool.QueryRow(ctx, `SELECT count(*) FROM notifications.push_installations WHERE id=$1 AND status='ready' AND account_id=$2 AND session_id IS NULL`, installation.ID, actor.accountID).Scan(&currentBinding); err != nil {
+		t.Fatal(err)
+	}
+	if remainingSessions != 0 || pendingPairings != 1 || currentBinding != 1 {
+		t.Fatalf("retention/bootstrap outcome sessions=%d newPending=%d readyBinding=%d, want 0/1/1", remainingSessions, pendingPairings, currentBinding)
+	}
 }
 
 func (f *pushIntegrationFixture) addDeliveryEvent(t *testing.T, actor pushTestActor, installationID, kind string, sequence int64, eventName string) string {
@@ -626,9 +918,6 @@ func (f *pushIntegrationFixture) addDeliveryOwner(t *testing.T, label string) (p
 	}
 	pair, verifier := f.createPairing(t, "", "198.51.100.60")
 	status := f.confirmAndExchange(t, actor, pair, verifier, "worker-token")
-	if _, err := f.push.PutPushRoute(context.Background(), actor.accountID, actor.sessionID, actor.monitorID, status.ID, PutPushRoute{Enabled: true, Version: 0}); err != nil {
-		t.Fatalf("enable test push route: %v", err)
-	}
 	return actor, pair, status
 }
 
@@ -803,7 +1092,7 @@ func TestPushCleanupAndRePairRaceKeepsNewPairing(t *testing.T) {
 		_ = cleaner.Rollback(ctx)
 		t.Fatalf("cleanup stale pairing: %v", err)
 	}
-	_, challenge := newPushVerifier(t)
+	verifier, challenge := newPushVerifier(t)
 	started := make(chan struct{})
 	repaired := make(chan struct {
 		result PushPairingResult
@@ -811,7 +1100,7 @@ func TestPushCleanupAndRePairRaceKeepsNewPairing(t *testing.T) {
 	}, 1)
 	go func() {
 		close(started)
-		result, err := f.push.CreatePairing(ctx, initial.Installation.Credential, "198.51.100.92", PushPairingInput{CodeChallenge: challenge, DeviceLabel: "Pixel", AppVersion: "1.0.0"})
+		result, err := f.push.CreatePairing(ctx, initial.Installation.Credential, "198.51.100.92", PushPairingInput{CodeChallenge: challenge, ClientState: verifier, DeviceLabel: "Pixel", AppVersion: "1.0.0"})
 		repaired <- struct {
 			result PushPairingResult
 			err    error

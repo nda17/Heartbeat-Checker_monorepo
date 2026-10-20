@@ -5,9 +5,17 @@ import java.util.List;
 
 public final class TestMainActivity extends MainActivity {
     static final List<RecordingLauncher> launchers = new ArrayList<>();
+    static final List<String> preparedTargets = new ArrayList<>();
 
     static void reset() {
         launchers.clear();
+        preparedTargets.clear();
+    }
+
+    @Override
+    void prepareBrowserTarget(String url, java.util.function.Consumer<String> ready) {
+        preparedTargets.add(url);
+        ready.accept(url);
     }
 
     @Override
