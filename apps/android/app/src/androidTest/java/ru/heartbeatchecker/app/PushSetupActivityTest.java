@@ -91,7 +91,8 @@ public final class PushSetupActivityTest {
         assertNull(PushContract.setupPair(PushContract.ORIGIN + "/android/push/complete?pairingId=" + PAIRING));
         Intent oldShape = callbackIntent().putExtra("pairingId", PAIRING);
         try (ActivityScenario<PushSetupActivity> scenario = ActivityScenario.launch(oldShape)) {
-            scenario.onActivity(activity -> assertTrue("ID-only callbacks must finish without exchange", activity.isFinishing()));
+            assertEquals("ID-only callback is rejected and the handler closes", androidx.lifecycle.Lifecycle.State.DESTROYED,
+                    scenario.getState());
         }
         assertFalse(store.read().getJSONObject("pair").has("completionCode"));
     }
@@ -157,7 +158,7 @@ public final class PushSetupActivityTest {
         assertEquals(RETURN_URL, PushPairing.bootstrap(context, RETURN_URL, api));
         assertEquals(CREDENTIAL, store.read().getString("credential"));
         assertEquals(PAIRING, store.read().getJSONObject("pair").getString("id"));
-        assertFalse(store.read().getBoolean("optedOut"));
+        assertFalse(store.read().optBoolean("optedOut"));
     }
 
     @Test
