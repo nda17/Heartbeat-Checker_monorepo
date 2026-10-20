@@ -17,6 +17,7 @@ import (
 	auth "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/monitors/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/monitors/internal/service"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/timezones"
 )
 
 type Server struct{ service *service.Service }
@@ -24,7 +25,8 @@ type Server struct{ service *service.Service }
 func New(s *service.Service) *Server { return &Server{s} }
 func (s *Server) Register(mux *http.ServeMux, protect func(http.Handler) http.Handler) {
 	routes := map[string]http.HandlerFunc{
-		"GET /api/v1/monitors": s.list, "POST /api/v1/monitors": s.create,
+		"GET /api/v1/monitor-time-zones": s.timeZones,
+		"GET /api/v1/monitors":           s.list, "POST /api/v1/monitors": s.create,
 		"GET /api/v1/monitors/{id}": s.get, "PATCH /api/v1/monitors/{id}": s.patch, "DELETE /api/v1/monitors/{id}": s.remove,
 		"GET /api/v1/monitors/{id}/results": s.results, "GET /api/v1/monitors/{id}/incidents": s.incidents,
 		"GET /api/v1/monitors/{id}/incidents/{incidentId}": s.incident,
@@ -295,4 +297,8 @@ func (s *Server) entitlement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, 200, map[string]any{"entitlement": e})
+}
+
+func (s *Server) timeZones(w http.ResponseWriter, r *http.Request) {
+	write(w, 200, map[string]any{"timeZones": timezones.Catalog()})
 }

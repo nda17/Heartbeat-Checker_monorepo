@@ -3,80 +3,228 @@ package ru.heartbeatchecker.app;
 import android.app.Application;
 import android.content.Context;
 
-import java.io.IOException;
+import com.google.android.gms.common.GoogleApiAvailability;
+import com.google.firebase.FirebaseApp;
+import com.google.firebase.FirebaseOptions;
+import com.google.firebase.installations.FirebaseInstallations;
+import com.google.firebase.messaging.FirebaseMessaging;
+import com.huawei.agconnect.AGConnectInstance;
+import com.huawei.agconnect.AGConnectOptionsBuilder;
+import com.huawei.agconnect.config.AGConnectServicesConfig;
+import com.huawei.hms.aaid.HmsInstanceId;
+import com.huawei.hms.api.HuaweiApiAvailability;
+import org.json.JSONObject;
 
+import java.io.IOException;
 import ru.rustore.sdk.pushclient.RuStorePushClient;
 import ru.rustore.sdk.pushclient.common.logger.Logger;
+import ru.rustore.sdk.pushclient.messaging.exception.RuStorePushClientException;
 import ru.rustore.sdk.core.feature.model.FeatureAvailabilityResult;
 
+/** One active route per installation. Other SDK callbacks only cache candidates. */
 final class PushSdk {
     interface TokenResult { void ready(String token); void unavailable(); }
+    private static volatile boolean initialized;
     private PushSdk() {}
 
     static void initialize(Application application) {
-        if (BuildConfig.RUSTORE_PUSH_PROJECT_ID.isEmpty()) {
-            new PushStore(application).providerIssue(PushStore.ProviderIssue.SDK_UNAVAILABLE); return;
-        }
         try {
-            RuStorePushClient.INSTANCE.init(application, BuildConfig.RUSTORE_PUSH_PROJECT_ID, new QuietLogger());
-        } catch (RuntimeException ignored) {
-            new PushStore(application).providerIssue(PushStore.ProviderIssue.SDK_UNAVAILABLE);
+            if (!BuildConfig.RUSTORE_PUSH_PROJECT_ID.isEmpty())
+                RuStorePushClient.INSTANCE.init(application, BuildConfig.RUSTORE_PUSH_PROJECT_ID, new QuietLogger());
+        } catch (RuntimeException ignored) { /* Another configured provider may be available. */ }
+        try {
+            if (configured("fcm")) {
+                if (FirebaseApp.getApps(application).isEmpty()) FirebaseApp.initializeApp(application, new FirebaseOptions.Builder()
+                        .setApplicationId(BuildConfig.FIREBASE_APP_ID).setApiKey(BuildConfig.FIREBASE_API_KEY)
+                        .setProjectId(BuildConfig.FIREBASE_PROJECT_ID).setGcmSenderId(BuildConfig.FIREBASE_SENDER_ID).build());
+                FirebaseMessaging.getInstance().setAutoInitEnabled(false);
+            }
+        } catch (RuntimeException ignored) { /* Missing/invalid configuration fails this provider closed. */ }
+        initializeHuawei(application);
+
+        initialized = true;
+    }
+
+    // HMS's own service may run in :pushservice. This method must not touch our
+    // encrypted state, another push SDK, or WorkManager from that process.
+    static void initializeHuawei(Context context) {
+        try {
+            if (configured("huawei")) {
+                // Push Kit needs only public app/project identity. Sending secrets never enter this APK.
+                AGConnectServicesConfig config = AGConnectServicesConfig.fromContext(context);
+                config.setParam("client/app_id", BuildConfig.HUAWEI_APP_ID);
+                config.setParam("client/project_id", BuildConfig.HUAWEI_PROJECT_ID);
+                config.setParam("client/cp_id", BuildConfig.HUAWEI_CP_ID);
+                config.setParam("client/package_name", BuildConfig.APPLICATION_ID);
+                AGConnectInstance.initialize(context, new AGConnectOptionsBuilder()
+                        .setAppId(BuildConfig.HUAWEI_APP_ID).setCPId(BuildConfig.HUAWEI_CP_ID)
+                        .setPackageName(BuildConfig.APPLICATION_ID).setCustomValue("client/project_id", BuildConfig.HUAWEI_PROJECT_ID));
+            }
+        } catch (RuntimeException ignored) { /* A missing provider must not block the cabinet. */ }
+    }
+
+    static boolean configured(String provider) {
+        switch (provider) {
+            case "fcm": return !BuildConfig.FIREBASE_APP_ID.isEmpty() && !BuildConfig.FIREBASE_API_KEY.isEmpty()
+                    && !BuildConfig.FIREBASE_PROJECT_ID.isEmpty() && !BuildConfig.FIREBASE_SENDER_ID.isEmpty();
+            case "huawei": return !BuildConfig.HUAWEI_APP_ID.isEmpty() && !BuildConfig.HUAWEI_PROJECT_ID.isEmpty()
+                    && !BuildConfig.HUAWEI_CP_ID.isEmpty();
+            case "rustore": return !BuildConfig.RUSTORE_PUSH_PROJECT_ID.isEmpty();
+            default: return false;
         }
+    }
+
+    static String provider(JSONObject state) {
+        String selected = state.optString("provider");
+        JSONObject installation = state.optJSONObject("installation");
+        if (!PushContract.provider(selected) && installation != null && installation.optLong("bindingGeneration") > 0) selected = installation.optString("provider");
+        // Upgrade from 1.1.3 keeps its existing RuStore token and route.
+        if (!PushContract.provider(selected) && PushContract.token(state.optString("token"))) selected = "rustore";
+        return selected;
+    }
+
+    private static boolean supported(Context context, String provider) {
+        if (!configured(provider)) return false;
+        try {
+            if ("fcm".equals(provider)) return GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context) == 0;
+            if ("huawei".equals(provider)) return HuaweiApiAvailability.getInstance().isHuaweiMobileServicesAvailable(context) == 0;
+            return RuStorePushClient.INSTANCE.isInitialized();
+        } catch (RuntimeException ignored) { return false; }
+    }
+
+    private static boolean definitivelyUnavailable(Context context, String provider) {
+        if (!configured(provider)) return true;
+        try {
+            if ("fcm".equals(provider)) {
+                int status = GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context);
+                return status == 1 || status == 9;
+            }
+            if ("huawei".equals(provider)) return HuaweiApiAvailability.getInstance().isHuaweiMobileServicesAvailable(context) == 1;
+            return false; // RuStore owns distributor detection, including non-store hosts.
+        } catch (RuntimeException ignored) { return false; }
     }
 
     static void token(Context context, TokenResult result) {
+        if (!initialized) { result.unavailable(); return; }
         try {
             PushStore store = new PushStore(context);
-            long revision = store.read().optLong("tokenRevision");
-            if (BuildConfig.RUSTORE_PUSH_PROJECT_ID.isEmpty() || !RuStorePushClient.INSTANCE.isInitialized()) {
-                store.providerIssue(PushStore.ProviderIssue.SDK_UNAVAILABLE);
-                result.unavailable(); return;
+            JSONObject state = store.read();
+            if (PushWork.locallyBlocked || state.optBoolean("optedOut")) { result.unavailable(); return; }
+            JSONObject capabilities = new PushApi().request("GET", "/api/v1/push/capabilities", "", null);
+            if (capabilities.optInt("protocolVersion") != 2) { result.unavailable(); return; }
+            store.update(value -> value.put("serverProviders", capabilities.getJSONArray("providers")));
+            String current = provider(state);
+            boolean allowed = false;
+            org.json.JSONArray available = capabilities.getJSONArray("providers");
+            for (int i=0; i<available.length(); i++) allowed |= current.equals(available.optString(i));
+            if (PushContract.provider(current) && allowed && !definitivelyUnavailable(context, current)) {
+                request(context, store, current, result); return;
             }
-            RuStorePushClient.INSTANCE.checkPushAvailability().addOnSuccessListener(availability -> {
-                if (!(availability instanceof FeatureAvailabilityResult.Available)) {
-                    store.providerIssue(PushStore.ProviderIssue.SDK_UNAVAILABLE); result.unavailable(); return;
-                }
-                fetchToken(store, revision, result);
-            })
-                    .addOnFailureListener(ignored -> unavailable(store, result));
-        } catch (RuntimeException | IOException ignored) { unavailable(new PushStore(context), result); }
+            choose(context, store, current, 0, result);
+        } catch (IOException | org.json.JSONException | RuntimeException ignored) { result.unavailable(); }
     }
 
-    private static void fetchToken(PushStore store, long revision, TokenResult result) {
+    private static void choose(Context context, PushStore store, String previous, int index, TokenResult result) {
+        String[] order = {"fcm", "huawei", "rustore"};
+        if (index >= order.length) { store.providerIssue(PushStore.ProviderIssue.SDK_UNAVAILABLE); result.unavailable(); return; }
+        String target = order[index];
+        boolean allowed = false;
         try {
-            RuStorePushClient.INSTANCE.getToken().addOnSuccessListener(token -> {
-                try {
-                    String current;
-                    synchronized (PushStore.LOCK) {
-                        org.json.JSONObject latest = store.read();
-                        current = latest.optLong("tokenRevision") != revision ? latest.optString("token") : token;
-                        if (!PushContract.token(current)) { result.unavailable(); return; }
-                        store.update(state -> {
-                            if (!current.equals(state.optString("token")))
-                                state.put("token", current).put("tokenRevision", state.optLong("tokenRevision") + 1);
-                        });
+            org.json.JSONArray available = store.read().optJSONArray("serverProviders");
+            if (available != null) for (int i=0; i<available.length(); i++) allowed |= target.equals(available.optString(i));
+        } catch (IOException ignored) { result.unavailable(); return; }
+        if (target.equals(previous) || !allowed || !supported(context, target)) { choose(context, store, previous, index + 1, result); return; }
+        if ("rustore".equals(target)) {
+            try {
+                RuStorePushClient.INSTANCE.checkPushAvailability().addOnSuccessListener(available -> {
+                    if (available instanceof FeatureAvailabilityResult.Available) select(context, store, previous, target, result);
+                    else choose(context, store, previous, index + 1, result);
+                }).addOnFailureListener(ignored -> result.unavailable());
+            } catch (RuntimeException ignored) { result.unavailable(); }
+        } else select(context, store, previous, target, result);
+    }
+
+    private static void select(Context context, PushStore store, String previous, String target, TokenResult result) {
+        try {
+            synchronized (PushStore.LOCK) {
+                JSONObject latest = store.read();
+                if (!previous.equals(provider(latest)) || PushWork.locallyBlocked || latest.optBoolean("optedOut")) { result.unavailable(); return; }
+                store.update(state -> {
+                    state.put("provider", target); state.remove("token");
+                    state.remove("providerDiagnostic");
+                    state.remove("registeredToken"); state.remove("registeredProvider");
+                    state.put("tokenRevision", state.optLong("tokenRevision") + 1);
+                });
+            }
+            request(context, store, target, result);
+        } catch (IOException ignored) { result.unavailable(); }
+    }
+
+    private static void request(Context context, PushStore store, String provider, TokenResult result) {
+        try {
+            long revision = store.read().optLong("tokenRevision");
+            if ("fcm".equals(provider)) {
+                FirebaseMessaging.getInstance().register().addOnSuccessListener(unused ->
+                        FirebaseInstallations.getInstance().getId().addOnSuccessListener(value -> acquired(context, store, provider, value, revision, result))
+                                .addOnFailureListener(ignored -> result.unavailable()))
+                        .addOnFailureListener(ignored -> result.unavailable());
+            } else if ("huawei".equals(provider)) {
+                // Synchronous HMS call is forbidden on the main thread. A blank return
+                // on older HMS is completed through onNewToken on a later retry.
+                PushWork.IO.execute(() -> {
+                    try {
+                        String value = HmsInstanceId.getInstance(context).getToken(BuildConfig.HUAWEI_APP_ID, "HCM");
+                        if (!PushContract.token(value)) value = store.read().optString("candidate_huawei");
+                        acquired(context, store, provider, value, revision, result);
+                    } catch (Exception ignored) { result.unavailable(); }
+                });
+            } else {
+                RuStorePushClient.INSTANCE.checkPushAvailability().addOnSuccessListener(available -> {
+                    if (!(available instanceof FeatureAvailabilityResult.Available)) {
+                        if (available instanceof FeatureAvailabilityResult.Unavailable
+                                && ((FeatureAvailabilityResult.Unavailable) available).getCause() instanceof RuStorePushClientException.HostAppNotInstalledException)
+                            choose(context, store, provider, 0, result);
+                        else result.unavailable();
+                        return;
                     }
-                    result.ready(current);
-                } catch (IOException ignored) { result.unavailable(); }
-            }).addOnFailureListener(ignored -> unavailable(store, result));
-        } catch (RuntimeException ignored) { unavailable(store, result); }
+                    RuStorePushClient.INSTANCE.getToken().addOnSuccessListener(value -> acquired(context, store, provider, value, revision, result))
+                            .addOnFailureListener(ignored -> result.unavailable());
+                }).addOnFailureListener(ignored -> result.unavailable());
+            }
+        } catch (IOException | RuntimeException ignored) { result.unavailable(); }
     }
 
-    private static void unavailable(PushStore store, TokenResult result) {
-        store.providerIssue(PushStore.ProviderIssue.SDK_UNAVAILABLE);
-        result.unavailable();
+    private static void acquired(Context context, PushStore store, String provider, String token, long revision, TokenResult result) {
+        try {
+            synchronized (PushStore.LOCK) {
+                JSONObject latest = store.read();
+                if (!provider.equals(provider(latest)) || PushWork.locallyBlocked || latest.optBoolean("optedOut")) { result.unavailable(); return; }
+                String current = latest.optLong("tokenRevision") != revision ? latest.optString("token") : token;
+                if (!PushContract.token(current)) { result.unavailable(); return; }
+                store.update(state -> {
+                    state.put("provider", provider);
+                    if (!current.equals(state.optString("token"))) state.put("token", current).put("tokenRevision", state.optLong("tokenRevision") + 1);
+                });
+                result.ready(current);
+            }
+        } catch (IOException ignored) { result.unavailable(); }
     }
 
-    static void rotated(Context context, String token) {
-        if (!PushContract.token(token)) return;
+    static void rotated(Context context, String token) { rotated(context, "rustore", token); }
+
+    static void rotated(Context context, String provider, String token) {
+        if (!PushContract.provider(provider) || !PushContract.token(token)) return;
         try {
             PushStore store = new PushStore(context);
             store.update(state -> {
-                if (!token.equals(state.optString("token")))
+                state.put("candidate_" + provider, token);
+                // Late callbacks from an unselected SDK cannot take over a binding.
+                if (provider.equals(provider(state)) && !state.optBoolean("optedOut") && !PushWork.locallyBlocked
+                        && !token.equals(state.optString("token")))
                     state.put("token", token).put("tokenRevision", state.optLong("tokenRevision") + 1);
             });
-            if (store.read().optBoolean("enabled")) PushWork.registration(context);
-        } catch (IOException | RuntimeException ignored) { /* Fail closed; never expose a token in logs. */ }
+            if (provider.equals(provider(store.read())) && store.read().optBoolean("enabled")) PushWork.registration(context);
+        } catch (IOException | RuntimeException ignored) { /* Never expose SDK identifiers in logs. */ }
     }
 
     private static final class QuietLogger implements Logger {

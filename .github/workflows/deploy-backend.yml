@@ -229,6 +229,11 @@ jobs:
           FIREWALL_POLICY_SHA: ${{ steps.firewall.outputs.policy_sha }}
           RUSTORE_PUSH_PROJECT_ID: ${{ vars.RUSTORE_PUSH_PROJECT_ID }}
           RUSTORE_PUSH_SERVICE_TOKEN: ${{ secrets.RUSTORE_PUSH_SERVICE_TOKEN }}
+          FCM_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
+          FCM_SERVICE_ACCOUNT_BASE64: ${{ secrets.FCM_SERVICE_ACCOUNT_BASE64 }}
+          HUAWEI_PROJECT_ID: ${{ vars.HUAWEI_PROJECT_ID }}
+          HUAWEI_CLIENT_ID: ${{ secrets.HUAWEI_CLIENT_ID }}
+          HUAWEI_CLIENT_SECRET: ${{ secrets.HUAWEI_CLIENT_SECRET }}
           YOOKASSA_TEST_SHOP_ID: ${{ secrets.YOOKASSA_TEST_SHOP_ID }}
           YOOKASSA_TEST_SECRET_KEY: ${{ secrets.YOOKASSA_TEST_SECRET_KEY }}
           YOOKASSA_PRODUCTION_SHOP_ID: ${{ secrets.YOOKASSA_PRODUCTION_SHOP_ID }}
@@ -282,7 +287,16 @@ jobs:
               service_token = os.environ.get("RUSTORE_PUSH_SERVICE_TOKEN", "")
               if not project or not service_token:
                   raise SystemExit("Missing protected RuStore push configuration")
-              payload = {"projectId": project, "serviceToken": service_token}
+              fcm_project = os.environ.get("FCM_PROJECT_ID", "")
+              fcm_credentials = os.environ.get("FCM_SERVICE_ACCOUNT_BASE64", "")
+              huawei_project = os.environ.get("HUAWEI_PROJECT_ID", "")
+              huawei_client = os.environ.get("HUAWEI_CLIENT_ID", "")
+              huawei_secret = os.environ.get("HUAWEI_CLIENT_SECRET", "")
+              if not all((fcm_project, fcm_credentials, huawei_project, huawei_client, huawei_secret)):
+                  raise SystemExit("Missing protected Firebase/Huawei push configuration")
+              payload = {"projectId": project, "serviceToken": service_token,
+                         "fcm": {"projectId": fcm_project, "serviceAccountBase64": fcm_credentials},
+                         "huawei": {"projectId": huawei_project, "clientId": huawei_client, "clientSecret": huawei_secret}}
           sys.stdout.write(token + "\n")
           if payload is not None:
               json.dump(payload, sys.stdout, ensure_ascii=True)

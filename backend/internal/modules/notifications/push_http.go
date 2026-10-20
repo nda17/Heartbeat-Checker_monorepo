@@ -75,6 +75,7 @@ func (p *Push) RegisterAPI(mux *http.ServeMux, protect func(http.Handler) http.H
 		mux.Handle(pattern, protect(handler))
 	}
 	for pattern, handler := range map[string]http.HandlerFunc{
+		"GET /api/v1/push/capabilities":                         p.pushCapabilities,
 		"POST /api/v1/push/pairings":                            p.createPushPairing,
 		"POST /api/v1/push/pairings/{id}/exchange":              p.exchangePushPairing,
 		"GET /api/v1/push/installation":                         p.getPushInstallation,
@@ -84,6 +85,18 @@ func (p *Push) RegisterAPI(mux *http.ServeMux, protect func(http.Handler) http.H
 	} {
 		mux.Handle(pattern, handler)
 	}
+}
+
+// Capabilities are public project-level transport availability, never credentials.
+func (p *Push) pushCapabilities(w http.ResponseWriter, r *http.Request) {
+	providers := []string{}
+	for _, provider := range []string{"fcm", "huawei", "rustore"} {
+		if p.providerEnabled(provider) {
+			providers = append(providers, provider)
+		}
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	messengerWrite(w, 200, map[string]any{"protocolVersion": 2, "providers": providers})
 }
 
 func (p *Push) nativeCredential(w http.ResponseWriter, r *http.Request) (string, bool) {
@@ -155,6 +168,10 @@ func (p *Push) exchangePushPairing(w http.ResponseWriter, r *http.Request) {
 	if !pushDecode(w, r, &in) {
 		return
 	}
+	if in.Provider != "rustore" && r.Header.Get("X-Heartbeat-Push-Protocol") != "2" {
+		pushFailure(w, ErrPushInvalid)
+		return
+	}
 	result, err := p.ExchangePairing(r.Context(), bearer, r.PathValue("id"), in)
 	if err != nil {
 		pushFailure(w, err)
@@ -172,6 +189,10 @@ func (p *Push) getPushInstallation(w http.ResponseWriter, r *http.Request) {
 		pushFailure(w, err)
 		return
 	}
+	if result.Provider != "rustore" && r.Header.Get("X-Heartbeat-Push-Protocol") != "2" {
+		pushFailure(w, ErrPushReconnect)
+		return
+	}
 	messengerWrite(w, 200, result)
 }
 func (p *Push) updatePushInstallation(w http.ResponseWriter, r *http.Request) {
@@ -181,6 +202,10 @@ func (p *Push) updatePushInstallation(w http.ResponseWriter, r *http.Request) {
 	}
 	var in PushRegistrationInput
 	if !pushDecode(w, r, &in) {
+		return
+	}
+	if in.Provider != "" && in.Provider != "rustore" && r.Header.Get("X-Heartbeat-Push-Protocol") != "2" {
+		pushFailure(w, ErrPushInvalid)
 		return
 	}
 	result, err := p.UpdateRegistration(r.Context(), bearer, in)

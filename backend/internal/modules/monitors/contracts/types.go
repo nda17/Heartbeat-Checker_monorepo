@@ -47,6 +47,7 @@ type MonitorInput struct {
 	CheckType        string `json:"checkType"`
 	Name             string `json:"name"`
 	URL              string `json:"url"`
+	TimeZone         string `json:"timeZone"`
 	Host             string `json:"host"`
 	Port             int    `json:"port"`
 	Method           string `json:"method"`
@@ -62,6 +63,7 @@ type Patch struct {
 	CheckType        *string `json:"checkType,omitempty"`
 	Name             *string `json:"name,omitempty"`
 	URL              *string `json:"url,omitempty"`
+	TimeZone         *string `json:"timeZone,omitempty"`
 	Host             *string `json:"host,omitempty"`
 	Port             *int    `json:"port,omitempty"`
 	Method           *string `json:"method,omitempty"`
@@ -79,6 +81,8 @@ type Monitor struct {
 	CheckType        string     `json:"checkType"`
 	Name             string     `json:"name"`
 	URL              string     `json:"url"`
+	TimeZone         string     `json:"timeZone"`
+	Provider         Provider   `json:"provider"`
 	Host             string     `json:"host"`
 	Port             int        `json:"port"`
 	Method           string     `json:"method"`
@@ -94,6 +98,13 @@ type Monitor struct {
 	LastLatencyMS    *int64     `json:"lastLatencyMs"`
 	LastRoundTripMS  *int64     `json:"lastRoundTripMs"`
 	NextCheckAt      *time.Time `json:"nextCheckAt"`
+}
+
+// Provider describes the health of configured outbound providers.
+type Provider struct {
+	Names     []string   `json:"names"`
+	Status    string     `json:"status"`
+	CheckedAt *time.Time `json:"checkedAt"`
 }
 
 // Result summarizes one completed monitor run.

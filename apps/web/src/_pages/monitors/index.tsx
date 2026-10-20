@@ -23,6 +23,8 @@ import {
   checkTypeLabel,
   monitorCheckType,
   monitorTarget,
+  monitorDateTime,
+  monitorProvider,
   resultErrorMessage,
 } from "@/entities/monitor";
 import { api, ApiError, errorMessage, safeAppReturnTo } from "@/shared/api";
@@ -627,6 +629,9 @@ export function MonitorsPage() {
                         Интервал: {m.intervalMinutes} мин · Порог:{" "}
                         {m.failureThreshold}
                       </span>
+                      <span className="cell-sub">
+                        Провайдер / CDN: {monitorProvider(m)}
+                      </span>
                       <span className="monitor-list-channels">
                         <Icon name="bell" size={20} />
                         {m.notificationChannels?.length ? (
@@ -678,10 +683,10 @@ export function MonitorsPage() {
                       </span>
                     </td>
                     <td data-label="Последняя проверка">
-                      {dateTime(m.lastCheckedAt)}
+                      {monitorDateTime(m.lastCheckedAt, m.timeZone)}
                       <span className="cell-sub">
                         {m.nextCheckAt
-                          ? `Следующая: ${dateTime(m.nextCheckAt)}`
+                          ? `Следующая: ${monitorDateTime(m.nextCheckAt, m.timeZone)}`
                           : m.enabled
                             ? "Ожидает расписания"
                             : "Проверки приостановлены"}
@@ -872,6 +877,14 @@ export function MonitorsPage() {
             Интервал: {detail.monitor.intervalMinutes} мин · Сбоев подряд до
             инцидента: {detail.monitor.failureThreshold}
           </p>
+          <p className="small muted">
+            Провайдер / CDN: {monitorProvider(detail.monitor)}
+            {detail.monitor.provider?.status === "pending"
+              ? " · определяется"
+              : detail.monitor.provider?.checkedAt
+                ? ` · определён ${monitorDateTime(detail.monitor.provider.checkedAt, detail.monitor.timeZone)}`
+                : ""}
+          </p>
           <h3 className="detail-section-title">
             Инциденты <span className="count">{detail.incidents.length}</span>
           </h3>
@@ -908,14 +921,22 @@ export function MonitorsPage() {
                           <span className="cell-sub">Из уведомления</span>
                         )}
                       </td>
-                      <td data-label="Начало">{dateTime(i.openedAt)}</td>
+                      <td data-label="Начало">
+                        {monitorDateTime(i.openedAt, detail.monitor.timeZone)}
+                      </td>
                       <td data-label="Подтверждён">
-                        {dateTime(i.confirmedAt)}
+                        {monitorDateTime(
+                          i.confirmedAt,
+                          detail.monitor.timeZone,
+                        )}
                       </td>
                       <td data-label="Завершение">
                         {i.closedAt ? (
                           <>
-                            {dateTime(i.closedAt)}
+                            {monitorDateTime(
+                              i.closedAt,
+                              detail.monitor.timeZone,
+                            )}
                             <span className="cell-sub">
                               {incidentCloseReasons[i.closeReason ?? ""] ??
                                 "Причина не указана"}
@@ -950,7 +971,12 @@ export function MonitorsPage() {
                   <tbody>
                     {detail.results.map((r) => (
                       <tr key={r.id}>
-                        <td data-label="Время">{dateTime(r.checkedAt)}</td>
+                        <td data-label="Время">
+                          {monitorDateTime(
+                            r.checkedAt,
+                            detail.monitor.timeZone,
+                          )}
+                        </td>
                         <td data-label="Результат">
                           <span
                             className={`badge ${r.outcome === "UP" || r.outcome === "SUCCESS" ? "up" : r.outcome === "UNKNOWN" ? "unknown" : "down"}`}

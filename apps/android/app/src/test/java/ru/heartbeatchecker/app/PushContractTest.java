@@ -56,6 +56,11 @@ public final class PushContractTest {
         assertTrue(parsed.isNull("leaseExpiresAt"));
         assertTrue(parsed.isNull("lastPairingId"));
 
+        for (String provider : new String[] {"rustore", "fcm", "huawei"}) {
+            assertEquals(provider, PushContract.installation(installation("ready", 1, 1).put("provider", provider))
+                    .getString("provider"));
+        }
+
         JSONObject extra = installation("ready", 1, 1).put("credential", "must-not-be-in-install-dto");
         assertInvalidInstallation(extra);
         assertInvalidInstallation(without(installation("pending", 0, 1), "lastSeenAt"));
@@ -63,7 +68,7 @@ public final class PushContractTest {
         assertInvalidInstallation(installation("ready", -1, 1));
         assertInvalidInstallation(installation("ready", 1, 0));
         assertInvalidInstallation(installation("ready", 1, 1).put("id", INSTALLATION.toUpperCase()));
-        assertInvalidInstallation(installation("ready", 1, 1).put("provider", "fcm"));
+        assertInvalidInstallation(installation("ready", 1, 1).put("provider", "unknown"));
         assertInvalidInstallation(installation("ready", 1, 1).put("lastSeenAt", JSONObject.NULL));
         assertInvalidInstallation(installation("ready", 1, 1).put("lastPairingId", "not-a-uuid"));
         assertInvalidInstallation(installation("ready", 1, 1).put("leaseExpiresAt", "not-an-instant"));
@@ -106,8 +111,12 @@ public final class PushContractTest {
         assertInvalidDelivery(delivery("not-a-uuid", 1, now + 60_000), now, DELIVERY);
         assertInvalidDelivery(delivery(DELIVERY, 1, now + 60_000).put("kind", "heartbeat"), now);
         assertInvalidDelivery(delivery(DELIVERY, 1, now + 60_000).put("title", repeat("x", 101)), now);
+        assertEquals(repeat("é", 1024), PushContract.delivery(
+                delivery(DELIVERY, 1, now + 60_000).put("body", repeat("é", 1024)), DELIVERY, now).getString("body"));
+        assertInvalidDelivery(delivery(DELIVERY, 1, now + 60_000).put("body", repeat("é", 1025)), now);
         assertInvalidDelivery(delivery(DELIVERY, 1, now + 60_000).put("body", repeat("я", 1025)), now);
         assertInvalidDelivery(delivery(DELIVERY, 1, now + 60_000).put("body", "bad\nbody"), now);
+        assertInvalidDelivery(delivery(DELIVERY, 1, now + 60_000).put("body", "bad\tbody"), now);
         assertInvalidDelivery(delivery(DELIVERY, 1, now + 60_000).put("occurredAt", "not-an-instant"), now);
     }
 

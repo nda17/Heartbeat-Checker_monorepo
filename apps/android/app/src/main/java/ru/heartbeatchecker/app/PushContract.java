@@ -39,6 +39,8 @@ final class PushContract {
                 && value.codePoints().noneMatch(c -> c < 32 || c == 127);
     }
 
+    static boolean provider(String value) { return "rustore".equals(value) || "fcm".equals(value) || "huawei".equals(value); }
+
     static boolean token(String value) { return value != null && !value.isEmpty() && bounded(value, 4096); }
 
     static boolean secret(String value) { return value != null && value.matches("[A-Za-z0-9_-]{43}"); }
@@ -80,7 +82,7 @@ final class PushContract {
         Set<String> actual = new HashSet<>();
         for (Iterator<String> it = value.keys(); it.hasNext();) actual.add(it.next());
         if (!actual.equals(keys) || !uuid(value.getString("id"))
-                || !"rustore".equals(value.getString("provider"))
+                || !provider(value.getString("provider"))
                 || !STATUSES.contains(value.getString("status"))
                 || !bounded(value.getString("deviceLabel"), 256)
                 || value.getString("deviceLabel").codePointCount(0, value.getString("deviceLabel").length()) > 64)

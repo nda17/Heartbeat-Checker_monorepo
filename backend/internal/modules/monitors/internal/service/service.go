@@ -18,6 +18,7 @@ import (
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/monitors/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/monitors/internal/repository/postgres"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/outbox"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/timezones"
 	probe "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/probe/contracts"
 )
 
@@ -69,6 +70,12 @@ func scheduling(in *contracts.MonitorInput) error {
 func validate(in *contracts.MonitorInput) (string, error) {
 	if err := scheduling(in); err != nil {
 		return "", err
+	}
+	if in.TimeZone == "" {
+		in.TimeZone = timezones.Default
+	}
+	if !timezones.Valid(in.TimeZone) {
+		return "", ErrInvalid
 	}
 	in.Name = strings.TrimSpace(in.Name)
 	in.URL = strings.TrimSpace(in.URL)
@@ -342,7 +349,7 @@ func (s *Service) PatchTx(ctx context.Context, tx pgx.Tx, owner, id string, e bi
 		return contracts.Monitor{}, ErrConflict
 	}
 	interval, threshold := m.IntervalMinutes, m.FailureThreshold
-	in := contracts.MonitorInput{CheckType: m.CheckType, Host: m.Host, Port: m.Port, Name: m.Name, URL: m.URL, Method: m.Method, ExpectedStatus: m.ExpectedStatus, BodyContains: m.BodyContains, IntervalMinutes: &interval, FailureThreshold: &threshold, Enabled: m.Enabled}
+	in := contracts.MonitorInput{TimeZone: m.TimeZone, CheckType: m.CheckType, Host: m.Host, Port: m.Port, Name: m.Name, URL: m.URL, Method: m.Method, ExpectedStatus: m.ExpectedStatus, BodyContains: m.BodyContains, IntervalMinutes: &interval, FailureThreshold: &threshold, Enabled: m.Enabled}
 	if p.CheckType != nil && *p.CheckType == "" {
 		return contracts.Monitor{}, ErrInvalid
 	}
@@ -358,6 +365,12 @@ func (s *Service) PatchTx(ctx context.Context, tx pgx.Tx, owner, id string, e bi
 	}
 	if p.Port != nil {
 		in.Port = *p.Port
+	}
+	if p.TimeZone != nil {
+		if *p.TimeZone == "" {
+			return contracts.Monitor{}, ErrInvalid
+		}
+		in.TimeZone = *p.TimeZone
 	}
 	if p.Name != nil {
 		in.Name = *p.Name
@@ -556,7 +569,7 @@ func (s *Service) claimOne(ctx context.Context, tx pgx.Tx, c postgres.Candidate)
 	if err = s.repo.Claim(ctx, tx, c.AccountID, c.ID, run, token); err != nil {
 		return nil, err
 	}
-	return &contracts.Attempt{AccountID: c.AccountID, MonitorID: c.ID, Request: probe.Request{RunID: run, AttemptToken: token, ConfigVersion: m.Version, CheckType: m.CheckType, Host: m.Host, Port: m.Port, URL: m.URL, Method: m.Method, ExpectedStatus: m.ExpectedStatus, BodyContains: m.BodyContains}}, nil
+	return &contracts.Attempt{AccountID: c.AccountID, MonitorID: c.ID, Request: probe.Request{RunID: run, AttemptToken: token, ConfigVersion: m.CheckConfigVersion, CheckType: m.CheckType, Host: m.Host, Port: m.Port, URL: m.URL, Method: m.Method, ExpectedStatus: m.ExpectedStatus, BodyContains: m.BodyContains}}, nil
 }
 func (s *Service) Complete(ctx context.Context, a contracts.Attempt, r probe.Result) (bool, error) {
 	if !probe.ValidResult(a.Request, r) || r.RunID != a.Request.RunID || r.AttemptToken != a.Request.AttemptToken || r.ConfigVersion != a.Request.ConfigVersion || r.LatencyMS < 0 || r.LatencyMS > 12000 || (r.Outcome != "UP" && r.Outcome != "DOWN" && r.Outcome != "UNKNOWN") || r.CheckedAt.IsZero() || r.CheckedAt.After(time.Now().Add(5*time.Second)) || r.CheckedAt.Before(time.Now().Add(-30*time.Second)) || len(r.ErrorCode) > 100 || (r.HTTPStatus != 0 && (r.HTTPStatus < 100 || r.HTTPStatus > 599)) {
@@ -574,7 +587,7 @@ func (s *Service) Complete(ctx context.Context, a contracts.Attempt, r probe.Res
 	if err != nil {
 		return false, err
 	}
-	if !m.Enabled || m.CheckType != probe.EffectiveCheckType(a.Request.CheckType) || m.Version != a.Request.ConfigVersion || m.RunID == nil || *m.RunID != a.Request.RunID || m.AttemptToken == nil || *m.AttemptToken != a.Request.AttemptToken || m.LeaseUntil == nil || !m.LeaseUntil.After(time.Now()) {
+	if !m.Enabled || m.CheckType != probe.EffectiveCheckType(a.Request.CheckType) || m.CheckConfigVersion != a.Request.ConfigVersion || m.RunID == nil || *m.RunID != a.Request.RunID || m.AttemptToken == nil || *m.AttemptToken != a.Request.AttemptToken || m.LeaseUntil == nil || !m.LeaseUntil.After(time.Now()) {
 		return false, nil
 	}
 	rank, err := s.repo.Rank(ctx, tx, a.AccountID, a.MonitorID)
@@ -599,7 +612,7 @@ func (s *Service) Complete(ctx context.Context, a contracts.Attempt, r probe.Res
 		return false, err
 	}
 	if err = s.incidents.Apply(ctx, tx, m.ID, m.AccountID, m.Sequence+1, r.Outcome, m.FailureThreshold, r.CheckedAt, incidents.Observation{
-		Name: m.Name, CheckType: m.CheckType, Host: m.Host, Port: m.Port, URL: m.URL, Outcome: r.Outcome, HTTPStatus: r.HTTPStatus, RoundTripMS: r.RoundTripMS,
+		TimeZone: m.TimeZone, ProviderNames: m.Provider.Names, Name: m.Name, CheckType: m.CheckType, Host: m.Host, Port: m.Port, URL: m.URL, Outcome: r.Outcome, HTTPStatus: r.HTTPStatus, RoundTripMS: r.RoundTripMS,
 		ErrorCode: r.ErrorCode, LatencyMS: r.LatencyMS, CheckedAt: r.CheckedAt, Sequence: m.Sequence + 1,
 	}); err != nil {
 		return false, err

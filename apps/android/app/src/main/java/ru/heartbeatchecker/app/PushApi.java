@@ -18,7 +18,7 @@ final class PushApi {
     }
 
     JSONObject request(String method, String path, String credential, JSONObject body) throws IOException, JSONException {
-        if (!path.matches("/api/v1/push/(pairings(?:/[0-9a-f-]{36}/exchange)?|installation(?:/deliveries/[0-9a-f-]{36})?)"))
+        if (!path.matches("/api/v1/push/(capabilities|pairings(?:/[0-9a-f-]{36}/exchange)?|installation(?:/deliveries/[0-9a-f-]{36})?)"))
             throw new IOException("Invalid push endpoint");
         HttpsURLConnection connection = (HttpsURLConnection) new URL(PushContract.ORIGIN + path).openConnection();
         connection.setInstanceFollowRedirects(false);
@@ -26,6 +26,7 @@ final class PushApi {
         connection.setReadTimeout(5000);
         connection.setRequestMethod(method);
         connection.setRequestProperty("Accept", "application/json");
+        connection.setRequestProperty("X-Heartbeat-Push-Protocol", "2");
         connection.setRequestProperty("Cache-Control", "no-store");
         // A dedicated connection sends neither browser cookies nor redirects.
         if (credential != null && !credential.isEmpty()) connection.setRequestProperty("Authorization", "Bearer " + credential);

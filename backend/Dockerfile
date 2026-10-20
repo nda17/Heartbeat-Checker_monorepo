@@ -4,7 +4,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN mkdir -p /out \
+RUN mkdir -p /out/asn-cache \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/probe ./cmd/probe \
@@ -26,6 +26,7 @@ EXPOSE 8080
 ENTRYPOINT ["/api"]
 
 FROM runtime AS worker
+COPY --from=build --chown=65532:65532 /out/asn-cache /var/lib/heartbeat/asn
 COPY --from=build --chown=65532:65532 /out/worker /worker
 ENTRYPOINT ["/worker"]
 

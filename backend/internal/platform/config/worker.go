@@ -20,6 +20,7 @@ type WorkerConfig struct {
 	ProbeSharedSecret     string
 	WebhookEncryptionKey  string
 	AuthMailEncryptionKey string
+	ProviderASNCacheDir   string
 	SMTPAddr              string
 	SMTPFrom              string
 	SMTPUsername          string
@@ -29,6 +30,10 @@ type WorkerConfig struct {
 
 func LoadWorker() (WorkerConfig, error) {
 	cfg := WorkerConfig{AppEnv: os.Getenv("APP_ENV"), DatabaseURL: os.Getenv("DATABASE_URL"), DatabaseTimeout: 5 * time.Second, ProbeURL: os.Getenv("PROBE_URL"), ProbeSharedSecret: os.Getenv("PROBE_SHARED_SECRET"), WebhookEncryptionKey: os.Getenv("WEBHOOK_ENCRYPTION_KEY")}
+	cfg.ProviderASNCacheDir = strings.TrimSpace(os.Getenv("PROVIDER_ASN_CACHE_DIR"))
+	if cfg.ProviderASNCacheDir == "" {
+		cfg.ProviderASNCacheDir = "/var/lib/heartbeat/asn"
+	}
 	if cfg.AppEnv == "" {
 		cfg.AppEnv = "production"
 	}

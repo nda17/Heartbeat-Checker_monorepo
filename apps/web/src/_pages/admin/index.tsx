@@ -9,6 +9,7 @@ import {
   Status,
   checkTypeLabel,
   monitorTarget,
+  monitorProvider,
 } from "@/entities/monitor";
 import { AdminPricing } from "@/features/admin-pricing";
 import { AdminMfa, MfaState } from "@/features/admin-mfa";
@@ -884,6 +885,7 @@ export function AdminPage() {
                               {checkTypeLabel(monitor.checkType)} ·{" "}
                               {monitorTarget(monitor)}
                             </p>
+                            <p>Провайдер / CDN: {monitorProvider(monitor)}</p>
                             <Status state={monitor.state} />
                           </div>
                           {canWrite && (

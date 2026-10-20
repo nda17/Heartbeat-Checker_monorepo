@@ -50,8 +50,8 @@ func incidentEmailData(s messengerSnapshot, buttons []messengerButton) incidentE
 		Title: "Сбой подтверждён", Intro: "Проверки подтвердили недоступность монитора. Откройте инцидент, чтобы посмотреть подробности.",
 		Name: name, Number: s.Number,
 		Rows: []incidentEmailRow{
-			{"Первый сбой", messengerTime(s.OpenedAt)},
-			{"Недоступность подтверждена", messengerTime(s.ConfirmedAt)},
+			{"Первый сбой", messengerTime(s.OpenedAt, s.TimeZone)},
+			{"Недоступность подтверждена", messengerTime(s.ConfirmedAt, s.TimeZone)},
 		},
 	}
 	switch s.Kind {
@@ -63,11 +63,11 @@ func incidentEmailData(s messengerSnapshot, buttons []messengerButton) incidentE
 		if s.ClosedAt != nil {
 			closed = *s.ClosedAt
 		}
-		v.Rows = append(v.Rows, incidentEmailRow{"Восстановлено", messengerTime(closed)}, incidentEmailRow{"Длительность", messengerDuration(closed.Sub(s.OpenedAt))})
+		v.Rows = append(v.Rows, incidentEmailRow{"Восстановлено", messengerTime(closed, s.TimeZone)}, incidentEmailRow{"Длительность", messengerDuration(closed.Sub(s.OpenedAt))})
 	case "reminder":
 		v.Title = "Сбой продолжается"
 		v.Intro = "Монитор по-прежнему недоступен. Это напоминание об открытом инциденте."
-		v.Rows = append(v.Rows, incidentEmailRow{"Проверка", messengerTime(s.CheckedAt)}, incidentEmailRow{"Длительность", messengerDuration(s.CheckedAt.Sub(s.OpenedAt))})
+		v.Rows = append(v.Rows, incidentEmailRow{"Проверка", messengerTime(s.CheckedAt, s.TimeZone)}, incidentEmailRow{"Длительность", messengerDuration(s.CheckedAt.Sub(s.OpenedAt))})
 	default:
 		v.Rows = append(v.Rows, incidentEmailRow{"До подтверждения", messengerDuration(s.ConfirmedAt.Sub(s.OpenedAt))})
 	}
@@ -82,6 +82,11 @@ func incidentEmailData(s messengerSnapshot, buttons []messengerButton) incidentE
 			v.Rows = append(v.Rows, incidentEmailRow{"Сайт", s.URL})
 		}
 	}
+	provider := "Неизвестно"
+	if len(s.ProviderNames) > 0 {
+		provider = strings.Join(s.ProviderNames, "; ")
+	}
+	v.Rows = append(v.Rows, incidentEmailRow{"Провайдер / CDN", provider})
 	if cause := messengerCause(s.ErrorCode); cause != "" && s.Kind != "up" {
 		v.Rows = append(v.Rows, incidentEmailRow{"Причина", cause})
 	}

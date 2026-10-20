@@ -41,6 +41,8 @@ type PushConfig struct {
 	Origin       string
 	SessionLease func(context.Context, pgx.Tx, string, string) (time.Time, error)
 	Sender       PushSender
+	Senders      map[string]PushSender
+	Providers    []string
 }
 
 type Push struct {
@@ -116,18 +118,18 @@ func pushToken(value string) bool {
 }
 
 type pushInstallation struct {
-	ID, AccountID, SessionID, Label, AppVersion, Status, Permission, LastPairingID string
-	Generation, Version                                                            int64
-	Token                                                                          []byte
-	TokenValid, ProviderAvailable                                                  bool
-	CreatedAt, UpdatedAt, LastSeenAt                                               time.Time
+	ID, AccountID, SessionID, Label, AppVersion, Status, Permission, LastPairingID, Provider string
+	Generation, Version                                                                      int64
+	Token                                                                                    []byte
+	TokenValid, ProviderAvailable                                                            bool
+	CreatedAt, UpdatedAt, LastSeenAt                                                         time.Time
 }
 
-const pushInstallationColumns = `id::text,COALESCE(account_id::text,''),COALESCE(session_id::text,''),device_label,app_version,status,permission,COALESCE(last_pairing_id::text,''),binding_generation,registration_version,encrypted_token,token_valid,provider_available,created_at,updated_at,last_seen_at`
+const pushInstallationColumns = `id::text,COALESCE(account_id::text,''),COALESCE(session_id::text,''),device_label,app_version,status,permission,COALESCE(last_pairing_id::text,''),binding_generation,registration_version,encrypted_token,token_valid,provider_available,created_at,updated_at,last_seen_at,provider`
 
 func scanPushInstallation(row pgx.Row) (pushInstallation, error) {
 	var i pushInstallation
-	err := row.Scan(&i.ID, &i.AccountID, &i.SessionID, &i.Label, &i.AppVersion, &i.Status, &i.Permission, &i.LastPairingID, &i.Generation, &i.Version, &i.Token, &i.TokenValid, &i.ProviderAvailable, &i.CreatedAt, &i.UpdatedAt, &i.LastSeenAt)
+	err := row.Scan(&i.ID, &i.AccountID, &i.SessionID, &i.Label, &i.AppVersion, &i.Status, &i.Permission, &i.LastPairingID, &i.Generation, &i.Version, &i.Token, &i.TokenValid, &i.ProviderAvailable, &i.CreatedAt, &i.UpdatedAt, &i.LastSeenAt, &i.Provider)
 	return i, err
 }
 func (p *Push) authenticate(ctx context.Context, bearer string) (pushInstallation, error) {
@@ -162,7 +164,7 @@ func (p *Push) Installation(ctx context.Context, bearer string) (PushInstallatio
 	if err != nil {
 		return PushInstallationStatus{}, err
 	}
-	result := PushInstallationStatus{ID: i.ID, Provider: "rustore", DeviceLabel: i.Label, LastSeenAt: i.LastSeenAt, BindingGeneration: i.Generation, RegistrationVersion: i.Version, Status: "pending", LastPairingID: pushOptionalID(i.LastPairingID)}
+	result := PushInstallationStatus{ID: i.ID, Provider: i.Provider, DeviceLabel: i.Label, LastSeenAt: i.LastSeenAt, BindingGeneration: i.Generation, RegistrationVersion: i.Version, Status: "pending", LastPairingID: pushOptionalID(i.LastPairingID)}
 	if i.AccountID == "" {
 		return result, nil
 	}
@@ -191,6 +193,7 @@ func (p *Push) Installation(ctx context.Context, bearer string) (PushInstallatio
 		return result, nil
 	}
 	i = current
+	result.Provider = i.Provider
 	result.RegistrationVersion = i.Version
 	result.LastSeenAt = i.LastSeenAt
 	result.LeaseExpiresAt = &expires
@@ -207,6 +210,35 @@ func (p *Push) Installation(ctx context.Context, bearer string) (PushInstallatio
 		result.Status = "ready"
 	}
 	return result, nil
+}
+
+func pushProvider(value string) bool {
+	return value == "rustore" || value == "fcm" || value == "huawei"
+}
+
+func (p *Push) providerEnabled(value string) bool {
+	if !p.cfg.Enabled || !pushProvider(value) {
+		return false
+	}
+	if p.cfg.Providers == nil {
+		return value == "rustore"
+	}
+	for _, provider := range p.cfg.Providers {
+		if provider == value {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Push) sender(provider string) PushSender {
+	if sender := p.cfg.Senders[provider]; sender != nil {
+		return sender
+	}
+	if provider == "rustore" {
+		return p.cfg.Sender
+	}
+	return nil
 }
 
 func (p *Push) cancelInstallation(ctx context.Context, tx pgx.Tx, id, code string) error {

@@ -27,6 +27,7 @@ import (
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/incidents"
 	monitorcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/monitors/contracts"
+	monitorpostgres "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/monitors/internal/repository/postgres"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/outbox"
 	probecontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/probe/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/migrations"
@@ -447,6 +448,152 @@ func TestMonitorCheckTypeDefaultsEditLeaseFenceAndHistorySnapshot(t *testing.T) 
 	}
 	if history.Code != http.StatusOK || json.Unmarshal(history.Body.Bytes(), &results) != nil || len(results.Results) != 1 || results.Results[0].CheckType != "icmp" || results.Results[0].RoundTripMS == nil || *results.Results[0].RoundTripMS != rtt {
 		t.Fatalf("ICMP history = %d %+v, want immutable type and RTT snapshot", history.Code, results.Results)
+	}
+}
+
+func TestMonitorTimeZoneDefaultValidationAndMetadataEditPreserveRunAndIncident(t *testing.T) {
+	f := newMonitorFixture(t)
+	actor := f.newActor(t, "Monitor Timezone Owner")
+	f.grant(t, actor, 2)
+
+	legacy, status := f.create(t, actor, "legacy zone", "legacy-zone.example", true)
+	if status != http.StatusCreated || legacy.TimeZone != "Europe/Moscow" {
+		t.Fatalf("monitor without timeZone = (%d, %+v), want Europe/Moscow default", status, legacy)
+	}
+	if legacy.Provider.Status != "pending" || legacy.Provider.Names == nil {
+		t.Fatalf("provider summary = %+v, want pending with an empty names list", legacy.Provider)
+	}
+	badZone := f.request(t, actor, http.MethodPost, "/api/v1/monitors", monitorcontracts.MonitorInput{
+		Name: "invalid zone", URL: "https://invalid-zone.example/health", Method: http.MethodGet,
+		ExpectedStatus: http.StatusOK, Enabled: true, TimeZone: "Not/A_Zone",
+	}, actor.csrf, monitorTestOrigin)
+	if badZone.Code != http.StatusBadRequest {
+		t.Fatalf("create with invalid timeZone status=%d body=%s, want 400", badZone.Code, badZone.Body.String())
+	}
+
+	monitor, status := f.create(t, actor, "incident zone", "incident-zone.example", true)
+	if status != http.StatusCreated {
+		t.Fatalf("create incident monitor status=%d", status)
+	}
+	threshold := 1
+	setThreshold := f.request(t, actor, http.MethodPatch, "/api/v1/monitors/"+monitor.ID, monitorcontracts.Patch{
+		Version: monitor.Version, FailureThreshold: &threshold,
+	}, actor.csrf, monitorTestOrigin)
+	var configured struct {
+		Monitor monitorcontracts.Monitor `json:"monitor"`
+	}
+	if setThreshold.Code != http.StatusOK || json.Unmarshal(setThreshold.Body.Bytes(), &configured) != nil {
+		t.Fatalf("set incident threshold = %d %s", setThreshold.Code, setThreshold.Body.String())
+	}
+	if err := f.setMonitorDue(monitor.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !f.complete(t, *f.claimMonitor(t, monitor.ID), "DOWN", "request_failed", time.Now().UTC()) {
+		t.Fatal("initial DOWN result rejected")
+	}
+	var openBefore int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM incidents.incidents WHERE monitor_id=$1 AND closed_at IS NULL`, monitor.ID).Scan(&openBefore); err != nil || openBefore != 1 {
+		t.Fatalf("open incidents before metadata edit=%d err=%v, want 1", openBefore, err)
+	}
+	if err := f.setMonitorDue(monitor.ID); err != nil {
+		t.Fatal(err)
+	}
+	attempt := f.claimMonitor(t, monitor.ID)
+	var runIDBefore *string
+	var configVersionBefore int64
+	if err := f.pool.QueryRow(context.Background(), `SELECT run_id::text,check_config_version FROM monitors.monitors WHERE id=$1`, monitor.ID).Scan(&runIDBefore, &configVersionBefore); err != nil || runIDBefore == nil {
+		t.Fatalf("active run before metadata edit=(%v, %d), err=%v", runIDBefore, configVersionBefore, err)
+	}
+	zone := "Europe/Berlin"
+	updated := f.request(t, actor, http.MethodPatch, "/api/v1/monitors/"+monitor.ID, monitorcontracts.Patch{
+		Version: configured.Monitor.Version, TimeZone: &zone,
+	}, actor.csrf, monitorTestOrigin)
+	var updatedResponse struct {
+		Monitor monitorcontracts.Monitor `json:"monitor"`
+	}
+	if updated.Code != http.StatusOK || json.Unmarshal(updated.Body.Bytes(), &updatedResponse) != nil || updatedResponse.Monitor.TimeZone != zone {
+		t.Fatalf("timezone-only patch = %d %s", updated.Code, updated.Body.String())
+	}
+	var runIDAfter *string
+	var configVersionAfter int64
+	if err := f.pool.QueryRow(context.Background(), `SELECT run_id::text,check_config_version FROM monitors.monitors WHERE id=$1`, monitor.ID).Scan(&runIDAfter, &configVersionAfter); err != nil || runIDAfter == nil || *runIDAfter != *runIDBefore || configVersionAfter != configVersionBefore {
+		t.Fatalf("metadata edit changed active check run/config: run=(%v,%v) config=(%d,%d) err=%v", runIDBefore, runIDAfter, configVersionBefore, configVersionAfter, err)
+	}
+	if accepted := f.complete(t, *attempt, "DOWN", "request_failed", time.Now().UTC()); !accepted {
+		t.Fatal("result from active check was rejected after timezone-only edit")
+	}
+	var openAfter int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM incidents.incidents WHERE monitor_id=$1 AND closed_at IS NULL`, monitor.ID).Scan(&openAfter); err != nil || openAfter != openBefore {
+		t.Fatalf("timezone edit changed open incident count=%d err=%v, before=%d", openAfter, err, openBefore)
+	}
+	badPatchZone := "Mars/Olympus_Mons"
+	rejected := f.request(t, actor, http.MethodPatch, "/api/v1/monitors/"+monitor.ID, monitorcontracts.Patch{
+		Version: updatedResponse.Monitor.Version, TimeZone: &badPatchZone,
+	}, actor.csrf, monitorTestOrigin)
+	if rejected.Code != http.StatusBadRequest {
+		t.Fatalf("patch with invalid timeZone status=%d body=%s, want 400", rejected.Code, rejected.Body.String())
+	}
+}
+
+func TestProviderLookupResetsOnTargetChangeAndFencesStaleCompletion(t *testing.T) {
+	f := newMonitorFixture(t)
+	actor := f.newActor(t, "Provider Lookup Owner")
+	f.grant(t, actor, 1)
+	monitor, status := f.create(t, actor, "provider lookup", "old-provider.example", true)
+	if status != http.StatusCreated || monitor.Provider.Status != "pending" || len(monitor.Provider.Names) != 0 {
+		t.Fatalf("new monitor provider state=(%d,%+v), want pending empty provider list", status, monitor.Provider)
+	}
+	repository := monitorpostgres.New(f.pool)
+	oldAttempt, err := repository.ClaimProvider(context.Background())
+	if err != nil || oldAttempt == nil || oldAttempt.MonitorID != monitor.ID || oldAttempt.Host != "old-provider.example" {
+		t.Fatalf("claim old provider lookup=(%+v,%v)", oldAttempt, err)
+	}
+	newURL := "https://new-provider.example/health"
+	changed := f.request(t, actor, http.MethodPatch, "/api/v1/monitors/"+monitor.ID, monitorcontracts.Patch{
+		Version: monitor.Version, URL: &newURL,
+	}, actor.csrf, monitorTestOrigin)
+	var changedResponse struct {
+		Monitor monitorcontracts.Monitor `json:"monitor"`
+	}
+	if changed.Code != http.StatusOK || json.Unmarshal(changed.Body.Bytes(), &changedResponse) != nil || changedResponse.Monitor.Provider.Status != "pending" || len(changedResponse.Monitor.Provider.Names) != 0 {
+		t.Fatalf("target change provider state=%d %s, want fresh pending lookup", changed.Code, changed.Body.String())
+	}
+	if err := repository.CompleteProvider(context.Background(), *oldAttempt, []string{"Stale Provider"}, []int64{64500}, "stale-dataset", false); err != nil {
+		t.Fatalf("complete stale provider lookup: %v", err)
+	}
+	var names []string
+	var target, state string
+	var generation int64
+	if err := f.pool.QueryRow(context.Background(), `SELECT target_host,status,provider_names,generation FROM monitors.provider_lookups WHERE monitor_id=$1`, monitor.ID).Scan(&target, &state, &names, &generation); err != nil || target != "new-provider.example" || state != "pending" || len(names) != 0 || generation < 2 {
+		t.Fatalf("target-changed provider row=(%q,%q,%v,%d) err=%v", target, state, names, generation, err)
+	}
+	newAttempt, err := repository.ClaimProvider(context.Background())
+	if err != nil || newAttempt == nil || newAttempt.Host != "new-provider.example" || newAttempt.Generation != generation {
+		t.Fatalf("claim new provider lookup=(%+v,%v), row generation=%d", newAttempt, err, generation)
+	}
+	if err := repository.CompleteProvider(context.Background(), *newAttempt, []string{"Cloudflare"}, []int64{13335}, "test-dataset", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT status,provider_names FROM monitors.provider_lookups WHERE monitor_id=$1`, monitor.ID).Scan(&state, &names); err != nil || state != "ready" || len(names) != 1 || names[0] != "Cloudflare" {
+		t.Fatalf("completed provider lookup=(%q,%v), err=%v", state, names, err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `UPDATE monitors.provider_lookups SET status='pending',next_attempt_at=now() WHERE monitor_id=$1`, monitor.ID); err != nil {
+		t.Fatal(err)
+	}
+	deleteAttempt, err := repository.ClaimProvider(context.Background())
+	if err != nil || deleteAttempt == nil {
+		t.Fatalf("claim provider lookup before monitor deletion=(%+v,%v)", deleteAttempt, err)
+	}
+	deleted := f.request(t, actor, http.MethodDelete, "/api/v1/monitors/"+monitor.ID, nil, actor.csrf, monitorTestOrigin)
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete monitor with claimed provider lookup=%d %s", deleted.Code, deleted.Body.String())
+	}
+	if err := repository.CompleteProvider(context.Background(), *deleteAttempt, []string{"Stale After Delete"}, []int64{64501}, "test-dataset", false); err != nil {
+		t.Fatalf("complete provider lookup after monitor deletion: %v", err)
+	}
+	var lookupCount int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM monitors.provider_lookups WHERE monitor_id=$1`, monitor.ID).Scan(&lookupCount); err != nil || lookupCount != 0 {
+		t.Fatalf("provider lookup rows after monitor deletion=%d err=%v, want 0", lookupCount, err)
 	}
 }
 
@@ -953,11 +1100,14 @@ func TestMonitorSchedulingConfigChangesResetWhileNoOpPatchesPreserve(t *testing.
 	var outcome string
 	var nextBefore time.Time
 	var runID *string
-	if err := f.pool.QueryRow(context.Background(), `SELECT outcome,next_check_at,run_id::text FROM monitors.monitors WHERE id=$1`, monitor.ID).Scan(&outcome, &nextBefore, &runID); err != nil || outcome != "DOWN" || runID != nil || !nextBefore.Equal(expectedNext) {
+	if err := f.pool.QueryRow(context.Background(), `SELECT outcome,next_check_at,run_id::text FROM monitors.monitors WHERE id=$1`, monitor.ID).Scan(&outcome, &nextBefore, &runID); err != nil || outcome != "DOWN" || runID == nil || *runID != stale.Request.RunID || !nextBefore.Equal(expectedNext) {
 		t.Fatalf("name-only patch persisted outcome=%s runID=%v err=%v", outcome, runID, err)
 	}
-	if f.complete(t, *stale, "UP", "", time.Now().UTC()) {
-		t.Fatal("attempt leased before name-only version change was accepted")
+	if !f.complete(t, *stale, "DOWN", "request_failed", time.Now().UTC()) {
+		t.Fatal("attempt leased before metadata-only name change was rejected")
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT next_check_at FROM monitors.monitors WHERE id=$1`, monitor.ID).Scan(&nextBefore); err != nil {
+		t.Fatal(err)
 	}
 	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM incidents.incidents WHERE monitor_id=$1 AND closed_at IS NULL`, monitor.ID).Scan(&incidentCount); err != nil || incidentCount != 1 {
 		t.Fatalf("name-only patch changed open incident count=%d err=%v", incidentCount, err)

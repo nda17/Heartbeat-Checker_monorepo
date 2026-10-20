@@ -76,7 +76,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("configure messenger notifications: %w", err)
 	}
-	pushModule, err := notifications.NewPush(pool, cfg.WebhookEncryptionKey, notifications.PushConfig{Enabled: cfg.AndroidPushEnabled, ProjectID: cfg.RuStorePushProjectID, Origin: cfg.AuthOrigin, SessionLease: auth.SessionLeaseTx}, billingModule)
+	pushModule, err := notifications.NewPush(pool, cfg.WebhookEncryptionKey, notifications.PushConfig{Enabled: cfg.AndroidPushEnabled, ProjectID: cfg.RuStorePushProjectID, Providers: cfg.PushProviders(), Origin: cfg.AuthOrigin, SessionLease: auth.SessionLeaseTx}, billingModule)
 	if err != nil {
 		return fmt.Errorf("configure Android push: %w", err)
 	}

@@ -583,6 +583,15 @@ func TestPushHTTPNativeAuthAndBrowserSafeResponses(t *testing.T) {
 		mux.ServeHTTP(out, req)
 		return out
 	}
+	f.push.cfg.Providers = []string{"rustore", "fcm", "huawei"}
+	capabilities := call(http.MethodGet, "/api/v1/push/capabilities", nil, "", false)
+	var capabilityDTO struct {
+		ProtocolVersion int      `json:"protocolVersion"`
+		Providers       []string `json:"providers"`
+	}
+	if capabilities.Code != http.StatusOK || json.Unmarshal(capabilities.Body.Bytes(), &capabilityDTO) != nil || capabilityDTO.ProtocolVersion != 2 || strings.Join(capabilityDTO.Providers, ",") != "fcm,huawei,rustore" {
+		t.Fatalf("public push capabilities = %d %s, want protocol 2 with configured providers", capabilities.Code, capabilities.Body.String())
+	}
 	verifier, challenge := newPushVerifier(t)
 	unauthorized := call(http.MethodGet, "/api/v1/push/installation", nil, "bad.bearer", false)
 	if unauthorized.Code != http.StatusUnauthorized {
@@ -1018,22 +1027,12 @@ func TestPushStaleAttemptAndInvalidProviderTokenAreFenced(t *testing.T) {
 	if err := f.webhook.pool.QueryRow(context.Background(), `SELECT status FROM notifications.push_deliveries WHERE id=$1`, deliveryID).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
-	if status != "pending" {
-		t.Fatalf("completion after token rotation state = %q, want pending for retry with current token", status)
-	}
-	if _, err := f.webhook.pool.Exec(context.Background(), `UPDATE notifications.push_deliveries SET next_attempt_at=now()-interval '1 second' WHERE id=$1`, deliveryID); err != nil {
-		t.Fatal(err)
-	}
-	second, err := f.push.ClaimPush(context.Background())
-	if err != nil || second == nil || second.RegistrationToken != newToken {
-		t.Fatalf("claim after token rotation = (%+v, %v), want new token", second, err)
-	}
-	if err := f.push.CompletePush(context.Background(), *second, pushProviderError{code: "invalid_token", permanent: true, invalidToken: true}); err != nil {
-		t.Fatal(err)
+	if status != "accepted" {
+		t.Fatalf("completion after token rotation state = %q, want accepted for the already attempted destination", status)
 	}
 	state, err := f.push.Installation(context.Background(), pair.Installation.Credential)
-	if err != nil || state.Status != "invalid_token" {
-		t.Fatalf("provider invalid-token state = (%+v, %v), want invalid_token", state, err)
+	if err != nil || state.Status != "ready" || state.RegistrationVersion <= installation.RegistrationVersion {
+		t.Fatalf("current registration after accepted stale-route completion = (%+v, %v), want rotated ready token", state, err)
 	}
 }
 
