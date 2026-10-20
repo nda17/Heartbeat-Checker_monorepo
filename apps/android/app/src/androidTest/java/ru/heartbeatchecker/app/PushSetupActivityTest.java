@@ -41,7 +41,6 @@ public final class PushSetupActivityTest {
     private static final String RETURN_URL = PushContract.ORIGIN + "/app/settings";
     private Context context;
     private PushStore store;
-    private boolean notificationPermissionWasGranted;
 
     @Before
     public void clearEncryptedStore() throws Exception {
@@ -68,10 +67,11 @@ public final class PushSetupActivityTest {
     }
 
     @Test
-    public void wrongPairWrongStateAndMissingCompletionCodeAreRejected() throws Exception {
+    public void wrongPairWrongClientStateAndMissingCompletionCodeAreRejected() throws Exception {
         seedPair(System.currentTimeMillis() + 300_000, false, null);
         assertReceiveRejected("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", CODE, CLIENT_STATE);
-        assertReceiveRejected(PAIRING, secret('D'), CLIENT_STATE);
+        // A well-formed completion code cannot be judged locally; state mismatch is the native proof check.
+        assertReceiveRejected(PAIRING, CODE, secret('D'));
         assertReceiveRejected(PAIRING, null, CLIENT_STATE);
         assertFalse("failed callbacks must not overwrite or add proof", store.read().getJSONObject("pair").has("completionCode"));
     }
@@ -184,25 +184,21 @@ public final class PushSetupActivityTest {
         store.update(state -> state.put("enabled", false).put("permissionPrompted", true)
                 .put("installation", installation("pending", null)));
         grantNotificationPermission();
-        try {
-            assertTrue("the test must model the user granting notifications again", PushNotifications.permitted(context));
-            FakeTransport api = new FakeTransport();
-            api.getFailure = new PushApi.Failure(404);
+        assertTrue("the test must model the user granting notifications again", PushNotifications.permitted(context));
+        FakeTransport api = new FakeTransport();
+        api.getFailure = new PushApi.Failure(404);
 
-            String next = PushPairing.bootstrap(context, RETURN_URL, api);
+        String next = PushPairing.bootstrap(context, RETURN_URL, api);
 
-            assertEquals(PushContract.ORIGIN + "/app/settings?pushPair=" + FRESH_PAIRING, next);
-            assertTrue(api.calls.get(0).startsWith("GET "));
-            assertTrue(api.calls.get(1).startsWith("POST "));
-            assertEquals("only a fresh anonymous pairing follows the expired orphan", 2, api.calls.size());
-            JSONObject state = store.read();
-            assertEquals(FRESH_INSTALLATION + ".abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG", state.getString("credential"));
-            assertEquals(FRESH_PAIRING, state.getJSONObject("pair").getString("id"));
-            assertFalse(state.optBoolean("everExchangeAttempted"));
-            assertFalse(state.optBoolean("optedOut"));
-        } finally {
-            revokeNotificationPermissionIfTestGranted();
-        }
+        assertEquals(PushContract.ORIGIN + "/app/settings?pushPair=" + FRESH_PAIRING, next);
+        assertTrue(api.calls.get(0).startsWith("GET "));
+        assertTrue(api.calls.get(1).startsWith("POST "));
+        assertEquals("only a fresh anonymous pairing follows the expired orphan", 2, api.calls.size());
+        JSONObject state = store.read();
+        assertEquals(FRESH_INSTALLATION + ".abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG", state.getString("credential"));
+        assertEquals(FRESH_PAIRING, state.getJSONObject("pair").getString("id"));
+        assertFalse(state.optBoolean("everExchangeAttempted"));
+        assertFalse(state.optBoolean("optedOut"));
     }
 
     @Test
@@ -227,28 +223,24 @@ public final class PushSetupActivityTest {
         seedPair(System.currentTimeMillis() + 300_000, false, CODE);
         store.update(state -> state.put("token", "native-token"));
         grantNotificationPermission();
-        try {
-            FakeTransport exchange = new FakeTransport();
-            exchange.exchangeFailure = new IOException("simulated lost exchange response");
+        FakeTransport exchange = new FakeTransport();
+        exchange.exchangeFailure = new IOException("simulated lost exchange response");
 
-            PushPairing.exchange(context, PAIRING, exchange);
+        PushPairing.exchange(context, PAIRING, exchange);
 
-            JSONObject attempted = store.read();
-            assertTrue(attempted.optBoolean("everExchangeAttempted"));
-            assertTrue(attempted.getJSONObject("pair").optBoolean("exchangeAttempted"));
+        JSONObject attempted = store.read();
+        assertTrue(attempted.optBoolean("everExchangeAttempted"));
+        assertTrue(attempted.getJSONObject("pair").optBoolean("exchangeAttempted"));
 
-            store.update(state -> state.getJSONObject("pair").put("expiresAt",
-                    Instant.ofEpochMilli(System.currentTimeMillis() - 1000).toString()));
-            FakeTransport bootstrap = new FakeTransport();
-            assertEquals(PushContract.ORIGIN + "/app/settings?pushPair=" + FRESH_PAIRING,
-                    PushPairing.bootstrap(context, RETURN_URL, bootstrap));
-            JSONObject replaced = store.read();
-            assertEquals(FRESH_PAIRING, replaced.getJSONObject("pair").getString("id"));
-            assertTrue("replacement proof must retain the historical exchange fence",
-                    replaced.optBoolean("everExchangeAttempted"));
-        } finally {
-            revokeNotificationPermissionIfTestGranted();
-        }
+        store.update(state -> state.getJSONObject("pair").put("expiresAt",
+                Instant.ofEpochMilli(System.currentTimeMillis() - 1000).toString()));
+        FakeTransport bootstrap = new FakeTransport();
+        assertEquals(PushContract.ORIGIN + "/app/settings?pushPair=" + FRESH_PAIRING,
+                PushPairing.bootstrap(context, RETURN_URL, bootstrap));
+        JSONObject replaced = store.read();
+        assertEquals(FRESH_PAIRING, replaced.getJSONObject("pair").getString("id"));
+        assertTrue("replacement proof must retain the historical exchange fence",
+                replaced.optBoolean("everExchangeAttempted"));
     }
 
     @Test
@@ -309,18 +301,10 @@ public final class PushSetupActivityTest {
     }
 
     private void grantNotificationPermission() throws Exception {
-        notificationPermissionWasGranted = Build.VERSION.SDK_INT < 33 || context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                == android.content.pm.PackageManager.PERMISSION_GRANTED;
-        if (!notificationPermissionWasGranted) {
+        if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             InstrumentationRegistry.getInstrumentation().getUiAutomation()
                     .grantRuntimePermission(context.getPackageName(), Manifest.permission.POST_NOTIFICATIONS);
-        }
-    }
-
-    private void revokeNotificationPermissionIfTestGranted() throws Exception {
-        if (Build.VERSION.SDK_INT >= 33 && !notificationPermissionWasGranted) {
-            InstrumentationRegistry.getInstrumentation().getUiAutomation()
-                    .revokeRuntimePermission(context.getPackageName(), Manifest.permission.POST_NOTIFICATIONS);
         }
     }
 
