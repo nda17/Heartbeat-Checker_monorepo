@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "packageName": "ru.heartbeatchecker.app",
-  "versionCode": 5,
-  "versionName": "1.1.3",
-  "sourceSha": "b74a5ae6d87a823dbef412e48ab97753510a19d0",
-  "releasedAt": "2026-10-20T15:21:45Z",
-  "sizeBytes": 15666258,
-  "sha256": "b06d91df0c11d4f66b1ad1b9d0525ad2a890e13ff62909449ef620514b2e254c",
+  "versionCode": 6,
+  "versionName": "1.2.0",
+  "sourceSha": "20aaf8b2a7d050b509baef613becc8eec7ef2b6f",
+  "releasedAt": "2026-10-20T18:24:50Z",
+  "sizeBytes": 18008496,
+  "sha256": "36d74837ec232c31ede43831b5f5acd5b46de1f18544a200c6baee23ed7e0004",
   "signingCertificateSha256": "9F:FE:6A:93:70:7D:A0:D3:5F:B0:2C:DB:3F:24:24:C0:45:D3:9B:6C:00:1E:E0:38:F2:F1:E5:C9:20:13:D1:31",
-  "downloadUrl": "https://s3.twcstorage.ru/heartbeat-data-1/heartbeat-checker/android/1.1.3/Heartbeat-Checker.apk"
+  "downloadUrl": "https://s3.twcstorage.ru/heartbeat-data-1/heartbeat-checker/android/1.2.0/Heartbeat-Checker.apk"
 }
