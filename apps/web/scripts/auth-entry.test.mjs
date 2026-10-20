@@ -114,6 +114,8 @@ function compile(relativePath, aliases, runtime = {}) {
         return { PublicPricing: () => null };
       if (id === "@/features/admin-pricing")
         return { AdminPricing: () => null };
+      if (id === "@/features/android-push")
+        return { AndroidPushSettings: () => null };
       return requireWeb(id);
     },
     console,
@@ -2473,11 +2475,6 @@ test("ConsoleShell menu is keyboard operable, closes on Escape, restores focus, 
       ApiError: class ApiError extends Error {},
       errorMessage: (error) => String(error?.message ?? error),
       safeAppReturnTo: (path) => path,
-    },
-    "@/shared/android": {
-      captureMonitorDraft: () => null,
-      clearMonitorDraft() {},
-      readMonitorDraft() {},
     },
     "@/shared/ui": {
       Icon: () => null,

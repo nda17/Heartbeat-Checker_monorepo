@@ -6,6 +6,8 @@ import (
 )
 
 var ErrEmailUnverified = errors.New("account email is not verified")
+var ErrSessionExpired = errors.New("session expired")
+var ErrSessionRevoked = errors.New("session revoked")
 
 // Principal is the authenticated identity passed between modules.
 type Principal struct {

@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	authcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/security"
 )
 
@@ -182,7 +183,7 @@ func (r *Repository) CredentialByAccount(ctx context.Context, accountID string) 
 }
 
 // LoginSession takes the account lock before credentials, as deletion does.
-func (r *Repository) LoginSession(ctx context.Context, c Credential, sessionID string, tokenHash []byte, expires time.Time, ip, agent string) error {
+func (r *Repository) LoginSession(ctx context.Context, c Credential, sessionID string, tokenHash []byte, expires time.Time, ip, agent string, previousHash []byte) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -216,7 +217,69 @@ func (r *Repository) LoginSession(ctx context.Context, c Credential, sessionID s
 	if err != nil {
 		return err
 	}
+	if err = RevokeReplacedSessionTx(ctx, tx, previousHash); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
+}
+
+// RevokeReplacedSessionTx invalidates only the exact cookie being replaced.
+// Call after inserting the new session, in the same successful transaction.
+func RevokeReplacedSessionTx(ctx context.Context, tx pgx.Tx, tokenHash []byte) error {
+	if len(tokenHash) == 0 {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `UPDATE auth.sessions SET revoked_at=clock_timestamp() WHERE token_hash=$1 AND revoked_at IS NULL`, tokenHash)
+	return err
+}
+
+// SessionLeaseTx follows the account -> credentials -> session lock order used
+// by login and deletion. It mirrors ordinary cookie authentication, without
+// touching last_used_at, changing expiry or applying administrator MFA gates.
+func SessionLeaseTx(ctx context.Context, tx pgx.Tx, accountID, sessionID string) (time.Time, error) {
+	if !security.ValidID(accountID) || !security.ValidID(sessionID) {
+		return time.Time{}, authcontracts.ErrSessionRevoked
+	}
+	var status string
+	err := tx.QueryRow(ctx, `SELECT status FROM accounts.accounts WHERE id=$1 FOR SHARE`, accountID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, authcontracts.ErrSessionRevoked
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	if status != "active" {
+		return time.Time{}, authcontracts.ErrSessionRevoked
+	}
+	var version int64
+	err = tx.QueryRow(ctx, `SELECT version FROM auth.credentials WHERE account_id=$1 FOR SHARE`, accountID).Scan(&version)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, authcontracts.ErrSessionRevoked
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	var sessionVersion int64
+	var expires time.Time
+	var revoked *time.Time
+	err = tx.QueryRow(ctx, `SELECT credential_version,expires_at,revoked_at FROM auth.sessions WHERE id=$1 AND account_id=$2 FOR SHARE`, sessionID, accountID).Scan(&sessionVersion, &expires, &revoked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, authcontracts.ErrSessionRevoked
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	if revoked != nil || sessionVersion != version {
+		return time.Time{}, authcontracts.ErrSessionRevoked
+	}
+	var fresh bool
+	if err = tx.QueryRow(ctx, `SELECT $1::timestamptz>clock_timestamp()`, expires).Scan(&fresh); err != nil {
+		return time.Time{}, err
+	}
+	if !fresh {
+		return time.Time{}, authcontracts.ErrSessionExpired
+	}
+	return expires, nil
 }
 
 func (r *Repository) SessionByToken(ctx context.Context, tokenHash []byte) (Session, error) {

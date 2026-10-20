@@ -14,6 +14,7 @@ import (
 // IntegrationConfig is loaded independently by API and worker so both apply the
 // same explicit mock entitlement policy. Bot credentials are worker-only.
 type IntegrationConfig struct {
+	PushConfig
 	BillingProvider               string
 	BillingMockAccountIDs         []string
 	BillingTestAccountIDs         []string
@@ -47,6 +48,11 @@ type IntegrationConfig struct {
 
 func loadIntegrations(worker bool) (IntegrationConfig, error) {
 	cfg := IntegrationConfig{BillingProvider: strings.TrimSpace(os.Getenv("BILLING_PROVIDER"))}
+	push, err := loadPush(worker)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.PushConfig = push
 	if cfg.BillingProvider == "" {
 		cfg.BillingProvider = "disabled"
 	}
@@ -78,7 +84,6 @@ func loadIntegrations(worker bool) (IntegrationConfig, error) {
 		}
 		cfg.BillingTestAccountIDs = []string{parsed.String()}
 	}
-	var err error
 	if cfg.SupportEnabled, err = integrationBool("SUPPORT_ENABLED"); err != nil {
 		return cfg, err
 	}

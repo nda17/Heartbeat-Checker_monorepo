@@ -326,7 +326,7 @@ func (s *Service) confirmCodeTx(ctx context.Context, tx pgx.Tx, c postgres.Email
 	return true, nil
 }
 
-func (s *Service) ConfirmRegistration(ctx context.Context, id, capability, code, captchaToken string, cl Client) (LoginResult, error) {
+func (s *Service) ConfirmRegistration(ctx context.Context, id, capability, code, captchaToken string, cl Client, previousToken string) (LoginResult, error) {
 	if !security.ValidID(id) || len(code) > 64 {
 		return LoginResult{}, ErrInvalid
 	}
@@ -391,6 +391,9 @@ func (s *Service) ConfirmRegistration(ctx context.Context, id, capability, code,
 		return LoginResult{}, ErrUnavailable
 	}
 	if err = postgres.CancelEmailCodeMailTx(ctx, tx, c.CodeHash); err != nil {
+		return LoginResult{}, ErrUnavailable
+	}
+	if err = postgres.RevokeReplacedSessionTx(ctx, tx, previousSessionHash(previousToken)); err != nil {
 		return LoginResult{}, ErrUnavailable
 	}
 	if err = tx.Commit(ctx); err != nil {

@@ -15,6 +15,8 @@ import (
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/security"
+	authservice "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/service"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/outbox"
 )
 
 const emailCodeTestKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
@@ -235,6 +237,77 @@ func TestRegistrationCodeRejectsLegacyRegistrationWithExistingSession(t *testing
 	var challengeCount int
 	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM auth.email_code_challenges WHERE email='second-account@example.test'`).Scan(&challengeCount); err != nil || challengeCount != 0 {
 		t.Fatalf("active-session registration unexpectedly created challenge: count=%d err=%v", challengeCount, err)
+	}
+}
+
+func TestConfirmRegistrationRevokesOnlyExplicitPriorCookie(t *testing.T) {
+	f := newEmailCodeFixture(t)
+	const existingEmail = "prior-registration-owner@example.test"
+	accountID, err := outbox.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	passwordHash, err := security.HashPassword(integrationPass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `INSERT INTO accounts.accounts(id,name) VALUES($1,'Prior Registration Owner')`, accountID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `INSERT INTO auth.credentials(account_id,email,password_hash) VALUES($1,$2,$3)`, accountID, existingEmail, passwordHash); err != nil {
+		t.Fatal(err)
+	}
+	prior, _, priorLogin := f.login(t, existingEmail, integrationPass)
+	other, _, otherLogin := f.login(t, existingEmail, integrationPass)
+	if priorLogin.Code != http.StatusOK || otherLogin.Code != http.StatusOK || prior == nil || other == nil {
+		t.Fatalf("create pre-existing sessions: first=%d second=%d", priorLogin.Code, otherLogin.Code)
+	}
+	const newEmail = "prior-registration-new@example.test"
+	start := f.request(t, http.MethodPost, "/api/v1/auth/registration", map[string]string{"name": "New Registration", "email": newEmail, "password": integrationPass, "turnstileToken": integrationToken}, nil, "", integrationOrigin, "")
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("start new registration: status=%d body=%s", start.Code, start.Body.String())
+	}
+	var challenge struct {
+		Challenge struct {
+			ID string `json:"id"`
+		} `json:"challenge"`
+	}
+	if err := json.Unmarshal(start.Body.Bytes(), &challenge); err != nil || challenge.Challenge.ID == "" {
+		t.Fatalf("decode registration id: err=%v body=%s", err, start.Body.String())
+	}
+	var capability *http.Cookie
+	for _, cookie := range start.Result().Cookies() {
+		if cookie.Name == "hc_registration" {
+			capability = cookie
+		}
+	}
+	if capability == nil {
+		t.Fatal("registration capability missing")
+	}
+	sender := &emailCodeCaptureSender{}
+	worker, err := NewMailWorker(f.pool, emailCodeTestKey, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if processed, err := worker.ProcessOne(context.Background()); err != nil || !processed {
+		t.Fatalf("process registration code email: processed=%t err=%v", processed, err)
+	}
+	code := regexp.MustCompile(`(?:^|[^0-9])([0-9]{6})(?:[^0-9]|$)`).FindStringSubmatch(sender.body.Text)
+	if len(code) != 2 {
+		t.Fatal("registration email did not contain its synthetic six-digit code")
+	}
+	result, err := f.module.service.ConfirmRegistration(context.Background(), challenge.Challenge.ID, capability.Value, code[1], integrationToken, authservice.Client{IP: "192.0.2.10"}, prior.Value)
+	if err != nil || result.Token == "" {
+		t.Fatalf("service registration confirmation with explicit prior cookie = (%+v, %v)", result, err)
+	}
+	if _, err := f.module.service.Authenticate(context.Background(), result.Token); err != nil {
+		t.Fatalf("new registration session is not valid: %v", err)
+	}
+	if _, err := f.module.service.Authenticate(context.Background(), prior.Value); !errors.Is(err, authservice.ErrUnauthorized) {
+		t.Fatalf("exact prior cookie remains valid after registration: %v", err)
+	}
+	if _, err := f.module.service.Authenticate(context.Background(), other.Value); err != nil {
+		t.Fatalf("unrelated session was revoked by registration: %v", err)
 	}
 }
 

@@ -18,6 +18,38 @@ type Module struct {
 	server  *notificationhttp.Server
 }
 
+// Channels combines module-owned readers without moving provider-specific
+// eligibility or private targets into the API composition root.
+type Channels []monitors.NotificationChannelsReader
+
+func (readers Channels) EnabledChannelsTx(ctx context.Context, tx pgx.Tx, accountID string, monitorIDs []string) (map[string][]string, error) {
+	result := make(map[string][]string, len(monitorIDs))
+	for _, id := range monitorIDs {
+		result[id] = []string{}
+	}
+	for _, reader := range readers {
+		channels, err := reader.EnabledChannelsTx(ctx, tx, accountID, monitorIDs)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range monitorIDs {
+			for _, channel := range channels[id] {
+				duplicate := false
+				for _, existing := range result[id] {
+					if existing == channel {
+						duplicate = true
+						break
+					}
+				}
+				if !duplicate {
+					result[id] = append(result[id], channel)
+				}
+			}
+		}
+	}
+	return result, nil
+}
+
 func New(pool *pgxpool.Pool, key string, owners monitors.OwnershipGuard, accounts accounts.ActiveGuard) (*Module, error) {
 	s, err := service.New(pool, key, owners, accounts)
 	if err != nil {

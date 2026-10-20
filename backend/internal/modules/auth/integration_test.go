@@ -272,6 +272,27 @@ func (f *authFixture) loginWithCaptcha(t *testing.T, email, password, captchaTok
 	return nil, "", response
 }
 
+func (f *authFixture) loginWithCookie(t *testing.T, email, password string, previous *http.Cookie) (*http.Cookie, string, *httptest.ResponseRecorder) {
+	t.Helper()
+	response := f.request(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email": email, "password": password, "turnstileToken": integrationToken,
+	}, previous, "", integrationOrigin, "")
+	if response.Code != http.StatusOK {
+		return nil, "", response
+	}
+	var out loginResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode replacement login response: %v", err)
+	}
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == "hc_session" {
+			return cookie, out.CSRFToken, response
+		}
+	}
+	t.Fatalf("replacement login response did not set a session cookie")
+	return nil, "", response
+}
+
 func (f *authFixture) signup(t *testing.T, email string) {
 	t.Helper()
 	token := f.register(t, email, "Test User", integrationPass)
@@ -367,6 +388,41 @@ func TestIntegrationRegistrationVerificationAndOpaqueLoginSession(t *testing.T) 
 	}
 	if me.Account.Role != "user" {
 		t.Fatalf("public signup account role = %q, want user", me.Account.Role)
+	}
+}
+
+func TestLoginReplacementRevokesOnlyExactPriorCookieAfterSuccessfulAuthentication(t *testing.T) {
+	f := newAuthFixture(t)
+	const ownerEmail = "prior-cookie-owner@example.test"
+	const targetEmail = "prior-cookie-target@example.test"
+	f.signup(t, ownerEmail)
+	f.signup(t, targetEmail)
+	prior, _, priorLogin := f.login(t, ownerEmail, integrationPass)
+	other, _, otherLogin := f.login(t, ownerEmail, integrationPass)
+	if priorLogin.Code != http.StatusOK || otherLogin.Code != http.StatusOK || prior == nil || other == nil {
+		t.Fatalf("create prior sessions: first=%d second=%d", priorLogin.Code, otherLogin.Code)
+	}
+
+	failed := f.request(t, http.MethodPost, "/api/v1/auth/login", map[string]string{"email": targetEmail, "password": "incorrect password", "turnstileToken": integrationToken}, prior, "", integrationOrigin, "")
+	if failed.Code != http.StatusUnauthorized {
+		t.Fatalf("failed account-switch login status=%d, want 401", failed.Code)
+	}
+	if got := f.request(t, http.MethodGet, "/api/v1/me", nil, prior, "", "", "").Code; got != http.StatusOK {
+		t.Fatalf("failed login revoked prior cookie: /me status=%d, want 200", got)
+	}
+
+	switched, _, response := f.loginWithCookie(t, targetEmail, integrationPass, prior)
+	if response.Code != http.StatusOK || switched == nil {
+		t.Fatalf("successful account-switch login status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := f.request(t, http.MethodGet, "/api/v1/me", nil, prior, "", "", "").Code; got != http.StatusUnauthorized {
+		t.Fatalf("successful login did not revoke exact prior cookie: status=%d, want 401", got)
+	}
+	if got := f.request(t, http.MethodGet, "/api/v1/me", nil, other, "", "", "").Code; got != http.StatusOK {
+		t.Fatalf("successful login revoked unrelated session: status=%d, want 200", got)
+	}
+	if got := f.request(t, http.MethodGet, "/api/v1/me", nil, switched, "", "", "").Code; got != http.StatusOK {
+		t.Fatalf("replacement session status=%d, want 200", got)
 	}
 }
 

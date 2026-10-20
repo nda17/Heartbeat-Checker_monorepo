@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/repository/postgres"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/security"
+	authservice "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/internal/service"
 )
 
 type fakeOAuthProvider struct {
@@ -125,8 +127,9 @@ func csrfFor(cookie *http.Cookie) string {
 
 func TestOAuthRegistrationRequiresStateBrowserProofAndEmailConfirmation(t *testing.T) {
 	const email = "oauth-new@example.test"
+	const pushPair = "123e4567-e89b-12d3-a456-426614174000"
 	f := oauthFixture(t, OAuthIdentityProfile{Subject: "subject-new-1", Email: email, Name: "OAuth User"})
-	start := f.request(t, http.MethodPost, "/api/v1/auth/oauth/yandex/start", map[string]string{"mode": "login", "returnTo": "/app/settings"}, nil, "", integrationOrigin, "")
+	start := f.request(t, http.MethodPost, "/api/v1/auth/oauth/yandex/start", map[string]string{"mode": "login", "returnTo": "/app/settings?pushPair=" + pushPair}, nil, "", integrationOrigin, "")
 	if start.Code != http.StatusOK {
 		t.Fatalf("OAuth start status=%d body=%s", start.Code, start.Body.String())
 	}
@@ -182,9 +185,58 @@ func TestOAuthRegistrationRequiresStateBrowserProofAndEmailConfirmation(t *testi
 	if confirm.Code != http.StatusOK {
 		t.Fatalf("OAuth confirmation status=%d body=%s", confirm.Code, confirm.Body.String())
 	}
+	var confirmBody struct {
+		ReturnTo string `json:"returnTo"`
+	}
+	if err := json.Unmarshal(confirm.Body.Bytes(), &confirmBody); err != nil {
+		t.Fatal(err)
+	}
+	if want := "/app/settings?pushPair=" + pushPair; confirmBody.ReturnTo != want {
+		t.Fatalf("OAuth push pairing return target = %q, want %q", confirmBody.ReturnTo, want)
+	}
 	var accounts int
 	if err := f.pool.QueryRow(context.Background(), "SELECT count(*) FROM auth.oauth_identities WHERE provider='yandex' AND subject='subject-new-1'").Scan(&accounts); err != nil || accounts != 1 {
 		t.Fatalf("OAuth identity count=%d err=%v", accounts, err)
+	}
+}
+
+func TestOAuthConfirmRevokesOnlyExplicitPriorCookie(t *testing.T) {
+	const targetEmail = "oauth-prior-cookie@example.test"
+	f := oauthFixture(t, OAuthIdentityProfile{Subject: "oauth-prior-cookie-subject", Email: targetEmail, Name: "OAuth Prior Cookie"})
+	const existingEmail = "oauth-prior-cookie-owner@example.test"
+	f.signup(t, existingEmail)
+	prior, _, priorLogin := f.login(t, existingEmail, integrationPass)
+	other, _, otherLogin := f.login(t, existingEmail, integrationPass)
+	if priorLogin.Code != http.StatusOK || otherLogin.Code != http.StatusOK || prior == nil || other == nil {
+		t.Fatalf("create prior OAuth sessions: first=%d second=%d", priorLogin.Code, otherLogin.Code)
+	}
+	state, attempt := oauthStart(t, f, "login", "/app/settings", "", nil)
+	callback := f.oauthCallback(t, state, attempt, nil)
+	if callback.Code != http.StatusSeeOther {
+		t.Fatalf("OAuth callback status=%d location=%q", callback.Code, callback.Header().Get("Location"))
+	}
+	var registration *http.Cookie
+	for _, cookie := range callback.Result().Cookies() {
+		if cookie.Name == "hc_oauth_registration" {
+			registration = cookie
+		}
+	}
+	if registration == nil || registration.Value == "" {
+		t.Fatal("OAuth browser registration proof missing")
+	}
+	token := f.mail.token(t, targetEmail, "verify-email?oauth=1", 0)
+	result, err := f.module.service.OAuthConfirm(context.Background(), registration.Value, token, authservice.Client{IP: "192.0.2.10"}, prior.Value)
+	if err != nil || result.Login.Token == "" {
+		t.Fatalf("OAuth confirmation with explicit prior cookie = (%+v, %v)", result, err)
+	}
+	if _, err := f.module.service.Authenticate(context.Background(), result.Login.Token); err != nil {
+		t.Fatalf("OAuth-created session is not valid: %v", err)
+	}
+	if _, err := f.module.service.Authenticate(context.Background(), prior.Value); !errors.Is(err, authservice.ErrUnauthorized) {
+		t.Fatalf("OAuth confirmation kept exact prior cookie valid: %v", err)
+	}
+	if _, err := f.module.service.Authenticate(context.Background(), other.Value); err != nil {
+		t.Fatalf("OAuth confirmation revoked unrelated session: %v", err)
 	}
 }
 

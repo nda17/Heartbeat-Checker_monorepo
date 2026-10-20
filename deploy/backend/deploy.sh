@@ -19,8 +19,9 @@ firewall_image=${13:?firewall image digest is required}
 firewall_policy_sha=${14:?firewall policy hash is required}
 activate_yookassa_test=${15-false}
 activate_email_notifications=${16-false}
+activate_android_push=${17-false}
 
-[[ ( $# -eq 14 || $# -eq 15 || $# -eq 16 ) && ( $activate_email_notifications == true || $activate_email_notifications == false ) && ( $activate_yookassa_test == true || $activate_yookassa_test == false ) && $firewall_policy_sha =~ ^[0-9a-f]{64}$ && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) && ( $activate_messenger_notifications == true || $activate_messenger_notifications == false ) && ( $provision_owner == true || $provision_owner == false ) && ( $activate_admin_mfa == true || $activate_admin_mfa == false ) && ( $activate_oauth == true || $activate_oauth == false ) ]] || {
+[[ ( $# -eq 14 || $# -eq 15 || $# -eq 16 || $# -eq 17 ) && ( $activate_android_push == true || $activate_android_push == false ) && ( $activate_email_notifications == true || $activate_email_notifications == false ) && ( $activate_yookassa_test == true || $activate_yookassa_test == false ) && $firewall_policy_sha =~ ^[0-9a-f]{64}$ && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) && ( $activate_messenger_notifications == true || $activate_messenger_notifications == false ) && ( $provision_owner == true || $provision_owner == false ) && ( $activate_admin_mfa == true || $activate_admin_mfa == false ) && ( $activate_oauth == true || $activate_oauth == false ) ]] || {
   echo 'Invalid release arguments' >&2; exit 1;
 }
 for spec in "api:$api_image" "worker:$worker_image" "probe:$probe_image" "migrate:$migrate_image" "backup:$backup_image" "firewall:$firewall_image"; do
@@ -129,7 +130,16 @@ unset registry_token
 if ! IFS= read -r -n 4097 registry_token || [[ -z $registry_token || ${#registry_token} -gt 4096 || ! $registry_token =~ ^[a-zA-Z0-9_.-]+$ ]]; then
   echo 'Invalid registry credential framing' >&2; exit 1
 fi
-if $activate_yookassa_test; then
+if $activate_android_push; then
+  if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $provision_owner || $activate_email_notifications || $activate_yookassa_test; then
+    echo 'Android push activation must be a separate configuration operation' >&2; exit 1
+  fi
+  [[ ! -e .env.next && ! -L .env.next ]] || { echo 'Resolve the existing staged configuration before Android push activation' >&2; exit 1; }
+  [[ -f stage-push.py.incoming && ! -L stage-push.py.incoming ]] || { echo 'Missing tracked Android push staging helper' >&2; exit 1; }
+  cp -p stage-push.py.incoming "$workdir/stage-push.py"
+  python3 "$workdir/stage-push.py" "$workdir"
+  activation_generated=true
+elif $activate_yookassa_test; then
   if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $provision_owner || $activate_email_notifications; then
     echo 'YooKassa activation must be a separate configuration operation' >&2; exit 1
   fi
@@ -215,7 +225,7 @@ except (OSError, UnicodeError, ValueError, TypeError):
 PY
 fi
 
-if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $activate_yookassa_test || $activate_email_notifications; then
+if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $activate_yookassa_test || $activate_email_notifications || $activate_android_push; then
   if ! $activation_generated; then
     [[ -f .env.next && ! -L .env.next && $(stat -c %a .env.next) == 600 ]] || {
       if $activate_messenger_notifications; then
@@ -230,7 +240,7 @@ if $activate_telegram_relay || $activate_messenger_notifications || $activate_ad
   [[ ! -e .env.activate.incoming && ! -L .env.activate.incoming && ! -e .env.rollback.incoming && ! -L .env.rollback.incoming ]] || {
     echo 'Resolve the previous configuration activation staging file' >&2; exit 1;
   }
-  python3 - "$workdir/.env.next" "$activate_telegram_relay" "$activate_messenger_notifications" "$activate_admin_mfa" "$activate_oauth" "$activate_yookassa_test" "$activate_email_notifications" <<'PY'
+  python3 - "$workdir/.env.next" "$activate_telegram_relay" "$activate_messenger_notifications" "$activate_admin_mfa" "$activate_oauth" "$activate_yookassa_test" "$activate_email_notifications" "$activate_android_push" <<'PY'
 import base64
 import binascii
 from pathlib import Path
@@ -262,9 +272,11 @@ oauth_keys = {
 oauth = sys.argv[5] == "true"
 yookassa_test = sys.argv[6] == "true"
 email_notifications = sys.argv[7] == "true"
+android_push = sys.argv[8] == "true"
+push_keys = {b"ANDROID_PUSH_ENABLED", b"RUSTORE_PUSH_PROJECT_ID", b"RUSTORE_PUSH_SERVICE_TOKEN"}
 email_key = b"EMAIL_NOTIFICATIONS_ENABLED"
 yookassa_keys = {b"BILLING_PROVIDER", b"BILLING_TEST_ACCOUNT_IDS", b"YOOKASSA_MODE", b"YOOKASSA_TEST_SHOP_ID", b"YOOKASSA_TEST_SECRET_KEY"}
-allowed = (set(relay_targets) if relay else set()) | (messenger_keys if messenger else set()) | ({mfa_key} if admin_mfa else set()) | (oauth_keys if oauth else set()) | (yookassa_keys if yookassa_test else set()) | ({email_key} if email_notifications else set())
+allowed = (set(relay_targets) if relay else set()) | (messenger_keys if messenger else set()) | ({mfa_key} if admin_mfa else set()) | (oauth_keys if oauth else set()) | (yookassa_keys if yookassa_test else set()) | ({email_key} if email_notifications else set()) | (push_keys if android_push else set())
 prefix = "Relay activation rejected" if relay and not messenger else "Configuration activation rejected"
 
 def reject(message):
@@ -301,6 +313,18 @@ old_lines, old_values = parse(".env")
 new_lines, new_values = parse(sys.argv[1])
 if old_lines != new_lines:
     reject("changes outside selected keys")
+if android_push:
+    if unquote_literal(new_values.get(b"ANDROID_PUSH_ENABLED",b"")) != b"true":
+        reject("Android push flag must be true")
+    if not re.fullmatch(rb"[A-Za-z0-9_-]{1,128}", unquote_literal(new_values.get(b"RUSTORE_PUSH_PROJECT_ID",b""))):
+        reject("invalid RuStore push project")
+    token = unquote_literal(new_values.get(b"RUSTORE_PUSH_SERVICE_TOKEN",b""))
+    if not 32 <= len(token) <= 8192 or any(c < 33 or c > 126 for c in token):
+        reject("invalid RuStore push service token")
+    for key in push_keys - {b"ANDROID_PUSH_ENABLED"}:
+        old = unquote_literal(old_values.get(key,b""))
+        if old and old != unquote_literal(new_values.get(key,b"")):
+            reject("Android push activation cannot rotate existing configuration")
 if email_notifications and new_values.get(email_key) != b"true":
     reject("email notification flag must be true")
 if yookassa_test:
@@ -413,6 +437,20 @@ if c["api"]["environment"].get(email_flag) not in ("true", "false") or c["api"][
     raise SystemExit("API and worker email notification flags must match")
 if any(email_flag in c.get(name, {}).get("environment", {}) for name in ("probe", "postgres", "caddy", "migrate")):
     raise SystemExit("Email notifications must be scoped to API and worker only")
+push_flag = "ANDROID_PUSH_ENABLED"
+api_push = c["api"]["environment"].get(push_flag, "false")
+worker_push = c["worker"]["environment"].get(push_flag, "false")
+if api_push not in ("true", "false") or api_push != worker_push:
+    raise SystemExit("API and worker Android push flags must match")
+if c["api"]["environment"].get("RUSTORE_PUSH_PROJECT_ID", "") != c["worker"]["environment"].get("RUSTORE_PUSH_PROJECT_ID", ""):
+    raise SystemExit("API and worker RuStore project identifiers must match")
+if "RUSTORE_PUSH_SERVICE_TOKEN" in c["api"]["environment"] or any(key in c.get(name, {}).get("environment", {}) for key in (push_flag,"RUSTORE_PUSH_PROJECT_ID","RUSTORE_PUSH_SERVICE_TOKEN") for name in ("probe","postgres","caddy","migrate")):
+    raise SystemExit("RuStore credentials must be scoped to the worker only")
+if api_push == "true":
+    project = c["worker"]["environment"].get("RUSTORE_PUSH_PROJECT_ID", "")
+    token = c["worker"]["environment"].get("RUSTORE_PUSH_SERVICE_TOKEN", "")
+    if not project or not 32 <= len(token) <= 8192 or any(ord(char) < 33 or ord(char) > 126 for char in token):
+        raise SystemExit("Enabled Android push requires complete worker configuration")
 if c["worker"]["environment"]["SMTP_TLS_MODE"] not in ("implicit_tls", "starttls"):
     raise SystemExit("SMTP_TLS_MODE must use verified TLS")
 try:
@@ -615,9 +653,10 @@ jq -n --arg source_sha "$source_sha" --arg api "$api_image" \
   --argjson telegram_relay_activated "$activate_telegram_relay" \
   --argjson messenger_notifications_activated "$activate_messenger_notifications" \
   --argjson email_notifications_activated "$activate_email_notifications" \
+  --argjson android_push_activated "$activate_android_push" \
   --argjson owner_import_requested "$provision_owner" --argjson admin_mfa_activated "$activate_admin_mfa" \
   --argjson oauth_activated "$activate_oauth" --argjson yookassa_test_activated "$activate_yookassa_test" \
-  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image,firewall:$firewall_image},firewall_policy_sha256:$firewall_policy_sha256,backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,messenger_notifications_activated:$messenger_notifications_activated,email_notifications_activated:$email_notifications_activated,owner_import_requested:$owner_import_requested,admin_mfa_activated:$admin_mfa_activated,oauth_activated:$oauth_activated,yookassa_test_activated:$yookassa_test_activated,completed_at:(now|todate)}' \
+  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image,firewall:$firewall_image},firewall_policy_sha256:$firewall_policy_sha256,backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,messenger_notifications_activated:$messenger_notifications_activated,email_notifications_activated:$email_notifications_activated,android_push_activated:$android_push_activated,owner_import_requested:$owner_import_requested,admin_mfa_activated:$admin_mfa_activated,oauth_activated:$oauth_activated,yookassa_test_activated:$yookassa_test_activated,completed_at:(now|todate)}' \
   > "receipts/$source_sha.json.incoming"
 mv compose.backup.yaml.incoming compose.backup.yaml
 mv backup.sh.incoming backup.sh

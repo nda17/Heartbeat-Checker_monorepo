@@ -5508,3 +5508,75 @@ html[data-installed-app="true"] .android-hero {
     background-attachment: scroll;
   }
 }
+
+.android-push-panel {
+  padding: 26px;
+  margin-top: 25px;
+}
+.push-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-block: 16px;
+}
+.push-pairing {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px;
+  margin-bottom: 20px;
+  background: var(--soft);
+  overflow-wrap: anywhere;
+}
+.push-pairing h3 {
+  font-size: 16px;
+}
+.push-comparison-code {
+  font-family: ui-monospace, monospace;
+  font-size: 30px;
+  letter-spacing: 0.15em;
+}
+.push-pairing > .primary {
+  align-self: flex-start;
+}
+.push-explanation {
+  margin-top: 20px;
+  line-height: 1.7;
+}
+.push-disconnect {
+  margin-top: 12px;
+}
+.android-push-routes {
+  margin-top: 20px;
+}
+.android-push-routes h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.push-route-editor {
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+.push-installations .session-info {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 680px) {
+  .android-push-panel {
+    padding: 18px;
+  }
+  .push-installations li {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  .push-installations .session-info {
+    flex-basis: calc(100% - 50px);
+  }
+  .push-installations li > button {
+    margin-left: 49px;
+  }
+  .push-actions > :is(a, button) {
+    max-width: 100%;
+    white-space: normal;
+  }
+}

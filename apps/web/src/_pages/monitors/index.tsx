@@ -27,13 +27,6 @@ import {
 } from "@/entities/monitor";
 import { api, ApiError, errorMessage, safeAppReturnTo } from "@/shared/api";
 import { Dialog } from "@/shared/dialog";
-import { useSession } from "@/entities/session";
-import {
-  clearMonitorDraft,
-  draftChanged,
-  MonitorDraft,
-  readMonitorDraft,
-} from "@/shared/android";
 import {
   dateTime,
   Loading,
@@ -59,13 +52,9 @@ const notificationNames = {
   max: "MAX",
   email: "Email",
   webhook: "Webhook",
+  push: "Android push",
 };
 export function MonitorsPage() {
-  const { profile } = useSession();
-  const [sharedDraft, setSharedDraft] = useState<MonitorDraft | null>(null);
-  const [formDraft, setFormDraft] = useState<
-    (MonitorDraft & { accountId: string }) | null
-  >(null);
   const [list, setList] = useState<MonitorPage | null>(null);
   const monitors = list?.monitors ?? null;
   const [selection, setSelection] = useState({
@@ -202,12 +191,6 @@ export function MonitorsPage() {
     },
     [],
   );
-  useEffect(() => {
-    const update = () => setSharedDraft(readMonitorDraft(profile.account.id));
-    update();
-    window.addEventListener(draftChanged, update);
-    return () => window.removeEventListener(draftChanged, update);
-  }, [profile.account.id]);
   async function toggle(monitor: Monitor) {
     setBusy(monitor.id);
     setError("");
@@ -660,7 +643,11 @@ export function MonitorsPage() {
                               ) : (
                                 <Icon
                                   name={
-                                    channel === "email" ? "mail" : "network"
+                                    channel === "email"
+                                      ? "mail"
+                                      : channel === "push"
+                                        ? "phone"
+                                        : "network"
                                   }
                                   size={20}
                                 />
@@ -808,47 +795,11 @@ export function MonitorsPage() {
           отсутствие квоты отображаются отдельно.
         </p>
       </div>
-      {sharedDraft && (
-        <Notice success>
-          Черновик из Android: {sharedDraft.name || sharedDraft.url}. Проверьте
-          данные перед сохранением.
-          <div className="dialog-actions">
-            <button
-              className="secondary"
-              disabled={!!editor}
-              onClick={() => {
-                const current = readMonitorDraft(profile.account.id);
-                if (!current) {
-                  setSharedDraft(null);
-                  return;
-                }
-                setFormDraft({ ...current, accountId: profile.account.id });
-                clearMonitorDraft();
-                setSharedDraft(null);
-                setEditor("new");
-              }}
-            >
-              Открыть черновик
-            </button>
-            <button
-              className="quiet"
-              onClick={() => {
-                clearMonitorDraft();
-                setSharedDraft(null);
-              }}
-            >
-              Удалить черновик
-            </button>
-          </div>
-        </Notice>
-      )}
       {editor && (
         <MonitorForm
           monitor={editor === "new" ? undefined : editor}
-          draft={editor === "new" ? (formDraft ?? undefined) : undefined}
           onClose={() => {
             setEditor(null);
-            setFormDraft(null);
           }}
           onSaved={load}
         />

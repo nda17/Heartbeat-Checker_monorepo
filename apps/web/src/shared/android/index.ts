@@ -1,4 +1,34 @@
 import release from "./release.json";
+
+const publicUUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function pushPairingId(params: URLSearchParams) {
+  const values = params.getAll("pushPair");
+  return params.size === 1 &&
+    values.length === 1 &&
+    values[0].length === 36 &&
+    publicUUID.test(values[0])
+    ? values[0].toLowerCase()
+    : null;
+}
+
+// Only these two reviewed native actions are allowed; no private material is put in URLs.
+export function androidPushIntent(
+  action: "connect" | "complete",
+  pairingId?: string,
+) {
+  if (action === "connect" && pairingId === undefined)
+    return "intent://heartbeat-checker.ru/android/push/connect#Intent;scheme=https;package=ru.heartbeatchecker.app;end";
+  if (
+    action === "complete" &&
+    pairingId?.length === 36 &&
+    publicUUID.test(pairingId)
+  )
+    return `intent://heartbeat-checker.ru/android/push/complete?pairingId=${pairingId.toLowerCase()}#Intent;scheme=https;package=ru.heartbeatchecker.app;end`;
+  throw new Error("Invalid Android push action");
+}
+
 export type AndroidRelease = {
   schemaVersion: 1;
   packageName: "ru.heartbeatchecker.app";
@@ -36,12 +66,3 @@ export function androidRelease(): AndroidRelease | null {
     throw new Error("Invalid immutable APK URL");
   return value;
 }
-
-export {
-  captureMonitorDraft,
-  clearMonitorDraft,
-  draftChanged,
-  parseMonitorDraft,
-  readMonitorDraft,
-} from "./draft";
-export type { MonitorDraft } from "./draft";

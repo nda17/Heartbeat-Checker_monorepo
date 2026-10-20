@@ -11,7 +11,12 @@ import (
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/outbox"
 )
 
-type Recorder struct{ messenger *Messenger }
+type Recorder struct {
+	messenger *Messenger
+	push      *Push
+}
+
+func (r Recorder) WithPush(push *Push) Recorder { r.push = push; return r }
 
 func NewRecorder(messenger ...*Messenger) Recorder {
 	if len(messenger) > 0 {
@@ -25,7 +30,12 @@ func (r Recorder) Enqueue(ctx context.Context, tx pgx.Tx, n incidentcontracts.No
 		return err
 	}
 	if r.messenger != nil && (r.messenger.cfg.Enabled || r.messenger.cfg.EmailEnabled) {
-		return r.messenger.Enqueue(ctx, tx, n)
+		if err := r.messenger.Enqueue(ctx, tx, n); err != nil {
+			return err
+		}
+	}
+	if r.push != nil {
+		return r.push.Enqueue(ctx, tx, n)
 	}
 	return nil
 }
@@ -44,7 +54,12 @@ func (r Recorder) CancelReminders(ctx context.Context, tx pgx.Tx, monitorID stri
 }
 func (r Recorder) CancelForReset(ctx context.Context, tx pgx.Tx, monitorID string) error {
 	if r.messenger != nil && (r.messenger.cfg.Enabled || r.messenger.cfg.EmailEnabled) {
-		return r.messenger.CancelForReset(ctx, tx, monitorID)
+		if err := r.messenger.CancelForReset(ctx, tx, monitorID); err != nil {
+			return err
+		}
+	}
+	if r.push != nil {
+		return r.push.CancelForReset(ctx, tx, monitorID)
 	}
 	return nil
 }

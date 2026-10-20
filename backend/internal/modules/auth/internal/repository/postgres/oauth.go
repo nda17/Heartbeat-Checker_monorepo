@@ -96,7 +96,7 @@ func (r *Repository) OAuthIdentities(ctx context.Context, accountID string) ([]O
 
 // OAuth login locks credentials before the identity and session insertion. Password
 // reset, unlink, block and role changes therefore fence concurrent callbacks.
-func (r *Repository) OAuthLoginSession(ctx context.Context, i OAuthIdentity, c Credential, session OAuthSession, lock OAuthAccountLock) error {
+func (r *Repository) OAuthLoginSession(ctx context.Context, i OAuthIdentity, c Credential, session OAuthSession, lock OAuthAccountLock, previousHash []byte) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -121,6 +121,9 @@ func (r *Repository) OAuthLoginSession(ctx context.Context, i OAuthIdentity, c C
 		return err
 	}
 	if err = insertOAuthSession(ctx, tx, i.AccountID, version, session); err != nil {
+		return err
+	}
+	if err = RevokeReplacedSessionTx(ctx, tx, previousHash); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -152,7 +155,7 @@ func (r *Repository) OAuthRegistration(ctx context.Context, browserHash []byte) 
 	err := r.pool.QueryRow(ctx, `SELECT id,oauth_provider,oauth_subject,email,name,oauth_return_to,expires_at FROM auth.registration_challenges WHERE oauth_browser_hash=$1 AND oauth_provider IS NOT NULL AND consumed_at IS NULL AND expires_at>now() ORDER BY created_at DESC LIMIT 1`, browserHash).Scan(&c.ID, &c.Provider, &c.Subject, &c.Email, &c.Name, &c.ReturnTo, &c.ExpiresAt)
 	return c, err
 }
-func (r *Repository) CompleteOAuthRegistration(ctx context.Context, tokenHash, browserHash []byte, identityID string, session OAuthSession, create func(context.Context, pgx.Tx, string) (string, error), audit OAuthAudit) (string, string, error) {
+func (r *Repository) CompleteOAuthRegistration(ctx context.Context, tokenHash, browserHash []byte, identityID string, session OAuthSession, create func(context.Context, pgx.Tx, string) (string, error), audit OAuthAudit, previousHash []byte) (string, string, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return "", "", err
@@ -194,6 +197,9 @@ func (r *Repository) CompleteOAuthRegistration(ctx context.Context, tokenHash, b
 		if err = audit(ctx, tx, accountID, session.ID, identityID, c.Provider, "oauth.registered"); err != nil {
 			return "", "", err
 		}
+	}
+	if err = RevokeReplacedSessionTx(ctx, tx, previousHash); err != nil {
+		return "", "", err
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return "", "", err

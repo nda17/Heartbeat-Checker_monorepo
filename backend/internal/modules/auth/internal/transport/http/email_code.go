@@ -106,7 +106,7 @@ func (s *Server) confirmRegistration(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	result, err := s.service.ConfirmRegistration(r.Context(), r.PathValue("id"), s.registrationCookie(r), in.Code, in.TurnstileToken, client(r))
+	result, err := s.service.ConfirmRegistration(r.Context(), r.PathValue("id"), s.registrationCookie(r), in.Code, in.TurnstileToken, client(r), s.sessionToken(r))
 	if err != nil {
 		failRegistrationCode(w, err, false)
 		return

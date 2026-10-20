@@ -217,7 +217,7 @@ func (s *Server) oauthConfirm(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	out, err := s.service.OAuthConfirm(r.Context(), s.oauthCookie(r, "registration"), in.Token, client(r))
+	out, err := s.service.OAuthConfirm(r.Context(), s.oauthCookie(r, "registration"), in.Token, client(r), s.sessionToken(r))
 	if err != nil {
 		failService(w, err)
 		return

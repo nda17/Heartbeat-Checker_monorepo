@@ -78,15 +78,24 @@ func oauthReturnTo(v string) string {
 	case "/app", "/app/admin", "/app/settings":
 		return v
 	}
-	if !strings.HasPrefix(v, "/app?") {
+	if !strings.HasPrefix(v, "/app?") && !strings.HasPrefix(v, "/app/settings?") {
 		return "/app"
 	}
 	u, err := url.Parse(v)
-	if err != nil || u.Path != "/app" || u.Host != "" || u.Scheme != "" || u.Fragment != "" {
+	if err != nil || u.Host != "" || u.Scheme != "" || u.Fragment != "" {
 		return "/app"
 	}
 	q, err := url.ParseQuery(u.RawQuery)
-	if err != nil || len(q) != 2 || len(q["monitor"]) != 1 || len(q["incident"]) != 1 {
+	if err != nil {
+		return "/app"
+	}
+	if u.Path == "/app/settings" {
+		if len(q) != 1 || len(q["pushPair"]) != 1 || !security.ValidID(strings.ToLower(q.Get("pushPair"))) {
+			return "/app"
+		}
+		return "/app/settings?pushPair=" + url.QueryEscape(q.Get("pushPair"))
+	}
+	if u.Path != "/app" || len(q) != 2 || len(q["monitor"]) != 1 || len(q["incident"]) != 1 {
 		return "/app"
 	}
 	monitor, incident := q.Get("monitor"), q.Get("incident")
@@ -295,7 +304,7 @@ func (s *Service) OAuthCallback(ctx context.Context, in OAuthCallbackInput) (out
 		if err != nil {
 			return OAuthCallbackResult{}, ErrUnavailable
 		}
-		if err = s.repo.OAuthLoginSession(ctx, identity, c, session, s.accounts.GetForAuthTx); err != nil {
+		if err = s.repo.OAuthLoginSession(ctx, identity, c, session, s.accounts.GetForAuthTx, previousSessionHash(in.SessionToken)); err != nil {
 			return OAuthCallbackResult{}, ErrCredentials
 		}
 		login := LoginResult{Account: account, Token: token, CSRF: security.CSRF(token)}
@@ -390,7 +399,7 @@ func (s *Service) OAuthRegistration(ctx context.Context, browser string) (OAuthR
 	}
 	return OAuthRegistrationInfo{c.Provider, c.Email, c.Name, c.ExpiresAt}, nil
 }
-func (s *Service) OAuthConfirm(ctx context.Context, browser, token string, client Client) (OAuthConfirmResult, error) {
+func (s *Service) OAuthConfirm(ctx context.Context, browser, token string, client Client, previousToken string) (OAuthConfirmResult, error) {
 	if len(browser) != 43 || len(token) != 43 {
 		return OAuthConfirmResult{}, ErrOAuthRegistrationExpired
 	}
@@ -408,7 +417,7 @@ func (s *Service) OAuthConfirm(ctx context.Context, browser, token string, clien
 	accountID, returnTo, err := s.repo.CompleteOAuthRegistration(ctx, security.Digest(token), security.Digest(browser), id, session, func(ctx context.Context, tx pgx.Tx, name string) (string, error) {
 		a, err := s.accounts.Create(ctx, tx, name)
 		return a.ID, err
-	}, s.cfg.OAuthAudit)
+	}, s.cfg.OAuthAudit, previousSessionHash(previousToken))
 	if errors.Is(err, postgres.ErrAlreadyExists) {
 		return OAuthConfirmResult{}, ErrOAuthEmailConflict
 	}

@@ -22,6 +22,8 @@ type OAuthIdentityProfile = service.OAuthIdentityProfile
 type AccountDeletion = postgres.AccountDeletion
 
 var ErrEmailUnverified = authcontracts.ErrEmailUnverified
+var ErrSessionExpired = authcontracts.ErrSessionExpired
+var ErrSessionRevoked = authcontracts.ErrSessionRevoked
 
 type Config struct {
 	OAuthProviders    map[string]OAuthProvider
@@ -145,6 +147,12 @@ func (m *Module) RequireRole(role string, next http.Handler) http.Handler {
 }
 
 func (m *Module) Protect(next http.Handler) http.Handler { return m.server.Protect(next) }
+
+// SessionLeaseTx fences an ordinary authenticated session without extending it
+// or requiring administrator MFA. Locks remain held until the caller ends tx.
+func SessionLeaseTx(ctx context.Context, tx pgx.Tx, accountID, sessionID string) (time.Time, error) {
+	return postgres.SessionLeaseTx(ctx, tx, accountID, sessionID)
+}
 
 func (m *Module) VerifyAdminTx(ctx context.Context, tx pgx.Tx, p authcontracts.Principal, mutation bool) error {
 	err := m.repo.VerifyAdminTx(ctx, tx, p, mutation)

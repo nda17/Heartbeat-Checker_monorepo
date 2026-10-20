@@ -10,6 +10,8 @@ import (
 // deliveries. In-flight provider calls may finish, but their rows cannot retry.
 func DeleteAccountTx(ctx context.Context, tx pgx.Tx, accountID string) error {
 	queries := []string{
+		`DELETE FROM notifications.push_pairings WHERE account_id=$1`,
+		`DELETE FROM notifications.push_installations WHERE account_id=$1`,
 		`DELETE FROM notifications.reservations WHERE account_id=$1`,
 		`DELETE FROM notifications.messenger_reservations WHERE account_id=$1`,
 		`DELETE FROM notifications.messenger_links WHERE account_id=$1`,

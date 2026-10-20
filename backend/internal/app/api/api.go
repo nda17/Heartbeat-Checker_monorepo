@@ -72,7 +72,11 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("configure messenger notifications: %w", err)
 	}
-	monitorModule := monitors.New(pool, billingModule, incidents.New(pool, notifications.NewRecorder(messengerModule)), accountModule, messengerModule)
+	pushModule, err := notifications.NewPush(pool, cfg.WebhookEncryptionKey, notifications.PushConfig{Enabled: cfg.AndroidPushEnabled, ProjectID: cfg.RuStorePushProjectID, Origin: cfg.AuthOrigin, SessionLease: auth.SessionLeaseTx}, billingModule)
+	if err != nil {
+		return fmt.Errorf("configure Android push: %w", err)
+	}
+	monitorModule := monitors.New(pool, billingModule, incidents.New(pool, notifications.NewRecorder(messengerModule).WithPush(pushModule)), accountModule, notifications.Channels{messengerModule, pushModule})
 	authModule, err := auth.New(pool, accountModule, captcha, mailer, auth.Config{
 		Origin:            cfg.AuthOrigin,
 		OAuthProviders:    oauthProviders,
@@ -108,6 +112,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	notificationModule.Register(handler, authModule.Protect)
 	messengerModule.RegisterAPI(handler, authModule.Protect)
 	messengerModule.RegisterIngest(handler)
+	pushModule.RegisterAPI(handler, authModule.Protect)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,

@@ -1,11 +1,13 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <queries>
         <intent>
             <action android:name="android.support.customtabs.action.CustomTabsService" />
         </intent>
     </queries>
     <application
+        android:name=".HeartbeatApplication"
         android:allowBackup="false"
         android:fullBackupContent="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -16,8 +18,24 @@
         android:theme="@style/AppTheme">
         <meta-data android:name="asset_statements" android:resource="@string/asset_statements" />
         <meta-data android:name="web_manifest_url" android:value="https://heartbeat-checker.ru/manifest.webmanifest" />
+        <meta-data android:name="ru.rustore.sdk.pushclient.default_notification_icon" android:resource="@drawable/ic_notification" />
+        <meta-data android:name="ru.rustore.sdk.pushclient.default_notification_channel_id" android:value="incidents" />
+        <service android:name=".HeartbeatMessagingService" android:exported="true" tools:ignore="ExportedService">
+            <intent-filter>
+                <action android:name="ru.rustore.sdk.pushclient.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+        <activity android:name=".PushSetupActivity" android:exported="true" android:launchMode="singleTop">
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="heartbeat-checker.ru" />
+                <data android:path="/android/push/connect" />
+                <data android:path="/android/push/complete" />
+            </intent-filter>
+        </activity>
         <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop">
-            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -32,11 +50,6 @@
                 <data android:path="/app/settings" />
                 <data android:path="/app/billing" />
                 <data android:path="/app/admin" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.SEND" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
         <activity android:name="com.google.androidbrowserhelper.trusted.FocusActivity" android:exported="false" />

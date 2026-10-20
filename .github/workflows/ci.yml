@@ -203,8 +203,6 @@ jobs:
             python3 deploy/android/release.py "$manifest" --frontend-sha "$GITHUB_SHA" --fingerprint "$SIGNING_FINGERPRINT"
           fi
       - run: npm ci
-      - name: Android draft contract tests
-        run: node --test scripts/android-draft.test.mjs
       - name: Admin and session component regressions
         run: npm run test:ui
       - run: npm run lint
