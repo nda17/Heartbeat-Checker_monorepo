@@ -1,12 +1,14 @@
 package ru.heartbeatchecker.app;
 
 import android.content.Context;
+import android.os.Build;
 
 import androidx.work.Constraints;
 import androidx.work.Data;
 import androidx.work.ExistingWorkPolicy;
 import androidx.work.NetworkType;
 import androidx.work.OneTimeWorkRequest;
+import androidx.work.OutOfQuotaPolicy;
 import androidx.work.WorkManager;
 
 import org.json.JSONArray;
@@ -28,9 +30,16 @@ final class PushWork {
     private PushWork() {}
 
     private static OneTimeWorkRequest work(String kind, String id, String tag) {
-        return new OneTimeWorkRequest.Builder(PushWorker.class)
+        return work(kind, id, tag, Build.VERSION.SDK_INT);
+    }
+
+    static OneTimeWorkRequest work(String kind, String id, String tag, int sdk) {
+        OneTimeWorkRequest.Builder request = new OneTimeWorkRequest.Builder(PushWorker.class)
                 .setConstraints(new Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-                .setInputData(new Data.Builder().putString("kind", kind).putString("id", id).build()).addTag(tag).build();
+                .setInputData(new Data.Builder().putString("kind", kind).putString("id", id).build()).addTag(tag);
+        if ("delivery".equals(kind) && sdk >= 31)
+            request.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST);
+        return request.build();
     }
 
     static void delivery(Context context, JSONObject envelope) throws IOException, JSONException {

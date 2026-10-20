@@ -30,6 +30,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.Assert.*;
 
@@ -41,10 +42,17 @@ public final class PushStoreTest {
     private static final String CREDENTIAL = INSTALLATION + ".abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
     private Context context;
     private PushStore store;
+    private boolean previousLocallyBlocked;
+    private boolean notificationPermissionOriginallyGranted;
 
     @Before
     public void setUp() throws Exception {
         context = ApplicationProvider.getApplicationContext();
+        previousLocallyBlocked = PushWork.locallyBlocked;
+        PushWork.locallyBlocked = false;
+        notificationPermissionOriginallyGranted = Build.VERSION.SDK_INT < 33
+                || context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED;
         store = new PushStore(context);
         store.update(state -> {
             java.util.Iterator<String> keys = state.keys();
@@ -53,6 +61,17 @@ public final class PushStoreTest {
             for (String key : remove) state.remove(key);
         });
         install(1, 1);
+    }
+
+    @org.junit.After
+    public void restoreDeliveryState() {
+        PushWork.locallyBlocked = previousLocallyBlocked;
+        if (Build.VERSION.SDK_INT >= 33 && !notificationPermissionOriginallyGranted
+                && context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            InstrumentationRegistry.getInstrumentation().getUiAutomation()
+                    .revokeRuntimePermission(context.getPackageName(), android.Manifest.permission.POST_NOTIFICATIONS);
+        }
     }
 
     @Test
@@ -261,6 +280,199 @@ public final class PushStoreTest {
     }
 
     @Test
+    public void stoppedBeforeFetchKeepsPendingWithoutSpendingAttempt() throws Exception {
+        String id = reserveDelivery(1);
+        AtomicInteger fetches = new AtomicInteger();
+
+        androidx.work.ListenableWorker.Result result = runDelivery(id, () -> true, fakeDelivery(fetches, new AtomicInteger()));
+
+        assertResult(androidx.work.ListenableWorker.Result.success(), result);
+        assertEquals(0, fetches.get());
+        JSONObject pending = store.read().getJSONObject("pending").getJSONObject(id);
+        assertEquals(0, pending.optInt("fetchAttempts"));
+        assertFalse(contains(store.read().optJSONArray("seen"), id));
+    }
+
+    @Test
+    public void stopDuringFetchIOExceptionKeepsPendingAndNextRunDisplaysOnce() throws Exception {
+        String id = reserveDelivery(2);
+        AtomicInteger fetches = new AtomicInteger();
+        AtomicInteger displays = new AtomicInteger();
+        AtomicBoolean stopped = new AtomicBoolean();
+
+        androidx.work.ListenableWorker.Result first = runDelivery(id, stopped::get, new PushWorker.DeliveryServices() {
+            @Override public JSONObject fetch(String deliveryId, String credential) throws IOException {
+                fetches.incrementAndGet();
+                stopped.set(true);
+                throw new IOException("simulated constraint stop");
+            }
+            @Override public void display(JSONObject content) { displays.incrementAndGet(); }
+        });
+
+        assertResult(androidx.work.ListenableWorker.Result.success(), first);
+        assertTrue(store.read().getJSONObject("pending").has(id));
+        assertEquals(1, store.read().getJSONObject("pending").getJSONObject(id).getInt("fetchAttempts"));
+        assertFalse(contains(store.read().optJSONArray("seen"), id));
+
+        androidx.work.ListenableWorker.Result second = runDelivery(id, () -> false, fakeDelivery(fetches, displays));
+        assertResult(androidx.work.ListenableWorker.Result.success(), second);
+        assertEquals(2, fetches.get());
+        assertEquals(1, displays.get());
+        assertFalse(store.read().optJSONObject("pending").has(id));
+        assertTrue(contains(store.read().optJSONArray("seen"), id));
+
+        runDelivery(id, () -> false, fakeDelivery(fetches, displays));
+        assertEquals("committed delivery is not fetched or displayed again", 2, fetches.get());
+        assertEquals(1, displays.get());
+    }
+
+    @Test
+    public void stopAfterValidResponseRetainsPendingUntilLaterRun() throws Exception {
+        String id = reserveDelivery(3);
+        AtomicInteger fetches = new AtomicInteger();
+        AtomicInteger displays = new AtomicInteger();
+        AtomicBoolean stopped = new AtomicBoolean();
+        PushWorker.DeliveryServices services = new PushWorker.DeliveryServices() {
+            @Override public JSONObject fetch(String deliveryId, String credential) throws org.json.JSONException {
+                fetches.incrementAndGet();
+                stopped.set(true);
+                return delivery(deliveryId, 3, "down", System.currentTimeMillis() + 300_000);
+            }
+            @Override public void display(JSONObject content) { displays.incrementAndGet(); }
+        };
+
+        androidx.work.ListenableWorker.Result stoppedResult = runDelivery(id, stopped::get, services);
+
+        assertResult(androidx.work.ListenableWorker.Result.success(), stoppedResult);
+        assertEquals(1, fetches.get());
+        assertEquals(0, displays.get());
+        assertTrue(store.read().getJSONObject("pending").has(id));
+        assertFalse(contains(store.read().optJSONArray("seen"), id));
+
+        androidx.work.ListenableWorker.Result retry = runDelivery(id, () -> false, fakeDelivery(fetches, displays));
+        assertResult(androidx.work.ListenableWorker.Result.success(), retry);
+        assertEquals(2, fetches.get());
+        assertEquals(1, displays.get());
+        assertFalse(store.read().optJSONObject("pending").has(id));
+        assertTrue(contains(store.read().optJSONArray("seen"), id));
+    }
+
+    @Test
+    public void threeActualTransientFetchFailuresExhaustDeliveryBudget() throws Exception {
+        String id = reserveDelivery(4);
+        AtomicInteger fetches = new AtomicInteger();
+        AtomicInteger displays = new AtomicInteger();
+        PushWorker.DeliveryServices transientFailure = new PushWorker.DeliveryServices() {
+            @Override public JSONObject fetch(String deliveryId, String credential) throws IOException {
+                fetches.incrementAndGet();
+                throw new IOException("simulated transient network failure");
+            }
+            @Override public void display(JSONObject content) { displays.incrementAndGet(); }
+        };
+
+        assertResult(androidx.work.ListenableWorker.Result.retry(), runDelivery(id, () -> false, transientFailure));
+        assertResult(androidx.work.ListenableWorker.Result.retry(), runDelivery(id, () -> false, transientFailure));
+        assertResult(androidx.work.ListenableWorker.Result.success(), runDelivery(id, () -> false, transientFailure));
+
+        assertEquals(3, fetches.get());
+        assertEquals(0, displays.get());
+        assertFalse(store.read().optJSONObject("pending").has(id));
+        assertTrue(contains(store.read().optJSONArray("seen"), id));
+    }
+
+    @Test
+    public void stoppedServerFailureKeepsPendingForLaterRun() throws Exception {
+        String id = reserveDelivery(10);
+        AtomicInteger fetches = new AtomicInteger();
+        AtomicBoolean stopped = new AtomicBoolean();
+        PushWorker.DeliveryServices serverFailure = new PushWorker.DeliveryServices() {
+            @Override public JSONObject fetch(String deliveryId, String credential) throws IOException {
+                fetches.incrementAndGet();
+                stopped.set(true);
+                throw new PushApi.Failure(503);
+            }
+            @Override public void display(JSONObject content) { fail("a transient failure cannot display"); }
+        };
+
+        assertResult(androidx.work.ListenableWorker.Result.success(), runDelivery(id, stopped::get, serverFailure));
+
+        assertEquals(1, fetches.get());
+        assertEquals(1, store.read().getJSONObject("pending").getJSONObject(id).getInt("fetchAttempts"));
+        assertFalse(contains(store.read().optJSONArray("seen"), id));
+    }
+
+    @Test
+    public void inflightResponseAfterRebindCannotDisplayOrChangeNewBinding() throws Exception {
+        String id = reserveDelivery(5);
+        AtomicInteger displays = new AtomicInteger();
+        PushWorker.DeliveryServices rebindDuringFetch = new PushWorker.DeliveryServices() {
+            @Override public JSONObject fetch(String deliveryId, String credential) throws IOException, org.json.JSONException {
+                try { install(2, 2); }
+                catch (Exception error) { throw new IOException(error); }
+                return delivery(deliveryId, 5, "down", System.currentTimeMillis() + 300_000);
+            }
+            @Override public void display(JSONObject content) { displays.incrementAndGet(); }
+        };
+
+        androidx.work.ListenableWorker.Result result = runDelivery(id, () -> false, rebindDuringFetch);
+
+        JSONObject state = store.read();
+        assertResult(androidx.work.ListenableWorker.Result.success(), result);
+        assertEquals(0, displays.get());
+        assertEquals(2, state.getJSONObject("installation").getLong("bindingGeneration"));
+        assertFalse(state.optJSONObject("pending") != null && state.getJSONObject("pending").has(id));
+        assertFalse(contains(state.optJSONArray("seen"), id));
+        assertFalse(state.has("sequences"));
+    }
+
+    @Test
+    public void inflightResponseAfterLogoutCannotDisplayOrRecreatePending() throws Exception {
+        String id = reserveDelivery(9);
+        AtomicInteger displays = new AtomicInteger();
+        PushWorker.DeliveryServices logoutDuringFetch = new PushWorker.DeliveryServices() {
+            @Override public JSONObject fetch(String deliveryId, String credential) throws IOException, org.json.JSONException {
+                store.update(state -> {
+                    state.put("enabled", false);
+                    for (String key : new String[]{"credential", "installation", "pending", "seen", "sequences"})
+                        state.remove(key);
+                });
+                return delivery(deliveryId, 9, "down", System.currentTimeMillis() + 300_000);
+            }
+            @Override public void display(JSONObject content) { displays.incrementAndGet(); }
+        };
+
+        androidx.work.ListenableWorker.Result result = runDelivery(id, () -> false, logoutDuringFetch);
+
+        JSONObject state = store.read();
+        assertResult(androidx.work.ListenableWorker.Result.success(), result);
+        assertEquals(0, displays.get());
+        assertFalse(state.optBoolean("enabled"));
+        assertFalse(state.has("credential"));
+        assertFalse(state.has("installation"));
+        assertFalse(state.optJSONObject("pending") != null && state.getJSONObject("pending").has(id));
+        assertFalse(contains(state.optJSONArray("seen"), id));
+        assertFalse(state.has("sequences"));
+    }
+
+    @Test
+    public void deliveryWorkUsesApiSpecificExpeditedPolicyOnlyForDelivery() {
+        androidx.work.OneTimeWorkRequest api30 = PushWork.work("delivery", deliveryId(6), PushWork.DELIVERY, 30);
+        androidx.work.OneTimeWorkRequest api31 = PushWork.work("delivery", deliveryId(7), PushWork.DELIVERY, 31);
+        androidx.work.OneTimeWorkRequest registration = PushWork.work("registration", "", PushWork.REGISTRATION, 31);
+        androidx.work.OneTimeWorkRequest pairing = PushWork.work("pairing", deliveryId(8), PushWork.PAIRING, 31);
+        androidx.work.OneTimeWorkRequest revoke = PushWork.work("revoke", "", "heartbeat-push-revoke", 31);
+
+        assertFalse(api30.getWorkSpec().expedited);
+        assertFalse("registration keeps ordinary scheduling", registration.getWorkSpec().expedited);
+        assertFalse("pairing keeps ordinary scheduling", pairing.getWorkSpec().expedited);
+        assertFalse("revocation keeps ordinary scheduling", revoke.getWorkSpec().expedited);
+        assertTrue(api31.getWorkSpec().expedited);
+        assertEquals(androidx.work.OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST,
+                api31.getWorkSpec().outOfQuotaPolicy);
+        assertEquals(NetworkType.CONNECTED, api31.getWorkSpec().constraints.getRequiredNetworkType());
+    }
+
+    @Test
     public void oversizedEncryptedStateWritePreservesPreviousFileAndDoesNotDisplay() throws Exception {
         String id = deliveryId(1);
         assertTrue(store.reserve(envelope(id, 1, System.currentTimeMillis() + 300_000)));
@@ -286,6 +498,44 @@ public final class PushStoreTest {
         store.acceptInstallation(installation(generation, registrationVersion), CREDENTIAL);
     }
 
+    private String reserveDelivery(int sequence) throws Exception {
+        ensureNotificationPermission();
+        String id = deliveryId(sequence);
+        assertTrue("delivery must be accepted into the real pending store",
+                store.reserve(envelope(id, 1, System.currentTimeMillis() + 300_000)));
+        return id;
+    }
+
+    private androidx.work.ListenableWorker.Result runDelivery(String id, java.util.function.BooleanSupplier stopped,
+                                                                PushWorker.DeliveryServices services) throws Exception {
+        return PushWorker.runDelivery(context, id, stopped, services);
+    }
+
+    private static PushWorker.DeliveryServices fakeDelivery(AtomicInteger fetches, AtomicInteger displays) {
+        return new PushWorker.DeliveryServices() {
+            @Override public JSONObject fetch(String deliveryId, String credential) throws org.json.JSONException {
+                fetches.incrementAndGet();
+                return delivery(deliveryId, 10, "down", System.currentTimeMillis() + 300_000);
+            }
+            @Override public void display(JSONObject content) { displays.incrementAndGet(); }
+        };
+    }
+
+    private void ensureNotificationPermission() {
+        PushNotifications.channel(context);
+        if (Build.VERSION.SDK_INT >= 33
+                && context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            InstrumentationRegistry.getInstrumentation().getUiAutomation()
+                    .grantRuntimePermission(context.getPackageName(), android.Manifest.permission.POST_NOTIFICATIONS);
+        }
+    }
+
+    private static void assertResult(androidx.work.ListenableWorker.Result expected,
+                                     androidx.work.ListenableWorker.Result actual) {
+        assertEquals(expected.getClass(), actual.getClass());
+    }
+
     private static JSONObject installation(long generation, long registrationVersion) throws Exception {
         return new JSONObject().put("id", INSTALLATION).put("provider", "rustore")
                 .put("deviceLabel", "Instrumentation device").put("status", "ready")
@@ -302,6 +552,7 @@ public final class PushStoreTest {
     }
 
     private static boolean contains(JSONArray values, String expected) {
+        if (values == null) return false;
         for (int i = 0; i < values.length(); i++) if (expected.equals(values.optString(i))) return true;
         return false;
     }
@@ -332,7 +583,7 @@ public final class PushStoreTest {
         return String.format(java.util.Locale.ROOT, "00000000-0000-4000-8000-%012x", sequence);
     }
 
-    private static JSONObject delivery(String id, long sequence, String kind, long expiry) throws Exception {
+    private static JSONObject delivery(String id, long sequence, String kind, long expiry) throws org.json.JSONException {
         return new JSONObject().put("deliveryId", id).put("monitorId", MONITOR).put("incidentId", INCIDENT)
                 .put("kind", kind).put("title", "Monitor " + kind).put("body", "Incident update")
                 .put("sequence", sequence).put("occurredAt", Instant.now().toString())

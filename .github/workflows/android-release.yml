@@ -92,7 +92,7 @@ jobs:
           assert fingerprint == os.environ['SIGNING_FINGERPRINT'], 'Release signing certificate mismatch'
           badging = Path(os.environ['RUNNER_TEMP'], 'android-badging.txt').read_text()
           match = re.search(r"^package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'", badging, re.M)
-          assert match and match.groups() == ('ru.heartbeatchecker.app', '4', '1.1.2'), 'Unexpected application/version'
+          assert match and match.groups() == ('ru.heartbeatchecker.app', '5', '1.1.3'), 'Unexpected application/version'
           assert 'application-debuggable' not in badging, 'Release APK must not be debuggable'
           apk = Path('android-release/Heartbeat-Checker.apk')
           value = dict(schemaVersion=1, packageName=match[1], versionCode=int(match[2]), versionName=match[3], sourceSha=os.environ['SOURCE_SHA'],
