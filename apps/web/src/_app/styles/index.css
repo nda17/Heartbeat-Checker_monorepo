@@ -734,6 +734,12 @@ input:read-only {
   grid-template-columns: repeat(3, 1fr);
   gap: 35px;
 }
+.how-grid article {
+  min-width: 0;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
 .step {
   display: block;
   font-family: ui-monospace, monospace;
@@ -2498,6 +2504,7 @@ html[data-installed-app="true"] .landing-footer-inner {
     display: grid;
     grid-template-columns: 30px 1fr;
     gap: 0 12px;
+    padding: 20px;
   }
   .step {
     grid-row: span 2;
@@ -3841,12 +3848,14 @@ html[data-installed-app="true"] .android-hero {
 }
 .landing .landing-faq-list {
   min-width: 0;
+  display: grid;
+  gap: 12px;
 }
 .landing .landing-faq details {
-  border-bottom: 1px solid var(--line);
-}
-.landing .landing-faq details:first-child {
-  border-top: 1px solid var(--line);
+  min-width: 0;
+  padding: 0 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
 }
 .landing .landing-faq summary {
   display: flex;
@@ -3871,7 +3880,7 @@ html[data-installed-app="true"] .android-hero {
   transform: rotate(180deg);
 }
 .landing .landing-faq details p {
-  padding: 0 35px 22px 0;
+  padding: 0 0 22px;
   max-width: 75ch;
   color: var(--muted);
   font-size: 14px;
@@ -4394,8 +4403,10 @@ html[data-installed-app="true"] .android-hero {
     gap: 18px;
     padding: 19px 0;
   }
+  .landing .landing-faq details {
+    padding: 0 18px;
+  }
   .landing .landing-faq details p {
-    padding-right: 20px;
     font-size: 14px;
   }
   .landing-demo .landing-demo-top {
