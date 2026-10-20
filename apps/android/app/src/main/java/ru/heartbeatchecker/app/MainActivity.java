@@ -18,6 +18,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import androidx.activity.ComponentActivity;
+import androidx.activity.OnBackPressedCallback;
 import androidx.browser.customtabs.CustomTabsCallback;
 import androidx.browser.customtabs.CustomTabsService;
 import androidx.browser.trusted.TrustedWebActivityIntentBuilder;
@@ -41,6 +42,13 @@ public class MainActivity extends ComponentActivity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                // Cancel the native launch instead of retaining it in a background task.
+                finish();
+            }
+        });
         if (state != null && state.getBoolean("handedOff")) {
             handedOff = true;
             finish();

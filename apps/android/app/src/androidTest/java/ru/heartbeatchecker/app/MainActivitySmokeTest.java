@@ -63,8 +63,7 @@ public final class MainActivitySmokeTest {
         Intent launcherIntent = new Intent(Intent.ACTION_MAIN)
                 .addCategory(Intent.CATEGORY_LAUNCHER)
                 .setPackage(context.getPackageName());
-        List<ResolveInfo> launchers = packageManager.queryIntentActivities(launcherIntent,
-                PackageManager.MATCH_DEFAULT_ONLY);
+        List<ResolveInfo> launchers = packageManager.queryIntentActivities(launcherIntent, 0);
         assertEquals(1, launchers.size());
         assertEquals(MainActivity.class.getName(), launchers.get(0).activityInfo.name);
 
@@ -102,6 +101,11 @@ public final class MainActivitySmokeTest {
             scenario.onActivity(activity -> {
                 TestMainActivity.launchers.get(0).fail();
                 activity.onNewIntent(viewIntent(INCIDENT_LINK));
+                assertEquals(Intent.ACTION_VIEW, activity.getIntent().getAction());
+                assertEquals(INCIDENT_LINK, activity.getIntent().getDataString());
+                // The new-intent assertion above covers dispatch; restore the launch intent
+                // so ActivityScenario.close() can match and destroy its original activity.
+                activity.setIntent(mainIntent());
             });
 
             assertEquals(2, TestMainActivity.launchers.size());
