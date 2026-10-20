@@ -12,12 +12,15 @@ import (
 	"time"
 
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing/contracts"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing/internal/service"
 )
 
 const testProviderID = "payment1234567890123456"
 
 type fakeYooKassa struct {
 	mu           sync.Mutex
+	mode         string
+	shopID       string
 	createKeys   []string
 	createBodies [][]byte
 	getIDs       []string
@@ -46,11 +49,12 @@ func (p *fakeYooKassa) CreatePayment(_ context.Context, key string, body []byte)
 	if err := json.Unmarshal(body, &request); err != nil {
 		return contracts.ProviderPayment{}, err
 	}
-	testMode := true
+	testMode := p.mode != "production"
+	shopID := p.shop()
 	return contracts.ProviderPayment{
 		ID: testProviderID, Status: "pending", AmountValue: request.Amount.Value,
 		Currency: request.Amount.Currency, OrderID: request.Metadata.OrderID,
-		ShopID: "123456", ConfirmationURL: "https://yookassa.ru/checkout/" + testProviderID,
+		ShopID: shopID, ConfirmationURL: "https://yookassa.ru/checkout/" + testProviderID,
 		Test: &testMode,
 	}, nil
 }
@@ -63,11 +67,18 @@ func (p *fakeYooKassa) GetPayment(_ context.Context, id string) (contracts.Provi
 	if fn != nil {
 		return fn(id)
 	}
-	testMode := true
+	testMode := p.mode != "production"
 	return contracts.ProviderPayment{
 		ID: id, Status: "pending", AmountValue: "29.00", Currency: "RUB",
-		OrderID: "", ShopID: "123456", Test: &testMode,
+		OrderID: "", ShopID: p.shop(), Test: &testMode,
 	}, nil
+}
+
+func (p *fakeYooKassa) shop() string {
+	if p.shopID != "" {
+		return p.shopID
+	}
+	return "123456"
 }
 
 func (p *fakeYooKassa) createCalls() (keys []string, bodies [][]byte) {
@@ -87,17 +98,224 @@ func (p *fakeYooKassa) getCalls() []string {
 }
 
 func (f *billingFixture) configureYooKassa(t *testing.T, owner billingActor, provider *fakeYooKassa) {
+	f.configureYooKassaMode(t, owner, provider, "test", "123456")
+}
+
+func (f *billingFixture) configureYooKassaMode(t *testing.T, owner billingActor, provider *fakeYooKassa, mode, shop string) {
 	t.Helper()
-	module, err := NewConfigured(f.pool, false, Config{
-		Provider: "yookassa", Mode: "test", ShopID: "123456",
-		TestAccountIDs: []string{owner.id}, PaymentProvider: provider,
-	}, f.accounts)
+	config := Config{Provider: "yookassa", Mode: mode, ShopID: shop, PaymentProvider: provider}
+	if mode == "test" {
+		config.TestAccountIDs = []string{owner.id}
+	}
+	module, err := NewConfigured(f.pool, false, config, f.accounts)
 	if err != nil {
 		t.Fatalf("configure test YooKassa provider: %v", err)
 	}
 	mux := http.NewServeMux()
 	module.Register(mux, authProtect(t, f.pool, f.accounts))
 	f.module, f.handler = module, mux
+}
+
+func TestYooKassaProductionCheckoutIsAvailableToAllActiveAccountsAndPersistsImmutableModeShop(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Production billing account")
+	other := f.newActor(t, "Another production billing account")
+	provider := &fakeYooKassa{mode: "production", shopID: "654321"}
+	f.configureYooKassaMode(t, owner, provider, "production", "654321")
+
+	for _, account := range []billingActor{owner, other} {
+		response := f.request(t, account, http.MethodGet, "/api/v1/billing", nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("production overview status=%d: %s", response.Code, response.Body.String())
+		}
+		var payload contracts.Billing
+		if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if !payload.CanPay || payload.Test {
+			t.Fatalf("production account %s overview must enable paid checkout without test mode: %+v", account.id, payload)
+		}
+	}
+
+	key := "c11ab93f-8056-4c86-9b84-443c36fa0f89"
+	order := createYooKassaOrder(t, f, other, key, 2)
+	if order.Test {
+		t.Fatalf("production order was serialized as test: %+v", order)
+	}
+	retry := createYooKassaOrder(t, f, other, key, 2)
+	if retry.ID != order.ID {
+		t.Fatalf("idempotent retry changed order ID %s to %s", order.ID, retry.ID)
+	}
+	conflict := f.request(t, other, http.MethodPost, "/api/v1/billing/orders", map[string]any{
+		"monitorCount": 3, "idempotencyKey": key, "priceVersion": 1,
+	})
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("changed same-key order status=%d, want 409", conflict.Code)
+	}
+	var mode, shop string
+	var amount int
+	var request []byte
+	if err := f.pool.QueryRow(context.Background(), `SELECT provider_mode,provider_shop_id,amount_minor,provider_request FROM billing.orders WHERE id=$1`, order.ID).Scan(&mode, &shop, &amount, &request); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "production" || shop != "654321" || amount != 5800 || !strings.Contains(string(request), `"value":"58.00"`) {
+		t.Fatalf("immutable order fields mode=%s shop=%s amount=%d request=%s", mode, shop, amount, request)
+	}
+
+	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
+		t.Fatalf("production worker=(%t,%v)", processed, err)
+	}
+	if keys, _ := provider.createCalls(); len(keys) != 1 || keys[0] != order.ID {
+		t.Fatalf("production provider calls=%v, want immutable order UUID once", keys)
+	}
+}
+
+func TestYooKassaProductionSuccessPersistsPaidEntitlementAndSurvivesDisabledCheckout(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Production payment owner")
+	provider := &fakeYooKassa{mode: "production", shopID: "654321"}
+	var orderID string
+	provider.create = func(key string, body []byte) (contracts.ProviderPayment, error) {
+		var request struct {
+			Amount struct{ Value, Currency string } `json:"amount"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			return contracts.ProviderPayment{}, err
+		}
+		mode := false
+		return contracts.ProviderPayment{ID: testProviderID, Status: "pending", AmountValue: request.Amount.Value, Currency: request.Amount.Currency, OrderID: key, ShopID: "654321", ConfirmationURL: "https://yookassa.ru/checkout/" + testProviderID, Test: &mode}, nil
+	}
+	provider.get = func(id string) (contracts.ProviderPayment, error) {
+		mode := false
+		return contracts.ProviderPayment{ID: id, Status: "succeeded", Paid: true, AmountValue: "58.00", Currency: "RUB", OrderID: orderID, ShopID: "654321", Test: &mode}, nil
+	}
+	f.configureYooKassaMode(t, owner, provider, "production", "654321")
+	order := createYooKassaOrder(t, f, owner, "20bff0f2-670f-4d5c-a5ad-52c54a64b538", 2)
+	orderID = order.ID
+	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
+		t.Fatalf("production create worker=(%t,%v)", processed, err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.orders SET next_reconcile_at=now() WHERE id=$1`, order.ID); err != nil {
+		t.Fatal(err)
+	}
+	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
+		t.Fatalf("production success worker=(%t,%v)", processed, err)
+	}
+	var status, fulfillment, source, entitlementReason string
+	var quota, reports int
+	if err := f.pool.QueryRow(context.Background(), `SELECT o.status,o.fulfillment_status,e.source,e.monitor_limit,e.reason,(SELECT count(*) FROM billing.payment_reports r WHERE r.order_id=o.id) FROM billing.orders o JOIN billing.entitlements e USING(account_id) WHERE o.id=$1`, order.ID).Scan(&status, &fulfillment, &source, &quota, &entitlementReason, &reports); err != nil {
+		t.Fatal(err)
+	}
+	if status != "succeeded" || fulfillment != "fulfilled" || source != "yookassa" || quota != 2 || strings.TrimSpace(entitlementReason) == "" || reports != 1 {
+		t.Fatalf("production payment fulfillment=%s/%s entitlement=%s/%d reason=%q reports=%d", status, fulfillment, source, quota, entitlementReason, reports)
+	}
+
+	mock, err := NewConfigured(f.pool, false, Config{Provider: "mock", MockAccountIDs: []string{owner.id}}, f.accounts)
+	if err != nil {
+		t.Fatalf("configure mock after production payment: %v", err)
+	}
+	if _, err := mock.service.CreateOrder(context.Background(), owner.id, 2, "bd5c7a69-6b9e-48ea-9672-8001f54b09d5", 1); !errors.Is(err, service.ErrForbidden) {
+		t.Fatalf("mock checkout must not replace active paid entitlement: %v", err)
+	}
+	mockTx, err := f.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mockAccess, err := mock.Lock(context.Background(), mockTx, owner.id)
+	_ = mockTx.Rollback(context.Background())
+	if err != nil || mockAccess.Source != "yookassa" || mockAccess.Quota != 2 {
+		t.Fatalf("mock provider switch changed paid access: %+v error=%v", mockAccess, err)
+	}
+
+	disabled, err := NewConfigured(f.pool, false, Config{Provider: "disabled"}, f.accounts)
+	if err != nil {
+		t.Fatalf("configure disabled checkout: %v", err)
+	}
+	tx, err := f.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+	access, err := disabled.Lock(context.Background(), tx, owner.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if access.Source != "yookassa" || access.Quota != 2 || access.ActiveUntil == nil || !access.ActiveUntil.After(time.Now()) {
+		t.Fatalf("paid production access was lost when checkout disabled: %+v", access)
+	}
+}
+
+func TestLateTestPaymentCannotOverwritePaidEntitlement(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Late test payment owner")
+	provider := &fakeYooKassa{mode: "test", shopID: "123456"}
+	provider.get = func(id string) (contracts.ProviderPayment, error) {
+		mode := true
+		return contracts.ProviderPayment{ID: id, Status: "succeeded", Paid: true, AmountValue: "58.00", Currency: "RUB", ShopID: "123456", Test: &mode}, nil
+	}
+	f.configureYooKassaMode(t, owner, provider, "test", "123456")
+	order := createYooKassaOrder(t, f, owner, "f8028a04-a97f-4426-8345-b788cc696975", 2)
+	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
+		t.Fatalf("test payment create worker=(%t,%v)", processed, err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason) VALUES($1,2,now()+interval '30 days','yookassa','YooKassa payment')`, owner.id); err != nil {
+		t.Fatalf("seed already-fulfilled production entitlement beside pending historical test order: %v", err)
+	}
+	provider.get = func(id string) (contracts.ProviderPayment, error) {
+		mode := true
+		return contracts.ProviderPayment{ID: id, Status: "succeeded", Paid: true, AmountValue: "58.00", Currency: "RUB", OrderID: order.ID, ShopID: "123456", Test: &mode}, nil
+	}
+	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.orders SET next_reconcile_at=now() WHERE id=$1`, order.ID); err != nil {
+		t.Fatal(err)
+	}
+	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
+		t.Fatalf("late test payment reconciliation=(%t,%v)", processed, err)
+	}
+	var status, fulfillment, reason, source string
+	var quota int
+	if err := f.pool.QueryRow(context.Background(), `SELECT o.status,o.fulfillment_status,o.fulfillment_reason,e.source,e.monitor_limit FROM billing.orders o JOIN billing.entitlements e USING(account_id) WHERE o.id=$1`, order.ID).Scan(&status, &fulfillment, &reason, &source, &quota); err != nil {
+		t.Fatal(err)
+	}
+	if status != "succeeded" || fulfillment != "blocked" || reason != "paid_entitlement" || source != "yookassa" || quota != 2 {
+		t.Fatalf("late test payment changed paid entitlement: order=%s/%s/%s entitlement=%s/%d", status, fulfillment, reason, source, quota)
+	}
+}
+
+func TestYooKassaReconciliationRequiresImmutableModeAndShopMatch(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Mode and shop reconciliation owner")
+	production := &fakeYooKassa{mode: "production", shopID: "654321"}
+	f.configureYooKassaMode(t, owner, production, "production", "654321")
+	order := createYooKassaOrder(t, f, owner, "4d814e2e-4ec6-4d5d-9e15-56dfdb83b5aa", 1)
+
+	testProvider := &fakeYooKassa{mode: "test", shopID: "123456"}
+	f.configureYooKassaMode(t, owner, testProvider, "test", "123456")
+	if processed, err := runPaymentWorker(t, f); err != nil || processed {
+		t.Fatalf("test-mode worker claimed production order=(%t,%v)", processed, err)
+	}
+	if keys, _ := testProvider.createCalls(); len(keys) != 0 {
+		t.Fatalf("test-mode provider received production order: %v", keys)
+	}
+
+	wrongShop := &fakeYooKassa{mode: "production", shopID: "999999"}
+	f.configureYooKassaMode(t, owner, wrongShop, "production", "999999")
+	if processed, err := runPaymentWorker(t, f); err != nil || processed {
+		t.Fatalf("wrong-shop worker claimed production order=(%t,%v)", processed, err)
+	}
+	if keys, _ := wrongShop.createCalls(); len(keys) != 0 {
+		t.Fatalf("wrong-shop provider received production order: %v", keys)
+	}
+
+	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.orders SET next_reconcile_at=now() WHERE id=$1`, order.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.configureYooKassaMode(t, owner, production, "production", "654321")
+	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
+		t.Fatalf("matching production worker did not claim order=(%t,%v)", processed, err)
+	}
+	if keys, _ := production.createCalls(); len(keys) != 1 || keys[0] != order.ID {
+		t.Fatalf("matching production provider calls=%v, want order UUID", keys)
+	}
 }
 
 func createYooKassaOrder(t *testing.T, f *billingFixture, owner billingActor, key string, count int) contracts.Order {
@@ -173,7 +391,7 @@ func TestYooKassaOrderIsDurableBeforeProviderAndUsesImmutableProviderKey(t *test
 	if err := json.Unmarshal(bodies[0], &request); err != nil {
 		t.Fatal(err)
 	}
-	if request.Amount.Value != "58.00" || request.Amount.Currency != "RUB" || !request.Capture || request.Metadata.OrderID != order.ID || !strings.HasSuffix(request.Confirmation.ReturnURL, "?order="+order.ID) {
+	if request.Amount.Value != "58.00" || request.Amount.Currency != "RUB" || !request.Capture || request.Metadata.OrderID != order.ID || request.Confirmation.ReturnURL != "https://heartbeat-checker.ru/app" {
 		t.Fatalf("provider request changed: %+v", request)
 	}
 	if len(provider.getCalls()) != 0 {

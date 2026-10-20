@@ -21,6 +21,8 @@ type IntegrationConfig struct {
 	YooKassaMode                  string
 	YooKassaTestShopID            string
 	YooKassaTestSecretKey         string
+	YooKassaProductionShopID      string
+	YooKassaProductionSecretKey   string
 	BillingReportsEnabled         bool
 	MessengerNotificationsEnabled bool
 	EmailNotificationsEnabled     bool
@@ -74,15 +76,23 @@ func loadIntegrations(worker bool) (IntegrationConfig, error) {
 		cfg.YooKassaMode = os.Getenv("YOOKASSA_MODE")
 		cfg.YooKassaTestShopID = os.Getenv("YOOKASSA_TEST_SHOP_ID")
 		cfg.YooKassaTestSecretKey = os.Getenv("YOOKASSA_TEST_SECRET_KEY")
-		if cfg.YooKassaMode != "test" || cfg.YooKassaTestShopID == "" || len(cfg.YooKassaTestShopID) > 32 || strings.Trim(cfg.YooKassaTestShopID, "0123456789") != "" || !strings.HasPrefix(cfg.YooKassaTestSecretKey, "test_") || len(cfg.YooKassaTestSecretKey) < 16 || len(cfg.YooKassaTestSecretKey) > 512 || strings.ContainsAny(cfg.YooKassaTestSecretKey, " \t\r\n") {
-			return cfg, errors.New("complete YooKassa test configuration is required")
+		cfg.YooKassaProductionShopID = os.Getenv("YOOKASSA_PRODUCTION_SHOP_ID")
+		cfg.YooKassaProductionSecretKey = os.Getenv("YOOKASSA_PRODUCTION_SECRET_KEY")
+		shop, secret := cfg.YooKassaTestShopID, cfg.YooKassaTestSecretKey
+		if cfg.YooKassaMode == "production" {
+			shop, secret = cfg.YooKassaProductionShopID, cfg.YooKassaProductionSecretKey
 		}
-		id := strings.TrimSpace(os.Getenv("BILLING_TEST_ACCOUNT_IDS"))
-		var parsed pgtype.UUID
-		if len(id) != 36 || parsed.Scan(id) != nil || !parsed.Valid {
-			return cfg, errors.New("BILLING_TEST_ACCOUNT_IDS must contain exactly one owner UUID")
+		if (cfg.YooKassaMode != "test" && cfg.YooKassaMode != "production") || shop == "" || len(shop) > 32 || strings.Trim(shop, "0123456789") != "" || len(secret) < 16 || len(secret) > 512 || strings.ContainsAny(secret, " \t\r\n") || (cfg.YooKassaMode == "test" && !strings.HasPrefix(secret, "test_")) || (cfg.YooKassaMode == "production" && strings.HasPrefix(secret, "test_")) {
+			return cfg, errors.New("complete YooKassa configuration for selected mode is required")
 		}
-		cfg.BillingTestAccountIDs = []string{parsed.String()}
+		if cfg.YooKassaMode == "test" {
+			id := strings.TrimSpace(os.Getenv("BILLING_TEST_ACCOUNT_IDS"))
+			var parsed pgtype.UUID
+			if len(id) != 36 || parsed.Scan(id) != nil || !parsed.Valid {
+				return cfg, errors.New("BILLING_TEST_ACCOUNT_IDS must contain exactly one owner UUID")
+			}
+			cfg.BillingTestAccountIDs = []string{parsed.String()}
+		}
 	}
 	if cfg.SupportEnabled, err = integrationBool("SUPPORT_ENABLED"); err != nil {
 		return cfg, err

@@ -44,7 +44,11 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 	if err != nil {
 		return err
 	}
-	billingModule, err := billing.NewConfigured(pool, cfg.AppEnv == "local", billing.Config{Provider: cfg.BillingProvider, MockAccountIDs: cfg.BillingMockAccountIDs, TestAccountIDs: cfg.BillingTestAccountIDs, Mode: cfg.YooKassaMode, ShopID: cfg.YooKassaTestShopID, SecretKey: cfg.YooKassaTestSecretKey}, accountModule)
+	shopID, secretKey := cfg.YooKassaTestShopID, cfg.YooKassaTestSecretKey
+	if cfg.YooKassaMode == "production" {
+		shopID, secretKey = cfg.YooKassaProductionShopID, cfg.YooKassaProductionSecretKey
+	}
+	billingModule, err := billing.NewConfigured(pool, cfg.AppEnv == "local", billing.Config{Provider: cfg.BillingProvider, MockAccountIDs: cfg.BillingMockAccountIDs, TestAccountIDs: cfg.BillingTestAccountIDs, Mode: cfg.YooKassaMode, ShopID: shopID, SecretKey: secretKey}, accountModule)
 	if err != nil {
 		return err
 	}

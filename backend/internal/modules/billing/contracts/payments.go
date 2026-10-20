@@ -65,7 +65,7 @@ type ProviderNotification struct {
 	} `json:"object"`
 }
 
-// PaymentReport is always TEST money: it contains no customer contact data.
+// PaymentReport contains no customer contact data. Test is stored on the order.
 // OrderID is stable across retries. A sender may receive it again after losing an acknowledgement.
 type PaymentReport struct {
 	OrderID           string

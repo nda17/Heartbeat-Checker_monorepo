@@ -17,6 +17,7 @@ func clearConfigEnv(t *testing.T) {
 		"WEBHOOK_ENCRYPTION_KEY", "PROBE_URL", "PROBE_SHARED_SECRET",
 		"BILLING_PROVIDER", "BILLING_MOCK_ACCOUNT_IDS", "BILLING_TEST_ACCOUNT_IDS",
 		"YOOKASSA_MODE", "YOOKASSA_TEST_SHOP_ID", "YOOKASSA_TEST_SECRET_KEY",
+		"YOOKASSA_PRODUCTION_SHOP_ID", "YOOKASSA_PRODUCTION_SECRET_KEY",
 	} {
 		old, existed := os.LookupEnv(key)
 		t.Cleanup(func() {
@@ -73,6 +74,59 @@ func TestLoadIntegrationsKeepsYooKassaExplicitlyInTestModeForOneOwner(t *testing
 			set(t, test.mode, test.shop, test.secret, test.ownerIDs)
 			if _, err := loadIntegrations(false); err == nil {
 				t.Fatal("loadIntegrations() succeeded with invalid YooKassa configuration")
+			}
+		})
+	}
+}
+
+func TestLoadIntegrationsSelectsIndependentProductionCredentialsWithoutOwnerGate(t *testing.T) {
+	const mockAccount = "61ec7d19-80c4-4fb6-8edb-79dc7abe3120"
+	clearConfigEnv(t)
+	_ = os.Setenv("BILLING_PROVIDER", "yookassa")
+	_ = os.Setenv("BILLING_MOCK_ACCOUNT_IDS", mockAccount)
+	_ = os.Setenv("YOOKASSA_MODE", "production")
+	_ = os.Setenv("YOOKASSA_TEST_SHOP_ID", "123456")
+	_ = os.Setenv("YOOKASSA_TEST_SECRET_KEY", "test_synthetic_secret_123")
+	_ = os.Setenv("YOOKASSA_PRODUCTION_SHOP_ID", "654321")
+	_ = os.Setenv("YOOKASSA_PRODUCTION_SECRET_KEY", "production_synthetic_secret_123")
+
+	for _, worker := range []bool{false, true} {
+		cfg, err := loadIntegrations(worker)
+		if err != nil {
+			t.Fatalf("loadIntegrations(worker=%t): %v", worker, err)
+		}
+		if cfg.YooKassaMode != "production" || cfg.YooKassaProductionShopID != "654321" || cfg.YooKassaProductionSecretKey != "production_synthetic_secret_123" {
+			t.Fatalf("production credentials were not selected for worker=%t: %+v", worker, cfg)
+		}
+		if len(cfg.BillingTestAccountIDs) != 0 {
+			t.Fatalf("production mode unexpectedly has a test allowlist: %+v", cfg.BillingTestAccountIDs)
+		}
+		if len(cfg.BillingMockAccountIDs) != 1 || cfg.BillingMockAccountIDs[0] != mockAccount {
+			t.Fatalf("existing mock account config was not preserved: %+v", cfg.BillingMockAccountIDs)
+		}
+	}
+}
+
+func TestLoadIntegrationsRejectsIncompleteOrCrossModeProductionCredentials(t *testing.T) {
+	tests := []struct {
+		name   string
+		shop   string
+		secret string
+	}{
+		{name: "missing shop", shop: "", secret: "production_synthetic_secret_123"},
+		{name: "non-numeric shop", shop: "shop", secret: "production_synthetic_secret_123"},
+		{name: "missing secret", shop: "654321", secret: ""},
+		{name: "test secret in production", shop: "654321", secret: "test_synthetic_secret_123"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			_ = os.Setenv("BILLING_PROVIDER", "yookassa")
+			_ = os.Setenv("YOOKASSA_MODE", "production")
+			_ = os.Setenv("YOOKASSA_PRODUCTION_SHOP_ID", tc.shop)
+			_ = os.Setenv("YOOKASSA_PRODUCTION_SECRET_KEY", tc.secret)
+			if _, err := loadIntegrations(false); err == nil {
+				t.Fatal("loadIntegrations() succeeded with invalid production credentials")
 			}
 		})
 	}

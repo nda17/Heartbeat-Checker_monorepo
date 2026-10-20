@@ -13,15 +13,21 @@ import (
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing/internal/adapters/yookassa"
 )
 
-func (s *Service) ConfigureYooKassa(provider contracts.Provider, shopID string, ids []string) error {
-	if s.provider != "yookassa" || provider == nil || shopID == "" || len(shopID) > 32 || strings.Trim(shopID, "0123456789") != "" || len(ids) != 1 || !validID(ids[0]) {
+func (s *Service) ConfigureYooKassa(provider contracts.Provider, mode, shopID string, ids []string) error {
+	if s.provider != "yookassa" || provider == nil || (mode != "test" && mode != "production") || shopID == "" || len(shopID) > 32 || strings.Trim(shopID, "0123456789") != "" || (mode == "test" && (len(ids) != 1 || !validID(ids[0]))) {
 		return ErrInvalid
 	}
-	s.payments, s.shopID = provider, shopID
-	var owner pgtype.UUID
-	_ = owner.Scan(ids[0])
-	s.allowed = map[string]bool{owner.String(): true}
+	s.payments, s.mode, s.shopID = provider, mode, shopID
+	if mode == "test" {
+		var owner pgtype.UUID
+		_ = owner.Scan(ids[0])
+		s.allowed = map[string]bool{owner.String(): true}
+	}
 	return nil
+}
+
+func (s *Service) canPay(account string) bool {
+	return s.mode == "production" || (s.mode == "test" && s.allowed[account])
 }
 
 func (s *Service) GetOrder(ctx context.Context, account, id string) (contracts.Order, error) {
@@ -39,7 +45,7 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	if count < 1 || count > 1000 || !validID(key) {
 		return contracts.Order{}, ErrInvalid
 	}
-	if s.payments == nil || !s.allowed[account] {
+	if s.payments == nil || !s.canPay(account) {
 		return contracts.Order{}, ErrForbidden
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -67,6 +73,9 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return contracts.Order{}, err
+	}
+	if s.mode == "test" && entitlement.Source == "yookassa" && entitlement.Quota > 0 {
+		return contracts.Order{}, ErrForbidden
 	}
 	pricing, err := s.PricingTx(ctx, tx, true)
 	if err != nil {
@@ -100,14 +109,14 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	body, err := json.Marshal(map[string]any{
 		"amount":       map[string]string{"value": moneyValue(count * pricing.PricePerMonitorMinor), "currency": "RUB"},
 		"capture":      true,
-		"confirmation": map[string]string{"type": "redirect", "return_url": "https://heartbeat-checker.ru/app/billing?order=" + id},
+		"confirmation": map[string]string{"type": "redirect", "return_url": "https://heartbeat-checker.ru/app"},
 		"description":  "Heartbeat Checker: мониторинг",
 		"metadata":     map[string]string{"order_id": id},
 	})
 	if err != nil {
 		return contracts.Order{}, err
 	}
-	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,provider_shop_id,provider_request,expires_at) VALUES($1,$2,$3,'yookassa',$4,$5,$6,$7,NULL) RETURNING `+orderColumns, id, account, key, count, count*pricing.PricePerMonitorMinor, s.shopID, body))
+	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,provider_mode,provider_shop_id,provider_request,expires_at) VALUES($1,$2,$3,'yookassa',$4,$5,$6,$7,$8,NULL) RETURNING `+orderColumns, id, account, key, count, count*pricing.PricePerMonitorMinor, s.mode, s.shopID, body))
 	if err != nil {
 		return contracts.Order{}, err
 	}
@@ -135,7 +144,7 @@ func (s *Service) ReceiveNotification(ctx context.Context, n contracts.ProviderN
 	}
 	defer tx.Rollback(ctx)
 	var id string
-	err = tx.QueryRow(ctx, `SELECT id::text FROM billing.orders WHERE provider='yookassa' AND provider_shop_id=$2 AND (provider_payment_id=$1 OR (id=NULLIF($3,'')::uuid AND status='pending' AND (provider_payment_id IS NULL OR provider_payment_id=$1))) ORDER BY (provider_payment_id=$1) DESC NULLS LAST LIMIT 1`, n.Object.ID, s.shopID, hint).Scan(&id)
+	err = tx.QueryRow(ctx, `SELECT id::text FROM billing.orders WHERE provider='yookassa' AND provider_mode=$4 AND provider_shop_id=$2 AND (provider_payment_id=$1 OR (id=NULLIF($3,'')::uuid AND status='pending' AND (provider_payment_id IS NULL OR provider_payment_id=$1))) ORDER BY (provider_payment_id=$1) DESC NULLS LAST LIMIT 1`, n.Object.ID, s.shopID, hint, s.mode).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return tx.Commit(ctx)
 	}

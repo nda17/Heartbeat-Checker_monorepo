@@ -68,14 +68,13 @@ func (w *ReportWorker) ProcessOne(ctx context.Context) (bool, error) {
 	}
 	var report contracts.PaymentReport
 	var attempt int
-	err = tx.QueryRow(ctx, `SELECT r.order_id,o.account_id,o.monitor_count,o.amount_minor,o.currency,o.completed_at,r.attempts,o.provider,o.fulfillment_status FROM billing.payment_reports r JOIN billing.orders o ON o.id=r.order_id WHERE r.attempts<8 AND ((r.status='pending' AND r.next_attempt_at<=now()) OR (r.status='sending' AND r.lease_until<=now())) ORDER BY r.next_attempt_at,r.order_id FOR UPDATE OF r SKIP LOCKED LIMIT 1`).Scan(&report.OrderID, &report.AccountID, &report.MonitorCount, &report.AmountMinor, &report.Currency, &report.CompletedAt, &attempt, &report.Provider, &report.FulfillmentStatus)
+	err = tx.QueryRow(ctx, `SELECT r.order_id,o.account_id,o.monitor_count,o.amount_minor,o.currency,o.completed_at,r.attempts,o.provider,o.fulfillment_status,(o.provider_mode='test') FROM billing.payment_reports r JOIN billing.orders o ON o.id=r.order_id WHERE r.attempts<8 AND ((r.status='pending' AND r.next_attempt_at<=now()) OR (r.status='sending' AND r.lease_until<=now())) ORDER BY r.next_attempt_at,r.order_id FOR UPDATE OF r SKIP LOCKED LIMIT 1`).Scan(&report.OrderID, &report.AccountID, &report.MonitorCount, &report.AmountMinor, &report.Currency, &report.CompletedAt, &attempt, &report.Provider, &report.FulfillmentStatus, &report.Test)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, tx.Commit(ctx)
 	}
 	if err != nil {
 		return false, err
 	}
-	report.Test = true
 	if _, err = tx.Exec(ctx, `UPDATE billing.payment_reports SET status='sending',attempts=attempts+1,attempt_token=$2,lease_until=now()+interval '1 minute' WHERE order_id=$1`, report.OrderID, token); err != nil {
 		return false, err
 	}
