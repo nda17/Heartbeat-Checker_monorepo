@@ -5,7 +5,7 @@ import { useSession } from "@/entities/session";
 import { Monitor, monitorCheckType } from "@/entities/monitor";
 import { api, ApiError, errorMessage } from "@/shared/api";
 import { Dialog } from "@/shared/dialog";
-import { Notice, Spinner } from "@/shared/ui";
+import { Icon, Notice, Spinner } from "@/shared/ui";
 export function MonitorForm({
   monitor,
   onClose,
@@ -531,105 +531,110 @@ function TimeZoneSelect({
       <span id={`${id}-label`} className="monitor-timezone-label">
         Часовой пояс отчётов
       </span>
-      <button
-        type="button"
-        ref={trigger}
-        className="monitor-timezone-trigger"
-        aria-labelledby={`${id}-label ${id}-value`}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-controls={`${id}-list`}
-        onClick={() => {
-          setQuery("");
-          setActive(0);
-          setOpen(!open);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-            event.preventDefault();
-            setOpen(true);
+      <div className="monitor-timezone-control">
+        <button
+          type="button"
+          ref={trigger}
+          className="monitor-timezone-trigger"
+          aria-labelledby={`${id}-label ${id}-value`}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-controls={`${id}-list`}
+          onClick={() => {
+            setQuery("");
             setActive(0);
-          }
-        }}
-      >
-        <span id={`${id}-value`}>
-          {selected?.label ?? value}
-          <span className="field-hint">{value}</span>
-        </span>
-        <span aria-hidden="true">⌄</span>
-      </button>
-      {open && (
-        <div className="monitor-timezone-popover">
-          <input
-            ref={search}
-            type="search"
-            role="combobox"
-            aria-label="Поиск часового пояса по городу или IANA"
-            aria-autocomplete="list"
-            aria-expanded={true}
-            aria-controls={`${id}-list`}
-            aria-activedescendant={
-              filtered[active] ? `${id}-option-${active}` : undefined
-            }
-            value={query}
-            placeholder="Город или IANA: Москва, Berlin…"
-            onChange={(event) => {
-              setQuery(event.target.value);
+            setOpen(!open);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              setOpen(true);
               setActive(0);
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.preventDefault();
-                event.stopPropagation();
-                close();
-              } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-                event.preventDefault();
-                setActive((index) =>
-                  Math.max(
-                    0,
-                    Math.min(
-                      filtered.length - 1,
-                      index + (event.key === "ArrowDown" ? 1 : -1),
+            }
+          }}
+        >
+          <span id={`${id}-value`}>
+            {selected?.label ?? value}
+            <span className="field-hint">{value}</span>
+          </span>
+          <Icon name="chevron-down" />
+        </button>
+        {open && (
+          <div className="monitor-timezone-popover">
+            <input
+              ref={search}
+              type="search"
+              role="combobox"
+              aria-label="Поиск часового пояса по городу или IANA"
+              aria-autocomplete="list"
+              aria-expanded={true}
+              aria-controls={`${id}-list`}
+              aria-activedescendant={
+                filtered[active] ? `${id}-option-${active}` : undefined
+              }
+              value={query}
+              placeholder="Город или IANA: Москва, Berlin…"
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setActive(0);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  close();
+                } else if (
+                  event.key === "ArrowDown" ||
+                  event.key === "ArrowUp"
+                ) {
+                  event.preventDefault();
+                  setActive((index) =>
+                    Math.max(
+                      0,
+                      Math.min(
+                        filtered.length - 1,
+                        index + (event.key === "ArrowDown" ? 1 : -1),
+                      ),
                     ),
-                  ),
-                );
-              } else if (event.key === "Enter") {
-                event.preventDefault();
-                if (filtered[active]) select(filtered[active]);
-              } else if (event.key === "Tab") setOpen(false);
-            }}
-          />
-          <div
-            id={`${id}-list`}
-            role="listbox"
-            aria-labelledby={`${id}-label`}
-            className="monitor-timezone-options"
-          >
-            {filtered.map((zone, index) => (
-              <button
-                key={zone.id}
-                id={`${id}-option-${index}`}
-                type="button"
-                role="option"
-                aria-selected={zone.id === value}
-                tabIndex={-1}
-                className={active === index ? "is-active" : ""}
-                onPointerMove={() => setActive(index)}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => select(zone)}
-              >
-                {zone.label}
-                <span>{zone.id}</span>
-              </button>
-            ))}
-            {filtered.length === 0 && (
-              <p className="field-hint" role="status">
-                Ничего не найдено. Измените запрос.
-              </p>
-            )}
+                  );
+                } else if (event.key === "Enter") {
+                  event.preventDefault();
+                  if (filtered[active]) select(filtered[active]);
+                } else if (event.key === "Tab") setOpen(false);
+              }}
+            />
+            <div
+              id={`${id}-list`}
+              role="listbox"
+              aria-labelledby={`${id}-label`}
+              className="monitor-timezone-options"
+            >
+              {filtered.map((zone, index) => (
+                <button
+                  key={zone.id}
+                  id={`${id}-option-${index}`}
+                  type="button"
+                  role="option"
+                  aria-selected={zone.id === value}
+                  tabIndex={-1}
+                  className={active === index ? "is-active" : ""}
+                  onPointerMove={() => setActive(index)}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => select(zone)}
+                >
+                  {zone.label}
+                  <span>{zone.id}</span>
+                </button>
+              ))}
+              {filtered.length === 0 && (
+                <p className="field-hint" role="status">
+                  Ничего не найдено. Измените запрос.
+                </p>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
       <p className="field-hint">
         Время событий учитывает переходы на летнее время. Длительность сбоя не
         меняется.
