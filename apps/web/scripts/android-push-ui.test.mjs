@@ -185,7 +185,7 @@ function loadSettings(
     .AndroidPushSettings;
 }
 
-function loadRoutes(api, onSaved = () => {}) {
+function loadRoutes(api) {
   const aliases = {
     "@/entities/session": {
       useSession: () => ({ profile: { account: { id: "account-1" } } }),
