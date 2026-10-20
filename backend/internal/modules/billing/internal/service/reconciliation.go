@@ -25,7 +25,7 @@ type paymentAttempt struct {
 // claimPayment releases every transaction lock before making provider requests.
 func (s *Service) claimPayment(ctx context.Context) (*paymentAttempt, error) {
 	var id, account string
-	err := s.pool.QueryRow(ctx, `SELECT id::text,account_id::text FROM billing.orders WHERE provider='yookassa' AND provider_shop_id=$1 AND status='pending' AND reconciliation_status='pending' AND next_reconcile_at<=now() AND (reconcile_lease_until IS NULL OR reconcile_lease_until<=now()) ORDER BY next_reconcile_at,id LIMIT 1`, s.shopID).Scan(&id, &account)
+	err := s.pool.QueryRow(ctx, `SELECT id::text,account_id::text FROM billing.orders WHERE provider='yookassa' AND provider_mode=$2 AND provider_shop_id=$1 AND status='pending' AND reconciliation_status='pending' AND next_reconcile_at<=now() AND (reconcile_lease_until IS NULL OR reconcile_lease_until<=now()) ORDER BY next_reconcile_at,id LIMIT 1`, s.shopID, s.mode).Scan(&id, &account)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -44,7 +44,7 @@ func (s *Service) claimPayment(ctx context.Context) (*paymentAttempt, error) {
 	if err != nil {
 		return nil, err
 	}
-	order, err := scanOrder(tx.QueryRow(ctx, `SELECT `+orderColumns+` FROM billing.orders WHERE id=$1 AND provider='yookassa' AND provider_shop_id=$2 AND status='pending' AND reconciliation_status='pending' AND next_reconcile_at<=now() AND (reconcile_lease_until IS NULL OR reconcile_lease_until<=now()) FOR UPDATE SKIP LOCKED`, id, s.shopID))
+	order, err := scanOrder(tx.QueryRow(ctx, `SELECT `+orderColumns+` FROM billing.orders WHERE id=$1 AND provider='yookassa' AND provider_mode=$3 AND provider_shop_id=$2 AND status='pending' AND reconciliation_status='pending' AND next_reconcile_at<=now() AND (reconcile_lease_until IS NULL OR reconcile_lease_until<=now()) FOR UPDATE SKIP LOCKED`, id, s.shopID, s.mode))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, tx.Commit(ctx)
 	}
@@ -66,7 +66,7 @@ func (s *Service) claimPayment(ctx context.Context) (*paymentAttempt, error) {
 			return nil, err
 		}
 	}
-	if a.PaymentID == "" && (!active || !s.allowed[account]) {
+	if a.PaymentID == "" && (!active || !s.canPay(account)) {
 		_, err = tx.Exec(ctx, `UPDATE billing.orders SET reconciliation_status='stopped',fulfillment_status='blocked',fulfillment_reason=CASE WHEN fulfillment_reason='account_deleted' THEN fulfillment_reason ELSE 'account_inactive' END,reconcile_token=NULL,reconcile_lease_until=NULL WHERE id=$1`, id)
 		if err != nil {
 			return nil, err
@@ -136,7 +136,7 @@ func (s *Service) ProcessOnePayment(ctx context.Context) (bool, error) {
 }
 
 func (s *Service) validPayment(a paymentAttempt, p contracts.ProviderPayment) bool {
-	return yookassa.ValidPaymentID(p.ID) && (a.PaymentID == "" || p.ID == a.PaymentID) && p.OrderID == a.Order.ID && p.ShopID == s.shopID && p.Test != nil && *p.Test && p.AmountValue == moneyValue(a.Order.AmountMinor) && p.Currency == a.Order.Currency && (p.Status == "pending" || p.Status == "waiting_for_capture" || p.Status == "succeeded" || p.Status == "canceled") && (p.Status != "succeeded" || p.Paid) && (p.ConfirmationURL == "" || yookassa.ValidConfirmationURL(p.ConfirmationURL))
+	return yookassa.ValidPaymentID(p.ID) && (a.PaymentID == "" || p.ID == a.PaymentID) && p.OrderID == a.Order.ID && p.ShopID == s.shopID && p.Test != nil && *p.Test == (s.mode == "test") && a.Order.Test == (s.mode == "test") && p.AmountValue == moneyValue(a.Order.AmountMinor) && p.Currency == a.Order.Currency && (p.Status == "pending" || p.Status == "waiting_for_capture" || p.Status == "succeeded" || p.Status == "canceled") && (p.Status != "succeeded" || p.Paid) && (p.ConfirmationURL == "" || yookassa.ValidConfirmationURL(p.ConfirmationURL))
 }
 
 func (s *Service) finishPayment(ctx context.Context, a paymentAttempt, p contracts.ProviderPayment, providerErr error) error {
@@ -159,7 +159,7 @@ func (s *Service) finishPayment(ctx context.Context, a paymentAttempt, p contrac
 	}
 	var fenced bool
 	var storedID string
-	if err = tx.QueryRow(ctx, `SELECT COALESCE(status='pending' AND reconciliation_status='pending' AND reconcile_token=$2 AND reconcile_lease_until>clock_timestamp() AND provider_shop_id=$3,false),COALESCE(provider_payment_id,'') FROM billing.orders WHERE id=$1`, order.ID, a.Token, s.shopID).Scan(&fenced, &storedID); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(status='pending' AND reconciliation_status='pending' AND reconcile_token=$2 AND reconcile_lease_until>clock_timestamp() AND provider_shop_id=$3 AND provider_mode=$4,false),COALESCE(provider_payment_id,'') FROM billing.orders WHERE id=$1`, order.ID, a.Token, s.shopID, s.mode).Scan(&fenced, &storedID); err != nil {
 		return err
 	}
 	if !fenced {
@@ -206,15 +206,22 @@ func (s *Service) finishPayment(ctx context.Context, a paymentAttempt, p contrac
 		switch {
 		case reason == "account_deleted":
 			fulfillment = "blocked"
-		case !active || !s.allowed[a.AccountID]:
+		case !active || !s.canPay(a.AccountID):
 			fulfillment, reason = "blocked", "account_inactive"
+		case order.Test && entitlement.Source == "yookassa" && entitlement.ActiveUntil != nil && entitlement.ActiveUntil.After(now):
+			fulfillment, reason = "blocked", "paid_entitlement"
 		case entitlement.Source == "admin_grant" && entitlement.ActiveUntil != nil && entitlement.ActiveUntil.After(now):
 			fulfillment, reason = "blocked", "admin_grant"
 		case entitlement.Quota > 0 && entitlement.Quota != order.MonitorCount:
 			fulfillment, reason = "blocked", "capacity_changed"
 		default:
 			start, anchor := now, now.In(moscow).Day()
-			if entitlement.Source == "yookassa_test" && entitlement.Quota > 0 && entitlement.ActiveUntil != nil && entitlement.ActiveUntil.After(start) {
+			source := "yookassa"
+			entitlementReason := "YooKassa payment"
+			if order.Test {
+				source, entitlementReason = "yookassa_test", "YooKassa test payment: no money charged"
+			}
+			if entitlement.Source == source && entitlement.Quota > 0 && entitlement.ActiveUntil != nil && entitlement.ActiveUntil.After(start) {
 				start = *entitlement.ActiveUntil
 				if entitlement.RenewalAnchorDay > 0 {
 					anchor = entitlement.RenewalAnchorDay
@@ -222,7 +229,7 @@ func (s *Service) finishPayment(ctx context.Context, a paymentAttempt, p contrac
 			}
 			expiry := nextMockMonth(start, anchor)
 			until, fulfilled, fulfillment, reason = &expiry, &now, "fulfilled", ""
-			_, err = tx.Exec(ctx, `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason,renewal_anchor_day) VALUES($1,$2,$3,'yookassa_test','YooKassa test payment: no money charged',$4) ON CONFLICT(account_id) DO UPDATE SET monitor_limit=excluded.monitor_limit,valid_until=excluded.valid_until,source='yookassa_test',renewal_anchor_day=excluded.renewal_anchor_day,version=billing.entitlements.version+1,granted_at=now(),reason=excluded.reason`, a.AccountID, order.MonitorCount, until, anchor)
+			_, err = tx.Exec(ctx, `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason,renewal_anchor_day) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(account_id) DO UPDATE SET monitor_limit=excluded.monitor_limit,valid_until=excluded.valid_until,source=excluded.source,renewal_anchor_day=excluded.renewal_anchor_day,version=billing.entitlements.version+1,granted_at=now(),reason=excluded.reason`, a.AccountID, order.MonitorCount, until, source, entitlementReason, anchor)
 			if err != nil {
 				return err
 			}

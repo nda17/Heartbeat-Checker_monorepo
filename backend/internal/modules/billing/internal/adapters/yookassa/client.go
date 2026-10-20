@@ -23,19 +23,20 @@ var (
 // Client uses only the official HTTPS API. Redirects and environment proxies
 // must never forward shop credentials to another destination.
 type Client struct {
+	mode     string
 	shopID   string
 	secret   string
 	endpoint string
 	http     *http.Client
 }
 
-func New(shopID, secret string) (*Client, error) {
-	if shopID == "" || len(shopID) > 32 || strings.Trim(shopID, "0123456789") != "" || !strings.HasPrefix(secret, "test_") || len(secret) < 16 || len(secret) > 512 || strings.ContainsAny(secret, " \t\r\n") {
-		return nil, errors.New("invalid YooKassa test credentials")
+func New(mode, shopID, secret string) (*Client, error) {
+	if (mode != "test" && mode != "production") || shopID == "" || len(shopID) > 32 || strings.Trim(shopID, "0123456789") != "" || len(secret) < 16 || len(secret) > 512 || strings.ContainsAny(secret, " \t\r\n") || (mode == "test" && !strings.HasPrefix(secret, "test_")) || (mode == "production" && strings.HasPrefix(secret, "test_")) {
+		return nil, errors.New("invalid YooKassa credentials for selected mode")
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	return &Client{shopID: shopID, secret: secret, endpoint: "https://api.yookassa.ru/v3", http: &http.Client{Transport: transport, Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+	return &Client{mode: mode, shopID: shopID, secret: secret, endpoint: "https://api.yookassa.ru/v3", http: &http.Client{Transport: transport, Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
 
 func (c *Client) CreatePayment(ctx context.Context, key string, body []byte) (contracts.ProviderPayment, error) {
@@ -99,7 +100,7 @@ func (c *Client) request(ctx context.Context, method, path, key string, body []b
 	if decoder.Decode(&payment) != nil || !errors.Is(decoder.Decode(&struct{}{}), io.EOF) {
 		return result, ErrInvalidResponse
 	}
-	if !ValidPaymentID(payment.ID) || payment.Test == nil || !*payment.Test || payment.Recipient.AccountID != c.shopID || (payment.Status != "pending" && payment.Status != "waiting_for_capture" && payment.Status != "succeeded" && payment.Status != "canceled") || (payment.Status == "succeeded" && !payment.Paid) || (payment.Confirmation.ConfirmationURL != "" && (payment.Confirmation.Type != "redirect" || !ValidConfirmationURL(payment.Confirmation.ConfirmationURL))) {
+	if !ValidPaymentID(payment.ID) || payment.Test == nil || *payment.Test != (c.mode == "test") || payment.Recipient.AccountID != c.shopID || (payment.Status != "pending" && payment.Status != "waiting_for_capture" && payment.Status != "succeeded" && payment.Status != "canceled") || (payment.Status == "succeeded" && !payment.Paid) || (payment.Confirmation.ConfirmationURL != "" && (payment.Confirmation.Type != "redirect" || !ValidConfirmationURL(payment.Confirmation.ConfirmationURL))) {
 		return result, ErrInvalidResponse
 	}
 	return contracts.ProviderPayment{ID: payment.ID, Status: payment.Status, Paid: payment.Paid, Test: payment.Test, AmountValue: payment.Amount.Value, Currency: payment.Amount.Currency, OrderID: payment.Metadata.OrderID, ShopID: payment.Recipient.AccountID, ConfirmationURL: payment.Confirmation.ConfirmationURL}, nil

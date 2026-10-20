@@ -20,8 +20,9 @@ firewall_policy_sha=${14:?firewall policy hash is required}
 activate_yookassa_test=${15-false}
 activate_email_notifications=${16-false}
 activate_android_push=${17-false}
+activate_yookassa_production=${18-false}
 
-[[ ( $# -eq 14 || $# -eq 15 || $# -eq 16 || $# -eq 17 ) && ( $activate_android_push == true || $activate_android_push == false ) && ( $activate_email_notifications == true || $activate_email_notifications == false ) && ( $activate_yookassa_test == true || $activate_yookassa_test == false ) && $firewall_policy_sha =~ ^[0-9a-f]{64}$ && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) && ( $activate_messenger_notifications == true || $activate_messenger_notifications == false ) && ( $provision_owner == true || $provision_owner == false ) && ( $activate_admin_mfa == true || $activate_admin_mfa == false ) && ( $activate_oauth == true || $activate_oauth == false ) ]] || {
+[[ ( $# -eq 14 || $# -eq 15 || $# -eq 16 || $# -eq 17 || $# -eq 18 ) && ( $activate_yookassa_production == true || $activate_yookassa_production == false ) && ( $activate_android_push == true || $activate_android_push == false ) && ( $activate_email_notifications == true || $activate_email_notifications == false ) && ( $activate_yookassa_test == true || $activate_yookassa_test == false ) && $firewall_policy_sha =~ ^[0-9a-f]{64}$ && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) && ( $activate_messenger_notifications == true || $activate_messenger_notifications == false ) && ( $provision_owner == true || $provision_owner == false ) && ( $activate_admin_mfa == true || $activate_admin_mfa == false ) && ( $activate_oauth == true || $activate_oauth == false ) ]] || {
   echo 'Invalid release arguments' >&2; exit 1;
 }
 for spec in "api:$api_image" "worker:$worker_image" "probe:$probe_image" "migrate:$migrate_image" "backup:$backup_image" "firewall:$firewall_image"; do
@@ -131,7 +132,7 @@ if ! IFS= read -r -n 4097 registry_token || [[ -z $registry_token || ${#registry
   echo 'Invalid registry credential framing' >&2; exit 1
 fi
 if $activate_android_push; then
-  if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $provision_owner || $activate_email_notifications || $activate_yookassa_test; then
+  if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $provision_owner || $activate_email_notifications || $activate_yookassa_test || $activate_yookassa_production; then
     echo 'Android push activation must be a separate configuration operation' >&2; exit 1
   fi
   [[ ! -e .env.next && ! -L .env.next ]] || { echo 'Resolve the existing staged configuration before Android push activation' >&2; exit 1; }
@@ -139,14 +140,16 @@ if $activate_android_push; then
   cp -p stage-push.py.incoming "$workdir/stage-push.py"
   python3 "$workdir/stage-push.py" "$workdir"
   activation_generated=true
-elif $activate_yookassa_test; then
-  if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $provision_owner || $activate_email_notifications; then
+elif $activate_yookassa_test || $activate_yookassa_production; then
+  if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $provision_owner || $activate_email_notifications || ( $activate_yookassa_test && $activate_yookassa_production ); then
     echo 'YooKassa activation must be a separate configuration operation' >&2; exit 1
   fi
   [[ ! -e .env.next && ! -L .env.next ]] || { echo 'Resolve the existing staged configuration before YooKassa activation' >&2; exit 1; }
   [[ -f stage-yookassa.py.incoming && ! -L stage-yookassa.py.incoming ]] || { echo 'Missing tracked YooKassa staging helper' >&2; exit 1; }
   cp -p stage-yookassa.py.incoming "$workdir/stage-yookassa.py"
-  python3 "$workdir/stage-yookassa.py" "$workdir"
+  billing_mode='test'
+  if $activate_yookassa_production; then billing_mode='production'; fi
+  python3 "$workdir/stage-yookassa.py" "$workdir" "$billing_mode"
   activation_generated=true
 else
   # Legacy deployment accepts only the original registry token, never a payload.
@@ -158,7 +161,7 @@ fi
 # This activation changes one non-secret flag under the deployment lock. SMTP,
 # encryption keys and every other byte remain the currently active values.
 if $activate_email_notifications; then
-  if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $provision_owner || $activate_yookassa_test; then
+  if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $provision_owner || $activate_yookassa_test || $activate_yookassa_production; then
     echo 'Email activation must be a separate configuration operation' >&2; exit 1
   fi
   [[ ! -e .env.next && ! -L .env.next ]] || { echo 'Resolve the existing staged configuration before email activation' >&2; exit 1; }
@@ -225,7 +228,7 @@ except (OSError, UnicodeError, ValueError, TypeError):
 PY
 fi
 
-if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $activate_yookassa_test || $activate_email_notifications || $activate_android_push; then
+if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $activate_yookassa_test || $activate_yookassa_production || $activate_email_notifications || $activate_android_push; then
   if ! $activation_generated; then
     [[ -f .env.next && ! -L .env.next && $(stat -c %a .env.next) == 600 ]] || {
       if $activate_messenger_notifications; then
@@ -240,7 +243,7 @@ if $activate_telegram_relay || $activate_messenger_notifications || $activate_ad
   [[ ! -e .env.activate.incoming && ! -L .env.activate.incoming && ! -e .env.rollback.incoming && ! -L .env.rollback.incoming ]] || {
     echo 'Resolve the previous configuration activation staging file' >&2; exit 1;
   }
-  python3 - "$workdir/.env.next" "$activate_telegram_relay" "$activate_messenger_notifications" "$activate_admin_mfa" "$activate_oauth" "$activate_yookassa_test" "$activate_email_notifications" "$activate_android_push" <<'PY'
+  python3 - "$workdir/.env.next" "$activate_telegram_relay" "$activate_messenger_notifications" "$activate_admin_mfa" "$activate_oauth" "$activate_yookassa_test" "$activate_email_notifications" "$activate_android_push" "$activate_yookassa_production" <<'PY'
 import base64
 import binascii
 from pathlib import Path
@@ -273,10 +276,12 @@ oauth = sys.argv[5] == "true"
 yookassa_test = sys.argv[6] == "true"
 email_notifications = sys.argv[7] == "true"
 android_push = sys.argv[8] == "true"
+yookassa_production = sys.argv[9] == "true"
 push_keys = {b"ANDROID_PUSH_ENABLED", b"RUSTORE_PUSH_PROJECT_ID", b"RUSTORE_PUSH_SERVICE_TOKEN"}
 email_key = b"EMAIL_NOTIFICATIONS_ENABLED"
 yookassa_keys = {b"BILLING_PROVIDER", b"BILLING_TEST_ACCOUNT_IDS", b"YOOKASSA_MODE", b"YOOKASSA_TEST_SHOP_ID", b"YOOKASSA_TEST_SECRET_KEY"}
-allowed = (set(relay_targets) if relay else set()) | (messenger_keys if messenger else set()) | ({mfa_key} if admin_mfa else set()) | (oauth_keys if oauth else set()) | (yookassa_keys if yookassa_test else set()) | ({email_key} if email_notifications else set()) | (push_keys if android_push else set())
+production_keys = {b"BILLING_PROVIDER", b"YOOKASSA_MODE", b"YOOKASSA_PRODUCTION_SHOP_ID", b"YOOKASSA_PRODUCTION_SECRET_KEY"}
+allowed = (set(relay_targets) if relay else set()) | (messenger_keys if messenger else set()) | ({mfa_key} if admin_mfa else set()) | (oauth_keys if oauth else set()) | (yookassa_keys if yookassa_test else set()) | (production_keys if yookassa_production else set()) | ({email_key} if email_notifications else set()) | (push_keys if android_push else set())
 prefix = "Relay activation rejected" if relay and not messenger else "Configuration activation rejected"
 
 def reject(message):
@@ -340,6 +345,17 @@ if yookassa_test:
         previous = unquote_literal(old_values.get(key, b""))
         if previous and previous != unquote_literal(new_values.get(key, b"")):
             reject("YooKassa activation cannot rotate existing credentials")
+if yookassa_production:
+    if unquote_literal(new_values.get(b"BILLING_PROVIDER", b"")) != b"yookassa" or unquote_literal(new_values.get(b"YOOKASSA_MODE", b"")) != b"production":
+        reject("YooKassa production mode is required")
+    shop = unquote_literal(new_values.get(b"YOOKASSA_PRODUCTION_SHOP_ID", b""))
+    secret = unquote_literal(new_values.get(b"YOOKASSA_PRODUCTION_SECRET_KEY", b""))
+    if not re.fullmatch(rb"[0-9]{1,32}", shop) or not 16 <= len(secret) <= 512 or secret.startswith(b"test_") or any(c < 33 or c > 126 or c in b"'\\" for c in secret):
+        reject("complete YooKassa production credentials are required")
+    for key in (b"YOOKASSA_PRODUCTION_SHOP_ID", b"YOOKASSA_PRODUCTION_SECRET_KEY"):
+        previous = unquote_literal(old_values.get(key, b""))
+        if previous and previous != unquote_literal(new_values.get(key, b"")):
+            reject("YooKassa production activation cannot rotate existing credentials")
 if oauth:
     for key in oauth_keys:
         previous = old_values.get(key, b"")
@@ -464,15 +480,22 @@ if any("AUTH_MFA_ENCRYPTION_KEY" in c[name]["environment"] for name in ("worker"
 oauth_keys = ("YANDEX_CLIENT_ID", "YANDEX_CLIENT_SECRET", "YANDEX_REDIRECT_URI", "YANDEX_SCOPES", "VK_CLIENT_ID", "VK_CALLBACK_URL")
 if any(key in c[name]["environment"] for key in oauth_keys for name in ("worker", "probe")):
     raise SystemExit("OAuth configuration must be scoped to API only")
-yookassa_keys = ("BILLING_TEST_ACCOUNT_IDS", "YOOKASSA_MODE", "YOOKASSA_TEST_SHOP_ID", "YOOKASSA_TEST_SECRET_KEY")
+yookassa_keys = ("BILLING_TEST_ACCOUNT_IDS", "YOOKASSA_MODE", "YOOKASSA_TEST_SHOP_ID", "YOOKASSA_TEST_SECRET_KEY", "YOOKASSA_PRODUCTION_SHOP_ID", "YOOKASSA_PRODUCTION_SECRET_KEY")
 if any(c["api"]["environment"].get(key, "") != c["worker"]["environment"].get(key, "") for key in yookassa_keys):
     raise SystemExit("API and worker must share the same YooKassa policy")
 if any(key in c.get(name, {}).get("environment", {}) for key in yookassa_keys for name in ("probe", "postgres", "caddy", "migrate")):
     raise SystemExit("YooKassa configuration must be scoped to API and worker only")
 if c["api"]["environment"].get("BILLING_PROVIDER") == "yookassa":
     e = c["api"]["environment"]
-    if e.get("YOOKASSA_MODE") != "test" or e.get("BILLING_TEST_ACCOUNT_IDS") != "51ec7d19-80c4-4fb6-8edb-79dc7abe3120" or not e.get("YOOKASSA_TEST_SHOP_ID", "").isdigit() or not e.get("YOOKASSA_TEST_SECRET_KEY", "").startswith("test_"):
-        raise SystemExit("YooKassa production activation must use owner-only sandbox configuration")
+    mode = e.get("YOOKASSA_MODE")
+    if mode == "test":
+        if e.get("BILLING_TEST_ACCOUNT_IDS") != "51ec7d19-80c4-4fb6-8edb-79dc7abe3120" or not e.get("YOOKASSA_TEST_SHOP_ID", "").isdigit() or not e.get("YOOKASSA_TEST_SECRET_KEY", "").startswith("test_"):
+            raise SystemExit("YooKassa test mode requires the reviewed owner-only sandbox")
+    elif mode == "production":
+        if not e.get("YOOKASSA_PRODUCTION_SHOP_ID", "").isdigit() or not 16 <= len(e.get("YOOKASSA_PRODUCTION_SECRET_KEY", "")) <= 512 or e.get("YOOKASSA_PRODUCTION_SECRET_KEY", "").startswith("test_"):
+            raise SystemExit("YooKassa production mode requires the selected production shop")
+    else:
+        raise SystemExit("YooKassa mode must be explicit")
 '
 "${compose_new[@]}" pull postgres caddy api worker probe migrate
 docker pull "$backup_image"
@@ -514,6 +537,15 @@ done
 # Stop writers before taking the recovery snapshot. On a pre-migration failure
 # the EXIT trap restores the previous release and restarts its processes.
 "${compose[@]}" stop -t 30 api worker probe
+if $activate_yookassa_production || $activate_yookassa_test; then
+  # Writers are stopped. A shop switch is safe only when no payment operation
+  # or untrusted webhook hint can still need the previous shop's credentials.
+  switch_blockers=$("${compose[@]}" exec -T postgres psql -X -v ON_ERROR_STOP=1 -U heartbeat -d heartbeat -Atqc \
+    "SELECT (SELECT count(*) FROM billing.orders WHERE status='pending' OR (provider='yookassa' AND (reconciliation_status<>'complete' OR fulfillment_status='pending' OR reconcile_token IS NOT NULL OR reconcile_lease_until IS NOT NULL OR last_error_code='payment_create_uncertain'))) + (SELECT count(*) FROM billing.webhook_inbox WHERE processed_at IS NULL)")
+  [[ $switch_blockers =~ ^[0-9]+$ && $switch_blockers == 0 ]] || {
+    echo 'YooKassa shop switch blocked by unfinished payment evidence' >&2; exit 1;
+  }
+fi
 backup="backups/${source_sha}-$(date -u +%Y%m%dT%H%M%SZ).dump"
 "${compose[@]}" exec -T postgres pg_dump -U heartbeat -d heartbeat -Fc > "$backup.partial"
 [[ -s $backup.partial ]] || { echo 'Database backup is empty' >&2; exit 1; }
@@ -656,7 +688,8 @@ jq -n --arg source_sha "$source_sha" --arg api "$api_image" \
   --argjson android_push_activated "$activate_android_push" \
   --argjson owner_import_requested "$provision_owner" --argjson admin_mfa_activated "$activate_admin_mfa" \
   --argjson oauth_activated "$activate_oauth" --argjson yookassa_test_activated "$activate_yookassa_test" \
-  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image,firewall:$firewall_image},firewall_policy_sha256:$firewall_policy_sha256,backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,messenger_notifications_activated:$messenger_notifications_activated,email_notifications_activated:$email_notifications_activated,android_push_activated:$android_push_activated,owner_import_requested:$owner_import_requested,admin_mfa_activated:$admin_mfa_activated,oauth_activated:$oauth_activated,yookassa_test_activated:$yookassa_test_activated,completed_at:(now|todate)}' \
+  --argjson yookassa_production_activated "$activate_yookassa_production" \
+  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image,firewall:$firewall_image},firewall_policy_sha256:$firewall_policy_sha256,backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,messenger_notifications_activated:$messenger_notifications_activated,email_notifications_activated:$email_notifications_activated,android_push_activated:$android_push_activated,owner_import_requested:$owner_import_requested,admin_mfa_activated:$admin_mfa_activated,oauth_activated:$oauth_activated,yookassa_test_activated:$yookassa_test_activated,yookassa_production_activated:$yookassa_production_activated,completed_at:(now|todate)}' \
   > "receipts/$source_sha.json.incoming"
 mv compose.backup.yaml.incoming compose.backup.yaml
 mv backup.sh.incoming backup.sh

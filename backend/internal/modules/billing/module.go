@@ -36,18 +36,18 @@ func NewConfigured(pool *pgxpool.Pool, local bool, cfg Config, guard accounts.Ac
 		return nil, err
 	}
 	if cfg.Provider == "yookassa" {
-		if cfg.Mode != "test" {
+		if cfg.Mode != "test" && cfg.Mode != "production" {
 			return nil, service.ErrInvalid
 		}
 		provider := cfg.PaymentProvider
 		if provider == nil {
 			var err error
-			provider, err = yookassa.New(cfg.ShopID, cfg.SecretKey)
+			provider, err = yookassa.New(cfg.Mode, cfg.ShopID, cfg.SecretKey)
 			if err != nil {
 				return nil, err
 			}
 		}
-		if err := s.ConfigureYooKassa(provider, cfg.ShopID, cfg.TestAccountIDs); err != nil {
+		if err := s.ConfigureYooKassa(provider, cfg.Mode, cfg.ShopID, cfg.TestAccountIDs); err != nil {
 			return nil, err
 		}
 	}

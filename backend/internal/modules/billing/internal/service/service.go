@@ -20,6 +20,7 @@ type Service struct {
 	accounts accounts.ActiveGuard
 	payments contracts.Provider
 	shopID   string
+	mode     string
 }
 
 var ErrAdminGrant = errors.New("invalid administrative grant")
@@ -43,7 +44,7 @@ func (s *Service) Lock(ctx context.Context, tx pgx.Tx, accountID string) (contra
 		return e, err
 	}
 	e.ActiveUntil = &until
-	validSource := e.Source == "admin_grant" || (s.local && e.Source == "local_test") || (s.provider == "mock" && s.allowed[accountID] && e.Source == "mock_test") || (s.provider == "yookassa" && s.allowed[accountID] && e.Source == "yookassa_test")
+	validSource := e.Source == "admin_grant" || e.Source == "yookassa" || (s.local && e.Source == "local_test") || (s.provider == "mock" && s.allowed[accountID] && e.Source == "mock_test") || (s.provider == "yookassa" && s.mode == "test" && s.allowed[accountID] && e.Source == "yookassa_test")
 	if !validSource || !until.After(time.Now()) {
 		e.Quota = 0
 	}

@@ -50,18 +50,22 @@ func newPaymentReporter(cfg config.IntegrationConfig) *paymentReporter {
 }
 
 func (p *paymentReporter) SendPaymentReport(ctx context.Context, report contracts.PaymentReport) error {
-	if !report.Test || report.Currency != "RUB" {
+	if report.Currency != "RUB" || (report.Provider != "mock" && report.Provider != "yookassa") || (report.Provider == "mock" && !report.Test) {
 		return &contracts.ReportSendError{Code: "report_invalid"}
 	}
-	title := "TEST · Имитация оплаты"
+	title, notice, amountLabel := "TEST · Имитация оплаты", "Деньги не списывались.\n", "Условная сумма"
 	if report.Provider == "yookassa" {
-		title = "ЮKassa · Платёж подтверждён"
+		if report.Test {
+			title = "TEST · ЮKassa · Платёж подтверждён"
+		} else {
+			title, notice, amountLabel = "ЮKassa · Платёж подтверждён", "", "Сумма"
+		}
 	}
 	access := ""
 	if report.FulfillmentStatus == "blocked" {
 		access = "\nКвота и срок доступа не изменены."
 	}
-	text := fmt.Sprintf("%s\nДеньги не списывались.\nЗаказ: %s\nАккаунт: %s\nМониторов: %d\nУсловная сумма: %d.%02d RUB\nПодтверждён: %s", title, report.OrderID, report.AccountID, report.MonitorCount, report.AmountMinor/100, report.AmountMinor%100, report.CompletedAt.UTC().Format(time.RFC3339)) + access
+	text := fmt.Sprintf("%s\n%sЗаказ: %s\nАккаунт: %s\nМониторов: %d\n%s: %d.%02d RUB\nПодтверждён: %s", title, notice, report.OrderID, report.AccountID, report.MonitorCount, amountLabel, report.AmountMinor/100, report.AmountMinor%100, report.CompletedAt.UTC().Format(time.RFC3339)) + access
 	body, err := json.Marshal(map[string]any{"chat_id": p.chatID, "message_thread_id": p.topicID, "text": text})
 	if err != nil {
 		return &contracts.ReportSendError{Code: "encode_failed"}

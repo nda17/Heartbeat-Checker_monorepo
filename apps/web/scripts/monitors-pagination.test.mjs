@@ -176,6 +176,7 @@ function loadPage(api, query = "") {
       useSearchParams: () => new URLSearchParams(currentQuery),
     },
     "next/link": {
+      __esModule: true,
       default: ({ href, children, ...props }) =>
         React.createElement("a", { href, ...props }, children),
     },

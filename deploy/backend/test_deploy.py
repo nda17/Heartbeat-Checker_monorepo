@@ -84,6 +84,10 @@ if args and args[0] == "compose":
             yookassa_environment = {"BILLING_PROVIDER": "yookassa", "BILLING_TEST_ACCOUNT_IDS": "51ec7d19-80c4-4fb6-8edb-79dc7abe3120", "YOOKASSA_MODE": "test", "YOOKASSA_TEST_SHOP_ID": "123456", "YOOKASSA_TEST_SECRET_KEY": "test_synthetic_secret_123"}
             api_environment.update(yookassa_environment)
             worker_environment.update({key: value for key, value in yookassa_environment.items() if key != "BILLING_PROVIDER"})
+        if os.environ.get("COMPOSE_YOOKASSA_PRODUCTION_KEYS") == "1":
+            production_environment = {"BILLING_PROVIDER": "yookassa", "YOOKASSA_MODE": "production", "YOOKASSA_PRODUCTION_SHOP_ID": "654321", "YOOKASSA_PRODUCTION_SECRET_KEY": "production_synthetic_secret_123"}
+            api_environment.update(production_environment)
+            worker_environment.update({key: value for key, value in production_environment.items() if key != "BILLING_PROVIDER"})
         print(json.dumps({"services": {
             "api": {"environment": api_environment},
             "postgres": {"environment": {"POSTGRES_PASSWORD": "testpass"}},
@@ -93,6 +97,8 @@ if args and args[0] == "compose":
     if "ps" in args and "-q" in args:
         print("container-id"); raise SystemExit(0)
     if "exec" in args:
+        if "billing.orders" in " ".join(args) and "webhook_inbox" in " ".join(args):
+            print(os.environ.get("YOOKASSA_SWITCH_BLOCKERS", "0")); raise SystemExit(0)
         if "psql" in args and "-X" in args and os.environ.get("OWNER_IMPORT_RESULT"):
             payload = sys.stdin.buffer.read()
             capture = os.environ.get("OWNER_IMPORT_STDIN")
@@ -120,6 +126,9 @@ raise SystemExit(1)
 
 PYTHON_MOCK = r'''#!/bin/sh
 case "$*" in
+  *"stage-yookassa.py"*"production"*)
+    exec "$REAL_PYTHON" -c 'import importlib.util,sys; spec=importlib.util.spec_from_file_location("stage_yookassa",sys.argv[1]); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); mod.verify_production_shop=lambda shop,secret: None; mod.stage(sys.argv[2], "production")' "$@"
+    ;;
   *"Probe public GET and metadata rejection passed"*)
     cat >/dev/null
     printf '%s\n' "Probe public GET and metadata rejection passed"
@@ -233,6 +242,7 @@ class BackendDeployTests(unittest.TestCase):
                    provision_owner=None, activate_admin_mfa=None, activate_oauth=None,
                    activate_yookassa_test=None, activate_email_notifications=None,
                    activate_android_push=None,
+                   activate_yookassa_production=None,
                    stdin_payload="test-token\n", **extra_env):
         env = os.environ.copy()
         env.update({
@@ -267,6 +277,10 @@ class BackendDeployTests(unittest.TestCase):
             elif activate_yookassa_test is not None and activate_email_notifications is None:
                 args.append("false")
             args.append("true" if activate_android_push else "false")
+        if activate_yookassa_production is not None:
+            current_flag_count = len(args) - 16
+            args.extend(["false"] * max(0, 3 - current_flag_count))
+            args.append("true" if activate_yookassa_production else "false")
         return subprocess.run(
             args,
             input=stdin_payload, cwd=self.root, env=env, text=True, capture_output=True,
@@ -455,7 +469,7 @@ class BackendDeployTests(unittest.TestCase):
     def yookassa_payload(shop_id="123456", secret_key="test_synthetic_secret_123"):
         return json.dumps({"shopId": shop_id, "secretKey": secret_key}, separators=(",", ":"))
 
-    def run_yookassa_stage(self, payload, active_env=BASE_ENV):
+    def run_yookassa_stage(self, payload, active_env=BASE_ENV, mode="test"):
         helper = Path(__file__).with_name("stage-yookassa.py")
         self.stage_test_counter += 1
         active = self.root / f"active-{self.stage_test_counter}"
@@ -464,8 +478,15 @@ class BackendDeployTests(unittest.TestCase):
         (active / ".env").chmod(0o600)
         workdir = self.root / f"private-workdir-{self.stage_test_counter}"
         workdir.mkdir(mode=0o700)
+        command = [os.sys.executable, str(helper), str(workdir), mode]
+        if mode == "production":
+            command = [os.sys.executable, "-c", (
+                "import importlib.util,sys; spec=importlib.util.spec_from_file_location('stage_yookassa',sys.argv[1]); "
+                "mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); "
+                "mod.verify_production_shop=lambda shop,secret: None; mod.stage(sys.argv[2], 'production')"
+            ), str(helper), str(workdir)]
         result = subprocess.run(
-            [os.sys.executable, str(helper), str(workdir)],
+            command,
             input=payload, cwd=active, text=False, capture_output=True,
         )
         return result, workdir
@@ -669,6 +690,26 @@ class BackendDeployTests(unittest.TestCase):
         self.assertIn("YOOKASSA_MODE=test", text)
         self.assertIn("YOOKASSA_TEST_SECRET_KEY='test_synthetic_secret_123'", text)
 
+    def test_yookassa_production_stage_verifies_shop_and_preserves_test_credentials(self):
+        production_secret = "production_synthetic_secret_123"
+        previous = self.yookassa_candidate()
+        result, workdir = self.run_yookassa_stage(
+            self.yookassa_payload("654321", production_secret).encode(),
+            active_env=previous,
+            mode="production",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        candidate = workdir / ".env.next"
+        self.assertEqual(candidate.stat().st_mode & 0o777, 0o600)
+        text = candidate.read_text()
+        self.assertIn("YOOKASSA_MODE=production", text)
+        self.assertIn("YOOKASSA_PRODUCTION_SHOP_ID=654321", text)
+        self.assertIn(f"YOOKASSA_PRODUCTION_SECRET_KEY='{production_secret}'", text)
+        self.assertIn("YOOKASSA_TEST_SHOP_ID=123456", text)
+        self.assertIn("YOOKASSA_TEST_SECRET_KEY=test_synthetic_secret_123", text)
+        self.assertIn("KEEP_EXISTING=one", text)
+        self.assertNotIn(production_secret, result.stdout.decode() + result.stderr.decode())
+
     def test_yookassa_activation_rejects_mixed_flags_rotation_and_external_candidate(self):
         cases = [
             {"activate_oauth": True},
@@ -704,6 +745,52 @@ class BackendDeployTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("existing staged configuration", result.stderr)
         self.assertEqual(self.docker_calls(), [])
+
+    def test_yookassa_production_activation_checks_stopped_writer_gate_and_records_receipt(self):
+        production_secret = "production_synthetic_secret_123"
+        active = self.yookassa_candidate()
+        (self.backend / ".env").write_text(active)
+        (self.backend / ".env").chmod(0o600)
+        result = self.run_deploy(
+            activate_yookassa_production=True,
+            COMPOSE_YOOKASSA_PRODUCTION_KEYS="1",
+            stdin_payload="test-token\n" + self.yookassa_payload("654321", production_secret),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        activated = (self.backend / ".env").read_text()
+        self.assertIn("YOOKASSA_MODE=production", activated)
+        self.assertIn("YOOKASSA_PRODUCTION_SHOP_ID=654321", activated)
+        self.assertIn(f"YOOKASSA_PRODUCTION_SECRET_KEY='{production_secret}'", activated)
+        self.assertIn("YOOKASSA_TEST_SECRET_KEY=test_synthetic_secret_123", activated)
+        self.assertEqual((self.backend / ".env").stat().st_mode & 0o777, 0o600)
+        receipt = json.loads((self.backend / "receipts" / f"{SOURCE_SHA}.json").read_text())
+        self.assertTrue(receipt["yookassa_production_activated"])
+        calls = [" ".join(call) for call in self.docker_calls()]
+        stop = next(i for i, call in enumerate(calls) if "stop" in call and "api" in call and "worker" in call and "probe" in call)
+        gate = next(i for i, call in enumerate(calls) if "billing.orders" in call and "webhook_inbox" in call)
+        migration = next(i for i, call in enumerate(calls) if "--profile" in call and "migration" in call)
+        self.assertLess(stop, gate)
+        self.assertLess(gate, migration)
+        self.assertNotIn(production_secret, result.stdout + result.stderr + self.log.read_text())
+
+    def test_yookassa_production_activation_gate_blocks_before_migration_and_restores_env(self):
+        production_secret = "production_synthetic_secret_123"
+        active = self.yookassa_candidate()
+        (self.backend / ".env").write_text(active)
+        (self.backend / ".env").chmod(0o600)
+        result = self.run_deploy(
+            activate_yookassa_production=True,
+            COMPOSE_YOOKASSA_PRODUCTION_KEYS="1",
+            YOOKASSA_SWITCH_BLOCKERS="1",
+            stdin_payload="test-token\n" + self.yookassa_payload("654321", production_secret),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("shop switch blocked by unfinished payment evidence", result.stderr)
+        self.assertEqual((self.backend / ".env").read_text(), active)
+        self.assertFalse((self.backend / f"receipts/{SOURCE_SHA}.json").exists())
+        calls = [" ".join(call) for call in self.docker_calls()]
+        self.assertFalse(any("--profile" in call and "migration" in call for call in calls))
+
 
     def test_yookassa_staging_waits_for_the_deployment_lock(self):
         result = self.run_deploy(

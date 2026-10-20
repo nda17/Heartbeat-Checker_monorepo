@@ -18,7 +18,11 @@ type Order = {
   reconciliationStatus?: "pending" | "complete" | "manual_review" | "stopped";
   fulfillmentStatus?: "pending" | "fulfilled" | "blocked" | "not_required";
   fulfillmentReason?:
-    "admin_grant" | "account_deleted" | "account_inactive" | "capacity_changed";
+    | "admin_grant"
+    | "account_deleted"
+    | "account_inactive"
+    | "capacity_changed"
+    | "paid_entitlement";
   monitorCount: number;
   amountMinor: number;
   currency: "RUB";
@@ -65,9 +69,10 @@ function orderStatus(order: Order) {
     if (order.status === "canceled") return "Демонстрация отменена";
     return "Ожидает результата демонстрации";
   }
-  if (order.status === "succeeded") return "Платёж подтверждён ЮKassa";
-  if (order.status === "canceled") return "Платёж отменён";
-  return "Ожидает подтверждения ЮKassa";
+  const label = order.test ? "Тестовый платёж" : "Платёж";
+  if (order.status === "succeeded") return `${label} подтверждён ЮKassa`;
+  if (order.status === "canceled") return `${label} отменён`;
+  return `Ожидает подтверждения ЮKassa (${order.test ? "тест" : "оплата"})`;
 }
 function fulfillmentMessage(order: Order) {
   if (order.fulfillmentStatus === "blocked") {
@@ -80,6 +85,8 @@ function fulfillmentMessage(order: Order) {
         return "Аккаунт неактивен. Квота по заказу не применяется.";
       case "capacity_changed":
         return "Параметры квоты изменились. Для применения заказа обратитесь в поддержку.";
+      case "paid_entitlement":
+        return "Действующая оплаченная квота сохранена. Тестовый заказ её не изменил.";
       default:
         return "Квота не изменена. Для проверки заказа обратитесь в поддержку.";
     }
@@ -264,7 +271,6 @@ function YooKassaCheckout({
     if (
       creating.current ||
       billing.canPay !== true ||
-      billing.test !== true ||
       (!request.current &&
         ((!!orderId && order?.id !== orderId) ||
           (order && unfinishedOrder(order))))
@@ -405,7 +411,7 @@ function YooKassaCheckout({
       }
     }
   }
-  const canPay = billing.canPay === true && billing.test === true;
+  const canPay = billing.canPay === true;
   const pending = order && unfinishedOrder(order);
   const quotedAmount =
     order && pending && !uncertain
@@ -431,7 +437,11 @@ function YooKassaCheckout({
       <div className="panel-heading">
         <div>
           <h2 id="checkout-title">Оформление заказа</h2>
-          <p>Подтверждение на странице ЮKassa. Деньги не списываются.</p>
+          <p>
+            {billing.test
+              ? "Тестовый платёж на странице ЮKassa. Деньги не списываются."
+              : "Оплата на странице ЮKassa. Сумма заказа будет списана после подтверждения платежа."}
+          </p>
         </div>
       </div>
       {billing.accessUnchanged && (
@@ -1069,7 +1079,9 @@ export function BillingPage() {
                         <td data-label="Заказ">
                           <strong>
                             {order.provider === "yookassa"
-                              ? "ЮKassa"
+                              ? order.test
+                                ? "ЮKassa · тест"
+                                : "ЮKassa · оплата"
                               : "Демонстрация"}
                           </strong>
                           <span className="cell-sub">

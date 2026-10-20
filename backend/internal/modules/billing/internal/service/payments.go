@@ -76,23 +76,27 @@ func scanOrder(row pgx.Row) (contracts.Order, error) {
 }
 
 func (s *Service) Overview(ctx context.Context, accountID string) (contracts.Billing, error) {
-	result := contracts.Billing{Provider: s.provider, CanSimulate: s.provider == "mock" && s.allowed[accountID], Orders: []contracts.Order{}, CanPay: s.provider == "yookassa" && s.allowed[accountID], Test: s.provider == "yookassa"}
+	result := contracts.Billing{Provider: s.provider, CanSimulate: s.provider == "mock" && s.allowed[accountID], Orders: []contracts.Order{}, CanPay: s.provider == "yookassa" && s.canPay(accountID), Test: s.provider == "yookassa" && s.mode == "test"}
 	// A missing current quote must not hide previously created orders. Zero/zero
 	// means unavailable, never a free tariff; new orders still require PricingTx.
 	if pricing, err := s.Pricing(ctx); err == nil {
 		result.PricePerMonitorMinor, result.PriceVersion = pricing.PricePerMonitorMinor, pricing.Version
 	}
 	if result.CanPay {
-		if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM billing.entitlements WHERE account_id=$1 AND source='admin_grant' AND valid_until>now())`, accountID).Scan(&result.AccessUnchanged); err != nil {
+		var paidAccess bool
+		if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM billing.entitlements WHERE account_id=$1 AND source='admin_grant' AND valid_until>now()), EXISTS(SELECT 1 FROM billing.entitlements WHERE account_id=$1 AND source='yookassa' AND valid_until>now())`, accountID).Scan(&result.AccessUnchanged, &paidAccess); err != nil {
 			return result, err
+		}
+		if result.Test && paidAccess {
+			result.CanPay = false
 		}
 	}
 	if result.CanSimulate {
-		var activeGrant bool
-		if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM billing.entitlements WHERE account_id=$1 AND source='admin_grant' AND valid_until>now())`, accountID).Scan(&activeGrant); err != nil {
+		var protectedAccess bool
+		if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM billing.entitlements WHERE account_id=$1 AND source IN ('admin_grant','yookassa') AND valid_until>now())`, accountID).Scan(&protectedAccess); err != nil {
 			return result, err
 		}
-		result.CanSimulate = !activeGrant
+		result.CanSimulate = !protectedAccess
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+orderColumns+` FROM billing.orders WHERE account_id=$1 ORDER BY created_at DESC,id DESC LIMIT 100`, accountID)
 	if err != nil {
@@ -120,7 +124,7 @@ func (s *Service) beginMock(ctx context.Context, accountID string) (pgx.Tx, cont
 	}
 	entitlement, err := s.Lock(ctx, tx, accountID)
 	if err == nil {
-		if entitlement.Source == "admin_grant" && entitlement.Quota > 0 {
+		if (entitlement.Source == "admin_grant" || entitlement.Source == "yookassa") && entitlement.Quota > 0 && entitlement.ActiveUntil != nil && entitlement.ActiveUntil.After(time.Now()) {
 			err = ErrForbidden
 		}
 	}
