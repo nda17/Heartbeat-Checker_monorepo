@@ -1,4 +1,5 @@
 "use client";
+import { notify } from "@/shared/notifications";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -74,7 +75,6 @@ export function AdminPage() {
   const [pricingRevision, setPricingRevision] = useState(0);
   const [pricingBusy, setPricingBusy] = useState(false);
   const [detailTab, setDetailTab] = useState("profile");
-  const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState("");
   const selectedId = useRef<string | null>(null);
   const selectionFocus = useRef<string | null>(null);
@@ -85,7 +85,7 @@ export function AdminPage() {
   const mutationBusy = useRef(false);
 
   const accessError = useRef(false);
-  const reportError = useCallback((cause: unknown) => {
+  const reportError = useCallback((cause: unknown, transient = false) => {
     accessError.current =
       cause instanceof ApiError &&
       [
@@ -95,7 +95,8 @@ export function AdminPage() {
         "mfa_step_up_required",
         "mfa_enrollment_required",
       ].includes(cause.code);
-    setError(errorMessage(cause, "admin"));
+    if (transient) notify.error(errorMessage(cause, "admin"));
+    else setError(errorMessage(cause, "admin"));
   }, []);
   const accessTransition = useRef(false);
   const onMfaState = useCallback((value: MfaState | null) => {
@@ -175,7 +176,7 @@ export function AdminPage() {
           setMonitors(null);
           setAudit(null);
           setMonitorForm(null);
-          setSuccess("");
+
           setRefreshError("");
           setError(
             "Аккаунт удалён. Его данные недоступны для управления и восстановления.",
@@ -297,7 +298,7 @@ export function AdminPage() {
     ++detailRequest.current;
     ++auditRequest.current;
     setDetailTab("profile");
-    setSuccess("");
+
     setDetail(null);
     setMonitors(null);
     setAudit(null);
@@ -331,7 +332,7 @@ export function AdminPage() {
     const targetId = detail?.account.id ?? null;
     setBusy(label);
     setError("");
-    setSuccess("");
+
     setRefreshError("");
     try {
       try {
@@ -339,10 +340,10 @@ export function AdminPage() {
       } catch (cause) {
         if (cause instanceof ApiError && cause.status === 401)
           router.replace("/login");
-        else reportError(cause);
+        else reportError(cause, true);
         return;
       }
-      setSuccess(message);
+      notify.success(message);
       if (logout) {
         router.replace("/login");
         return;
@@ -497,7 +498,7 @@ export function AdminPage() {
         onBusyChange={setPricingBusy}
       />
       {error && <Notice>{error}</Notice>}
-      {success && <Notice success>{success}</Notice>}
+
       {refreshError && (
         <Notice>
           {refreshError}{" "}
@@ -616,7 +617,6 @@ export function AdminPage() {
                     aria-pressed={detailTab === key}
                     onClick={() => {
                       setDetailTab(key);
-                      setSuccess("");
                     }}
                   >
                     {label}
@@ -863,7 +863,6 @@ export function AdminPage() {
                         type="button"
                         disabled={mfaBusy || pricingBusy || !!busy}
                         onClick={() => {
-                          setSuccess("");
                           setMonitorForm("new");
                         }}
                       >
@@ -894,7 +893,6 @@ export function AdminPage() {
                                 type="button"
                                 disabled={!!busy || pricingBusy || mfaBusy}
                                 onClick={() => {
-                                  setSuccess("");
                                   setMonitorForm(monitor);
                                 }}
                               >
@@ -994,11 +992,11 @@ export function AdminPage() {
           basePath={accountPath("/monitors")}
           requireReason
           onClose={() => setMonitorForm(null)}
+          successMessage={
+            monitorForm === "new" ? "Монитор добавлен." : "Монитор обновлён."
+          }
           onSaved={async () => {
             await loadDetail(detail.account.id);
-            setSuccess(
-              monitorForm === "new" ? "Монитор добавлен." : "Монитор обновлён.",
-            );
           }}
         />
       )}

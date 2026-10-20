@@ -9,6 +9,17 @@ import { createRoot } from "react-dom/client";
 import ts from "typescript";
 
 const requireWeb = createRequire(new URL("../package.json", import.meta.url));
+const toastCalls = [];
+const toastMock = {
+  notify: {
+    success(message, id) {
+      toastCalls.push({ kind: "success", message, id });
+    },
+    error(message, id) {
+      toastCalls.push({ kind: "error", message, id });
+    },
+  },
+};
 const billingEntity = (() => {
   const source = fs.readFileSync(
     new URL("../src/entities/billing/index.ts", import.meta.url),
@@ -39,6 +50,7 @@ function deferred() {
 }
 
 function createHarness(url = "http://localhost/login") {
+  toastCalls.length = 0;
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { url });
   globalThis.window = dom.window;
   globalThis.document = dom.window.document;
@@ -96,6 +108,7 @@ function compile(relativePath, aliases, runtime = {}) {
     exports,
     require(id) {
       if (Object.hasOwn(aliases, id)) return aliases[id];
+      if (id === "@/shared/notifications") return toastMock;
       if (id === "@/entities/billing") return billingEntity;
       if (id === "@/features/public-pricing")
         return { PublicPricing: () => null };
@@ -452,7 +465,14 @@ for (const [query, expected] of [
     );
     await harness.render(React.createElement(AuthEntry, { mode: "login" }));
     await settle();
-    assert.match(harness.host.textContent, expected);
+    if (query.startsWith("oauthError=")) {
+      assert.ok(
+        toastCalls.some(
+          (call) => call.kind === "error" && expected.test(call.message),
+        ),
+        "OAuth callback failure is announced through a toast",
+      );
+    } else assert.match(harness.host.textContent, expected);
     assert.ok(harness.host.querySelector('form input[name="email"]'));
     assert.equal(calls.filter((call) => call.path === "/me").length, 0);
     assert.deepEqual(routes, []);
@@ -1151,6 +1171,14 @@ test("email verification prevents duplicate sends and restores an account-scoped
   );
   await act(async () => pending.resolve({ sent: true }));
   await settle();
+  assert.ok(
+    toastCalls.some(
+      (call) =>
+        call.kind === "success" &&
+        call.message.startsWith("Письмо с подтверждением запрошено."),
+    ),
+    "an accepted verification-email request should be announced as a transient toast",
+  );
   assert.match(resend().textContent, /Отправить повторно \(60 с\)/);
   assert.equal(resend().disabled, true);
   assert.ok(
@@ -1331,6 +1359,12 @@ test("email verification 429 respects Retry-After and timeout ignores a late suc
       assert.ok(requestTimer);
       await act(async () => requestTimer.callback());
       await settle();
+      assert.equal(
+        calls.find((call) => call.path === "/me/email-verification")?.options
+          .signal?.aborted,
+        true,
+        "the timed-out request must be aborted before a late completion",
+      );
       assert.match(
         harness.host.textContent,
         /Ответ занял слишком много времени/,
@@ -1344,6 +1378,11 @@ test("email verification 429 respects Retry-After and timeout ignores a late suc
       assert.doesNotMatch(
         harness.host.textContent,
         /Письмо с подтверждением запрошено/,
+      );
+      assert.equal(
+        toastCalls.some((call) => call.kind === "success"),
+        false,
+        "a late response after timeout must not announce a committed send",
       );
       assert.equal(
         calls.filter((call) => call.path === "/me/email-verification").length,

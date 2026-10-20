@@ -1,4 +1,5 @@
 "use client";
+import { notify } from "@/shared/notifications";
 
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useState } from "react";
@@ -38,7 +39,6 @@ export function OAuthIdentities({
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
   const load = useCallback(async (signal?: AbortSignal) => {
     const [available, linked] = await Promise.all([
       api<{ providers: Provider[] }>("/auth/oauth/providers", { signal }),
@@ -54,9 +54,8 @@ export function OAuthIdentities({
     const failure = url.searchParams.get("oauthError");
     if (linked || failure) {
       // Capture the one-time callback result before removing it from the browser URL.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setSuccess(linked ? "Способ входа подключён." : "");
-      setError(failure ? oauthCallbackMessage(failure) : "");
+      if (linked) notify.success("Способ входа подключён.");
+      if (failure) notify.error(oauthCallbackMessage(failure));
       window.history.replaceState(null, "", "/app/settings");
       if (linked)
         void onChange().catch((cause) =>
@@ -99,7 +98,7 @@ export function OAuthIdentities({
     const password = new FormData(event.currentTarget).get("password");
     setBusy(provider);
     setError("");
-    setSuccess("");
+
     try {
       const result = await api<{ authorizationUrl: string }>(
         `/auth/oauth/${provider}/start`,
@@ -113,7 +112,7 @@ export function OAuthIdentities({
         oauthAuthorizationUrl(provider, result.authorizationUrl),
       );
     } catch (cause) {
-      setError(errorMessage(cause));
+      notify.error(errorMessage(cause));
       setBusy("");
     }
   }
@@ -128,7 +127,7 @@ export function OAuthIdentities({
     const password = new FormData(form).get("password");
     setBusy(identity.id);
     setError("");
-    setSuccess("");
+
     try {
       beginSessionTransition();
       try {
@@ -144,7 +143,7 @@ export function OAuthIdentities({
       setIdentities(
         (current) => current?.filter((item) => item.id !== identity.id) ?? null,
       );
-      setSuccess(`${names[identity.provider]} отключён от аккаунта.`);
+      notify.success(`${names[identity.provider]} отключён от аккаунта.`);
       try {
         await Promise.all([load(), onChange()]);
       } catch (cause) {
@@ -153,7 +152,7 @@ export function OAuthIdentities({
         );
       }
     } catch (cause) {
-      setError(errorMessage(cause));
+      notify.error(errorMessage(cause));
     } finally {
       setBusy("");
     }
@@ -172,7 +171,7 @@ export function OAuthIdentities({
         </div>
       </div>
       {error && <Notice>{error}</Notice>}
-      {success && <Notice success>{success}</Notice>}
+
       {!hasPassword && (
         <p className="small">
           Чтобы подключать и отключать способы входа, сначала{" "}

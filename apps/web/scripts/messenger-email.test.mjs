@@ -9,6 +9,26 @@ import { createRoot } from "react-dom/client";
 import ts from "typescript";
 
 const requireWeb = createRequire(new URL("../package.json", import.meta.url));
+const toastCalls = [];
+const toastMock = {
+  notify: {
+    success(message, id) {
+      toastCalls.push({ kind: "success", message, id });
+    },
+    error(message, id) {
+      toastCalls.push({ kind: "error", message, id });
+    },
+  },
+};
+
+function assertToast(kind, expected) {
+  assert.ok(
+    toastCalls.some(
+      (call) => call.kind === kind && expected.test(call.message),
+    ),
+    `missing ${kind} toast matching ${expected}`,
+  );
+}
 
 class ApiError extends Error {
   constructor(status, code) {
@@ -37,6 +57,7 @@ function loadComponent(relativePath, aliases, runtime = {}) {
     exports: fixtureModule.exports,
     require(id) {
       if (Object.hasOwn(aliases, id)) return aliases[id];
+      if (id === "@/shared/notifications") return toastMock;
       return requireWeb(id);
     },
     console,
@@ -56,6 +77,7 @@ function loadComponent(relativePath, aliases, runtime = {}) {
 }
 
 function createHarness(url = "http://localhost/") {
+  toastCalls.length = 0;
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { url });
   globalThis.window = dom.window;
   globalThis.document = dom.window.document;
@@ -158,6 +180,91 @@ function loadEmailDestinationEditor(api) {
     apiAliases(emailAPI),
   ).EmailDestinationEditor;
 }
+
+test("notification settings keep initial read failures persistent until explicit retry", async (t) => {
+  const harness = createHarness();
+  t.after(() => harness.unmount());
+  let destinationReads = 0;
+  const api = async (path) => {
+    if (path === "/messenger-destinations") {
+      destinationReads += 1;
+      if (destinationReads < 3) throw new Error("destinations unavailable");
+      return {
+        enabled: true,
+        emailEnabled: true,
+        destinations: [],
+      };
+    }
+    if (path === "/me") return { emailVerified: true };
+    if (path === "/monitors/monitor-1/messenger-routes")
+      return { enabled: true, emailEnabled: true, routes: [] };
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  const aliases = {
+    ...apiAliases(api),
+    "@/entities/session": {
+      useSession: () => ({ profile: { emailVerified: true } }),
+    },
+    "next/link": ({ href, children }) =>
+      React.createElement("a", { href }, children),
+    "@/entities/monitor": {},
+    "@/entities/messenger": loadMessengerEntity(api),
+    "./webhook": { WebhookNotifications: () => null },
+  };
+  const { MonitorNotifications } = loadComponent(
+    "../src/features/monitor-notifications/index.tsx",
+    aliases,
+  );
+
+  await harness.render(
+    React.createElement(MonitorNotifications, {
+      monitor: { id: "monitor-1", name: "Checkout" },
+      onClose() {},
+    }),
+  );
+  assert.match(harness.host.textContent, /destinations unavailable/);
+  assert.ok(
+    [...harness.host.querySelectorAll("button")].some((button) =>
+      button.textContent.includes("Повторить загрузку настроек"),
+    ),
+    "failed initial reads must leave an explicit retry action",
+  );
+  assert.equal(
+    toastCalls.length,
+    0,
+    "read failures stay visible instead of timing out as transient toasts",
+  );
+
+  await act(async () => window.dispatchEvent(new window.Event("focus")));
+  await settle();
+  assert.match(harness.host.textContent, /destinations unavailable/);
+  assert.equal(
+    toastCalls.length,
+    0,
+    "background focus refresh failures must not produce repeated toasts",
+  );
+
+  const retry = [...harness.host.querySelectorAll("button")].find((button) =>
+    button.textContent.includes("Повторить загрузку настроек"),
+  );
+  assert.ok(retry);
+  await act(async () => retry.click());
+  await settle();
+  assert.equal(
+    destinationReads,
+    3,
+    "the explicit retry issues a fresh destinations read",
+  );
+  assert.match(harness.host.textContent, /Email для уведомлений/);
+  assert.equal(
+    [...harness.host.querySelectorAll("button")].some((button) =>
+      button.textContent.includes("Повторить загрузку настроек"),
+    ),
+    false,
+    "successful retry should replace the persistent read failure with the loaded editor",
+  );
+  assert.equal(toastCalls.length, 0);
+});
 
 function loadMessengerEntity(api) {
   return loadComponent("../src/entities/messenger/index.ts", {
@@ -523,7 +630,7 @@ test("email account connection posts the explicit verified account address", asy
     assert.equal(connect?.options.method, "POST");
     assert.equal(connect?.options.authenticated, true);
     assert.match(harness.host.textContent, /Подтверждённый email/);
-    assert.match(harness.host.textContent, /Email уведомлений подключён/);
+    assertToast("success", /Email уведомлений подключён/);
   } finally {
     await harness.unmount();
   }
@@ -624,7 +731,7 @@ test("email monitor route is off by default and saves the selected destination",
       reminderMinutes: 0,
       version: 0,
     });
-    assert.match(harness.host.textContent, /Настройки уведомлений сохранены/);
+    assertToast("success", /Настройки уведомлений сохранены/);
   } finally {
     await harness.unmount();
   }
@@ -786,8 +893,11 @@ test("a late route save cannot restore the old route after email replacement", a
       newDestination.id,
     );
     assert.equal(
-      harness.host.textContent.includes("Настройки уведомлений сохранены"),
+      toastCalls.some(
+        (call) => call.message === "Настройки уведомлений сохранены.",
+      ),
       false,
+      "a save from the old route editor must not toast after replacement",
     );
   } finally {
     await harness.unmount();
@@ -943,7 +1053,7 @@ test("verified email refresh enables explicit connection without enabling or res
       false,
       "connecting an address must not save or enable the monitor route",
     );
-    assert.match(harness.host.textContent, /Email уведомлений подключён/);
+    assertToast("success", /Email уведомлений подключён/);
   } finally {
     await harness.unmount();
   }
@@ -1041,7 +1151,7 @@ test("settings clears the verification fragment and requires explicit confirmati
       0,
       "email confirmation must not rotate the session",
     );
-    assert.match(harness.host.textContent, /Email подтверждён/);
+    assertToast("success", /Email аккаунта подтверждён/);
     assert.equal(
       timers.size,
       0,
@@ -1179,7 +1289,7 @@ test("webhook create reveals a one-time secret, keeps a committed success throug
       enabled: false,
     });
     assert.match(harness.host.textContent, /one-time-signing-secret/);
-    assert.match(harness.host.textContent, /Webhook сохранён и выключен/);
+    assertToast("success", /Webhook сохранён и выключен/);
     assert.match(harness.host.textContent, /temporarily_unavailable/);
     assert.equal(
       calls.filter((call) => call.options.method === "PUT").length,
@@ -1599,7 +1709,7 @@ test("server link status wins over browser clock skew and legacy expiry does not
         );
         await clickMessengerButton(harness, "Подтвердить этот чат");
         assert.deepEqual(confirmCalls, ["POST"]);
-        assert.match(harness.host.textContent, /Чат подтверждён/);
+        assertToast("success", /Чат подтверждён/);
         assert.doesNotMatch(
           harness.host.textContent,
           /Срок действия ссылки истёк/,
@@ -1840,7 +1950,7 @@ test("a candidate poll started before confirmation cannot replace the confirmed 
       "candidate polling should be active before confirmation",
     );
     await clickMessengerButton(harness, "Подтвердить этот чат");
-    assert.match(harness.host.textContent, /Чат подтверждён/);
+    assertToast("success", /Чат подтверждён/);
     oldPoll.resolve({
       link: messengerLink(
         "candidate-topic",
@@ -1852,7 +1962,7 @@ test("a candidate poll started before confirmation cannot replace the confirmed 
     });
     await settle();
     assert.equal(harness.host.querySelector('[role="dialog"]'), null);
-    assert.match(harness.host.textContent, /Чат подтверждён/);
+    assertToast("success", /Чат подтверждён/);
     assert.doesNotMatch(harness.host.textContent, /Срок действия ссылки истёк/);
   } finally {
     await harness.unmount();
@@ -1917,8 +2027,8 @@ test("an ambiguous confirmation is reconciled by GET without replaying its POST"
     await clickMessengerButton(harness, "Telegram · группа");
     await clickMessengerButton(harness, "Подтвердить этот чат");
     assert.deepEqual(confirmationWrites, ["POST"]);
-    assert.match(
-      harness.host.textContent,
+    assertToast(
+      "success",
       /Чат подтверждён\. Теперь его можно выбрать для монитора/,
     );
     assert.equal(

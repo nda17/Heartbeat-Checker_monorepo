@@ -1,4 +1,5 @@
 "use client";
+import { notify } from "@/shared/notifications";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -111,7 +112,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
       setProfile(null);
       router.replace("/login");
     } catch (e) {
-      setError(errorMessage(e));
+      notify.error(errorMessage(e));
       setLeaving(false);
     }
   }

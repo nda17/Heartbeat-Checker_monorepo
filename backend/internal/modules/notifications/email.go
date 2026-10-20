@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"net"
 	"net/http"
 	"strings"
@@ -381,27 +380,25 @@ func emailProofReady(kind string, verifiedAt *time.Time, targetEmail, currentEma
 	return kind == "code" && verifiedAt != nil || kind == "account_email" && currentEmail != "" && targetEmail == currentEmail
 }
 
-func emailMessage(s messengerSnapshot) (string, authcontracts.MailContent) {
+func emailMessage(s messengerSnapshot) (string, authcontracts.MailContent, error) {
 	text, buttons := messengerMessage(s)
-	subject := "Heartbeat Checker · сбой подтверждён"
-	if s.Kind == "up" {
-		subject = "Heartbeat Checker · сервис восстановился"
-	}
-	if s.Kind == "reminder" {
-		subject = "Heartbeat Checker · сбой продолжается"
-	}
-	markup := `<html lang="ru"><body style="font-family:Arial,sans-serif;line-height:1.6;color:#132334"><h1 style="font-size:22px">` + html.EscapeString(subject) + `</h1><p>` + strings.ReplaceAll(html.EscapeString(text), "\n", "<br>") + `</p>`
+	view := incidentEmailData(s, buttons)
+	subject := "Heartbeat Checker · " + view.Title + " · " + incidentEmailSubjectName(view.Name)
 	for _, button := range buttons {
 		text += "\n\n" + button.Text + ": " + button.URL
-		markup += `<p><a href="` + html.EscapeString(button.URL) + `">` + html.EscapeString(button.Text) + `</a></p>`
 	}
-	footer := "Вы получаете письмо, потому что включили email-уведомления для этого монитора. Отключить их можно в настройках уведомлений монитора в личном кабинете."
-	text += "\n\n" + footer
-	markup += `<p style="color:#607080">` + footer + `</p></body></html>`
-	return subject, authcontracts.MailContent{Text: text, HTML: markup}
+	text += "\n\n" + incidentEmailFooter
+	markup, err := renderIncidentEmail(view)
+	if err != nil {
+		return "", authcontracts.MailContent{}, err
+	}
+	return subject, authcontracts.MailContent{Text: text, HTML: markup}, nil
 }
 
 func (m *Messenger) sendEmail(ctx context.Context, a MessengerAttempt) error {
-	subject, body := emailMessage(a.Snapshot)
+	subject, body, err := emailMessage(a.Snapshot)
+	if err != nil {
+		return err
+	}
 	return m.cfg.EmailSender.SendWithID(ctx, a.Target.Email, subject, body, fmt.Sprintf("<%s@heartbeat-checker.ru>", a.ID))
 }

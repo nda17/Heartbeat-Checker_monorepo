@@ -1,4 +1,5 @@
 "use client";
+import { notify } from "@/shared/notifications";
 import { FormEvent, useRef, useState } from "react";
 import { useSession } from "@/entities/session";
 import { Monitor, monitorCheckType } from "@/entities/monitor";
@@ -12,6 +13,7 @@ export function MonitorForm({
   onSaved,
   basePath = "/monitors",
   requireReason = false,
+  successMessage = "Монитор сохранён.",
 }: {
   monitor?: Monitor;
   draft?: { name?: string; url: string; accountId: string };
@@ -19,6 +21,7 @@ export function MonitorForm({
   onSaved: () => Promise<void>;
   basePath?: string;
   requireReason?: boolean;
+  successMessage?: string;
 }) {
   const { refresh } = useSession();
   const httpMonitor = monitorCheckType(monitor?.checkType) === "http";
@@ -152,6 +155,7 @@ export function MonitorForm({
         { method: monitor ? "PATCH" : "POST", body, authenticated: true },
       );
       setSaved(true);
+      notify.success(successMessage);
       try {
         await onSaved();
         onClose();
@@ -161,7 +165,7 @@ export function MonitorForm({
         );
       }
     } catch (e) {
-      setError(errorMessage(e));
+      notify.error(errorMessage(e));
       if (e instanceof ApiError && e.code === "account_changed")
         await refresh().catch(() => undefined);
     } finally {
@@ -177,7 +181,7 @@ export function MonitorForm({
     >
       {saved ? (
         <div className="form-stack">
-          <Notice success>Монитор сохранён.</Notice>
+          <p>Монитор сохранён.</p>
           {error && <Notice>{error}</Notice>}
           <div className="dialog-actions">
             <button

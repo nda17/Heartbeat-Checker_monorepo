@@ -1,4 +1,5 @@
 "use client";
+import { notify } from "@/shared/notifications";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import type { Destination } from "./index";
@@ -43,7 +44,6 @@ export function EmailDestinationEditor({
   const [error, setError] = useState("");
   const [readError, setReadError] = useState("");
   const [notice, setNotice] = useState("");
-  const [success, setSuccess] = useState("");
   const [refreshError, setRefreshError] = useState("");
   const [uncertain, setUncertain] = useState(false);
   const uncertainTarget = useRef("");
@@ -93,7 +93,7 @@ export function EmailDestinationEditor({
       setReadError("");
       setNotice("");
       setRefreshError("");
-      setSuccess(
+      notify.success(
         resetRoutes
           ? "Адрес уведомлений подтверждён и подключён. После смены или повторного подключения адреса включите нужные мониторы заново."
           : "Email уведомлений подключён.",
@@ -245,7 +245,7 @@ export function EmailDestinationEditor({
     const view = ++generation.current;
     setBusy(kind);
     setNotice("");
-    setSuccess("");
+
     setRefreshError("");
     writing.current = true;
     busyCallback.current?.(true);
@@ -303,7 +303,7 @@ export function EmailDestinationEditor({
         );
         reconcile = true;
       } else {
-        setError(errorMessage(cause));
+        notify.error(errorMessage(cause));
         if (cause.status === 429)
           setRateUntil(
             Date.now() + Math.max(60, cause.retryAfterSeconds ?? 60) * 1000,
@@ -338,7 +338,7 @@ export function EmailDestinationEditor({
     setCode("");
     setError("");
     setNotice("");
-    setSuccess("");
+
     setEmail(
       currentRef.current?.email ??
         currentRef.current?.label ??
@@ -359,7 +359,7 @@ export function EmailDestinationEditor({
           </p>
         </div>
       )}
-      {success && <Notice success>{success}</Notice>}
+
       {error && <Notice>{error}</Notice>}
       {readError && <Notice>{readError}</Notice>}
       {refreshError && <Notice>{refreshError}</Notice>}

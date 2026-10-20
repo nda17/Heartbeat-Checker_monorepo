@@ -14,7 +14,7 @@ type messengerButton struct{ Text, URL string }
 var moscow = time.FixedZone("МСК", 3*60*60)
 
 func messengerTime(at time.Time) string {
-	return at.In(moscow).Format("02.01.2006 15:04 МСК (UTC+03)")
+	return at.In(moscow).Format("02.01.2006 15:04") + " МСК (UTC+03)"
 }
 
 func messengerMessage(s messengerSnapshot) (string, []messengerButton) {

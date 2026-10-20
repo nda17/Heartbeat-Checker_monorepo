@@ -1,4 +1,5 @@
 "use client";
+import { notify } from "@/shared/notifications";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import type { PutWebhook, Webhook, WebhookDelivery } from "@/entities/webhook";
@@ -38,7 +39,6 @@ function WebhookEditor({ monitorId }: { monitorId: string }) {
   const [needsSecret, setNeedsSecret] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
   const [loadError, setLoadError] = useState("");
   const [uncertain, setUncertain] = useState(false);
   const [confirmation, setConfirmation] = useState<
@@ -177,7 +177,7 @@ function WebhookEditor({ monitorId }: { monitorId: string }) {
     const view = generation.current;
     setBusy(true);
     setError("");
-    setSuccess("");
+
     setConfirmation(null);
     try {
       if (input) {
@@ -197,7 +197,7 @@ function WebhookEditor({ monitorId }: { monitorId: string }) {
           setNeedsSecret(false);
           setCopied(false);
         }
-        setSuccess(
+        notify.success(
           response.webhook.enabled
             ? "Webhook включён. Отправляются только новые события."
             : response.secret
@@ -219,7 +219,7 @@ function WebhookEditor({ monitorId }: { monitorId: string }) {
         setUrl("");
         updateSecret("");
         setNeedsSecret(false);
-        setSuccess("Webhook и его история доставок удалены.");
+        notify.success("Webhook и его история доставок удалены.");
       }
       // A failed history GET cannot turn a committed settings write into an error.
       void loadHistory();
@@ -242,7 +242,7 @@ function WebhookEditor({ monitorId }: { monitorId: string }) {
             "Настройки сверены с сервером. Если ответ с новым секретом потерян, явно обновите секрет и настройте получателя перед включением.",
           );
       } else {
-        setError(errorMessage(e));
+        notify.error(errorMessage(e));
         if (e.status === 409 || e.status === 404) {
           setUncertain(true);
           updateSecret("");
@@ -298,7 +298,7 @@ function WebhookEditor({ monitorId }: { monitorId: string }) {
       if (alive.current && revision === secretRevision.current) setCopied(true);
     } catch {
       if (alive.current && revision === secretRevision.current)
-        setError(
+        notify.error(
           "Не удалось скопировать секрет. Выделите его и скопируйте вручную.",
         );
     }
@@ -311,7 +311,7 @@ function WebhookEditor({ monitorId }: { monitorId: string }) {
         POST с событием сбоя (DOWN) или восстановления (UP) на ваш публичный
         HTTPS-адрес, порт 443. Например: https://example.com/hooks/heartbeat.
       </p>
-      {success && <Notice success>{success}</Notice>}
+
       {error && <Notice>{error}</Notice>}
       {loadError && <Notice>{loadError}</Notice>}
       {webhook === undefined ? (

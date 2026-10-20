@@ -1,4 +1,5 @@
 "use client";
+import { notify } from "@/shared/notifications";
 import {
   useCallback,
   useEffect,
@@ -222,7 +223,7 @@ export function MonitorsPage() {
         ),
       );
     } catch (e) {
-      setError(errorMessage(e));
+      notify.error(errorMessage(e));
     } finally {
       setBusy("");
     }
@@ -243,7 +244,7 @@ export function MonitorsPage() {
         ),
       );
     } catch (e) {
-      setDeleteError(errorMessage(e));
+      notify.error(errorMessage(e));
     } finally {
       setBusy("");
     }

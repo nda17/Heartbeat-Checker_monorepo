@@ -142,10 +142,6 @@ export function PublicPricing({
         ) : (
           <p role="status">{unavailable}</p>
         )}
-        <p className="landing-price-note">
-          Пробного периода нет. Итоговая сумма и условия заказа показываются до
-          оплаты.
-        </p>
         <Link href={landingMode ? "#how" : "/register"} className="button">
           {landingMode ? "Как это работает" : "Создать аккаунт"} <Arrow />
         </Link>

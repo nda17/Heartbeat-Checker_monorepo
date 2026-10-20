@@ -9,6 +9,17 @@ import { createRoot } from "react-dom/client";
 import ts from "typescript";
 
 const requireWeb = createRequire(new URL("../package.json", import.meta.url));
+const toastCalls = [];
+const toastMock = {
+  notify: {
+    success(message, id) {
+      toastCalls.push({ kind: "success", message, id });
+    },
+    error(message, id) {
+      toastCalls.push({ kind: "error", message, id });
+    },
+  },
+};
 const qrcode = requireWeb("qrcode.react");
 const monitorHelpers = loadComponent("../src/entities/monitor/index.tsx", {});
 
@@ -32,6 +43,7 @@ function loadComponent(relativePath, aliases, runtime = {}) {
     exports,
     require(id) {
       if (Object.hasOwn(aliases, id)) return aliases[id];
+      if (id === "@/shared/notifications") return toastMock;
       if (id === "@/features/admin-pricing")
         return { AdminPricing: () => null };
       return requireWeb(id);
@@ -73,6 +85,7 @@ function uiMocks(React) {
 }
 
 function createHarness() {
+  toastCalls.length = 0;
   const dom = new JSDOM("<!doctype html><html><body></body></html>", {
     url: "http://localhost/",
   });
@@ -935,6 +948,12 @@ test("MonitorForm sends one write and does not replay a committed write when ref
     /сохран|измен|обновлен/i,
     "the UI should tell the operator the write committed even if refresh failed",
   );
+  assert.ok(
+    toastCalls.some(
+      (call) => call.kind === "success" && call.message === "Монитор сохранён.",
+    ),
+    "a committed monitor write should also emit its transient success toast",
+  );
 
   await submit(form);
   assert.equal(
@@ -1181,6 +1200,12 @@ test("MonitorsPage preserves a committed monitor when its refresh fails", async 
   assert.equal(calls.filter((call) => call.method === "POST").length, 1);
   assert.ok(harness.host.textContent.includes("Монитор сохранён."));
   assert.ok(
+    toastCalls.some(
+      (call) => call.kind === "success" && call.message === "Монитор сохранён.",
+    ),
+    "a successful create should emit a toast while preserving the committed-state notice",
+  );
+  assert.ok(
     harness.host.textContent.includes("Данные не обновились"),
     "the dialog should explain that the saved monitor list could not refresh",
   );
@@ -1236,6 +1261,160 @@ test("API errors hide proxy error bodies and preserve structured server codes", 
       assert.doesNotMatch(error.message, /Internal Server Error|not JSON/);
       return true;
     });
+  }
+});
+
+test("notification toasts use timed IDs, dismiss controls, and follow the open native dialog", async () => {
+  const harness = createHarness();
+  const libraryCalls = [];
+  let toastOptions;
+  let pauseStarts = 0;
+  let pauseEnds = 0;
+  const activeToast = {
+    id: "success:Saved",
+    type: "success",
+    message: "Saved",
+  };
+  const toastLibrary = {
+    success(message, options) {
+      libraryCalls.push({ type: "success", message, options });
+      return options?.id;
+    },
+    error(message, options) {
+      libraryCalls.push({ type: "error", message, options });
+      return options?.id;
+    },
+    dismiss(id) {
+      libraryCalls.push({ type: "dismiss", id });
+    },
+  };
+  function ToastBar({ toast, children }) {
+    return React.createElement(
+      "div",
+      { className: "fake-toast" },
+      children({
+        icon: React.createElement("span", null, "✓"),
+        message: toast.message,
+      }),
+    );
+  }
+  const dialog = document.createElement("dialog");
+  dialog.open = true;
+  document.body.append(dialog);
+  const notificationModule = loadComponent(
+    "../src/shared/notifications/index.tsx",
+    {
+      "react-hot-toast": Object.assign(toastLibrary, {
+        default: toastLibrary,
+        ToastBar,
+        useToaster(options) {
+          toastOptions = options;
+          return {
+            toasts: [activeToast],
+            handlers: {
+              startPause() {
+                pauseStarts += 1;
+              },
+              endPause() {
+                pauseEnds += 1;
+              },
+              updateHeight() {},
+              calculateOffset: () => 0,
+            },
+          };
+        },
+      }),
+      "@/shared/ui": { Icon: () => null },
+    },
+  );
+  let unregister;
+
+  try {
+    await act(async () => {
+      unregister = notificationModule.registerNotificationDialog(dialog);
+    });
+    await harness.render(
+      React.createElement(notificationModule.NotificationToaster),
+    );
+    assert.ok(
+      dialog.querySelector(".notification-layer"),
+      "toasts portal into the open modal",
+    );
+    assert.ok(
+      dialog.querySelector(".notification-close"),
+      "toast includes an accessible dismiss action",
+    );
+    assert.equal(
+      dialog.querySelector(".fake-toast")?.textContent.includes("Saved"),
+      true,
+    );
+    assert.equal(toastOptions.success.duration, 4000);
+    assert.equal(toastOptions.error.duration, 6000);
+    const layer = dialog.querySelector(".notification-toaster");
+    await act(async () =>
+      layer.dispatchEvent(
+        new window.MouseEvent("mouseover", { bubbles: true }),
+      ),
+    );
+    assert.equal(pauseStarts, 1, "hovering pauses the active toast timer");
+
+    notificationModule.notify.success("Saved");
+    notificationModule.notify.success("Updated", "account-save");
+    notificationModule.notify.success("Updated again", "account-save");
+    notificationModule.notify.error("Try again");
+    assert.deepEqual(
+      libraryCalls.slice(0, 4).map(({ type, message, options }) => ({
+        type,
+        message,
+        id: options.id,
+        duration: options.duration,
+      })),
+      [
+        { type: "success", message: "Saved", id: undefined, duration: 4000 },
+        {
+          type: "success",
+          message: "Updated",
+          id: "account-save",
+          duration: 4000,
+        },
+        {
+          type: "success",
+          message: "Updated again",
+          id: "account-save",
+          duration: 4000,
+        },
+        { type: "error", message: "Try again", id: undefined, duration: 6000 },
+      ],
+    );
+
+    await act(async () => dialog.querySelector(".notification-close").click());
+    assert.deepEqual(libraryCalls.at(-1), {
+      type: "dismiss",
+      id: activeToast.id,
+    });
+
+    const pausesBeforeHostChange = pauseEnds;
+    await act(async () => {
+      dialog.open = false;
+      dialog.dispatchEvent(new window.Event("close"));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    assert.equal(dialog.querySelector(".notification-layer"), null);
+    assert.ok(
+      document.body.querySelector(".notification-layer"),
+      "closing the modal moves the host back to the page",
+    );
+    assert.ok(
+      pauseEnds > pausesBeforeHostChange,
+      "moving the host out of a closing dialog ends the hover pause",
+    );
+  } finally {
+    unregister();
+    await harness.unmount();
+    dialog.remove();
   }
 });
 
@@ -1347,7 +1526,12 @@ test("deleting an admin monitor keeps the operator in the admin page", async (t)
     [],
     "a successful monitor deletion must not navigate away from admin",
   );
-  assert.ok(harness.host.textContent.includes("Монитор удалён."));
+  assert.ok(
+    toastCalls.some(
+      (call) => call.kind === "success" && call.message === "Монитор удалён.",
+    ),
+    "successful deletion is announced through the toast channel",
+  );
 });
 
 test("deleted account rows are terminal and cannot open account details", async (t) => {

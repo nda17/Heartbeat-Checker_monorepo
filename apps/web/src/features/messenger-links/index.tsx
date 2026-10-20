@@ -1,4 +1,5 @@
 "use client";
+import { notify } from "@/shared/notifications";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Destination,
@@ -110,7 +111,6 @@ export function MessengerLinks({
   const [removing, setRemoving] = useState<Destination | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
   const [pollError, setPollError] = useState("");
   const [copyState, setCopyState] = useState<
     "idle" | "copying" | "copied" | "failed"
@@ -286,7 +286,7 @@ export function MessengerLinks({
     linkAction.current = controller;
     setBusy(true);
     setError("");
-    setSuccess("");
+
     try {
       const response = await linkRequest(controller, (signal) =>
         api<LinkStart>("/messenger-links", {
@@ -301,7 +301,7 @@ export function MessengerLinks({
       replaceLink(response.link);
     } catch (e) {
       if (alive.current && view === generation.current)
-        setError(
+        notify.error(
           e instanceof DOMException && e.name === "AbortError"
             ? "Не удалось получить новую ссылку вовремя. Начните подключение заново."
             : errorMessage(e),
@@ -315,7 +315,7 @@ export function MessengerLinks({
     setStarted(null);
     replaceLink(null);
     setError("");
-    setSuccess("Чат подтверждён. Теперь его можно выбрать для монитора.");
+    notify.success("Чат подтверждён. Теперь его можно выбрать для монитора.");
     const controller = new AbortController();
     destinationRefresh.current = controller;
     void linkRequest(controller, (signal) => loadDestinations(signal))
@@ -343,7 +343,7 @@ export function MessengerLinks({
     linkAction.current = controller;
     setBusy(true);
     setError("");
-    setSuccess("");
+
     try {
       const response = await linkRequest(controller, (signal) =>
         api<{ destination: Destination }>(
@@ -412,7 +412,7 @@ export function MessengerLinks({
     cancelDestinationRefresh();
     setBusy(true);
     setError("");
-    setSuccess("");
+
     try {
       await api(`/messenger-destinations/${encodeURIComponent(removing.id)}`, {
         method: "DELETE",
@@ -422,7 +422,7 @@ export function MessengerLinks({
         (current) => current?.filter((item) => item.id !== removing.id) ?? null,
       );
       setRemoving(null);
-      setSuccess(
+      notify.success(
         removing.provider === "email"
           ? "Email отключён. Новые попытки доставки остановлены."
           : "Чат отключён. Уведомления для него остановлены.",
@@ -433,7 +433,7 @@ export function MessengerLinks({
         setError(`Чат отключён, но список не обновился: ${errorMessage(e)}`);
       }
     } catch (e) {
-      setError(errorMessage(e));
+      notify.error(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -459,7 +459,7 @@ export function MessengerLinks({
         </div>
       </div>
       {error && <Notice>{error}</Notice>}
-      {success && <Notice success>{success}</Notice>}
+
       {loadError ? (
         <div className="form-stack">
           <Notice>{loadError}</Notice>
@@ -490,12 +490,7 @@ export function MessengerLinks({
                   else setLoadAttempt((attempt) => attempt + 1);
                   setBusy(value);
                 }}
-                onConnected={(destination, resetRoutes) => {
-                  setSuccess(
-                    resetRoutes
-                      ? "Email уведомлений подключён. После смены или повторного подключения адреса включите нужные мониторы заново."
-                      : "Email уведомлений подключён.",
-                  );
+                onConnected={(destination) => {
                   setDestinations((current) => [
                     ...(current ?? []).filter(
                       (item) => item.provider !== "email",

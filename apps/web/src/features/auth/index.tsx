@@ -1,4 +1,5 @@
 "use client";
+import { notify } from "@/shared/notifications";
 import Link from "next/link";
 import { RegistrationForm } from "./registration";
 import { useRouter } from "next/navigation";
@@ -94,7 +95,7 @@ function OAuthButtons() {
         oauthAuthorizationUrl(provider, result.authorizationUrl),
       );
     } catch (failure) {
-      setError(errorMessage(failure));
+      notify.error(errorMessage(failure));
       setBusy(false);
     }
   }
@@ -201,7 +202,6 @@ function LegacyAuthForm({ mode }: { mode: AuthMode }) {
   const [resetKey, setResetKey] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [oauthError, setOAuthError] = useState("");
   const [accountResult, setAccountResult] = useState<
     "deleted" | "unknown" | null
   >(null);
@@ -230,8 +230,8 @@ function LegacyAuthForm({ mode }: { mode: AuthMode }) {
       account === "deleted" || account === "unknown" ? account : null;
     if (!code && !accountOutcome) return;
     // Capture one-time action results before removing them from the browser URL.
+    if (code) notify.error(oauthCallbackMessage(code));
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (code) setOAuthError(oauthCallbackMessage(code));
     if (accountOutcome) setAccountResult(accountOutcome);
     url.searchParams.delete("oauthError");
     url.searchParams.delete("account");
@@ -285,7 +285,7 @@ function LegacyAuthForm({ mode }: { mode: AuthMode }) {
         setToken("");
       }
     } catch (e) {
-      setError(errorMessage(e));
+      notify.error(errorMessage(e));
       if (captcha) setResetKey((v) => v + 1);
     } finally {
       setBusy(false);
@@ -344,7 +344,6 @@ function LegacyAuthForm({ mode }: { mode: AuthMode }) {
                 : "Результат удаления неизвестен. Запрос не повторяется автоматически. Войдите заново, чтобы проверить доступ. Если удаление завершилось, восстановить прежние данные нельзя."}
             </Notice>
           )}
-          {oauthError && <Notice>{oauthError}</Notice>}
           {error && <Notice>{error}</Notice>}
           {isLink && linkReady && !token && (
             <Notice>
@@ -528,7 +527,7 @@ export function OAuthRegistration() {
       router.replace(safeAppReturnTo(result.returnTo) ?? "/app");
       router.refresh();
     } catch (failure) {
-      setError(errorMessage(failure));
+      notify.error(errorMessage(failure));
       setBusy(false);
     }
   }
