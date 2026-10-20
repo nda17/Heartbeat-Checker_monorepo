@@ -793,6 +793,7 @@ test("a focus refresh that returns 401 during MFA rotation cannot sign the sessi
       "@/shared/api": {
         api,
         ApiError: TestApiError,
+        boundedRequest: (controller, request) => request(controller.signal),
         errorMessage: (error) => error?.message ?? "API error",
         safeAppReturnTo: (path) => path,
       },

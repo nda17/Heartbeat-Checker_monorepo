@@ -8,6 +8,12 @@ import androidx.work.WorkerParameters;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 public final class PushWorker extends Worker {
     public PushWorker(@NonNull Context context, @NonNull WorkerParameters parameters) { super(context, parameters); }
@@ -18,6 +24,7 @@ public final class PushWorker extends Worker {
             if ("delivery".equals(kind)) return delivery();
             if ("registration".equals(kind)) return registration();
             if ("revoke".equals(kind)) return revoke();
+            if ("pairing".equals(kind)) return pairing();
         } catch (Exception ignored) {
             // Do not attach exceptions, payloads or credentials to WorkManager output/logs.
         }
@@ -26,6 +33,85 @@ public final class PushWorker extends Worker {
 
     private Result retry() { return getRunAttemptCount() < 2 && !isStopped() ? Result.retry() : Result.failure(); }
 
+    interface PairingServices {
+        void token(PushSdk.TokenResult result);
+        void exchange(String id, long revocation, BooleanSupplier active) throws Exception;
+    }
+
+    private Result pairing() throws Exception {
+        Context context = getApplicationContext();
+        return runPairing(context, getInputData().getString("id"), this::isStopped, new PairingServices() {
+            @Override public void token(PushSdk.TokenResult result) { PushSdk.token(context, result); }
+            @Override public void exchange(String id, long revocation, BooleanSupplier active) throws Exception {
+                PushPairing.exchange(context, id, revocation, active);
+            }
+        }, 30000);
+    }
+
+    static Result runPairing(Context context, String id, BooleanSupplier stopped, PairingServices services, long timeoutMs) throws Exception {
+        PushStore store = new PushStore(context);
+        if (!PushContract.uuid(id)) return Result.failure();
+        AtomicBoolean attemptActive = new AtomicBoolean(true);
+        long revocation = PushWork.localRevocation;
+        BooleanSupplier active = () -> attemptActive.get() && !stopped.getAsBoolean()
+                && !PushWork.locallyBlocked && revocation == PushWork.localRevocation;
+        Future<?> exchange = null;
+        try {
+            JSONObject pending;
+            synchronized (PushStore.LOCK) {
+                JSONObject state = store.read(); pending = state.optJSONObject("pair");
+                if (!active.getAsBoolean() || state.optBoolean("optedOut") || pending == null || !id.equals(pending.optString("id"))
+                        || !PushContract.secret(pending.optString("completionCode")) || !PushNotifications.permitted(context)) return Result.success();
+                if (pending.optInt("workerAttempts") >= 3) return Result.success();
+                if (!pending.optBoolean("exchangeAttempted") && PushContract.instant(pending.getString("expiresAt")) <= System.currentTimeMillis()) return Result.success();
+                store.update(value -> {
+                    JSONObject pair = value.getJSONObject("pair");
+                    pair.put("workerAttempts", pair.optInt("workerAttempts") + 1);
+                });
+            }
+            if (!pending.optBoolean("exchangeAttempted")) {
+                long remaining = PushContract.instant(pending.getString("expiresAt")) - System.currentTimeMillis();
+                if (!awaitToken(Math.min(timeoutMs, remaining), active, services::token)) return pairingRetry(store, id, stopped);
+            }
+            exchange = PushWork.IO.submit(() -> {
+                if (!active.getAsBoolean()) return;
+                try { services.exchange(id, revocation, active); }
+                catch (Exception ignored) { /* Proof and revocation state remain authoritative for retry. */ }
+            });
+            exchange.get(timeoutMs, TimeUnit.MILLISECONDS);
+            JSONObject state = store.read(); JSONObject installation = state.optJSONObject("installation");
+            if (PushStore.ready(state, System.currentTimeMillis()) && installation != null && id.equals(installation.optString("lastPairingId")))
+                return Result.success();
+            return pairingRetry(store, id, stopped);
+        } catch (java.util.concurrent.TimeoutException timeout) {
+            return pairingRetry(store, id, stopped);
+        } finally {
+            attemptActive.set(false);
+            if (exchange != null) exchange.cancel(false);
+        }
+    }
+
+    private static Result pairingRetry(PushStore store, String id, BooleanSupplier stopped) throws Exception {
+        synchronized (PushStore.LOCK) {
+            JSONObject state = store.read(); JSONObject pair = state.optJSONObject("pair");
+            if (pair == null || !id.equals(pair.optString("id")) || state.optBoolean("optedOut") || PushWork.locallyBlocked || stopped.getAsBoolean()) return Result.success();
+            boolean more = pair.optInt("workerAttempts") < 3 && (pair.optBoolean("exchangeAttempted")
+                    || PushContract.instant(pair.getString("expiresAt")) > System.currentTimeMillis());
+            if (!more) store.update(value -> value.put("lastConnectionStatus", "connection_failed"));
+            return more ? Result.retry() : Result.failure();
+        }
+    }
+
+    static boolean awaitToken(long timeoutMs, BooleanSupplier active, Consumer<PushSdk.TokenResult> request) throws InterruptedException {
+        if (timeoutMs <= 0 || !active.getAsBoolean()) return false;
+        CountDownLatch completed = new CountDownLatch(1); AtomicBoolean ready = new AtomicBoolean();
+        request.accept(new PushSdk.TokenResult() {
+            @Override public void ready(String token) { ready.set(PushContract.token(token)); completed.countDown(); }
+            @Override public void unavailable() { completed.countDown(); }
+        });
+        return completed.await(timeoutMs, TimeUnit.MILLISECONDS) && active.getAsBoolean() && ready.get();
+    }
+
     private Result delivery() throws Exception {
         Context context = getApplicationContext(); PushStore store = new PushStore(context);
         String id = getInputData().getString("id"); if (!PushContract.uuid(id)) return Result.failure();
@@ -33,6 +119,12 @@ public final class PushWorker extends Worker {
         JSONObject envelope = pending == null ? null : pending.optJSONObject(id);
         if (envelope == null) return Result.success();
         if (PushWork.locallyBlocked || !PushStore.matches(state, envelope, System.currentTimeMillis()) || !PushNotifications.permitted(context)) {
+            PushStore.DeliveryStage stage = PushWork.locallyBlocked ? PushStore.DeliveryStage.LOCALLY_BLOCKED
+                    : !PushNotifications.permitted(context) ? PushStore.DeliveryStage.PERMISSION_DENIED : PushStore.DeliveryStage.BINDING_MISMATCH;
+            if (stage == PushStore.DeliveryStage.BINDING_MISMATCH) try {
+                if (PushContract.instant(envelope.optString("expiresAt")) <= System.currentTimeMillis()) stage = PushStore.DeliveryStage.EXPIRED;
+            } catch (RuntimeException ignored) { /* Diagnostic classification must not change rejection behavior. */ }
+            store.deliveryStage(stage);
             store.drop(id); PushWork.permissionsChanged(context); return Result.success();
         }
         int attempts = envelope.optInt("fetchAttempts");
@@ -43,25 +135,32 @@ public final class PushWorker extends Worker {
         });
         String credential = state.getString("credential");
         try {
+            store.deliveryStage(PushStore.DeliveryStage.FETCH_STARTED);
             JSONObject result = new PushApi().request("GET", "/api/v1/push/installation/deliveries/" + id, credential, null);
             JSONObject content = PushContract.delivery(result, id, System.currentTimeMillis());
+            store.deliveryStage(PushStore.DeliveryStage.FETCHED);
             if (isStopped()) return Result.success();
             synchronized (PushStore.LOCK) {
                 if (PushWork.locallyBlocked || !PushNotifications.permitted(context)) { store.drop(id); return Result.success(); }
                 store.commitDelivery(id, content, () -> {
                     try { PushNotifications.display(context, content); }
-                    catch (Exception ignored) { /* Permission can change between check and notify. */ }
+                    catch (Exception ignored) { store.deliveryStage(PushStore.DeliveryStage.DISPLAY_FAILED); }
                 });
             }
             return Result.success();
         } catch (PushApi.Failure failure) {
+            store.deliveryStage(failure.status == 401 || failure.status == 403 ? PushStore.DeliveryStage.FETCH_UNAUTHORIZED
+                    : failure.status == 404 ? PushStore.DeliveryStage.FETCH_NOT_FOUND
+                    : failure.status >= 500 ? PushStore.DeliveryStage.FETCH_TRANSIENT : PushStore.DeliveryStage.FETCH_FAILED);
             if (failure.status == 401) PushWork.unauthorized(context, credential);
             if (failure.status >= 500 && attempts < 2 && !isStopped()) return Result.retry();
             store.drop(id); return Result.success();
         } catch (java.io.IOException failure) {
+            store.deliveryStage(PushStore.DeliveryStage.FETCH_TRANSIENT);
             if (attempts < 2 && !isStopped()) return Result.retry();
             store.drop(id); return Result.success();
         } catch (RuntimeException | org.json.JSONException invalid) {
+            store.deliveryStage(PushStore.DeliveryStage.FETCH_FAILED);
             store.drop(id); return Result.success();
         }
     }

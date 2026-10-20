@@ -145,8 +145,50 @@ function loadSafeAppReturnTo() {
     },
   }).outputText;
   const exports = {};
-  vm.runInNewContext(compiled, { exports, module: { exports }, URL });
+  vm.runInNewContext(compiled, {
+    exports,
+    module: { exports },
+    URL,
+    URLSearchParams,
+  });
   return exports.safeAppReturnTo;
+}
+
+function loadOAuthAuthorizationUrl() {
+  const source = fs.readFileSync(
+    new URL("../src/shared/api/index.ts", import.meta.url),
+    "utf8",
+  );
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+  }).outputText;
+  const exports = {};
+  vm.runInNewContext(compiled, { exports, module: { exports }, URL });
+  return exports.oauthAuthorizationUrl;
+}
+
+function loadBoundedRequest() {
+  const source = fs.readFileSync(
+    new URL("../src/shared/api/index.ts", import.meta.url),
+    "utf8",
+  );
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+  }).outputText;
+  const exports = {};
+  vm.runInNewContext(compiled, {
+    exports,
+    module: { exports },
+    window: globalThis.window,
+    DOMException: globalThis.DOMException,
+  });
+  return exports.boundedRequest;
 }
 
 function authEntry(api, routes, options = {}) {
@@ -159,9 +201,13 @@ function authEntry(api, routes, options = {}) {
   }
   const aliases = {
     "./public-auth-links": { PublicAuthLinks: () => null },
-    "./registration": { RegistrationForm: () => null },
-    "next/link": ({ href, className, children }) =>
-      React.createElement("a", { href, className }, children),
+    "./registration": { RegistrationForm: registrationComponent(api, routes) },
+    "next/link": ({ href, className, children, replace }) =>
+      React.createElement(
+        "a",
+        { href, className, ...(replace ? { "data-replace": "true" } : {}) },
+        children,
+      ),
     "next/navigation": { useRouter: () => routes },
     "@/shared/api": {
       api,
@@ -177,11 +223,19 @@ function authEntry(api, routes, options = {}) {
         code === "oauth_cancelled"
           ? "Вход через провайдера отменён. Вы можете попробовать снова."
           : "Не удалось завершить вход через провайдера. Попробуйте ещё раз.",
-      oauthAuthorizationUrl: (_provider, value) => value,
+      oauthAuthorizationUrl: loadOAuthAuthorizationUrl(),
     },
     "@/shared/turnstile": {
-      Turnstile: () =>
-        React.createElement("div", { "data-testid": "turnstile" }),
+      Turnstile: ({ action, onToken }) =>
+        React.createElement(
+          "button",
+          {
+            type: "button",
+            "data-captcha-action": action,
+            onClick: () => onToken(`synthetic-${action}`),
+          },
+          `captcha:${action}`,
+        ),
     },
     "@/shared/ui": {
       Icon: () => null,
@@ -196,6 +250,7 @@ function authEntry(api, routes, options = {}) {
       PasswordInput: (props) =>
         React.createElement("input", { ...props, type: "password" }),
       Spinner: () => React.createElement("span", null, "…"),
+      OAuthIcon: () => null,
     },
   };
   return {
@@ -225,8 +280,12 @@ function registrationComponent(api, router) {
     },
   };
   const routes = {
-    "next/link": ({ href, children, ...props }) =>
-      React.createElement("a", { href, ...props }, children),
+    "next/link": ({ href, children, replace, ...props }) =>
+      React.createElement(
+        "a",
+        { href, ...props, ...(replace ? { "data-replace": "true" } : {}) },
+        children,
+      ),
     "next/navigation": { useRouter: () => router },
     "@/shared/api": {
       api,
@@ -234,7 +293,7 @@ function registrationComponent(api, router) {
       boundedRequest: (controller, request) => request(controller.signal),
       errorMessage: (error) =>
         String(error?.code ?? error?.message ?? "Ошибка"),
-      safeAppReturnTo: (path) => (path?.startsWith("/app/") ? path : null),
+      safeAppReturnTo: loadSafeAppReturnTo(),
     },
     "@/shared/email-code": challengeTools,
     "@/shared/turnstile": {
@@ -396,6 +455,458 @@ test("401 keeps the login form available without redirecting", async () => {
   await harness.unmount();
 });
 
+for (const [provider, name, authorizationUrl] of [
+  ["vk", "VK", "https://id.vk.ru/authorize?client_id=synthetic"],
+  ["yandex", "Яндекс", "https://oauth.yandex.ru/authorize?client_id=synthetic"],
+]) {
+  test(`${name} login replaces the page with its validated URL and keeps a safe returnTo`, async () => {
+    const harness = createHarness();
+    const calls = [];
+    const replaced = [];
+    const oauthWindow = {
+      location: {
+        href: "http://localhost/login?returnTo=%2Fapp%2Fsettings",
+        pathname: "/login",
+        search: "?returnTo=%2Fapp%2Fsettings",
+        replace: (url) => replaced.push(url),
+      },
+      history: { replaceState() {} },
+    };
+    const api = async (path, options = {}) => {
+      calls.push({ path, options });
+      if (path === "/auth/oauth/providers")
+        return { providers: [{ id: provider, name, enabled: true }] };
+      if (path === `/auth/oauth/${provider}/start`) return { authorizationUrl };
+      throw new Error(`Unexpected API call: ${path}`);
+    };
+    const { AuthForm } = authEntry(api, {}, { window: oauthWindow });
+    await harness.render(React.createElement(AuthForm, { mode: "login" }));
+    await settle();
+    const button = [...harness.host.querySelectorAll("button")].find((item) =>
+      item.textContent.includes(name),
+    );
+    assert.ok(button, `enabled ${name} provider is available`);
+    await act(async () => button.click());
+    await settle();
+    const start = calls.find(
+      (call) => call.path === `/auth/oauth/${provider}/start`,
+    );
+    assert.equal(start.options.method, "POST");
+    assert.deepEqual(JSON.parse(JSON.stringify(start.options.body)), {
+      mode: "login",
+      returnTo: "/app/settings",
+    });
+    assert.deepEqual(replaced, [authorizationUrl]);
+    await harness.unmount();
+  });
+}
+
+test("OAuth rejects an untrusted authorization URL without leaving the page", async () => {
+  const harness = createHarness();
+  const replaced = [];
+  const oauthWindow = {
+    location: {
+      href: "http://localhost/login?returnTo=%2Fapp",
+      pathname: "/login",
+      search: "?returnTo=%2Fapp",
+      replace: (url) => replaced.push(url),
+    },
+    history: { replaceState() {} },
+  };
+  const api = async (path) => {
+    if (path === "/auth/oauth/providers")
+      return { providers: [{ id: "vk", name: "VK", enabled: true }] };
+    if (path === "/auth/oauth/vk/start")
+      return { authorizationUrl: "https://attacker.example/authorize" };
+    throw new Error(`Unexpected API call: ${path}`);
+  };
+  const { AuthForm } = authEntry(api, {}, { window: oauthWindow });
+  await harness.render(React.createElement(AuthForm, { mode: "login" }));
+  await settle();
+  const button = [...harness.host.querySelectorAll("button")].find((item) =>
+    item.textContent.includes("VK"),
+  );
+  assert.ok(button);
+  await act(async () => button.click());
+  await settle();
+  assert.deepEqual(replaced, []);
+  assert.equal(button.disabled, false, "provider login can be retried");
+  assert.ok(toastCalls.some((call) => call.kind === "error"));
+  await harness.unmount();
+});
+
+for (const [mode, url, expectedHref, description] of [
+  [
+    "login",
+    "http://localhost/login?returnTo=%2Fapp%2Fsettings",
+    "/register?returnTo=%2Fapp%2Fsettings",
+    "carries a safe returnTo to registration",
+  ],
+  [
+    "register",
+    "http://localhost/register?returnTo=%2Fapp%2Fsettings",
+    "/login?returnTo=%2Fapp%2Fsettings",
+    "carries a safe returnTo to login",
+  ],
+  [
+    "login",
+    "http://localhost/login?returnTo=https%3A%2F%2Fevil.example%2F",
+    "/register",
+    "drops an external returnTo",
+  ],
+  [
+    "register",
+    "http://localhost/register?returnTo=%2Fapp&returnTo=%2Fapp%2Fsettings",
+    "/login",
+    "drops duplicate returnTo parameters",
+  ],
+]) {
+  test(`${mode} stage link ${description}`, async () => {
+    const harness = createHarness(url);
+    const calls = [];
+    const api = async (path, options = {}) => {
+      calls.push({ path, options });
+      if (path === "/auth/oauth/providers") return { providers: [] };
+      if (path === "/auth/registration" && !options.method)
+        return { challenge: null };
+      throw new Error(`Unexpected API call: ${path}`);
+    };
+    const { AuthForm } = authEntry(api, { replace() {}, refresh() {} });
+    await harness.render(React.createElement(AuthForm, { mode }));
+    await settle();
+    const switchLink = harness.host.querySelector(".auth-switch a");
+    assert.ok(switchLink, harness.host.textContent);
+    assert.equal(switchLink.getAttribute("href"), expectedHref);
+    assert.equal(switchLink.getAttribute("data-replace"), "true");
+    await harness.unmount();
+  });
+}
+
+for (const [returnTo, expectedPath, description] of [
+  ["/app/settings", "/app/settings", "preserves safe returnTo"],
+  ["https://evil.example/", "/app", "rejects external returnTo"],
+]) {
+  test(`successful email and password login replaces to the reviewed destination and ${description}`, async () => {
+    const harness = createHarness(
+      `http://localhost/login?returnTo=${encodeURIComponent(returnTo)}`,
+    );
+    const calls = [];
+    const routes = [];
+    const api = async (path, options = {}) => {
+      calls.push({ path, options });
+      if (path === "/auth/oauth/providers") return { providers: [] };
+      if (path === "/auth/login") return {};
+      throw new Error(`Unexpected API call: ${path}`);
+    };
+    const { AuthForm } = authEntry(api, {
+      replace: (path) => routes.push(path),
+      refresh() {},
+    });
+    await harness.render(React.createElement(AuthForm, { mode: "login" }));
+    await setReactInputValue(
+      harness.host.querySelector('input[name="email"]'),
+      "owner@example.test",
+    );
+    await setReactInputValue(
+      harness.host.querySelector('input[name="password"]'),
+      "synthetic passphrase",
+    );
+    await act(async () =>
+      harness.host.querySelector('[data-captcha-action="login"]').click(),
+    );
+    await submitReactForm(harness.host.querySelector("form"));
+    assert.deepEqual(routes, [expectedPath]);
+    assert.equal(
+      calls.find((call) => call.path === "/auth/login").options.method,
+      "POST",
+    );
+    await harness.unmount();
+  });
+}
+
+async function dispatchPageShow(persisted, target = window) {
+  const event = new target.Event("pageshow");
+  Object.defineProperty(event, "persisted", { value: persisted });
+  await act(async () => target.dispatchEvent(event));
+}
+
+test("a persisted login page rechecks the session and routes only to its safe returnTo", async () => {
+  const harness = createHarness(
+    "http://localhost/login?returnTo=%2Fapp%2Fsettings",
+  );
+  const calls = [];
+  let attempts = 0;
+  const routes = [];
+  const { AuthEntry, ApiError } = authEntry(
+    apiStub(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new ApiError(401, "unauthorized");
+      return {};
+    }, calls),
+    { replace: (path) => routes.push(path) },
+  );
+  await harness.render(React.createElement(AuthEntry, { mode: "login" }));
+  await settle();
+  assert.ok(harness.host.querySelector('form input[name="email"]'));
+  assert.equal(calls.filter((call) => call.path === "/me").length, 1);
+
+  await dispatchPageShow(false);
+  await settle();
+  assert.equal(
+    calls.filter((call) => call.path === "/me").length,
+    1,
+    "ordinary pageshow does not duplicate the check",
+  );
+  await dispatchPageShow(true, harness.dom.window);
+  await settle();
+  assert.equal(calls.filter((call) => call.path === "/me").length, 2);
+  assert.deepEqual(routes, ["/app/settings"]);
+  await harness.unmount();
+});
+
+test("a persisted login that remains signed out keeps the editable form", async () => {
+  const harness = createHarness();
+  const calls = [];
+  const routes = [];
+  const { AuthEntry, ApiError } = authEntry(
+    apiStub(async () => {
+      throw new ApiError(401, "unauthorized");
+    }, calls),
+    { replace: (path) => routes.push(path) },
+  );
+  await harness.render(React.createElement(AuthEntry, { mode: "login" }));
+  await settle();
+  await dispatchPageShow(true);
+  await settle();
+  assert.equal(calls.filter((call) => call.path === "/me").length, 2);
+  assert.ok(harness.host.querySelector('form input[name="email"]'));
+  assert.ok(harness.host.querySelector('form input[name="password"]'));
+  assert.deepEqual(routes, []);
+  await harness.unmount();
+});
+
+test("a failed persisted session check can be retried", async () => {
+  const harness = createHarness();
+  const calls = [];
+  const routes = [];
+  let attempts = 0;
+  const { AuthEntry, ApiError } = authEntry(
+    apiStub(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new ApiError(401, "unauthorized");
+      if (attempts === 2) throw new ApiError(503, "temporarily_unavailable");
+      return {};
+    }, calls),
+    { replace: (path) => routes.push(path) },
+  );
+  await harness.render(React.createElement(AuthEntry, { mode: "login" }));
+  await settle();
+  await dispatchPageShow(true);
+  await settle();
+  assert.match(harness.host.textContent, /Попробуйте немного позже/);
+  const retry = [...harness.host.querySelectorAll("button")].find(
+    (button) => button.textContent.trim() === "Повторить",
+  );
+  assert.ok(
+    retry,
+    "the restored page offers a retry after the temporary failure",
+  );
+  await act(async () => retry.click());
+  await settle();
+  assert.equal(calls.filter((call) => call.path === "/me").length, 3);
+  assert.deepEqual(routes, ["/app"]);
+  await harness.unmount();
+});
+
+test("a persisted check aborts obsolete work and cleanup ignores late responses", async () => {
+  const harness = createHarness();
+  const first = deferred();
+  const restored = deferred();
+  const calls = [];
+  const routes = [];
+  let count = 0;
+  const { AuthEntry } = authEntry(
+    apiStub(() => {
+      count += 1;
+      return count === 1 ? first.promise : restored.promise;
+    }, calls),
+    { replace: (path) => routes.push(path) },
+  );
+  await harness.render(React.createElement(AuthEntry, { mode: "login" }));
+  const initialSignal = calls[0].options.signal;
+  await dispatchPageShow(true);
+  await settle();
+  assert.equal(initialSignal.aborted, true);
+  assert.equal(calls.filter((call) => call.path === "/me").length, 2);
+  first.resolve({});
+  await settle();
+  assert.deepEqual(routes, [], "an obsolete success is ignored");
+
+  await harness.unmount();
+  assert.equal(calls[1].options.signal.aborted, true);
+  await dispatchPageShow(true, harness.dom.window);
+  assert.equal(calls.filter((call) => call.path === "/me").length, 2);
+  restored.resolve({});
+  await settle();
+  assert.deepEqual(routes, [], "unmount also fences a late success");
+});
+
+test("OAuthRegistration BFCache revalidates session before replacing to a safe destination", async () => {
+  const returnTo =
+    "/app/settings?pushPair=123e4567-e89b-12d3-a456-426614174000";
+  const harness = createHarness(
+    `http://localhost/auth/oauth/registration?returnTo=${encodeURIComponent(returnTo)}#token=email-confirmation-secret`,
+  );
+  const sessionCheck = deferred();
+  const calls = [];
+  const routes = [];
+  const { OAuthRegistration } = authEntry(
+    async (path, options = {}) => {
+      calls.push({ path, options });
+      if (path === "/auth/oauth/registration")
+        return {
+          provider: "vk",
+          email: "owner@example.test",
+          name: "Owner",
+          expiresAt: "later",
+        };
+      if (path === "/me") return sessionCheck.promise;
+      throw new Error(`Unexpected API call: ${path}`);
+    },
+    { replace: (path) => routes.push(path), refresh() {} },
+  );
+  await harness.render(React.createElement(OAuthRegistration));
+  await settle();
+  assert.match(harness.host.textContent, /owner@example\.test/);
+  assert.equal(
+    harness.dom.window.location.hash,
+    "",
+    "the confirmation token is removed from the URL",
+  );
+
+  await dispatchPageShow(true, harness.dom.window);
+  await settle();
+  assert.match(harness.host.textContent, /Проверяем регистрацию/);
+  assert.doesNotMatch(harness.host.textContent, /owner@example\.test/);
+  const check = calls.find((call) => call.path === "/me");
+  assert.ok(check);
+  assert.ok(check.options.signal);
+  sessionCheck.resolve({});
+  await settle();
+
+  assert.deepEqual(routes, [returnTo]);
+  assert.equal(
+    calls.filter((call) => call.path === "/auth/oauth/registration").length,
+    1,
+  );
+  assert.equal(
+    calls.some((call) => call.options.method === "POST"),
+    false,
+  );
+  await harness.unmount();
+});
+
+test("OAuthRegistration BFCache 401 performs a fresh read without replaying confirmation", async () => {
+  const harness = createHarness(
+    "http://localhost/auth/oauth/registration#token=email-confirmation-secret",
+  );
+  const calls = [];
+  const routes = [];
+  const { OAuthRegistration, ApiError } = authEntry(
+    async (path, options = {}) => {
+      calls.push({ path, options });
+      if (path === "/auth/oauth/registration")
+        return {
+          provider: "yandex",
+          email: "owner@example.test",
+          name: "Owner",
+          expiresAt: "later",
+        };
+      if (path === "/me") throw new ApiError(401, "unauthorized");
+      throw new Error(`Unexpected API call: ${path}`);
+    },
+    { replace: (path) => routes.push(path), refresh() {} },
+  );
+  await harness.render(React.createElement(OAuthRegistration));
+  await settle();
+  await dispatchPageShow(true, harness.dom.window);
+  await settle();
+
+  const registrationReads = calls.filter(
+    (call) => call.path === "/auth/oauth/registration",
+  );
+  assert.equal(registrationReads.length, 2);
+  assert.ok(registrationReads.every((call) => call.options.method !== "POST"));
+  assert.match(harness.host.textContent, /owner@example\.test/);
+  assert.ok(
+    [...harness.host.querySelectorAll("button")].some((button) =>
+      button.textContent.includes("Подтвердить email"),
+    ),
+    "the pending confirmation stays available after a fresh signed-out check",
+  );
+  assert.equal(
+    calls.some((call) => call.path === "/auth/oauth/registration/confirm"),
+    false,
+  );
+  assert.deepEqual(routes, []);
+  await harness.unmount();
+});
+
+test("OAuthRegistration restore aborts a stale confirmation and ignores its late success", async () => {
+  const harness = createHarness(
+    "http://localhost/auth/oauth/registration#token=email-confirmation-secret",
+  );
+  const confirmation = deferred();
+  const calls = [];
+  const routes = [];
+  const { OAuthRegistration, ApiError } = authEntry(
+    async (path, options = {}) => {
+      calls.push({ path, options });
+      if (path === "/auth/oauth/registration")
+        return {
+          provider: "vk",
+          email: "owner@example.test",
+          name: "Owner",
+          expiresAt: "later",
+        };
+      if (path === "/auth/oauth/registration/confirm")
+        return confirmation.promise;
+      if (path === "/me") throw new ApiError(401, "unauthorized");
+      throw new Error(`Unexpected API call: ${path}`);
+    },
+    { replace: (path) => routes.push(path), refresh() {} },
+  );
+  await harness.render(React.createElement(OAuthRegistration));
+  await settle();
+  const confirm = [...harness.host.querySelectorAll("button")].find((button) =>
+    button.textContent.includes("Подтвердить email"),
+  );
+  assert.ok(confirm);
+  await act(async () => confirm.click());
+  const post = calls.find(
+    (call) => call.path === "/auth/oauth/registration/confirm",
+  );
+  assert.ok(post);
+  assert.equal(post.options.method, "POST");
+
+  await dispatchPageShow(true, harness.dom.window);
+  await settle();
+  assert.equal(post.options.signal.aborted, true);
+  assert.equal(calls.filter((call) => call.path === "/me").length, 1);
+  assert.equal(
+    calls.filter((call) => call.path === "/auth/oauth/registration").length,
+    2,
+  );
+  confirmation.resolve({ returnTo: "/app/settings" });
+  await settle();
+  assert.deepEqual(
+    routes,
+    [],
+    "the stale confirmation cannot navigate after restoration",
+  );
+  await harness.unmount();
+});
+
 for (const [label, code] of [
   ["503", "temporarily_unavailable"],
   ["network failure", "network_error"],
@@ -456,8 +967,10 @@ for (const [query, expected] of [
   ["oauthError=oauth_cancelled", /Вход через провайдера отменён/],
 ]) {
   test(`${query} keeps its notice and bypasses automatic session routing`, async () => {
+    const returnTo =
+      "/app/settings?pushPair=10000000-0000-4000-8000-000000000001";
     const harness = createHarness(
-      `http://localhost/login?${query}&returnTo=%2Fapp`,
+      `http://localhost/login?${query}&returnTo=${encodeURIComponent(returnTo)}`,
     );
     const calls = [];
     const routes = [];
@@ -480,8 +993,14 @@ for (const [query, expected] of [
     assert.deepEqual(routes, []);
     assert.equal(
       new URL(harness.dom.window.location.href).searchParams.get("returnTo"),
-      "/app",
+      returnTo,
     );
+    if (query.startsWith("oauthError="))
+      assert.equal(
+        harness.host.querySelector(".auth-switch a")?.getAttribute("href"),
+        `/register?returnTo=${encodeURIComponent(returnTo)}`,
+        "the provider-cancel retry route retains the reviewed destination",
+      );
     await harness.unmount();
   });
 }
@@ -2334,6 +2853,45 @@ test("OAuth identity loading recovers both provider and linked-identity GETs", a
   await harness.unmount();
 });
 
+test("a cancelled OAuth link returns to settings and consumes its one-time error", async () => {
+  const harness = createHarness(
+    "http://localhost/app/settings?oauthError=oauth_cancelled",
+  );
+  const calls = [];
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/auth/oauth/providers") return { providers: [] };
+    if (path === "/me/identities") return { identities: [] };
+    throw new Error(`Unexpected API call: ${path}`);
+  };
+  const component = compile(
+    "../src/features/oauth-identities/index.tsx",
+    retryableFeatureAliases(api),
+  );
+  await harness.render(
+    React.createElement(component.OAuthIdentities, {
+      hasPassword: true,
+      isAdmin: false,
+      onChange: async () => {},
+    }),
+  );
+  await settle();
+  assert.ok(
+    toastCalls.some(
+      (call) =>
+        call.kind === "error" && /OAuth callback error/.test(call.message),
+    ),
+  );
+  assert.equal(harness.dom.window.location.pathname, "/app/settings");
+  assert.equal(harness.dom.window.location.search, "");
+  assert.equal(
+    calls.some((call) => call.options.method === "POST"),
+    false,
+    "a cancelled callback does not retry or create a new link attempt",
+  );
+  await harness.unmount();
+});
+
 test("messenger destinations recover from an initial GET failure", async () => {
   const harness = createHarness("http://localhost/app/settings");
   const { api, calls } = transientFailureApi({
@@ -2474,7 +3032,8 @@ test("ConsoleShell menu is keyboard operable, closes on Escape, restores focus, 
       },
       ApiError: class ApiError extends Error {},
       errorMessage: (error) => String(error?.message ?? error),
-      safeAppReturnTo: (path) => path,
+      safeAppReturnTo: loadSafeAppReturnTo(),
+      boundedRequest: loadBoundedRequest(),
     },
     "@/shared/ui": {
       Icon: () => null,
@@ -2638,4 +3197,329 @@ test("registration challenge sends distinct captcha actions, normalizes code, an
   } finally {
     await harness.unmount();
   }
+});
+
+test("registration completion falls back to /app for an unsafe returnTo", async () => {
+  const harness = createHarness(
+    "http://localhost/register?returnTo=javascript%3Aalert(1)",
+  );
+  const calls = [];
+  const challenge = {
+    id: "10000000-0000-4000-8000-000000000002",
+    email: "owner@example.test",
+    expiresAt: "2026-10-20T12:00:00.000Z",
+    resendAvailableAt: "2026-10-20T10:00:00.000Z",
+    serverNow: "2026-10-20T10:01:00.000Z",
+  };
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/auth/registration" && !options.method)
+      return { challenge: null };
+    if (path === "/auth/registration" && options.method === "POST")
+      return { challenge };
+    if (path === `/auth/registration/${challenge.id}/confirm`)
+      return {
+        account: { id: "account-unsafe-return" },
+        csrfToken: "synthetic-csrf",
+      };
+    throw new Error(`Unexpected registration API request: ${path}`);
+  };
+  const routes = [];
+  const RegistrationForm = registrationComponent(api, {
+    replace: (path) => routes.push(path),
+    refresh() {},
+  });
+  try {
+    await harness.render(React.createElement(RegistrationForm));
+    await settle();
+    await setReactInputValue(
+      harness.host.querySelector('input[name="name"]'),
+      "New Owner",
+    );
+    await setReactInputValue(
+      harness.host.querySelector('input[name="email"]'),
+      "owner@example.test",
+    );
+    await setReactInputValue(
+      harness.host.querySelector('input[name="password"]'),
+      "long synthetic passphrase",
+    );
+    await act(async () =>
+      harness.host.querySelector('[data-captcha-action="register"]').click(),
+    );
+    await submitReactForm(harness.host.querySelector("form"));
+    await setReactInputValue(
+      harness.host.querySelector('input[name="code"]'),
+      "123456",
+    );
+    await act(async () =>
+      harness.host
+        .querySelector('[data-captcha-action="registration_confirm"]')
+        .click(),
+    );
+    await submitReactForm(harness.host.querySelector("form"));
+    assert.ok(calls.some((call) => call.path.endsWith("/confirm")));
+    assert.deepEqual(routes, ["/app"]);
+  } finally {
+    await harness.unmount();
+  }
+});
+
+function consoleShellFixture(api, routes = {}, suppliedContext = null) {
+  class ConsoleApiError extends Error {
+    constructor(status, code) {
+      super(code);
+      this.status = status;
+      this.code = code;
+    }
+  }
+  const sessionContext = suppliedContext ?? React.createContext(null);
+  const component = compile("../src/widgets/console-shell/index.tsx", {
+    "next/link": ({ href, children, onClick, ...props }) =>
+      React.createElement(
+        "a",
+        {
+          href,
+          ...props,
+          onClick(event) {
+            event.preventDefault();
+            onClick?.(event);
+          },
+        },
+        children,
+      ),
+    "next/navigation": {
+      usePathname: () => "/app",
+      useRouter: () => routes,
+    },
+    "@/entities/session": { SessionContext: sessionContext },
+    "@/features/theme-toggle": { ThemeToggle: () => null },
+    "@/shared/api": {
+      api,
+      ApiError: ConsoleApiError,
+      boundedRequest: loadBoundedRequest(),
+      errorMessage: (error) => String(error?.code ?? error?.message ?? error),
+      safeAppReturnTo: loadSafeAppReturnTo(),
+    },
+    "@/shared/ui": {
+      Icon: () => null,
+      Brand: () => React.createElement("span", null, "Heartbeat Checker"),
+      Loading: ({ text }) =>
+        React.createElement("span", { role: "status" }, text),
+      Notice: ({ children }) =>
+        React.createElement("div", { role: "alert" }, children),
+    },
+  });
+  return { ...component, ApiError: ConsoleApiError, sessionContext };
+}
+
+const consoleTestProfile = (id, name) => ({
+  account: {
+    id,
+    name,
+    role: "user",
+    status: "active",
+    createdAt: "2026-01-01T00:00:00Z",
+  },
+  email: `${id}@example.test`,
+  hasPassword: true,
+});
+
+test("ConsoleShell hides a BFCache snapshot until the fresh session check succeeds", async () => {
+  const harness = createHarness("http://localhost/app");
+  const initial = consoleTestProfile("account-bfcache", "Cached session");
+  const refreshed = consoleTestProfile("account-bfcache", "Fresh session");
+  const restored = deferred();
+  const calls = [];
+  const routes = [];
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path !== "/me") throw new Error(`Unexpected API call: ${path}`);
+    return calls.filter((call) => call.path === "/me").length === 1
+      ? initial
+      : restored.promise;
+  };
+  const component = consoleShellFixture(api, {
+    replace: (path) => routes.push(path),
+  });
+  await harness.render(
+    React.createElement(component.ConsoleShell, null, "Page content"),
+  );
+  await settle();
+  assert.match(harness.host.textContent, /Cached session/);
+  assert.equal(calls.length, 1);
+
+  await dispatchPageShow(false);
+  assert.equal(calls.length, 1, "non-persisted pageshow does not refresh");
+  await dispatchPageShow(true);
+  assert.equal(calls.length, 2);
+  assert.match(harness.host.textContent, /Открываем кабинет/);
+  assert.doesNotMatch(harness.host.textContent, /Cached session/);
+  restored.resolve(refreshed);
+  await settle();
+  assert.match(harness.host.textContent, /Fresh session/);
+  assert.deepEqual(routes, []);
+  await harness.unmount();
+});
+
+test("ConsoleShell replaces a stale authenticated destination after BFCache 401", async () => {
+  const pushPair = "123e4567-e89b-12d3-a456-426614174000";
+  const returnTo = `/app/settings?pushPair=${pushPair}`;
+  const harness = createHarness(`http://localhost${returnTo}`);
+  const calls = [];
+  const routes = [];
+  const { ApiError, ConsoleShell } = consoleShellFixture(
+    async (path, options = {}) => {
+      calls.push({ path, options });
+      if (calls.filter((call) => call.path === "/me").length === 1)
+        return consoleTestProfile("account-expired", "Expired cached profile");
+      throw new ApiError(401, "unauthorized");
+    },
+    { replace: (path) => routes.push(path) },
+  );
+  await harness.render(React.createElement(ConsoleShell, null, "Page content"));
+  await settle();
+  assert.match(harness.host.textContent, /Expired cached profile/);
+  await dispatchPageShow(true);
+  await settle();
+  assert.deepEqual(routes, [`/login?returnTo=${encodeURIComponent(returnTo)}`]);
+  assert.doesNotMatch(harness.host.textContent, /Expired cached profile/);
+  await harness.unmount();
+});
+
+test("ConsoleShell logout fences an in-flight session refresh from restoring the profile", async () => {
+  const harness = createHarness("http://localhost/app");
+  const profile = consoleTestProfile("account-logout", "Signed-in profile");
+  const staleRequest = deferred();
+  const logoutRequest = deferred();
+  const calls = [];
+  const routes = [];
+  const api = (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/auth/logout") return logoutRequest.promise;
+    if (path !== "/me") throw new Error(`Unexpected API call: ${path}`);
+    return calls.filter((call) => call.path === "/me").length === 1
+      ? Promise.resolve(profile)
+      : staleRequest.promise;
+  };
+  const { ConsoleShell } = consoleShellFixture(api, {
+    replace: (path) => routes.push(path),
+  });
+  await harness.render(React.createElement(ConsoleShell, null, "Page content"));
+  await settle();
+  assert.match(harness.host.textContent, /Signed-in profile/);
+
+  await act(async () => window.dispatchEvent(new window.Event("focus")));
+  await settle();
+  const staleSignal = calls.findLast((call) => call.path === "/me").options
+    .signal;
+  assert.equal(staleSignal.aborted, false);
+  const logout = harness.host.querySelector("button.logout");
+  assert.ok(logout);
+  await act(async () => logout.click());
+  assert.equal(staleSignal.aborted, true);
+  assert.equal(
+    calls.find((call) => call.path === "/auth/logout").options.method,
+    "POST",
+  );
+  logoutRequest.resolve({});
+  await settle();
+  assert.deepEqual(routes, ["/login"]);
+
+  staleRequest.resolve(profile);
+  await settle();
+  assert.doesNotMatch(harness.host.textContent, /Signed-in profile/);
+  assert.deepEqual(routes, ["/login"]);
+  await harness.unmount();
+});
+
+test("ConsoleShell session transitions ignore persisted pageshow until transition ends", async () => {
+  const harness = createHarness("http://localhost/app");
+  const calls = [];
+  const profile = consoleTestProfile(
+    "account-transition",
+    "Transition profile",
+  );
+  let session;
+  function SessionProbe() {
+    session = React.useContext(context);
+    return null;
+  }
+  const context = React.createContext(null);
+  const { ConsoleShell } = consoleShellFixture(
+    async (path, options = {}) => {
+      calls.push({ path, options });
+      if (path === "/me") return profile;
+      return {};
+    },
+    {},
+    context,
+  );
+  await harness.render(
+    React.createElement(
+      ConsoleShell,
+      null,
+      React.createElement(SessionProbe),
+      "Page content",
+    ),
+  );
+  await settle();
+  assert.ok(session);
+  assert.match(harness.host.textContent, /Transition profile/);
+
+  await act(async () => session.beginSessionTransition());
+  await dispatchPageShow(true);
+  assert.equal(calls.filter((call) => call.path === "/me").length, 1);
+  assert.match(harness.host.textContent, /Transition profile/);
+  await act(async () => session.endSessionTransition());
+  await dispatchPageShow(true);
+  await settle();
+  assert.equal(calls.filter((call) => call.path === "/me").length, 2);
+  assert.match(harness.host.textContent, /Transition profile/);
+  await harness.unmount();
+});
+
+test("ConsoleShell times out a hanging profile check and retry can recover", async () => {
+  const harness = createHarness("http://localhost/app");
+  const scheduled = [];
+  window.setTimeout = (callback, delay) => {
+    const timer = { callback, delay, cleared: false };
+    scheduled.push(timer);
+    return timer;
+  };
+  window.clearTimeout = (timer) => {
+    if (timer) timer.cleared = true;
+  };
+  const pending = deferred();
+  const calls = [];
+  const profile = consoleTestProfile("account-retry", "Recovered session");
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path !== "/me") throw new Error(`Unexpected API call: ${path}`);
+    return calls.filter((call) => call.path === "/me").length === 1
+      ? pending.promise
+      : profile;
+  };
+  const { ConsoleShell } = consoleShellFixture(api);
+  await harness.render(React.createElement(ConsoleShell, null, "Page content"));
+  assert.equal(scheduled[0].delay, 10_000);
+  await act(async () => scheduled[0].callback());
+  await settle();
+  assert.equal(calls[0].options.signal.aborted, true);
+  assert.match(
+    harness.host.textContent,
+    /Проверка входа заняла слишком много времени/,
+  );
+  const retry = [...harness.host.querySelectorAll("button")].find(
+    (button) => button.textContent.trim() === "Повторить",
+  );
+  assert.ok(retry);
+  await act(async () => retry.click());
+  await settle();
+  assert.equal(calls.filter((call) => call.path === "/me").length, 2);
+  assert.match(harness.host.textContent, /Recovered session/);
+  pending.resolve(profile);
+  await settle();
+  assert.match(harness.host.textContent, /Recovered session/);
+  await harness.unmount();
 });

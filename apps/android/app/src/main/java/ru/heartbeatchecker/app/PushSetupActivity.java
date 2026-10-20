@@ -30,6 +30,8 @@ import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.browser.customtabs.CustomTabsCallback;
 import androidx.browser.customtabs.CustomTabsService;
 import androidx.browser.trusted.TrustedWebActivityIntentBuilder;
+import androidx.work.WorkInfo;
+import androidx.work.WorkManager;
 
 import com.google.androidbrowserhelper.trusted.TwaLauncher;
 
@@ -101,10 +103,11 @@ public final class PushSetupActivity extends ComponentActivity {
             PushWork.IO.execute(() -> {
                 try {
                     String target = PushPairing.receive(this, (String) id, (String) code, (String) state);
+                    if (PushNotifications.permitted(getApplicationContext()))
+                        PushWork.pairing(getApplicationContext(), (String) id);
                     handler.post(() -> {
                         if (!current(request)) return;
                         returnUrl = target;
-                        recordStatus("connecting");
                         requestPermission();
                     });
                 } catch (Exception ignored) { handler.post(() -> { if (current(request)) openCabinet(); }); }
@@ -129,26 +132,16 @@ public final class PushSetupActivity extends ComponentActivity {
         if (destroyed || isFinishing() || opening) return;
         if (!PushNotifications.permitted(this)) { recordStatus("permission_denied"); openCabinet(); return; }
         int request = ++operation;
-        // Missing provider, a stalled SDK or network must not trap the user outside the cabinet.
-        handler.postDelayed(() -> { if (current(request)) { recordStatus("connection_failed"); openCabinet(); } }, 8000);
-        PushWork.IO.execute(() -> PushSdk.token(getApplicationContext(), new PushSdk.TokenResult() {
-            @Override public void ready(String token) {
-                if (!current(request)) return;
-                PushWork.IO.execute(() -> {
-                    try {
-                        PushPairing.exchange(getApplicationContext(), pairingId);
-                        JSONObject latest = store.read(); JSONObject installation = latest.optJSONObject("installation");
-                        recordStatus(PushStore.ready(latest, System.currentTimeMillis()) && installation != null
-                                && pairingId.equals(installation.optString("lastPairingId")) ? "ready" : "connection_failed");
-                    } catch (Exception ignored) { recordStatus("connection_failed"); }
-                    handler.post(() -> { if (current(request)) openCabinet(); });
-                });
-            }
-            @Override public void unavailable() {
-                recordStatus("provider_unavailable");
-                handler.post(() -> { if (current(request)) openCabinet(); });
-            }
-        }));
+        // The deadline controls navigation only. Persisted proof belongs to WorkManager,
+        // so Activity destruction or a slow SDK callback cannot cancel the binding.
+        handler.postDelayed(() -> { if (current(request)) openCabinet(); }, 8000);
+        try {
+            String name = PushWork.pairing(getApplicationContext(), pairingId);
+            WorkManager.getInstance(getApplicationContext()).getWorkInfosForUniqueWorkLiveData(name).observe(this, jobs -> {
+                if (!current(request) || jobs == null) return;
+                for (WorkInfo job : jobs) if (job.getState().isFinished()) { openCabinet(); break; }
+            });
+        } catch (RuntimeException ignored) { openCabinet(); }
     }
 
     private boolean current(int request) { return request == operation && !destroyed && !isFinishing() && !opening; }
@@ -164,9 +157,11 @@ public final class PushSetupActivity extends ComponentActivity {
             if (state.optBoolean("optedOut")) text(page, "Уведомления отключены. Включите их, чтобы подключить устройство заново.");
             else if ("permission_denied".equals(status)) text(page, "Уведомления запрещены в Android. Разрешите их в настройках приложения.");
             else if ("provider_unavailable".equals(status)) text(page, "RuStore Push недоступен. Проверьте RuStore и повторите подключение.");
-            else if ("connection_failed".equals(status) || "connecting".equals(status)) text(page, "Подключение не завершено. Проверьте интернет и повторите подключение.");
+            else if ("connecting".equals(status)) text(page, "Подключаем устройство в фоне. Можно продолжать работу в кабинете.");
+            else if ("connection_failed".equals(status)) text(page, "Подключение не завершено. Проверьте интернет и повторите подключение.");
             else if (PushStore.ready(state, System.currentTimeMillis())) text(page, "Устройство подключено");
             else text(page, "Устройство не подключено");
+            diagnostics(page, state);
         } catch (Exception ignored) { text(page, "Защищённые данные подключения недоступны."); }
         button(page, "Включить уведомления", () -> {
             if (busy) return;
@@ -203,6 +198,51 @@ public final class PushSetupActivity extends ComponentActivity {
     }
 
     private void openCabinet() { openBrowser(returnUrl); }
+
+    private void diagnostics(LinearLayout page, JSONObject state) {
+        JSONObject provider = state.optJSONObject("providerDiagnostic");
+        if (provider != null) {
+            String message;
+            switch (provider.optString("code")) {
+                case "DISTRIBUTOR_MISSING": message = "Установите или включите RuStore, затем повторите подключение."; break;
+                case "DISTRIBUTOR_AUTH_REQUIRED": message = "Откройте RuStore и войдите в аккаунт, затем повторите подключение."; break;
+                case "DISTRIBUTOR_BACKGROUND_RESTRICTED": message = "Разрешите RuStore работу в фоне в настройках Android, затем повторите подключение."; break;
+                default: message = "Проверьте доступность RuStore и сеть, затем повторите подключение.";
+            }
+            text(page, "Последняя ошибка RuStore (" + diagnosticTime(provider.optLong("at")) + "): " + message);
+        }
+        JSONObject delivery = state.optJSONObject("deliveryDiagnostic");
+        if (delivery == null) {
+            text(page, "Получение сигнала приложением пока не зафиксировано. Разрешение Android само по себе не подтверждает доставку.");
+            return;
+        }
+        String message;
+        switch (delivery.optString("code")) {
+            case "RECEIVED": message = "Сигнал получен приложением."; break;
+            case "QUEUED": message = "Сигнал ожидает обработки при доступной сети."; break;
+            case "FETCH_STARTED": message = "Приложение начало запрашивать событие с сервера."; break;
+            case "FETCHED": message = "Событие получено с сервера."; break;
+            case "DISPLAY_SUBMITTED": message = "Уведомление передано Android. Это не подтверждает появление баннера или видимость в шторке."; break;
+            case "PERMISSION_DENIED": message = "Показ запрещён в настройках приложения или канала «Инциденты»."; break;
+            case "LOCALLY_BLOCKED": message = "Уведомления отключены на этом устройстве."; break;
+            case "EXPIRED": message = "Сигнал пришёл после истечения срока действия и не показан."; break;
+            case "BINDING_MISMATCH": message = "Сигнал не относится к текущему подключению устройства."; break;
+            case "INVALID_ENVELOPE": message = "Получен некорректный сигнал; он отклонён."; break;
+            case "FETCH_UNAUTHORIZED": message = "Доступ к событию прекращён. Подключите устройство заново."; break;
+            case "FETCH_NOT_FOUND": message = "Событие больше недоступно на сервере."; break;
+            case "FETCH_TRANSIENT": message = "Не удалось получить событие. Проверьте сеть."; break;
+            case "DISPLAY_FAILED": message = "Android не принял уведомление. Проверьте настройки приложения и канала «Инциденты»."; break;
+            default: message = "Обработка сигнала не завершена. Проверьте сеть и настройки уведомлений.";
+        }
+        text(page, "Последняя обработка (" + diagnosticTime(delivery.optLong("at")) + "): " + message);
+        if (state.optLong("lastReceivedAt") > 0)
+            text(page, "Последний сигнал RuStore: " + diagnosticTime(state.optLong("lastReceivedAt")));
+    }
+
+    private String diagnosticTime(long at) {
+        return java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT)
+                .format(new java.util.Date(at));
+    }
 
     private void recordStatus(String status) {
         try { store.update(value -> value.put("lastConnectionStatus", status)); } catch (Exception ignored) { }

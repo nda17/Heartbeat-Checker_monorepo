@@ -38,11 +38,13 @@ final class PushPairing {
         PushStore store = new PushStore(context);
         long revocation = PushWork.localRevocation;
         try {
+            if (!explicitEnable && PushWork.locallyBlocked) return returnUrl;
             if (explicitEnable) {
                 if (!PushWork.revokePending(context, true)) return returnUrl;
                 synchronized (PushStore.LOCK) {
                     if (revocation != PushWork.localRevocation) return returnUrl;
                     store.update(value -> { value.remove("optedOut"); value.remove("permissionPrompted"); });
+                    PushWork.locallyBlocked = false;
                 }
             }
             JSONObject state = store.read();
@@ -57,7 +59,12 @@ final class PushPairing {
                     if (pending != null && pending.optBoolean("exchangeAttempted")) {
                         if ("ready".equals(installation.optString("status")) && pending.optString("id").equals(installation.optString("lastPairingId")))
                             accept(context, pending.getString("id"), credential, installation, revocation);
-                        else if (PushContract.instant(pending.getString("expiresAt")) > System.currentTimeMillis()) return returnUrl;
+                        else if (PushContract.instant(pending.getString("expiresAt")) > System.currentTimeMillis()) {
+                            if (PushContract.secret(pending.optString("completionCode")) && pending.optInt("workerAttempts") < 3
+                                    && PushNotifications.permitted(context))
+                                PushWork.pairing(context, pending.getString("id"));
+                            return returnUrl;
+                        }
                         // After expiry and an authoritative GET, a fresh pairing supersedes
                         // the old proof; the old exchange itself is never posted again.
                     }
@@ -82,11 +89,20 @@ final class PushPairing {
                         PushWork.blockLocally(context);
                         revocation = PushWork.localRevocation;
                         credential = "";
+                        // The rejected identity and its proof are gone. Reopening here
+                        // cannot revive it, even if creating the next pair fails offline.
+                        PushWork.locallyBlocked = false;
                     }
                 }
             }
             state = store.read();
             if (state.optBoolean("optedOut") || !credential.equals(state.optString("credential"))) return returnUrl;
+            JSONObject proof = state.optJSONObject("pair");
+            if (proof != null && PushContract.secret(proof.optString("completionCode"))
+                    && PushContract.instant(proof.getString("expiresAt")) > System.currentTimeMillis()) {
+                if (proof.optInt("workerAttempts") < 3 && PushNotifications.permitted(context)) PushWork.pairing(context, proof.getString("id"));
+                return returnUrl;
+            }
             // A browser confirmation response may have been lost. A fresh request avoids
             // attempting to recover or reuse its single-issued completion code.
             String verifier = random(); String clientState = random();
@@ -141,7 +157,10 @@ final class PushPairing {
                 throw new IllegalArgumentException();
             String returnUrl = pending.optString("returnUrl", LinkPolicy.HOME);
             if (LinkPolicy.appLink(returnUrl) == null) throw new IllegalArgumentException();
-            store.update(value -> value.getJSONObject("pair").put("completionCode", code));
+            store.update(value -> {
+                value.getJSONObject("pair").put("completionCode", code);
+                value.put("lastConnectionStatus", "connecting");
+            });
             return returnUrl;
         }
     }
@@ -151,29 +170,43 @@ final class PushPairing {
     }
 
     static void exchange(Context context, String id, Transport api) throws Exception {
-        PushStore store = new PushStore(context); long revocation = PushWork.localRevocation;
-        JSONObject state = store.read(); JSONObject pending = state.getJSONObject("pair");
-        boolean expired = PushContract.instant(pending.getString("expiresAt")) <= System.currentTimeMillis();
-        if (state.optBoolean("optedOut") || !id.equals(pending.getString("id")) || !PushNotifications.permitted(context)) return;
-        String credential = state.getString("credential"); String token = state.getString("token");
-        if (!PushContract.token(token) || !PushContract.secret(pending.optString("completionCode"))) return;
+        exchange(context, id, api, PushWork.localRevocation, () -> true);
+    }
+
+    static void exchange(Context context, String id, long revocation, java.util.function.BooleanSupplier active) throws Exception {
+        exchange(context, id, new PushApi()::request, revocation, active);
+    }
+
+    static void exchange(Context context, String id, Transport api, long revocation,
+                         java.util.function.BooleanSupplier active) throws Exception {
+        PushStore store = new PushStore(context);
+        JSONObject pending; String credential; String token; boolean attempted;
+        synchronized (PushStore.LOCK) {
+            JSONObject state = store.read(); pending = state.optJSONObject("pair");
+            if (!active.getAsBoolean() || PushWork.locallyBlocked || revocation != PushWork.localRevocation || state.optBoolean("optedOut")
+                    || pending == null || !id.equals(pending.optString("id")) || !PushNotifications.permitted(context)
+                    || !PushContract.secret(pending.optString("completionCode"))) return;
+            credential = state.getString("credential");
+            attempted = pending.optBoolean("exchangeAttempted");
+            token = state.optString("token");
+            if (!attempted) {
+                if (PushContract.instant(pending.getString("expiresAt")) <= System.currentTimeMillis() || !PushContract.token(token)) return;
+                store.update(value -> {
+                    JSONObject current = value.getJSONObject("pair");
+                    if (!id.equals(current.getString("id")) || !credential.equals(value.optString("credential"))
+                            || current.optBoolean("exchangeAttempted") || value.optBoolean("optedOut")
+                            || !active.getAsBoolean() || PushWork.locallyBlocked || revocation != PushWork.localRevocation || !PushNotifications.permitted(context))
+                        throw new org.json.JSONException("Pairing superseded");
+                    current.put("exchangeAttempted", true);
+                    value.put("everExchangeAttempted", true);
+                });
+            }
+        }
+        if (!current(context, store, id, credential, revocation, active)) return;
         JSONObject result;
         try {
-            result = pending.optBoolean("exchangeAttempted")
-                    ? api.request("GET", "/api/v1/push/installation", credential, null) : null;
-            boolean reconciled = result != null && "ready".equals(result.optString("status")) && id.equals(result.optString("lastPairingId"));
-            if (!reconciled) {
-                if (expired || pending.optBoolean("exchangeAttempted")) return;
-                synchronized (PushStore.LOCK) {
-                    if (revocation != PushWork.localRevocation) return;
-                    store.update(value -> {
-                        JSONObject current = value.getJSONObject("pair");
-                        if (!id.equals(current.getString("id")) || !credential.equals(value.optString("credential")) || value.optBoolean("optedOut"))
-                            throw new org.json.JSONException("Pairing superseded");
-                        current.put("exchangeAttempted", true);
-                        value.put("everExchangeAttempted", true);
-                    });
-                }
+            if (attempted) result = api.request("GET", "/api/v1/push/installation", credential, null);
+            else {
                 JSONObject body = new JSONObject().put("codeVerifier", pending.getString("verifier"))
                         .put("completionCode", pending.getString("completionCode")).put("provider", "rustore")
                         .put("token", token).put("permission", "granted").put("appVersion", BuildConfig.VERSION_NAME);
@@ -181,22 +214,39 @@ final class PushPairing {
             }
         } catch (java.io.IOException unknown) {
             // A response lost after consumption must be reconciled, never posted again.
+            if (!current(context, store, id, credential, revocation, active)) return;
             result = api.request("GET", "/api/v1/push/installation", credential, null);
         }
-        accept(context, id, credential, result, revocation);
+        accept(context, id, credential, result, revocation, active);
+    }
+
+    private static boolean current(Context context, PushStore store, String id, String credential, long revocation,
+                                   java.util.function.BooleanSupplier active) throws Exception {
+        synchronized (PushStore.LOCK) {
+            JSONObject state = store.read(); JSONObject pair = state.optJSONObject("pair");
+            return active.getAsBoolean() && !PushWork.locallyBlocked && revocation == PushWork.localRevocation && PushNotifications.permitted(context)
+                    && !state.optBoolean("optedOut") && credential.equals(state.optString("credential"))
+                    && pair != null && id.equals(pair.optString("id"));
+        }
     }
 
     private static void accept(Context context, String id, String credential, JSONObject result, long revocation) throws Exception {
+        accept(context, id, credential, result, revocation, () -> true);
+    }
+
+    private static void accept(Context context, String id, String credential, JSONObject result, long revocation,
+                               java.util.function.BooleanSupplier active) throws Exception {
         JSONObject installation = PushContract.installation(result);
         if (!"ready".equals(installation.getString("status")) || !id.equals(installation.optString("lastPairingId"))) return;
         PushStore store = new PushStore(context);
         synchronized (PushStore.LOCK) {
             JSONObject state = store.read(); JSONObject current = state.optJSONObject("pair");
-            if (revocation != PushWork.localRevocation || state.optBoolean("optedOut") || !credential.equals(state.optString("credential"))
+            if (!active.getAsBoolean() || PushWork.locallyBlocked || !PushNotifications.permitted(context) || revocation != PushWork.localRevocation
+                    || state.optBoolean("optedOut") || !credential.equals(state.optString("credential"))
                     || current == null || !id.equals(current.optString("id"))) return;
             PushWork.accept(context, installation, credential);
             store.update(value -> {
-                value.put("enabled", true); value.remove("pair");
+                value.put("enabled", true).put("lastConnectionStatus", "ready"); value.remove("pair");
                 // A reconciled response cannot prove which token reached the server.
                 value.remove("registeredToken"); value.remove("registeredPermission");
             });

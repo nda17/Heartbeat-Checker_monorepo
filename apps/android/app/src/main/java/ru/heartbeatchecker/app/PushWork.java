@@ -21,6 +21,7 @@ import java.util.concurrent.Executors;
 final class PushWork {
     static final String DELIVERY = "heartbeat-push-delivery";
     static final String REGISTRATION = "heartbeat-push-registration";
+    static final String PAIRING = "heartbeat-push-pairing:";
     static final ExecutorService IO = Executors.newSingleThreadExecutor();
     static volatile boolean locallyBlocked;
     static volatile long localRevocation;
@@ -33,8 +34,21 @@ final class PushWork {
     }
 
     static void delivery(Context context, JSONObject envelope) throws IOException, JSONException {
-        if (locallyBlocked || !PushNotifications.permitted(context)) { permissionsChanged(context); return; }
-        if (new PushStore(context).reserve(envelope)) enqueueDelivery(context, envelope.getString("deliveryId"));
+        PushStore store = new PushStore(context);
+        if (locallyBlocked || !PushNotifications.permitted(context)) {
+            store.deliveryStage(locallyBlocked ? PushStore.DeliveryStage.LOCALLY_BLOCKED : PushStore.DeliveryStage.PERMISSION_DENIED);
+            permissionsChanged(context); return;
+        }
+        if (store.reserve(envelope)) {
+            store.deliveryStage(PushStore.DeliveryStage.QUEUED);
+            enqueueDelivery(context, envelope.getString("deliveryId"));
+        } else try {
+            if (!PushStore.matches(store.read(), envelope, System.currentTimeMillis()))
+                store.deliveryStage(PushContract.instant(envelope.optString("expiresAt")) <= System.currentTimeMillis()
+                        ? PushStore.DeliveryStage.EXPIRED : PushStore.DeliveryStage.BINDING_MISMATCH);
+        } catch (Exception ignored) {
+            // Best-effort diagnostics never turn an existing rejection into an operation failure.
+        }
     }
 
     private static void enqueueDelivery(Context context, String id) {
@@ -43,6 +57,13 @@ final class PushWork {
 
     static void registration(Context context) {
         WorkManager.getInstance(context).enqueueUniqueWork(REGISTRATION, ExistingWorkPolicy.REPLACE, work("registration", "", REGISTRATION));
+    }
+
+    static String pairing(Context context, String id) {
+        if (!PushContract.uuid(id)) throw new IllegalArgumentException();
+        String name = PAIRING + id;
+        WorkManager.getInstance(context).enqueueUniqueWork(name, ExistingWorkPolicy.KEEP, work("pairing", id, PAIRING));
+        return name;
     }
 
     static void permissionsChanged(Context context) {
@@ -61,6 +82,9 @@ final class PushWork {
             try {
                 JSONObject state = new PushStore(app).read();
                 if (state.has("retired")) revoke(app);
+                JSONObject pair = state.optJSONObject("pair");
+                if (!state.optBoolean("optedOut") && pair != null && PushContract.secret(pair.optString("completionCode"))
+                        && pair.optInt("workerAttempts") < 3 && PushNotifications.permitted(app)) pairing(app, pair.optString("id"));
                 if (state.optBoolean("enabled")) {
                     permissionsChanged(app);
                     JSONObject pending = state.optJSONObject("pending");
@@ -109,6 +133,7 @@ final class PushWork {
         try {
             WorkManager.getInstance(context).cancelAllWorkByTag(DELIVERY);
             WorkManager.getInstance(context).cancelAllWorkByTag(REGISTRATION);
+            WorkManager.getInstance(context).cancelAllWorkByTag(PAIRING);
         } catch (RuntimeException ignored) { }
     }
 

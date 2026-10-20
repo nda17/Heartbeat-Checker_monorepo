@@ -21,11 +21,17 @@ import (
 )
 
 type fakeOAuthProvider struct {
+	id       string
 	profile  OAuthIdentityProfile
 	profiles map[string]OAuthIdentityProfile
 }
 
-func (p fakeOAuthProvider) ID() string { return "yandex" }
+func (p fakeOAuthProvider) ID() string {
+	if p.id == "" {
+		return "yandex"
+	}
+	return p.id
+}
 func (p fakeOAuthProvider) AuthorizationURL(state, challenge string) string {
 	return "https://provider.example/authorize?state=" + url.QueryEscape(state) + "&code_challenge=" + url.QueryEscape(challenge)
 }
@@ -48,20 +54,24 @@ func oauthFixture(t *testing.T, profile OAuthIdentityProfile) *authFixture {
 }
 
 func oauthProfilesFixture(t *testing.T, profiles map[string]OAuthIdentityProfile) *authFixture {
-	return oauthProfilesFixtureWithPoolSize(t, profiles, 1)
+	return oauthProfilesFixtureForProviderWithPoolSize(t, "yandex", profiles, 1)
 }
 
 func oauthProfilesFixtureWithPoolSize(t *testing.T, profiles map[string]OAuthIdentityProfile, maxConns int32) *authFixture {
+	return oauthProfilesFixtureForProviderWithPoolSize(t, "yandex", profiles, maxConns)
+}
+
+func oauthProfilesFixtureForProviderWithPoolSize(t *testing.T, providerID string, profiles map[string]OAuthIdentityProfile, maxConns int32) *authFixture {
 	t.Helper()
 	f := newAuthFixtureWithPoolSize(t, maxConns)
 	audit := postgres.OAuthAudit(func(context.Context, pgx.Tx, string, string, string, string, string) error { return nil })
-	provider := fakeOAuthProvider{profiles: profiles}
+	provider := fakeOAuthProvider{id: providerID, profiles: profiles}
 	if profile, ok := profiles["fake-code"]; ok {
 		provider.profile = profile
 	}
 	module, err := New(f.pool, accounts.New(f.pool), integrationCaptcha{}, f.mail, Config{
 		Origin: integrationOrigin, ChallengeTTL: time.Hour, ResetTTL: time.Hour, RateLimitWindow: time.Hour,
-		OAuthProviders: map[string]OAuthProvider{"yandex": provider}, OAuthAudit: audit,
+		OAuthProviders: map[string]OAuthProvider{providerID: provider}, OAuthAudit: audit,
 		AccountDeletion: newTestAccountDeletion(f.pool),
 	})
 	if err != nil {
@@ -72,8 +82,12 @@ func oauthProfilesFixtureWithPoolSize(t *testing.T, profiles map[string]OAuthIde
 }
 
 func oauthStart(t *testing.T, f *authFixture, mode, returnTo, password string, session *http.Cookie) (string, *http.Cookie) {
+	return oauthStartProvider(t, f, "yandex", mode, returnTo, password, session)
+}
+
+func oauthStartProvider(t *testing.T, f *authFixture, provider, mode, returnTo, password string, session *http.Cookie) (string, *http.Cookie) {
 	t.Helper()
-	start := f.request(t, http.MethodPost, "/api/v1/auth/oauth/yandex/start", map[string]string{"mode": mode, "returnTo": returnTo, "password": password}, session, csrfFor(session), integrationOrigin, "")
+	start := f.request(t, http.MethodPost, "/api/v1/auth/oauth/"+provider+"/start", map[string]string{"mode": mode, "returnTo": returnTo, "password": password}, session, csrfFor(session), integrationOrigin, "")
 	if start.Code != http.StatusOK {
 		t.Fatalf("OAuth %s start status=%d body=%s", mode, start.Code, start.Body.String())
 	}
@@ -104,8 +118,12 @@ func (f *authFixture) oauthCallback(t *testing.T, state string, attempt, session
 }
 
 func (f *authFixture) oauthCallbackCode(t *testing.T, state string, attempt, session *http.Cookie, code string) *httptest.ResponseRecorder {
+	return f.oauthCallbackCodeProvider(t, "yandex", state, attempt, session, code)
+}
+
+func (f *authFixture) oauthCallbackCodeProvider(t *testing.T, provider, state string, attempt, session *http.Cookie, code string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/yandex/callback?code="+url.QueryEscape(code)+"&state="+url.QueryEscape(state)+"&device_id=fake-device", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/"+provider+"/callback?code="+url.QueryEscape(code)+"&state="+url.QueryEscape(state)+"&device_id=fake-device", nil)
 	req.RemoteAddr = netJoin("192.0.2.10", "43125")
 	if attempt != nil {
 		req.AddCookie(attempt)
@@ -271,32 +289,100 @@ func TestOAuthCallbackRejectsDuplicateFieldsWithoutConsumingAttemptOrClearingCoo
 	}
 }
 
-func TestOAuthForeignStatePreservesActiveAttemptAndValidCancellationConsumesIt(t *testing.T) {
-	f := oauthFixture(t, OAuthIdentityProfile{Subject: "subject-cancel", Email: "cancel@example.test", Name: "Cancel User"})
-	state, attempt := oauthStart(t, f, "login", "/app", "", nil)
-	foreignState := strings.Repeat("x", 43)
-	foreign := f.oauthCallback(t, foreignState, attempt, nil)
-	if foreign.Code != http.StatusSeeOther || !strings.Contains(foreign.Header().Get("Location"), "oauth_state_invalid") {
-		t.Fatalf("foreign-state callback status=%d location=%q", foreign.Code, foreign.Header().Get("Location"))
+func TestOAuthCancelledLoginRetainsSafeReturnToOnlyForConsumedAttempts(t *testing.T) {
+	const pushPair = "123e4567-e89b-12d3-a456-426614174000"
+	returnTo := "/app/settings?pushPair=" + pushPair
+	for _, provider := range []string{"yandex", "vk"} {
+		t.Run(provider, func(t *testing.T) {
+			profile := OAuthIdentityProfile{Subject: "subject-cancel-" + provider, Email: "cancel-" + provider + "@example.test", Name: "Cancel User"}
+			f := oauthProfilesFixtureForProviderWithPoolSize(t, provider, map[string]OAuthIdentityProfile{"fake-code": profile}, 1)
+			state, attempt := oauthStartProvider(t, f, provider, "login", returnTo, "", nil)
+			cancelCallback := func(callbackState string, cookie *http.Cookie) *httptest.ResponseRecorder {
+				t.Helper()
+				req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/"+provider+"/callback?error=access_denied&state="+url.QueryEscape(callbackState), nil)
+				if cookie != nil {
+					req.AddCookie(cookie)
+				}
+				w := httptest.NewRecorder()
+				f.h.ServeHTTP(w, req)
+				return w
+			}
+			assertNoRetryTarget := func(label string, callback *httptest.ResponseRecorder) {
+				t.Helper()
+				destination, err := url.Parse(callback.Header().Get("Location"))
+				if err != nil || destination.Query().Has("returnTo") {
+					t.Fatalf("%s callback leaked returnTo: location=%q err=%v", label, callback.Header().Get("Location"), err)
+				}
+			}
+
+			foreignState := strings.Repeat("x", 43)
+			foreign := cancelCallback(foreignState, attempt)
+			if foreign.Code != http.StatusSeeOther || !strings.Contains(foreign.Header().Get("Location"), "oauth_state_invalid") {
+				t.Fatalf("foreign-state callback status=%d location=%q", foreign.Code, foreign.Header().Get("Location"))
+			}
+			assertNoRetryTarget("foreign-state", foreign)
+			for _, c := range foreign.Result().Cookies() {
+				if c.Name == attempt.Name && c.MaxAge < 0 {
+					t.Fatalf("foreign state cleared active attempt cookie: %#v", c)
+				}
+			}
+			injected := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/"+provider+"/callback?error=access_denied&state="+url.QueryEscape(foreignState)+"&returnTo="+url.QueryEscape("/app/admin"), nil)
+			injected.AddCookie(attempt)
+			injectedResponse := httptest.NewRecorder()
+			f.h.ServeHTTP(injectedResponse, injected)
+			if injectedResponse.Code != http.StatusSeeOther || !strings.Contains(injectedResponse.Header().Get("Location"), "oauth_state_invalid") {
+				t.Fatalf("forged returnTo callback status=%d location=%q", injectedResponse.Code, injectedResponse.Header().Get("Location"))
+			}
+			assertNoRetryTarget("forged returnTo", injectedResponse)
+
+			wrongCookie := &http.Cookie{Name: attempt.Name, Value: strings.Repeat("y", 43) + "." + strings.Repeat("v", 43)}
+			wrong := cancelCallback(state, wrongCookie)
+			if wrong.Code != http.StatusSeeOther || !strings.Contains(wrong.Header().Get("Location"), "oauth_state_invalid") {
+				t.Fatalf("wrong-cookie callback status=%d location=%q", wrong.Code, wrong.Header().Get("Location"))
+			}
+			assertNoRetryTarget("wrong-cookie", wrong)
+
+			var consumed int
+			if err := f.pool.QueryRow(context.Background(), "SELECT count(*) FROM auth.oauth_attempts WHERE state_hash=$1 AND consumed_at IS NOT NULL", security.Digest(state)).Scan(&consumed); err != nil || consumed != 0 {
+				t.Fatalf("invalid callbacks consumed active attempt: count=%d err=%v", consumed, err)
+			}
+
+			cancel := cancelCallback(state, attempt)
+			location, err := url.Parse(cancel.Header().Get("Location"))
+			if err != nil || cancel.Code != http.StatusSeeOther || location.Path != "/login" || location.Query().Get("oauthError") != "oauth_cancelled" || location.Query().Get("returnTo") != returnTo {
+				t.Fatalf("valid cancellation redirect status=%d location=%q err=%v", cancel.Code, cancel.Header().Get("Location"), err)
+			}
+			if err := f.pool.QueryRow(context.Background(), "SELECT count(*) FROM auth.oauth_attempts WHERE state_hash=$1 AND consumed_at IS NOT NULL", security.Digest(state)).Scan(&consumed); err != nil || consumed != 1 {
+				t.Fatalf("valid cancellation did not consume attempt exactly once: count=%d err=%v", consumed, err)
+			}
+
+			replay := cancelCallback(state, attempt)
+			if replay.Code != http.StatusSeeOther || !strings.Contains(replay.Header().Get("Location"), "oauth_state_invalid") {
+				t.Fatalf("replayed cancellation status=%d location=%q", replay.Code, replay.Header().Get("Location"))
+			}
+			assertNoRetryTarget("replay", replay)
+		})
 	}
-	for _, c := range foreign.Result().Cookies() {
-		if c.Name == attempt.Name && c.MaxAge < 0 {
-			t.Fatalf("foreign state cleared active attempt cookie: %#v", c)
-		}
+}
+
+func TestOAuthCancelledLinkReturnsToSettingsWithoutLoginReturnTo(t *testing.T) {
+	f := oauthFixture(t, OAuthIdentityProfile{Subject: "subject-link-cancel", Email: "link-cancel@example.test", Name: "Link Cancel User"})
+	const email = "link-cancel-owner@example.test"
+	f.signup(t, email)
+	session, _, login := f.login(t, email, integrationPass)
+	if login.Code != http.StatusOK || session == nil {
+		t.Fatalf("create link-mode session: status=%d", login.Code)
 	}
-	var consumed int
-	if err := f.pool.QueryRow(context.Background(), "SELECT count(*) FROM auth.oauth_attempts WHERE state_hash=$1 AND consumed_at IS NOT NULL", security.Digest(state)).Scan(&consumed); err != nil || consumed != 0 {
-		t.Fatalf("foreign state consumed active attempt: count=%d err=%v", consumed, err)
-	}
+	state, attempt := oauthStart(t, f, "link", "https://attacker.example/", integrationPass, session)
 	cancel := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/yandex/callback?error=access_denied&state="+url.QueryEscape(state), nil)
 	cancel.AddCookie(attempt)
+	cancel.AddCookie(&http.Cookie{Name: "hc_oauth_mode", Value: "link"})
+	cancel.AddCookie(session)
 	w := httptest.NewRecorder()
 	f.h.ServeHTTP(w, cancel)
-	if w.Code != http.StatusSeeOther || !strings.Contains(w.Header().Get("Location"), "oauth_cancelled") {
-		t.Fatalf("valid provider cancellation status=%d location=%q", w.Code, w.Header().Get("Location"))
-	}
-	if err := f.pool.QueryRow(context.Background(), "SELECT count(*) FROM auth.oauth_attempts WHERE state_hash=$1 AND consumed_at IS NOT NULL", security.Digest(state)).Scan(&consumed); err != nil || consumed != 1 {
-		t.Fatalf("valid cancellation did not consume attempt exactly once: count=%d err=%v", consumed, err)
+	location, err := url.Parse(w.Header().Get("Location"))
+	if err != nil || w.Code != http.StatusSeeOther || location.Path != "/app/settings" || location.Query().Get("oauthError") != "oauth_cancelled" || location.Query().Has("returnTo") {
+		t.Fatalf("cancelled link redirect status=%d location=%q err=%v", w.Code, w.Header().Get("Location"), err)
 	}
 }
 

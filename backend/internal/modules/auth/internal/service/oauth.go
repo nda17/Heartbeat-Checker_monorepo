@@ -53,6 +53,7 @@ type OAuthCallbackResult struct {
 	Mode                         string
 	Login                        *LoginResult
 	ReturnTo, RegistrationCookie string
+	RetryReturnTo                string
 }
 type OAuthRegistrationInfo struct {
 	Provider  string    `json:"provider"`
@@ -224,7 +225,13 @@ func (s *Service) OAuthCallback(ctx context.Context, in OAuthCallbackInput) (out
 		return OAuthCallbackResult{}, ErrUnavailable
 	}
 	// Only a successfully consumed database attempt may clear the browser cookie.
-	defer func() { out.Consumed = true; out.Mode = a.Mode }()
+	defer func() {
+		out.Consumed = true
+		out.Mode = a.Mode
+		if callbackErr != nil && a.Mode == "login" {
+			out.RetryReturnTo = oauthReturnTo(a.ReturnTo)
+		}
+	}()
 	if in.ProviderError != "" {
 		if in.ProviderError == "access_denied" {
 			return OAuthCallbackResult{}, ErrOAuthCancelled

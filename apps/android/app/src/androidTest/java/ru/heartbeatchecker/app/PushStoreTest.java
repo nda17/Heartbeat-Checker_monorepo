@@ -25,7 +25,9 @@ import org.junit.runner.RunWith;
 import java.io.File;
 import java.io.IOException;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -70,6 +72,53 @@ public final class PushStoreTest {
         JSONObject persisted = new PushStore(context).read();
         assertEquals(id, persisted.getJSONObject("pending").getJSONObject(id).getString("deliveryId"));
         assertTrue("push state must live outside auto-backup", file.getParentFile().equals(context.getNoBackupFilesDir()));
+    }
+
+    @Test
+    public void diagnosticsAreEncryptedBoundedAndRetainSpecificProviderFailure() throws Exception {
+        String sdkMessage = "credential=secret-provider-token";
+        List<ru.rustore.sdk.pushclient.messaging.exception.RuStorePushClientException> failures = Arrays.asList(
+                new ru.rustore.sdk.pushclient.messaging.exception.RuStorePushClientException.HostAppNotInstalledException(sdkMessage));
+        store.providerIssue(HeartbeatMessagingService.providerIssue(failures));
+        store.providerIssue(PushStore.ProviderIssue.SDK_UNAVAILABLE);
+        store.providerIssue(PushStore.ProviderIssue.OTHER);
+        store.deliveryStage(PushStore.DeliveryStage.RECEIVED);
+        store.deliveryStage(PushStore.DeliveryStage.QUEUED);
+
+        JSONObject state = store.read();
+        assertEquals(PushStore.ProviderIssue.DISTRIBUTOR_MISSING.name(),
+                state.getJSONObject("providerDiagnostic").getString("code"));
+        assertEquals(PushStore.DeliveryStage.QUEUED.name(),
+                state.getJSONObject("deliveryDiagnostic").getString("code"));
+        assertTrue("receive timestamp is retained independently of the latest stage", state.getLong("lastReceivedAt") > 0);
+        assertFalse("provider diagnostics do not retain SDK messages", state.toString().contains(sdkMessage));
+        assertFalse("delivery diagnostics do not retain identifiers or payloads", state.has("payload"));
+
+        byte[] encrypted = java.nio.file.Files.readAllBytes(
+                new File(context.getNoBackupFilesDir(), "push-state.enc").toPath());
+        String ciphertext = new String(encrypted, java.nio.charset.StandardCharsets.UTF_8);
+        assertFalse(ciphertext.contains("DISTRIBUTOR_MISSING"));
+        assertFalse(ciphertext.contains(PushStore.DeliveryStage.QUEUED.name()));
+        assertFalse(ciphertext.contains(sdkMessage));
+        assertTrue("diagnostics keep encrypted state within its configured bound", encrypted.length < 8192);
+    }
+
+    @Test
+    public void providerIssueClassifierUsesExceptionTypesAndStablePriority() {
+        String secret = "must-not-be-persisted-provider-token";
+        assertEquals(PushStore.ProviderIssue.DISTRIBUTOR_AUTH_REQUIRED,
+                HeartbeatMessagingService.providerIssue(Arrays.asList(
+                        new ru.rustore.sdk.pushclient.messaging.exception.RuStorePushClientException.HostAppNotInstalledException(secret),
+                        new ru.rustore.sdk.pushclient.messaging.exception.RuStorePushClientException.UnauthorizedException(secret))));
+        assertEquals(PushStore.ProviderIssue.DISTRIBUTOR_MISSING,
+                HeartbeatMessagingService.providerIssue(Arrays.asList(
+                        new ru.rustore.sdk.pushclient.messaging.exception.RuStorePushClientException.HostAppBackgroundWorkPermissionNotGranted(secret),
+                        new ru.rustore.sdk.pushclient.messaging.exception.RuStorePushClientException.HostAppNotInstalledException(secret))));
+        assertEquals(PushStore.ProviderIssue.DISTRIBUTOR_BACKGROUND_RESTRICTED,
+                HeartbeatMessagingService.providerIssue(Arrays.asList(
+                        new ru.rustore.sdk.pushclient.messaging.exception.RuStorePushClientException.HostAppBackgroundWorkPermissionNotGranted(secret))));
+        assertEquals(PushStore.ProviderIssue.OTHER, HeartbeatMessagingService.providerIssue(null));
+        assertEquals(PushStore.ProviderIssue.OTHER, HeartbeatMessagingService.providerIssue(java.util.Collections.emptyList()));
     }
 
     @Test

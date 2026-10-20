@@ -91,7 +91,7 @@ function OAuthButtons() {
           body: { mode: "login", ...(returnTo ? { returnTo } : {}) },
         },
       );
-      window.location.assign(
+      window.location.replace(
         oauthAuthorizationUrl(provider, result.authorizationUrl),
       );
     } catch (failure) {
@@ -131,40 +131,58 @@ export function AuthEntry({ mode }: { mode: "login" | "register" }) {
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const account = params.get("account");
-    if (
-      mode === "login" &&
-      (params.get("oauthError") ||
-        account === "deleted" ||
-        account === "unknown")
-    ) {
-      // Let the form capture and display one-time action results before clearing the URL.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setShowForm(true);
-      return;
-    }
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      controller.abort();
-      setError(
-        "Проверка входа заняла слишком много времени. Повторите попытку.",
-      );
-    }, 10_000);
-    void api("/me", { signal: controller.signal })
-      .then(() => {
-        if (!controller.signal.aborted)
-          router.replace(safeAppReturnTo(params.get("returnTo")) ?? "/app");
-      })
-      .catch((failure) => {
-        if (controller.signal.aborted) return;
-        if (failure instanceof ApiError && failure.status === 401)
-          setShowForm(true);
-        else setError(errorMessage(failure));
-      })
-      .finally(() => window.clearTimeout(timer));
+    let controller: AbortController | undefined;
+    let timer: number | undefined;
+    const checkSession = (restored = false) => {
+      controller?.abort();
+      window.clearTimeout(timer);
+      const params = new URLSearchParams(window.location.search);
+      const account = params.get("account");
+      if (
+        mode === "login" &&
+        (params.get("oauthError") ||
+          account === "deleted" ||
+          account === "unknown")
+      ) {
+        // Let the form display one-time action results before clearing the URL.
+        setShowForm(true);
+        return;
+      }
+      if (restored) {
+        setShowForm(false);
+        setError("");
+      }
+      const request = new AbortController();
+      controller = request;
+      const deadline = window.setTimeout(() => {
+        if (controller !== request || request.signal.aborted) return;
+        request.abort();
+        setError(
+          "Проверка входа заняла слишком много времени. Повторите попытку.",
+        );
+      }, 10_000);
+      timer = deadline;
+      void api("/me", { signal: request.signal })
+        .then(() => {
+          if (controller === request && !request.signal.aborted)
+            router.replace(safeAppReturnTo(params.get("returnTo")) ?? "/app");
+        })
+        .catch((failure) => {
+          if (controller !== request || request.signal.aborted) return;
+          if (failure instanceof ApiError && failure.status === 401)
+            setShowForm(true);
+          else setError(errorMessage(failure));
+        })
+        .finally(() => window.clearTimeout(deadline));
+    };
+    const restored = (event: PageTransitionEvent) => {
+      if (event.persisted) checkSession(true);
+    };
+    window.addEventListener("pageshow", restored);
+    checkSession();
     return () => {
-      controller.abort();
+      window.removeEventListener("pageshow", restored);
+      controller?.abort();
       window.clearTimeout(timer);
     };
   }, [mode, router, attempt]);
@@ -187,14 +205,33 @@ export function AuthEntry({ mode }: { mode: "login" | "register" }) {
   );
 }
 export function AuthForm({ mode }: { mode: AuthMode }) {
+  const [returnTo, setReturnTo] = useState<string | null>(null);
+  useEffect(() => {
+    const values = new URLSearchParams(window.location.search).getAll(
+      "returnTo",
+    );
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Auth stage links retain only the reviewed browser destination.
+    setReturnTo(values.length === 1 ? safeAppReturnTo(values[0]) : null);
+  }, []);
+  const loginHref = returnTo
+    ? `/login?${new URLSearchParams({ returnTo })}`
+    : "/login";
   return mode === "register" ? (
-    <RegistrationForm oauth={<OAuthButtons />} />
+    <RegistrationForm oauth={<OAuthButtons />} loginHref={loginHref} />
   ) : (
-    <LegacyAuthForm mode={mode} />
+    <LegacyAuthForm mode={mode} returnTo={returnTo} />
   );
 }
-function LegacyAuthForm({ mode }: { mode: AuthMode }) {
+function LegacyAuthForm({
+  mode,
+  returnTo,
+}: {
+  mode: AuthMode;
+  returnTo: string | null;
+}) {
   const cfg = config[mode];
+  const authHref = (path: string) =>
+    returnTo ? `${path}?${new URLSearchParams({ returnTo })}` : path;
   const router = useRouter();
   const [token, setToken] = useState("");
   const [linkReady, setLinkReady] = useState(false);
@@ -215,7 +252,16 @@ function LegacyAuthForm({ mode }: { mode: AuthMode }) {
       consumedLink.current = true;
       const params = new URLSearchParams(window.location.hash.slice(1));
       setToken(params.get("token") ?? "");
-      window.history.replaceState(null, "", window.location.pathname);
+      const values = new URLSearchParams(window.location.search).getAll(
+        "returnTo",
+      );
+      const target = values.length === 1 ? safeAppReturnTo(values[0]) : null;
+      window.history.replaceState(
+        null,
+        "",
+        window.location.pathname +
+          (target ? `?${new URLSearchParams({ returnTo: target })}` : ""),
+      );
     }
     // The fragment is available only after hydration and is immediately removed from the URL.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -235,7 +281,9 @@ function LegacyAuthForm({ mode }: { mode: AuthMode }) {
     if (accountOutcome) setAccountResult(accountOutcome);
     url.searchParams.delete("oauthError");
     url.searchParams.delete("account");
-    const returnTo = safeAppReturnTo(url.searchParams.get("returnTo"));
+    const destinations = url.searchParams.getAll("returnTo");
+    const returnTo =
+      destinations.length === 1 ? safeAppReturnTo(destinations[0]) : null;
     window.history.replaceState(
       null,
       "",
@@ -321,7 +369,7 @@ function LegacyAuthForm({ mode }: { mode: AuthMode }) {
                   ? "Email подтверждён. Теперь можно войти в свой кабинет."
                   : "Пароль обновлён. Войдите с новым паролем."}
           </p>
-          <Link href="/login" className="button full">
+          <Link href={authHref("/login")} replace className="button full">
             Перейти ко входу <Icon name="arrow-right" />
           </Link>
           {(mode === "register" || mode === "reset-request") && (
@@ -402,7 +450,11 @@ function LegacyAuthForm({ mode }: { mode: AuthMode }) {
             </label>
           )}
           {mode === "login" && (
-            <Link href="/forgot-password" className="small auth-forgot">
+            <Link
+              href={authHref("/forgot-password")}
+              replace
+              className="small auth-forgot"
+            >
               Забыли пароль?
             </Link>
           )}
@@ -441,7 +493,10 @@ function LegacyAuthForm({ mode }: { mode: AuthMode }) {
           </button>
           {isLink && !token && linkReady && (
             <Link
-              href={mode === "verify" ? "/register" : "/forgot-password"}
+              href={authHref(
+                mode === "verify" ? "/register" : "/forgot-password",
+              )}
+              replace
               className="button secondary full"
             >
               Запросить новую ссылку
@@ -454,14 +509,20 @@ function LegacyAuthForm({ mode }: { mode: AuthMode }) {
         <p className="auth-switch">
           {mode === "login" ? (
             <>
-              Ещё нет аккаунта? <Link href="/register">Зарегистрироваться</Link>
+              Ещё нет аккаунта?{" "}
+              <Link href={authHref("/register")} replace>
+                Зарегистрироваться
+              </Link>
             </>
           ) : mode === "register" ? (
             <>
-              Уже есть аккаунт? <Link href="/login">Войти</Link>
+              Уже есть аккаунт?{" "}
+              <Link href={authHref("/login")} replace>
+                Войти
+              </Link>
             </>
           ) : (
-            <Link href="/login">
+            <Link href={authHref("/login")} replace>
               <Icon name="arrow-left" /> Вернуться ко входу
             </Link>
           )}
@@ -481,12 +542,15 @@ type OAuthRegistrationInfo = {
 export function OAuthRegistration() {
   const router = useRouter();
   const consumedLink = useRef(false);
+  const requestVersion = useRef(0);
+  const confirmation = useRef<AbortController | null>(null);
   const [registration, setRegistration] =
     useState<OAuthRegistrationInfo | null>(null);
   const [token, setToken] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!consumedLink.current) {
       consumedLink.current = true;
@@ -500,33 +564,98 @@ export function OAuthRegistration() {
           window.location.pathname + window.location.search,
         );
     }
-    const controller = new AbortController();
-    void api<OAuthRegistrationInfo>("/auth/oauth/registration", {
-      signal: controller.signal,
-    })
-      .then(setRegistration)
-      .catch((failure) => {
-        if (!(failure instanceof DOMException && failure.name === "AbortError"))
-          setError(errorMessage(failure));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
-      });
-    return () => controller.abort();
-  }, []);
+    let controller: AbortController | undefined;
+    let timer: number | undefined;
+    const load = (restored = false) => {
+      controller?.abort();
+      confirmation.current?.abort();
+      const version = ++requestVersion.current;
+      window.clearTimeout(timer);
+      const request = new AbortController();
+      controller = request;
+      setLoading(true);
+      setBusy(false);
+      setError("");
+      setRegistration(null);
+      const current = () =>
+        version === requestVersion.current && !request.signal.aborted;
+      const deadline = window.setTimeout(() => {
+        if (!current()) return;
+        request.abort();
+        setLoading(false);
+        setError(
+          "Проверка регистрации заняла слишком много времени. Повторите попытку.",
+        );
+      }, 10_000);
+      timer = deadline;
+      const check = async () => {
+        if (restored) {
+          try {
+            await api("/me", { signal: request.signal });
+            if (current()) {
+              const targets = new URLSearchParams(
+                window.location.search,
+              ).getAll("returnTo");
+              router.replace(
+                (targets.length === 1 && safeAppReturnTo(targets[0])) || "/app",
+              );
+            }
+            return;
+          } catch (failure) {
+            if (!current()) return;
+            if (!(failure instanceof ApiError && failure.status === 401))
+              throw failure;
+          }
+        }
+        const result = await api<OAuthRegistrationInfo>(
+          "/auth/oauth/registration",
+          {
+            signal: request.signal,
+          },
+        );
+        if (current()) setRegistration(result);
+      };
+      void check()
+        .catch((failure) => {
+          if (current()) setError(errorMessage(failure));
+        })
+        .finally(() => {
+          window.clearTimeout(deadline);
+          if (current()) setLoading(false);
+        });
+    };
+    const restored = (event: PageTransitionEvent) => {
+      if (event.persisted) load(true);
+    };
+    window.addEventListener("pageshow", restored);
+    load(attempt > 0);
+    return () => {
+      controller?.abort();
+      confirmation.current?.abort();
+      window.clearTimeout(timer);
+      window.removeEventListener("pageshow", restored);
+    };
+  }, [router, attempt]);
   async function confirm() {
-    if (!token || busy) return;
+    if (!token || busy || loading) return;
+    const version = ++requestVersion.current;
+    const controller = new AbortController();
+    confirmation.current = controller;
+    const current = () =>
+      version === requestVersion.current && !controller.signal.aborted;
     setBusy(true);
     setError("");
     try {
       const result = await api<{ returnTo: string }>(
         "/auth/oauth/registration/confirm",
-        { method: "POST", body: { token } },
+        { method: "POST", body: { token }, signal: controller.signal },
       );
+      if (!current()) return;
       setToken("");
       router.replace(safeAppReturnTo(result.returnTo) ?? "/app");
       router.refresh();
     } catch (failure) {
+      if (!current()) return;
       notify.error(errorMessage(failure));
       setBusy(false);
     }
@@ -541,7 +670,17 @@ export function OAuthRegistration() {
           браузере. Аккаунт появится только после подтверждения.
         </p>
       </div>
-      {error && <Notice>{error}</Notice>}
+      {error && (
+        <div className="form-stack">
+          <Notice>{error}</Notice>
+          <button
+            type="button"
+            onClick={() => setAttempt((value) => value + 1)}
+          >
+            Повторить проверку
+          </button>
+        </div>
+      )}
       {loading ? (
         <div className="auth-done">
           <Spinner /> Проверяем регистрацию…
@@ -573,7 +712,7 @@ export function OAuthRegistration() {
         </p>
       )}
       <p className="auth-switch">
-        <Link href="/login">
+        <Link href="/login" replace>
           <Icon name="arrow-left" /> Вернуться ко входу
         </Link>
       </p>
