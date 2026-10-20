@@ -43,16 +43,12 @@ public final class PushStoreTest {
     private Context context;
     private PushStore store;
     private boolean previousLocallyBlocked;
-    private boolean notificationPermissionOriginallyGranted;
 
     @Before
     public void setUp() throws Exception {
         context = ApplicationProvider.getApplicationContext();
         previousLocallyBlocked = PushWork.locallyBlocked;
         PushWork.locallyBlocked = false;
-        notificationPermissionOriginallyGranted = Build.VERSION.SDK_INT < 33
-                || context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
-                == android.content.pm.PackageManager.PERMISSION_GRANTED;
         store = new PushStore(context);
         store.update(state -> {
             java.util.Iterator<String> keys = state.keys();
@@ -66,12 +62,6 @@ public final class PushStoreTest {
     @org.junit.After
     public void restoreDeliveryState() {
         PushWork.locallyBlocked = previousLocallyBlocked;
-        if (Build.VERSION.SDK_INT >= 33 && !notificationPermissionOriginallyGranted
-                && context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
-                == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            InstrumentationRegistry.getInstrumentation().getUiAutomation()
-                    .revokeRuntimePermission(context.getPackageName(), android.Manifest.permission.POST_NOTIFICATIONS);
-        }
     }
 
     @Test
