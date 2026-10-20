@@ -227,7 +227,7 @@ public final class PushSetupActivity extends ComponentActivity {
             case "LOCALLY_BLOCKED": message = "Уведомления отключены на этом устройстве."; break;
             case "EXPIRED": message = "Сигнал пришёл после истечения срока действия и не показан."; break;
             case "BINDING_MISMATCH": message = "Сигнал не относится к текущему подключению устройства."; break;
-            case "INVALID_ENVELOPE": message = "Получен некорректный сигнал; он отклонён."; break;
+            case "INVALID_ENVELOPE": message = invalidEnvelopeMessage(delivery.optString("reason")); break;
             case "FETCH_UNAUTHORIZED": message = "Доступ к событию прекращён. Подключите устройство заново."; break;
             case "FETCH_NOT_FOUND": message = "Событие больше недоступно на сервере."; break;
             case "FETCH_TRANSIENT": message = "Не удалось получить событие. Проверьте сеть."; break;
@@ -237,6 +237,21 @@ public final class PushSetupActivity extends ComponentActivity {
         text(page, "Последняя обработка (" + diagnosticTime(delivery.optLong("at")) + "): " + message);
         if (state.optLong("lastReceivedAt") > 0)
             text(page, "Последний сигнал RuStore: " + diagnosticTime(state.optLong("lastReceivedAt")));
+    }
+
+    private String invalidEnvelopeMessage(String reason) {
+        switch (reason) {
+            case "NULL_MESSAGE": return "RuStore передал пустое сообщение; сигнал отклонён.";
+            case "NOTIFICATION_CONTENT": return "Сигнал содержит непустые поля уведомления RuStore; он отклонён.";
+            case "DATA_KEYS": return "Набор полей данных сигнала не совпадает с ожидаемым; он отклонён.";
+            case "VERSION": return "Версия сигнала не поддерживается; он отклонён.";
+            case "DELIVERY_ID": return "Идентификатор доставки в сигнале некорректен; он отклонён.";
+            case "INSTALLATION_ID": return "Идентификатор установки в сигнале некорректен; он отклонён.";
+            case "GENERATION": return "Поколение привязки в сигнале некорректно; он отклонён.";
+            case "EXPIRY_FORMAT": return "Срок действия сигнала записан некорректно; он отклонён.";
+            case "SDK_MESSAGE": return "Не удалось прочитать сообщение RuStore; сигнал отклонён.";
+            default: return "Получен некорректный сигнал; он отклонён.";
+        }
     }
 
     private String diagnosticTime(long at) {
