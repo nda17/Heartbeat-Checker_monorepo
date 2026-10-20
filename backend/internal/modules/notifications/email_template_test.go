@@ -173,3 +173,40 @@ func TestIncidentEmailSubjectSanitizesNameAndTimeUsesMoscowOffsetAcrossDateBound
 		})
 	}
 }
+
+func TestEmailSnapshotFormatsSelectedZoneKeepsDurationStableAndSupportsLegacyZone(t *testing.T) {
+	snapshot := emailTemplateSnapshot("up", "http")
+	snapshot.OpenedAt = time.Date(2026, time.January, 15, 12, 0, 0, 0, time.UTC)
+	closed := snapshot.OpenedAt.Add(90 * time.Minute)
+	snapshot.CheckedAt = closed
+	snapshot.ClosedAt = &closed
+	snapshot.TimeZone = "Europe/Berlin"
+	snapshot.ProviderNames = []string{"Cloudflare", "Timeweb"}
+	_, berlin, err := emailMessage(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(berlin.HTML, "15.01.2026 13:00 CET (UTC&#43;01)") || !strings.Contains(berlin.HTML, "15.01.2026 14:30 CET (UTC&#43;01)") || !strings.Contains(berlin.HTML, "1 ч 30 мин") {
+		t.Fatalf("Berlin email is missing localized times or elapsed duration: %s", berlin.HTML)
+	}
+	if !strings.Contains(berlin.HTML, "Cloudflare; Timeweb") {
+		t.Fatal("email snapshot did not preserve provider names")
+	}
+	snapshot.TimeZone = "Asia/Kathmandu"
+	_, kathmandu, err := emailMessage(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(kathmandu.HTML, "15.01.2026 17:45 Asia/Kathmandu (UTC&#43;05:45)") || !strings.Contains(kathmandu.HTML, "1 ч 30 мин") {
+		t.Fatalf("Kathmandu email changed event offset or elapsed duration: %s", kathmandu.HTML)
+	}
+
+	snapshot.TimeZone = ""
+	_, legacy, err := emailMessage(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(legacy.HTML, "15.01.2026 15:00 МСК (UTC&#43;03)") || !strings.Contains(legacy.HTML, "1 ч 30 мин") {
+		t.Fatalf("legacy email snapshot did not use Moscow and stable duration: %s", legacy.HTML)
+	}
+}

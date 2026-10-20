@@ -583,6 +583,15 @@ func TestPushHTTPNativeAuthAndBrowserSafeResponses(t *testing.T) {
 		mux.ServeHTTP(out, req)
 		return out
 	}
+	f.push.cfg.Providers = []string{"rustore", "fcm"}
+	capabilities := call(http.MethodGet, "/api/v1/push/capabilities", nil, "", false)
+	var capabilityDTO struct {
+		ProtocolVersion int      `json:"protocolVersion"`
+		Providers       []string `json:"providers"`
+	}
+	if capabilities.Code != http.StatusOK || json.Unmarshal(capabilities.Body.Bytes(), &capabilityDTO) != nil || capabilityDTO.ProtocolVersion != 2 || strings.Join(capabilityDTO.Providers, ",") != "fcm,rustore" {
+		t.Fatalf("public push capabilities = %d %s, want protocol 2 with configured providers", capabilities.Code, capabilities.Body.String())
+	}
 	verifier, challenge := newPushVerifier(t)
 	unauthorized := call(http.MethodGet, "/api/v1/push/installation", nil, "bad.bearer", false)
 	if unauthorized.Code != http.StatusUnauthorized {
@@ -621,6 +630,9 @@ func TestPushHTTPNativeAuthAndBrowserSafeResponses(t *testing.T) {
 	repeatConfirm := call(http.MethodPost, "/api/v1/push/pairings/"+pairResult.Pairing.ID+"/confirm", map[string]any{}, "", true)
 	if repeatConfirm.Code != http.StatusConflict {
 		t.Fatalf("repeat HTTP confirmation = %d %s, want 409", repeatConfirm.Code, repeatConfirm.Body.String())
+	}
+	if _, err := f.push.ExchangePairing(context.Background(), pairResult.Installation.Credential, pairResult.Pairing.ID, PushExchangeInput{CodeVerifier: verifier, CompletionCode: confirmation.CompletionCode, Provider: "huawei", Token: "provider-private-token", Permission: "granted", AppVersion: "1.2.3"}); !errors.Is(err, ErrPushInvalid) {
+		t.Fatalf("Huawei pairing exchange with FCM/RuStore-only config = %v, want invalid provider", err)
 	}
 	if _, err := f.push.ExchangePairing(context.Background(), pairResult.Installation.Credential, pairResult.Pairing.ID, PushExchangeInput{CodeVerifier: verifier, CompletionCode: confirmation.CompletionCode, Provider: "rustore", Token: "provider-private-token", Permission: "granted", AppVersion: "1.2.3"}); err != nil {
 		t.Fatal(err)
@@ -1018,22 +1030,12 @@ func TestPushStaleAttemptAndInvalidProviderTokenAreFenced(t *testing.T) {
 	if err := f.webhook.pool.QueryRow(context.Background(), `SELECT status FROM notifications.push_deliveries WHERE id=$1`, deliveryID).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
-	if status != "pending" {
-		t.Fatalf("completion after token rotation state = %q, want pending for retry with current token", status)
-	}
-	if _, err := f.webhook.pool.Exec(context.Background(), `UPDATE notifications.push_deliveries SET next_attempt_at=now()-interval '1 second' WHERE id=$1`, deliveryID); err != nil {
-		t.Fatal(err)
-	}
-	second, err := f.push.ClaimPush(context.Background())
-	if err != nil || second == nil || second.RegistrationToken != newToken {
-		t.Fatalf("claim after token rotation = (%+v, %v), want new token", second, err)
-	}
-	if err := f.push.CompletePush(context.Background(), *second, pushProviderError{code: "invalid_token", permanent: true, invalidToken: true}); err != nil {
-		t.Fatal(err)
+	if status != "accepted" {
+		t.Fatalf("completion after token rotation state = %q, want accepted for the already attempted destination", status)
 	}
 	state, err := f.push.Installation(context.Background(), pair.Installation.Credential)
-	if err != nil || state.Status != "invalid_token" {
-		t.Fatalf("provider invalid-token state = (%+v, %v), want invalid_token", state, err)
+	if err != nil || state.Status != "ready" || state.RegistrationVersion <= installation.RegistrationVersion {
+		t.Fatalf("current registration after accepted stale-route completion = (%+v, %v), want rotated ready token", state, err)
 	}
 }
 

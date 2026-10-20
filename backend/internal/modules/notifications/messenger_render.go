@@ -2,6 +2,7 @@ package notifications
 
 import (
 	"fmt"
+	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/platform/timezones"
 	"net"
 	"net/url"
 	"strconv"
@@ -11,10 +12,12 @@ import (
 
 type messengerButton struct{ Text, URL string }
 
-var moscow = time.FixedZone("МСК", 3*60*60)
-
-func messengerTime(at time.Time) string {
-	return at.In(moscow).Format("02.01.2006 15:04") + " МСК (UTC+03)"
+func messengerTime(at time.Time, zone ...string) string {
+	value := timezones.Default
+	if len(zone) > 0 {
+		value = zone[0]
+	}
+	return timezones.Format(at, value)
 }
 
 func messengerMessage(s messengerSnapshot) (string, []messengerButton) {
@@ -28,15 +31,15 @@ func messengerMessage(s messengerSnapshot) (string, []messengerButton) {
 	var lines []string
 	switch s.Kind {
 	case "down":
-		lines = []string{fmt.Sprintf("🔴 Инцидент №%d · %s", s.Number, name), "Первый сбой: " + messengerTime(s.OpenedAt), "Недоступность подтверждена: " + messengerTime(s.ConfirmedAt), "До подтверждения: " + messengerDuration(s.ConfirmedAt.Sub(s.OpenedAt))}
+		lines = []string{fmt.Sprintf("🔴 Инцидент №%d · %s", s.Number, name), "Первый сбой: " + messengerTime(s.OpenedAt, s.TimeZone), "Недоступность подтверждена: " + messengerTime(s.ConfirmedAt, s.TimeZone), "До подтверждения: " + messengerDuration(s.ConfirmedAt.Sub(s.OpenedAt))}
 	case "up":
 		closed := s.CheckedAt
 		if s.ClosedAt != nil {
 			closed = *s.ClosedAt
 		}
-		lines = []string{fmt.Sprintf("🟢 Инцидент №%d завершён · %s", s.Number, name), "Первый сбой: " + messengerTime(s.OpenedAt), "Недоступность подтверждена: " + messengerTime(s.ConfirmedAt), "Восстановлено: " + messengerTime(closed), "Длительность: " + messengerDuration(closed.Sub(s.OpenedAt))}
+		lines = []string{fmt.Sprintf("🟢 Инцидент №%d завершён · %s", s.Number, name), "Первый сбой: " + messengerTime(s.OpenedAt, s.TimeZone), "Недоступность подтверждена: " + messengerTime(s.ConfirmedAt, s.TimeZone), "Восстановлено: " + messengerTime(closed, s.TimeZone), "Длительность: " + messengerDuration(closed.Sub(s.OpenedAt))}
 	case "reminder":
-		lines = []string{fmt.Sprintf("🔴 Инцидент №%d продолжается · %s", s.Number, name), "Первый сбой: " + messengerTime(s.OpenedAt), "Недоступность подтверждена: " + messengerTime(s.ConfirmedAt), "Проверка: " + messengerTime(s.CheckedAt), "Длительность: " + messengerDuration(s.CheckedAt.Sub(s.OpenedAt))}
+		lines = []string{fmt.Sprintf("🔴 Инцидент №%d продолжается · %s", s.Number, name), "Первый сбой: " + messengerTime(s.OpenedAt, s.TimeZone), "Недоступность подтверждена: " + messengerTime(s.ConfirmedAt, s.TimeZone), "Проверка: " + messengerTime(s.CheckedAt, s.TimeZone), "Длительность: " + messengerDuration(s.CheckedAt.Sub(s.OpenedAt))}
 	}
 	if s.CheckType == "tcp" {
 		lines = append(lines, "TCP: "+net.JoinHostPort(s.Host, strconv.Itoa(s.Port)))
@@ -45,6 +48,11 @@ func messengerMessage(s messengerSnapshot) (string, []messengerButton) {
 	} else if s.URL != "" {
 		lines = append(lines, "Сайт: "+s.URL)
 	}
+	provider := "Неизвестно"
+	if len(s.ProviderNames) > 0 {
+		provider = strings.Join(s.ProviderNames, "; ")
+	}
+	lines = append(lines, "Провайдер / CDN: "+provider)
 	if cause := messengerCause(s.ErrorCode); cause != "" && s.Kind != "up" {
 		lines = append(lines, "Причина: "+cause)
 	}

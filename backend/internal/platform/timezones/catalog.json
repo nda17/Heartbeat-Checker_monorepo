@@ -1,0 +1,1754 @@
+[
+  {
+    "id": "Africa/Abidjan",
+    "label": "Абиджан · Африка"
+  },
+  {
+    "id": "Africa/Accra",
+    "label": "Аккра · Африка"
+  },
+  {
+    "id": "Africa/Addis_Ababa",
+    "label": "Аддис-Абеба · Африка"
+  },
+  {
+    "id": "Africa/Algiers",
+    "label": "Алжир · Африка"
+  },
+  {
+    "id": "Africa/Asmara",
+    "label": "Асмэра · Африка"
+  },
+  {
+    "id": "Africa/Asmera",
+    "label": "Асмэра · Африка"
+  },
+  {
+    "id": "Africa/Bamako",
+    "label": "Бамако · Африка"
+  },
+  {
+    "id": "Africa/Bangui",
+    "label": "Банги · Африка"
+  },
+  {
+    "id": "Africa/Banjul",
+    "label": "Банжул · Африка"
+  },
+  {
+    "id": "Africa/Bissau",
+    "label": "Бисау · Африка"
+  },
+  {
+    "id": "Africa/Blantyre",
+    "label": "Блантайр · Африка"
+  },
+  {
+    "id": "Africa/Brazzaville",
+    "label": "Браззавиль · Африка"
+  },
+  {
+    "id": "Africa/Bujumbura",
+    "label": "Бужумбура · Африка"
+  },
+  {
+    "id": "Africa/Cairo",
+    "label": "Каир · Африка"
+  },
+  {
+    "id": "Africa/Casablanca",
+    "label": "Касабланка · Африка"
+  },
+  {
+    "id": "Africa/Ceuta",
+    "label": "Сеута · Африка"
+  },
+  {
+    "id": "Africa/Conakry",
+    "label": "Конакри · Африка"
+  },
+  {
+    "id": "Africa/Dakar",
+    "label": "Дакар · Африка"
+  },
+  {
+    "id": "Africa/Dar_es_Salaam",
+    "label": "Дар-эс-Салам · Африка"
+  },
+  {
+    "id": "Africa/Djibouti",
+    "label": "Джибути · Африка"
+  },
+  {
+    "id": "Africa/Douala",
+    "label": "Дуала · Африка"
+  },
+  {
+    "id": "Africa/El_Aaiun",
+    "label": "Эль-Аюн · Африка"
+  },
+  {
+    "id": "Africa/Freetown",
+    "label": "Фритаун · Африка"
+  },
+  {
+    "id": "Africa/Gaborone",
+    "label": "Габороне · Африка"
+  },
+  {
+    "id": "Africa/Harare",
+    "label": "Хараре · Африка"
+  },
+  {
+    "id": "Africa/Johannesburg",
+    "label": "Йоханнесбург · Африка"
+  },
+  {
+    "id": "Africa/Juba",
+    "label": "Джуба · Африка"
+  },
+  {
+    "id": "Africa/Kampala",
+    "label": "Кампала · Африка"
+  },
+  {
+    "id": "Africa/Khartoum",
+    "label": "Хартум · Африка"
+  },
+  {
+    "id": "Africa/Kigali",
+    "label": "Кигали · Африка"
+  },
+  {
+    "id": "Africa/Kinshasa",
+    "label": "Киншаса · Африка"
+  },
+  {
+    "id": "Africa/Lagos",
+    "label": "Лагос · Африка"
+  },
+  {
+    "id": "Africa/Libreville",
+    "label": "Либревиль · Африка"
+  },
+  {
+    "id": "Africa/Lome",
+    "label": "Ломе · Африка"
+  },
+  {
+    "id": "Africa/Luanda",
+    "label": "Луанда · Африка"
+  },
+  {
+    "id": "Africa/Lubumbashi",
+    "label": "Лубумбаши · Африка"
+  },
+  {
+    "id": "Africa/Lusaka",
+    "label": "Лусака · Африка"
+  },
+  {
+    "id": "Africa/Malabo",
+    "label": "Малабо · Африка"
+  },
+  {
+    "id": "Africa/Maputo",
+    "label": "Мапуту · Африка"
+  },
+  {
+    "id": "Africa/Maseru",
+    "label": "Масеру · Африка"
+  },
+  {
+    "id": "Africa/Mbabane",
+    "label": "Мбабане · Африка"
+  },
+  {
+    "id": "Africa/Mogadishu",
+    "label": "Могадишо · Африка"
+  },
+  {
+    "id": "Africa/Monrovia",
+    "label": "Монровия · Африка"
+  },
+  {
+    "id": "Africa/Nairobi",
+    "label": "Найроби · Африка"
+  },
+  {
+    "id": "Africa/Ndjamena",
+    "label": "Нджамена · Африка"
+  },
+  {
+    "id": "Africa/Niamey",
+    "label": "Ниамей · Африка"
+  },
+  {
+    "id": "Africa/Nouakchott",
+    "label": "Нуакшот · Африка"
+  },
+  {
+    "id": "Africa/Ouagadougou",
+    "label": "Уагадугу · Африка"
+  },
+  {
+    "id": "Africa/Porto-Novo",
+    "label": "Порто-Ново · Африка"
+  },
+  {
+    "id": "Africa/Sao_Tome",
+    "label": "Сан-Томе · Африка"
+  },
+  {
+    "id": "Africa/Tripoli",
+    "label": "Триполи · Африка"
+  },
+  {
+    "id": "Africa/Tunis",
+    "label": "Тунис · Африка"
+  },
+  {
+    "id": "Africa/Windhoek",
+    "label": "Виндхук · Африка"
+  },
+  {
+    "id": "America/Adak",
+    "label": "Адак · Америка"
+  },
+  {
+    "id": "America/Anchorage",
+    "label": "Анкоридж · Америка"
+  },
+  {
+    "id": "America/Anguilla",
+    "label": "Ангилья · Америка"
+  },
+  {
+    "id": "America/Antigua",
+    "label": "Антигуа · Америка"
+  },
+  {
+    "id": "America/Araguaina",
+    "label": "Арагуаина · Америка"
+  },
+  {
+    "id": "America/Argentina/Buenos_Aires",
+    "label": "Буэнос-Айрес · Америка"
+  },
+  {
+    "id": "America/Argentina/Catamarca",
+    "label": "Катамарка · Америка"
+  },
+  {
+    "id": "America/Argentina/Cordoba",
+    "label": "Кордова · Америка"
+  },
+  {
+    "id": "America/Argentina/Jujuy",
+    "label": "Жужуй · Америка"
+  },
+  {
+    "id": "America/Argentina/La_Rioja",
+    "label": "Ла-Риоха · Америка"
+  },
+  {
+    "id": "America/Argentina/Mendoza",
+    "label": "Мендоса · Америка"
+  },
+  {
+    "id": "America/Argentina/Rio_Gallegos",
+    "label": "Рио-Гальегос · Америка"
+  },
+  {
+    "id": "America/Argentina/Salta",
+    "label": "Сальта · Америка"
+  },
+  {
+    "id": "America/Argentina/San_Juan",
+    "label": "Сан-Хуан · Америка"
+  },
+  {
+    "id": "America/Argentina/San_Luis",
+    "label": "Сан-Луис · Америка"
+  },
+  {
+    "id": "America/Argentina/Tucuman",
+    "label": "Тукуман · Америка"
+  },
+  {
+    "id": "America/Argentina/Ushuaia",
+    "label": "Ушуая · Америка"
+  },
+  {
+    "id": "America/Aruba",
+    "label": "Аруба · Америка"
+  },
+  {
+    "id": "America/Asuncion",
+    "label": "Асунсьон · Америка"
+  },
+  {
+    "id": "America/Atikokan",
+    "label": "Корал-Харбор · Америка"
+  },
+  {
+    "id": "America/Bahia",
+    "label": "Баия · Америка"
+  },
+  {
+    "id": "America/Bahia_Banderas",
+    "label": "Баия-де-Бандерас · Америка"
+  },
+  {
+    "id": "America/Barbados",
+    "label": "Барбадос · Америка"
+  },
+  {
+    "id": "America/Belem",
+    "label": "Белен · Америка"
+  },
+  {
+    "id": "America/Belize",
+    "label": "Белиз · Америка"
+  },
+  {
+    "id": "America/Blanc-Sablon",
+    "label": "Бланк-Саблон · Америка"
+  },
+  {
+    "id": "America/Boa_Vista",
+    "label": "Боа-Виста · Америка"
+  },
+  {
+    "id": "America/Bogota",
+    "label": "Богота · Америка"
+  },
+  {
+    "id": "America/Boise",
+    "label": "Бойсе · Америка"
+  },
+  {
+    "id": "America/Buenos_Aires",
+    "label": "Буэнос-Айрес · Америка"
+  },
+  {
+    "id": "America/Cambridge_Bay",
+    "label": "Кеймбридж-Бей · Америка"
+  },
+  {
+    "id": "America/Campo_Grande",
+    "label": "Кампу-Гранди · Америка"
+  },
+  {
+    "id": "America/Cancun",
+    "label": "Канкун · Америка"
+  },
+  {
+    "id": "America/Caracas",
+    "label": "Каракас · Америка"
+  },
+  {
+    "id": "America/Catamarca",
+    "label": "Катамарка · Америка"
+  },
+  {
+    "id": "America/Cayenne",
+    "label": "Кайенна · Америка"
+  },
+  {
+    "id": "America/Cayman",
+    "label": "Острова Кайман · Америка"
+  },
+  {
+    "id": "America/Chicago",
+    "label": "Чикаго · Америка"
+  },
+  {
+    "id": "America/Chihuahua",
+    "label": "Чиуауа · Америка"
+  },
+  {
+    "id": "America/Ciudad_Juarez",
+    "label": "Сьюдад-Хуарес · Америка"
+  },
+  {
+    "id": "America/Coral_Harbour",
+    "label": "Корал-Харбор · Америка"
+  },
+  {
+    "id": "America/Cordoba",
+    "label": "Кордова · Америка"
+  },
+  {
+    "id": "America/Costa_Rica",
+    "label": "Коста-Рика · Америка"
+  },
+  {
+    "id": "America/Coyhaique",
+    "label": "Койайке · Америка"
+  },
+  {
+    "id": "America/Creston",
+    "label": "Крестон · Америка"
+  },
+  {
+    "id": "America/Cuiaba",
+    "label": "Куяба · Америка"
+  },
+  {
+    "id": "America/Curacao",
+    "label": "Кюрасао · Америка"
+  },
+  {
+    "id": "America/Danmarkshavn",
+    "label": "Денмарксхавн · Америка"
+  },
+  {
+    "id": "America/Dawson",
+    "label": "Доусон · Америка"
+  },
+  {
+    "id": "America/Dawson_Creek",
+    "label": "Доусон-Крик · Америка"
+  },
+  {
+    "id": "America/Denver",
+    "label": "Денвер · Америка"
+  },
+  {
+    "id": "America/Detroit",
+    "label": "Детройт · Америка"
+  },
+  {
+    "id": "America/Dominica",
+    "label": "Доминика · Америка"
+  },
+  {
+    "id": "America/Edmonton",
+    "label": "Эдмонтон · Америка"
+  },
+  {
+    "id": "America/Eirunepe",
+    "label": "Эйрунепе · Америка"
+  },
+  {
+    "id": "America/El_Salvador",
+    "label": "Сальвадор · Америка"
+  },
+  {
+    "id": "America/Fort_Nelson",
+    "label": "Форт Нельсон · Америка"
+  },
+  {
+    "id": "America/Fortaleza",
+    "label": "Форталеза · Америка"
+  },
+  {
+    "id": "America/Glace_Bay",
+    "label": "Глейс-Бей · Америка"
+  },
+  {
+    "id": "America/Godthab",
+    "label": "Нуук · Америка"
+  },
+  {
+    "id": "America/Goose_Bay",
+    "label": "Гус-Бей · Америка"
+  },
+  {
+    "id": "America/Grand_Turk",
+    "label": "Гранд-Терк · Америка"
+  },
+  {
+    "id": "America/Grenada",
+    "label": "Гренада · Америка"
+  },
+  {
+    "id": "America/Guadeloupe",
+    "label": "Гваделупа · Америка"
+  },
+  {
+    "id": "America/Guatemala",
+    "label": "Гватемала · Америка"
+  },
+  {
+    "id": "America/Guayaquil",
+    "label": "Гуаякиль · Америка"
+  },
+  {
+    "id": "America/Guyana",
+    "label": "Гайана · Америка"
+  },
+  {
+    "id": "America/Halifax",
+    "label": "Галифакс · Америка"
+  },
+  {
+    "id": "America/Havana",
+    "label": "Гавана · Америка"
+  },
+  {
+    "id": "America/Hermosillo",
+    "label": "Эрмосильо · Америка"
+  },
+  {
+    "id": "America/Indiana/Indianapolis",
+    "label": "Индианаполис · Америка"
+  },
+  {
+    "id": "America/Indiana/Knox",
+    "label": "Нокс, Индиана · Америка"
+  },
+  {
+    "id": "America/Indiana/Marengo",
+    "label": "Маренго, Индиана · Америка"
+  },
+  {
+    "id": "America/Indiana/Petersburg",
+    "label": "Питерсберг, Индиана · Америка"
+  },
+  {
+    "id": "America/Indiana/Tell_City",
+    "label": "Телл-Сити · Америка"
+  },
+  {
+    "id": "America/Indiana/Vevay",
+    "label": "Вевей, Индиана · Америка"
+  },
+  {
+    "id": "America/Indiana/Vincennes",
+    "label": "Винсеннес · Америка"
+  },
+  {
+    "id": "America/Indiana/Winamac",
+    "label": "Уинамак · Америка"
+  },
+  {
+    "id": "America/Indianapolis",
+    "label": "Индианаполис · Америка"
+  },
+  {
+    "id": "America/Inuvik",
+    "label": "Инувик · Америка"
+  },
+  {
+    "id": "America/Iqaluit",
+    "label": "Икалуит · Америка"
+  },
+  {
+    "id": "America/Jamaica",
+    "label": "Ямайка · Америка"
+  },
+  {
+    "id": "America/Jujuy",
+    "label": "Жужуй · Америка"
+  },
+  {
+    "id": "America/Juneau",
+    "label": "Джуно · Америка"
+  },
+  {
+    "id": "America/Kentucky/Louisville",
+    "label": "Луисвилл · Америка"
+  },
+  {
+    "id": "America/Kentucky/Monticello",
+    "label": "Монтиселло, Кентукки · Америка"
+  },
+  {
+    "id": "America/Kralendijk",
+    "label": "Кралендейк · Америка"
+  },
+  {
+    "id": "America/La_Paz",
+    "label": "Ла-Пас · Америка"
+  },
+  {
+    "id": "America/Lima",
+    "label": "Лима · Америка"
+  },
+  {
+    "id": "America/Los_Angeles",
+    "label": "Лос-Анджелес · Америка"
+  },
+  {
+    "id": "America/Louisville",
+    "label": "Луисвилл · Америка"
+  },
+  {
+    "id": "America/Lower_Princes",
+    "label": "Лоуэр-Принс-Куотер · Америка"
+  },
+  {
+    "id": "America/Maceio",
+    "label": "Масейо · Америка"
+  },
+  {
+    "id": "America/Managua",
+    "label": "Манагуа · Америка"
+  },
+  {
+    "id": "America/Manaus",
+    "label": "Манаус · Америка"
+  },
+  {
+    "id": "America/Marigot",
+    "label": "Мариго · Америка"
+  },
+  {
+    "id": "America/Martinique",
+    "label": "Мартиника · Америка"
+  },
+  {
+    "id": "America/Matamoros",
+    "label": "Матаморос · Америка"
+  },
+  {
+    "id": "America/Mazatlan",
+    "label": "Масатлан · Америка"
+  },
+  {
+    "id": "America/Mendoza",
+    "label": "Мендоса · Америка"
+  },
+  {
+    "id": "America/Menominee",
+    "label": "Меномини · Америка"
+  },
+  {
+    "id": "America/Merida",
+    "label": "Мерида · Америка"
+  },
+  {
+    "id": "America/Metlakatla",
+    "label": "Метлакатла · Америка"
+  },
+  {
+    "id": "America/Mexico_City",
+    "label": "Мехико · Америка"
+  },
+  {
+    "id": "America/Miquelon",
+    "label": "Микелон · Америка"
+  },
+  {
+    "id": "America/Moncton",
+    "label": "Монктон · Америка"
+  },
+  {
+    "id": "America/Monterrey",
+    "label": "Монтеррей · Америка"
+  },
+  {
+    "id": "America/Montevideo",
+    "label": "Монтевидео · Америка"
+  },
+  {
+    "id": "America/Montserrat",
+    "label": "Монтсеррат · Америка"
+  },
+  {
+    "id": "America/Nassau",
+    "label": "Нассау · Америка"
+  },
+  {
+    "id": "America/New_York",
+    "label": "Нью-Йорк · Америка"
+  },
+  {
+    "id": "America/Nome",
+    "label": "Ном · Америка"
+  },
+  {
+    "id": "America/Noronha",
+    "label": "Норонья · Америка"
+  },
+  {
+    "id": "America/North_Dakota/Beulah",
+    "label": "Бойла, Северная Дакота · Америка"
+  },
+  {
+    "id": "America/North_Dakota/Center",
+    "label": "Центр, Северная Дакота · Америка"
+  },
+  {
+    "id": "America/North_Dakota/New_Salem",
+    "label": "Нью-Сейлем, Северная Дакота · Америка"
+  },
+  {
+    "id": "America/Nuuk",
+    "label": "Нуук · Америка"
+  },
+  {
+    "id": "America/Ojinaga",
+    "label": "Охинага · Америка"
+  },
+  {
+    "id": "America/Panama",
+    "label": "Панама · Америка"
+  },
+  {
+    "id": "America/Paramaribo",
+    "label": "Парамарибо · Америка"
+  },
+  {
+    "id": "America/Phoenix",
+    "label": "Финикс · Америка"
+  },
+  {
+    "id": "America/Port-au-Prince",
+    "label": "Порт-о-Пренс · Америка"
+  },
+  {
+    "id": "America/Port_of_Spain",
+    "label": "Порт-оф-Спейн · Америка"
+  },
+  {
+    "id": "America/Porto_Velho",
+    "label": "Порту-Велью · Америка"
+  },
+  {
+    "id": "America/Puerto_Rico",
+    "label": "Пуэрто-Рико · Америка"
+  },
+  {
+    "id": "America/Punta_Arenas",
+    "label": "Пунта-Аренас · Америка"
+  },
+  {
+    "id": "America/Rankin_Inlet",
+    "label": "Ранкин-Инлет · Америка"
+  },
+  {
+    "id": "America/Recife",
+    "label": "Ресифи · Америка"
+  },
+  {
+    "id": "America/Regina",
+    "label": "Реджайна · Америка"
+  },
+  {
+    "id": "America/Resolute",
+    "label": "Резольют · Америка"
+  },
+  {
+    "id": "America/Rio_Branco",
+    "label": "Риу-Бранку · Америка"
+  },
+  {
+    "id": "America/Santarem",
+    "label": "Сантарен · Америка"
+  },
+  {
+    "id": "America/Santiago",
+    "label": "Сантьяго · Америка"
+  },
+  {
+    "id": "America/Santo_Domingo",
+    "label": "Санто-Доминго · Америка"
+  },
+  {
+    "id": "America/Sao_Paulo",
+    "label": "Сан-Паулу · Америка"
+  },
+  {
+    "id": "America/Scoresbysund",
+    "label": "Скорсбисунн · Америка"
+  },
+  {
+    "id": "America/Sitka",
+    "label": "Ситка · Америка"
+  },
+  {
+    "id": "America/St_Barthelemy",
+    "label": "Сен-Бартелеми · Америка"
+  },
+  {
+    "id": "America/St_Johns",
+    "label": "Сент-Джонс · Америка"
+  },
+  {
+    "id": "America/St_Kitts",
+    "label": "Сент-Китс · Америка"
+  },
+  {
+    "id": "America/St_Lucia",
+    "label": "Сент-Люсия · Америка"
+  },
+  {
+    "id": "America/St_Thomas",
+    "label": "Сент-Томас · Америка"
+  },
+  {
+    "id": "America/St_Vincent",
+    "label": "Сент-Винсент · Америка"
+  },
+  {
+    "id": "America/Swift_Current",
+    "label": "Свифт-Керрент · Америка"
+  },
+  {
+    "id": "America/Tegucigalpa",
+    "label": "Тегусигальпа · Америка"
+  },
+  {
+    "id": "America/Thule",
+    "label": "Туле · Америка"
+  },
+  {
+    "id": "America/Tijuana",
+    "label": "Тихуана · Америка"
+  },
+  {
+    "id": "America/Toronto",
+    "label": "Торонто · Америка"
+  },
+  {
+    "id": "America/Tortola",
+    "label": "Тортола · Америка"
+  },
+  {
+    "id": "America/Vancouver",
+    "label": "Ванкувер · Америка"
+  },
+  {
+    "id": "America/Whitehorse",
+    "label": "Уайтхорс · Америка"
+  },
+  {
+    "id": "America/Winnipeg",
+    "label": "Виннипег · Америка"
+  },
+  {
+    "id": "America/Yakutat",
+    "label": "Якутат · Америка"
+  },
+  {
+    "id": "Antarctica/Casey",
+    "label": "Кейси · Антарктида"
+  },
+  {
+    "id": "Antarctica/Davis",
+    "label": "Дейвис · Антарктида"
+  },
+  {
+    "id": "Antarctica/DumontDUrville",
+    "label": "Дюмон-д’Юрвиль · Антарктида"
+  },
+  {
+    "id": "Antarctica/Macquarie",
+    "label": "Маккуори · Антарктида"
+  },
+  {
+    "id": "Antarctica/Mawson",
+    "label": "Моусон · Антарктида"
+  },
+  {
+    "id": "Antarctica/McMurdo",
+    "label": "Мак-Мердо · Антарктида"
+  },
+  {
+    "id": "Antarctica/Palmer",
+    "label": "Палмер · Антарктида"
+  },
+  {
+    "id": "Antarctica/Rothera",
+    "label": "Ротера · Антарктида"
+  },
+  {
+    "id": "Antarctica/Syowa",
+    "label": "Сёва · Антарктида"
+  },
+  {
+    "id": "Antarctica/Troll",
+    "label": "Тролль · Антарктида"
+  },
+  {
+    "id": "Antarctica/Vostok",
+    "label": "Восток · Антарктида"
+  },
+  {
+    "id": "Arctic/Longyearbyen",
+    "label": "Лонгйир · Арктика"
+  },
+  {
+    "id": "Asia/Aden",
+    "label": "Аден · Азия"
+  },
+  {
+    "id": "Asia/Almaty",
+    "label": "Алматы · Азия"
+  },
+  {
+    "id": "Asia/Amman",
+    "label": "Амман · Азия"
+  },
+  {
+    "id": "Asia/Anadyr",
+    "label": "Анадырь · Азия"
+  },
+  {
+    "id": "Asia/Aqtau",
+    "label": "Актау · Азия"
+  },
+  {
+    "id": "Asia/Aqtobe",
+    "label": "Актобе · Азия"
+  },
+  {
+    "id": "Asia/Ashgabat",
+    "label": "Ашхабад · Азия"
+  },
+  {
+    "id": "Asia/Atyrau",
+    "label": "Атырау · Азия"
+  },
+  {
+    "id": "Asia/Baghdad",
+    "label": "Багдад · Азия"
+  },
+  {
+    "id": "Asia/Bahrain",
+    "label": "Бахрейн · Азия"
+  },
+  {
+    "id": "Asia/Baku",
+    "label": "Баку · Азия"
+  },
+  {
+    "id": "Asia/Bangkok",
+    "label": "Бангкок · Азия"
+  },
+  {
+    "id": "Asia/Barnaul",
+    "label": "Барнаул · Азия"
+  },
+  {
+    "id": "Asia/Beirut",
+    "label": "Бейрут · Азия"
+  },
+  {
+    "id": "Asia/Bishkek",
+    "label": "Бишкек · Азия"
+  },
+  {
+    "id": "Asia/Brunei",
+    "label": "Бруней · Азия"
+  },
+  {
+    "id": "Asia/Calcutta",
+    "label": "Калькутта · Азия"
+  },
+  {
+    "id": "Asia/Chita",
+    "label": "Чита · Азия"
+  },
+  {
+    "id": "Asia/Colombo",
+    "label": "Коломбо · Азия"
+  },
+  {
+    "id": "Asia/Damascus",
+    "label": "Дамаск · Азия"
+  },
+  {
+    "id": "Asia/Dhaka",
+    "label": "Дакка · Азия"
+  },
+  {
+    "id": "Asia/Dili",
+    "label": "Дили · Азия"
+  },
+  {
+    "id": "Asia/Dubai",
+    "label": "Дубай · Азия"
+  },
+  {
+    "id": "Asia/Dushanbe",
+    "label": "Душанбе · Азия"
+  },
+  {
+    "id": "Asia/Famagusta",
+    "label": "Фамагуста · Азия"
+  },
+  {
+    "id": "Asia/Gaza",
+    "label": "Газа · Азия"
+  },
+  {
+    "id": "Asia/Hebron",
+    "label": "Хеврон · Азия"
+  },
+  {
+    "id": "Asia/Ho_Chi_Minh",
+    "label": "Хошимин · Азия"
+  },
+  {
+    "id": "Asia/Hong_Kong",
+    "label": "Гонконг · Азия"
+  },
+  {
+    "id": "Asia/Hovd",
+    "label": "Ховд · Азия"
+  },
+  {
+    "id": "Asia/Irkutsk",
+    "label": "Иркутск · Азия"
+  },
+  {
+    "id": "Asia/Jakarta",
+    "label": "Джакарта · Азия"
+  },
+  {
+    "id": "Asia/Jayapura",
+    "label": "Джаяпура · Азия"
+  },
+  {
+    "id": "Asia/Jerusalem",
+    "label": "Иерусалим · Азия"
+  },
+  {
+    "id": "Asia/Kabul",
+    "label": "Кабул · Азия"
+  },
+  {
+    "id": "Asia/Kamchatka",
+    "label": "Петропавловск-Камчатский · Азия"
+  },
+  {
+    "id": "Asia/Karachi",
+    "label": "Карачи · Азия"
+  },
+  {
+    "id": "Asia/Kathmandu",
+    "label": "Катманду · Азия"
+  },
+  {
+    "id": "Asia/Katmandu",
+    "label": "Катманду · Азия"
+  },
+  {
+    "id": "Asia/Khandyga",
+    "label": "Хандыга · Азия"
+  },
+  {
+    "id": "Asia/Kolkata",
+    "label": "Калькутта · Азия"
+  },
+  {
+    "id": "Asia/Krasnoyarsk",
+    "label": "Красноярск · Азия"
+  },
+  {
+    "id": "Asia/Kuala_Lumpur",
+    "label": "Куала-Лумпур · Азия"
+  },
+  {
+    "id": "Asia/Kuching",
+    "label": "Кучинг · Азия"
+  },
+  {
+    "id": "Asia/Kuwait",
+    "label": "Кувейт · Азия"
+  },
+  {
+    "id": "Asia/Macau",
+    "label": "Макао · Азия"
+  },
+  {
+    "id": "Asia/Magadan",
+    "label": "Магадан · Азия"
+  },
+  {
+    "id": "Asia/Makassar",
+    "label": "Макасар · Азия"
+  },
+  {
+    "id": "Asia/Manila",
+    "label": "Манила · Азия"
+  },
+  {
+    "id": "Asia/Muscat",
+    "label": "Маскат · Азия"
+  },
+  {
+    "id": "Asia/Nicosia",
+    "label": "Никосия · Азия"
+  },
+  {
+    "id": "Asia/Novokuznetsk",
+    "label": "Новокузнецк · Азия"
+  },
+  {
+    "id": "Asia/Novosibirsk",
+    "label": "Новосибирск · Азия"
+  },
+  {
+    "id": "Asia/Omsk",
+    "label": "Омск · Азия"
+  },
+  {
+    "id": "Asia/Oral",
+    "label": "Уральск · Азия"
+  },
+  {
+    "id": "Asia/Phnom_Penh",
+    "label": "Пномпень · Азия"
+  },
+  {
+    "id": "Asia/Pontianak",
+    "label": "Понтианак · Азия"
+  },
+  {
+    "id": "Asia/Pyongyang",
+    "label": "Пхеньян · Азия"
+  },
+  {
+    "id": "Asia/Qatar",
+    "label": "Катар · Азия"
+  },
+  {
+    "id": "Asia/Qostanay",
+    "label": "Костанай · Азия"
+  },
+  {
+    "id": "Asia/Qyzylorda",
+    "label": "Кызылорда · Азия"
+  },
+  {
+    "id": "Asia/Rangoon",
+    "label": "Янгон · Азия"
+  },
+  {
+    "id": "Asia/Riyadh",
+    "label": "Эр-Рияд · Азия"
+  },
+  {
+    "id": "Asia/Saigon",
+    "label": "Хошимин · Азия"
+  },
+  {
+    "id": "Asia/Sakhalin",
+    "label": "о-в Сахалин · Азия"
+  },
+  {
+    "id": "Asia/Samarkand",
+    "label": "Самарканд · Азия"
+  },
+  {
+    "id": "Asia/Seoul",
+    "label": "Сеул · Азия"
+  },
+  {
+    "id": "Asia/Shanghai",
+    "label": "Шанхай · Азия"
+  },
+  {
+    "id": "Asia/Singapore",
+    "label": "Сингапур · Азия"
+  },
+  {
+    "id": "Asia/Srednekolymsk",
+    "label": "Среднеколымск · Азия"
+  },
+  {
+    "id": "Asia/Taipei",
+    "label": "Тайбэй · Азия"
+  },
+  {
+    "id": "Asia/Tashkent",
+    "label": "Ташкент · Азия"
+  },
+  {
+    "id": "Asia/Tbilisi",
+    "label": "Тбилиси · Азия"
+  },
+  {
+    "id": "Asia/Tehran",
+    "label": "Тегеран · Азия"
+  },
+  {
+    "id": "Asia/Thimphu",
+    "label": "Тхимпху · Азия"
+  },
+  {
+    "id": "Asia/Tokyo",
+    "label": "Токио · Азия"
+  },
+  {
+    "id": "Asia/Tomsk",
+    "label": "Томск · Азия"
+  },
+  {
+    "id": "Asia/Ulaanbaatar",
+    "label": "Улан-Батор · Азия"
+  },
+  {
+    "id": "Asia/Urumqi",
+    "label": "Урумчи · Азия"
+  },
+  {
+    "id": "Asia/Ust-Nera",
+    "label": "Усть-Нера · Азия"
+  },
+  {
+    "id": "Asia/Vientiane",
+    "label": "Вьентьян · Азия"
+  },
+  {
+    "id": "Asia/Vladivostok",
+    "label": "Владивосток · Азия"
+  },
+  {
+    "id": "Asia/Yakutsk",
+    "label": "Якутск · Азия"
+  },
+  {
+    "id": "Asia/Yangon",
+    "label": "Янгон · Азия"
+  },
+  {
+    "id": "Asia/Yekaterinburg",
+    "label": "Екатеринбург · Азия"
+  },
+  {
+    "id": "Asia/Yerevan",
+    "label": "Ереван · Азия"
+  },
+  {
+    "id": "Atlantic/Azores",
+    "label": "Азорские о-ва · Атлантика"
+  },
+  {
+    "id": "Atlantic/Bermuda",
+    "label": "Бермудские о-ва · Атлантика"
+  },
+  {
+    "id": "Atlantic/Canary",
+    "label": "Канарские о-ва · Атлантика"
+  },
+  {
+    "id": "Atlantic/Cape_Verde",
+    "label": "Кабо-Верде · Атлантика"
+  },
+  {
+    "id": "Atlantic/Faeroe",
+    "label": "Фарерские о-ва · Атлантика"
+  },
+  {
+    "id": "Atlantic/Faroe",
+    "label": "Фарерские о-ва · Атлантика"
+  },
+  {
+    "id": "Atlantic/Madeira",
+    "label": "Мадейра · Атлантика"
+  },
+  {
+    "id": "Atlantic/Reykjavik",
+    "label": "Рейкьявик · Атлантика"
+  },
+  {
+    "id": "Atlantic/South_Georgia",
+    "label": "Южная Георгия · Атлантика"
+  },
+  {
+    "id": "Atlantic/St_Helena",
+    "label": "о-в Святой Елены · Атлантика"
+  },
+  {
+    "id": "Atlantic/Stanley",
+    "label": "Стэнли · Атлантика"
+  },
+  {
+    "id": "Australia/Adelaide",
+    "label": "Аделаида · Австралия"
+  },
+  {
+    "id": "Australia/Brisbane",
+    "label": "Брисбен · Австралия"
+  },
+  {
+    "id": "Australia/Broken_Hill",
+    "label": "Брокен-Хилл · Австралия"
+  },
+  {
+    "id": "Australia/Darwin",
+    "label": "Дарвин · Австралия"
+  },
+  {
+    "id": "Australia/Eucla",
+    "label": "Юкла · Австралия"
+  },
+  {
+    "id": "Australia/Hobart",
+    "label": "Хобарт · Австралия"
+  },
+  {
+    "id": "Australia/Lindeman",
+    "label": "Линдеман · Австралия"
+  },
+  {
+    "id": "Australia/Lord_Howe",
+    "label": "Лорд-Хау · Австралия"
+  },
+  {
+    "id": "Australia/Melbourne",
+    "label": "Мельбурн · Австралия"
+  },
+  {
+    "id": "Australia/Perth",
+    "label": "Перт · Австралия"
+  },
+  {
+    "id": "Australia/Sydney",
+    "label": "Сидней · Австралия"
+  },
+  {
+    "id": "Etc/UTC",
+    "label": "Всемирное координированное время · UTC"
+  },
+  {
+    "id": "Europe/Amsterdam",
+    "label": "Амстердам · Европа"
+  },
+  {
+    "id": "Europe/Andorra",
+    "label": "Андорра · Европа"
+  },
+  {
+    "id": "Europe/Astrakhan",
+    "label": "Астрахань · Европа"
+  },
+  {
+    "id": "Europe/Athens",
+    "label": "Афины · Европа"
+  },
+  {
+    "id": "Europe/Belgrade",
+    "label": "Белград · Европа"
+  },
+  {
+    "id": "Europe/Berlin",
+    "label": "Берлин · Европа"
+  },
+  {
+    "id": "Europe/Bratislava",
+    "label": "Братислава · Европа"
+  },
+  {
+    "id": "Europe/Brussels",
+    "label": "Брюссель · Европа"
+  },
+  {
+    "id": "Europe/Bucharest",
+    "label": "Бухарест · Европа"
+  },
+  {
+    "id": "Europe/Budapest",
+    "label": "Будапешт · Европа"
+  },
+  {
+    "id": "Europe/Busingen",
+    "label": "Бюзинген-на-Верхнем-Рейне · Европа"
+  },
+  {
+    "id": "Europe/Chisinau",
+    "label": "Кишинев · Европа"
+  },
+  {
+    "id": "Europe/Copenhagen",
+    "label": "Копенгаген · Европа"
+  },
+  {
+    "id": "Europe/Dublin",
+    "label": "Дублин · Европа"
+  },
+  {
+    "id": "Europe/Gibraltar",
+    "label": "Гибралтар · Европа"
+  },
+  {
+    "id": "Europe/Guernsey",
+    "label": "Гернси · Европа"
+  },
+  {
+    "id": "Europe/Helsinki",
+    "label": "Хельсинки · Европа"
+  },
+  {
+    "id": "Europe/Isle_of_Man",
+    "label": "о-в Мэн · Европа"
+  },
+  {
+    "id": "Europe/Istanbul",
+    "label": "Стамбул · Европа"
+  },
+  {
+    "id": "Europe/Jersey",
+    "label": "Джерси · Европа"
+  },
+  {
+    "id": "Europe/Kaliningrad",
+    "label": "Калининград · Европа"
+  },
+  {
+    "id": "Europe/Kiev",
+    "label": "Киев · Европа"
+  },
+  {
+    "id": "Europe/Kirov",
+    "label": "Киров · Европа"
+  },
+  {
+    "id": "Europe/Kyiv",
+    "label": "Киев · Европа"
+  },
+  {
+    "id": "Europe/Lisbon",
+    "label": "Лиссабон · Европа"
+  },
+  {
+    "id": "Europe/Ljubljana",
+    "label": "Любляна · Европа"
+  },
+  {
+    "id": "Europe/London",
+    "label": "Лондон · Европа"
+  },
+  {
+    "id": "Europe/Luxembourg",
+    "label": "Люксембург · Европа"
+  },
+  {
+    "id": "Europe/Madrid",
+    "label": "Мадрид · Европа"
+  },
+  {
+    "id": "Europe/Malta",
+    "label": "Мальта · Европа"
+  },
+  {
+    "id": "Europe/Mariehamn",
+    "label": "Мариехамн · Европа"
+  },
+  {
+    "id": "Europe/Minsk",
+    "label": "Минск · Европа"
+  },
+  {
+    "id": "Europe/Monaco",
+    "label": "Монако · Европа"
+  },
+  {
+    "id": "Europe/Moscow",
+    "label": "Москва · Европа"
+  },
+  {
+    "id": "Europe/Oslo",
+    "label": "Осло · Европа"
+  },
+  {
+    "id": "Europe/Paris",
+    "label": "Париж · Европа"
+  },
+  {
+    "id": "Europe/Podgorica",
+    "label": "Подгорица · Европа"
+  },
+  {
+    "id": "Europe/Prague",
+    "label": "Прага · Европа"
+  },
+  {
+    "id": "Europe/Riga",
+    "label": "Рига · Европа"
+  },
+  {
+    "id": "Europe/Rome",
+    "label": "Рим · Европа"
+  },
+  {
+    "id": "Europe/Samara",
+    "label": "Самара · Европа"
+  },
+  {
+    "id": "Europe/San_Marino",
+    "label": "Сан-Марино · Европа"
+  },
+  {
+    "id": "Europe/Sarajevo",
+    "label": "Сараево · Европа"
+  },
+  {
+    "id": "Europe/Saratov",
+    "label": "Саратов · Европа"
+  },
+  {
+    "id": "Europe/Simferopol",
+    "label": "Симферополь · Европа"
+  },
+  {
+    "id": "Europe/Skopje",
+    "label": "Скопье · Европа"
+  },
+  {
+    "id": "Europe/Sofia",
+    "label": "София · Европа"
+  },
+  {
+    "id": "Europe/Stockholm",
+    "label": "Стокгольм · Европа"
+  },
+  {
+    "id": "Europe/Tallinn",
+    "label": "Таллин · Европа"
+  },
+  {
+    "id": "Europe/Tirane",
+    "label": "Тирана · Европа"
+  },
+  {
+    "id": "Europe/Ulyanovsk",
+    "label": "Ульяновск · Европа"
+  },
+  {
+    "id": "Europe/Vaduz",
+    "label": "Вадуц · Европа"
+  },
+  {
+    "id": "Europe/Vatican",
+    "label": "Ватикан · Европа"
+  },
+  {
+    "id": "Europe/Vienna",
+    "label": "Вена · Европа"
+  },
+  {
+    "id": "Europe/Vilnius",
+    "label": "Вильнюс · Европа"
+  },
+  {
+    "id": "Europe/Volgograd",
+    "label": "Волгоград · Европа"
+  },
+  {
+    "id": "Europe/Warsaw",
+    "label": "Варшава · Европа"
+  },
+  {
+    "id": "Europe/Zagreb",
+    "label": "Загреб · Европа"
+  },
+  {
+    "id": "Europe/Zurich",
+    "label": "Цюрих · Европа"
+  },
+  {
+    "id": "Indian/Antananarivo",
+    "label": "Антананариву · Индийский океан"
+  },
+  {
+    "id": "Indian/Chagos",
+    "label": "Чагос · Индийский океан"
+  },
+  {
+    "id": "Indian/Christmas",
+    "label": "о-в Рождества · Индийский океан"
+  },
+  {
+    "id": "Indian/Cocos",
+    "label": "Кокосовые о-ва · Индийский океан"
+  },
+  {
+    "id": "Indian/Comoro",
+    "label": "Коморы · Индийский океан"
+  },
+  {
+    "id": "Indian/Kerguelen",
+    "label": "Кергелен · Индийский океан"
+  },
+  {
+    "id": "Indian/Mahe",
+    "label": "Маэ · Индийский океан"
+  },
+  {
+    "id": "Indian/Maldives",
+    "label": "Мальдивы · Индийский океан"
+  },
+  {
+    "id": "Indian/Mauritius",
+    "label": "Маврикий · Индийский океан"
+  },
+  {
+    "id": "Indian/Mayotte",
+    "label": "Майотта · Индийский океан"
+  },
+  {
+    "id": "Indian/Reunion",
+    "label": "Реюньон · Индийский океан"
+  },
+  {
+    "id": "Pacific/Apia",
+    "label": "Апиа · Тихий океан"
+  },
+  {
+    "id": "Pacific/Auckland",
+    "label": "Окленд · Тихий океан"
+  },
+  {
+    "id": "Pacific/Bougainville",
+    "label": "Бугенвиль · Тихий океан"
+  },
+  {
+    "id": "Pacific/Chatham",
+    "label": "Чатем · Тихий океан"
+  },
+  {
+    "id": "Pacific/Chuuk",
+    "label": "Трук · Тихий океан"
+  },
+  {
+    "id": "Pacific/Easter",
+    "label": "о-в Пасхи · Тихий океан"
+  },
+  {
+    "id": "Pacific/Efate",
+    "label": "Эфате · Тихий океан"
+  },
+  {
+    "id": "Pacific/Enderbury",
+    "label": "о-в Кантон · Тихий океан"
+  },
+  {
+    "id": "Pacific/Fakaofo",
+    "label": "Факаофо · Тихий океан"
+  },
+  {
+    "id": "Pacific/Fiji",
+    "label": "Фиджи · Тихий океан"
+  },
+  {
+    "id": "Pacific/Funafuti",
+    "label": "Фунафути · Тихий океан"
+  },
+  {
+    "id": "Pacific/Galapagos",
+    "label": "Галапагосские о-ва · Тихий океан"
+  },
+  {
+    "id": "Pacific/Gambier",
+    "label": "о-ва Гамбье · Тихий океан"
+  },
+  {
+    "id": "Pacific/Guadalcanal",
+    "label": "Гуадалканал · Тихий океан"
+  },
+  {
+    "id": "Pacific/Guam",
+    "label": "Гуам · Тихий океан"
+  },
+  {
+    "id": "Pacific/Honolulu",
+    "label": "Гонолулу · Тихий океан"
+  },
+  {
+    "id": "Pacific/Kanton",
+    "label": "о-в Кантон · Тихий океан"
+  },
+  {
+    "id": "Pacific/Kiritimati",
+    "label": "Киритимати · Тихий океан"
+  },
+  {
+    "id": "Pacific/Kosrae",
+    "label": "Косрае · Тихий океан"
+  },
+  {
+    "id": "Pacific/Kwajalein",
+    "label": "Кваджалейн · Тихий океан"
+  },
+  {
+    "id": "Pacific/Majuro",
+    "label": "Маджуро · Тихий океан"
+  },
+  {
+    "id": "Pacific/Marquesas",
+    "label": "Маркизские о-ва · Тихий океан"
+  },
+  {
+    "id": "Pacific/Midway",
+    "label": "о-ва Мидуэй · Тихий океан"
+  },
+  {
+    "id": "Pacific/Nauru",
+    "label": "Науру · Тихий океан"
+  },
+  {
+    "id": "Pacific/Niue",
+    "label": "Ниуэ · Тихий океан"
+  },
+  {
+    "id": "Pacific/Norfolk",
+    "label": "Норфолк · Тихий океан"
+  },
+  {
+    "id": "Pacific/Noumea",
+    "label": "Нумеа · Тихий океан"
+  },
+  {
+    "id": "Pacific/Pago_Pago",
+    "label": "Паго-Паго · Тихий океан"
+  },
+  {
+    "id": "Pacific/Palau",
+    "label": "Палау · Тихий океан"
+  },
+  {
+    "id": "Pacific/Pitcairn",
+    "label": "Питкэрн · Тихий океан"
+  },
+  {
+    "id": "Pacific/Pohnpei",
+    "label": "Понпеи · Тихий океан"
+  },
+  {
+    "id": "Pacific/Ponape",
+    "label": "Понпеи · Тихий океан"
+  },
+  {
+    "id": "Pacific/Port_Moresby",
+    "label": "Порт-Морсби · Тихий океан"
+  },
+  {
+    "id": "Pacific/Rarotonga",
+    "label": "Раротонга · Тихий океан"
+  },
+  {
+    "id": "Pacific/Saipan",
+    "label": "Сайпан · Тихий океан"
+  },
+  {
+    "id": "Pacific/Tahiti",
+    "label": "Таити · Тихий океан"
+  },
+  {
+    "id": "Pacific/Tarawa",
+    "label": "Тарава · Тихий океан"
+  },
+  {
+    "id": "Pacific/Tongatapu",
+    "label": "Тонгатапу · Тихий океан"
+  },
+  {
+    "id": "Pacific/Truk",
+    "label": "Трук · Тихий океан"
+  },
+  {
+    "id": "Pacific/Wake",
+    "label": "Уэйк · Тихий океан"
+  },
+  {
+    "id": "Pacific/Wallis",
+    "label": "Уоллис · Тихий океан"
+  }
+]

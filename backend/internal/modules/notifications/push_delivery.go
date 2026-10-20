@@ -63,7 +63,7 @@ func (p *Push) Enqueue(ctx context.Context, tx pgx.Tx, n incidentcontracts.Notif
 		if kind == "up" {
 			label = "Монитор снова доступен"
 		}
-		content := PushDeliveryContent{DeliveryID: id, Kind: kind, Sequence: n.Sequence, MonitorID: n.MonitorID, IncidentID: n.IncidentID, OccurredAt: n.At.UTC(), ExpiresAt: n.At.Add(time.Hour).UTC(), Title: string(title), Body: label + " · " + n.At.In(time.FixedZone("MSK", 3*3600)).Format("02.01 15:04 МСК")}
+		content := PushDeliveryContent{DeliveryID: id, Kind: kind, Sequence: n.Sequence, MonitorID: n.MonitorID, IncidentID: n.IncidentID, OccurredAt: n.At.UTC(), ExpiresAt: n.At.Add(time.Hour).UTC(), Title: string(title), Body: pushIncidentBody(n, label)}
 		body, e := json.Marshal(content)
 		if e != nil {
 			return e
@@ -80,19 +80,50 @@ func (p *Push) Enqueue(ctx context.Context, tx pgx.Tx, n incidentcontracts.Notif
 	return nil
 }
 
+// Opaque transport envelopes do not carry this immutable incident snapshot.
+func pushIncidentBody(n incidentcontracts.Notification, label string) string {
+	zone := n.Observation.TimeZone
+	lines := []string{label, "Первый сбой: " + messengerTime(n.Incident.OpenedAt, zone), "Недоступность подтверждена: " + messengerTime(n.Incident.ConfirmedAt, zone)}
+	if n.Incident.ClosedAt != nil {
+		lines = append(lines, "Восстановлено: "+messengerTime(*n.Incident.ClosedAt, zone), "Длительность: "+messengerDuration(n.Incident.ClosedAt.Sub(n.Incident.OpenedAt)))
+	} else {
+		lines = append(lines, "До подтверждения: "+messengerDuration(n.Incident.ConfirmedAt.Sub(n.Incident.OpenedAt)))
+	}
+	names := n.Observation.ProviderNames
+	if len(names) > 3 {
+		names = names[:3]
+	}
+	provider := "Неизвестно"
+	if len(names) > 0 {
+		provider = strings.Join(names, "; ")
+	}
+	// Keep every timestamp; only the provider label is bounded for native display.
+	runes := []rune(provider)
+	if len(runes) > 160 {
+		provider = string(runes[:160])
+	}
+	lines = append(lines, "Провайдер / CDN: "+provider)
+	return strings.Join(lines, " · ")
+}
+
 type PushAttempt struct {
-	ID, AccountID, MonitorID, InstallationID, SessionID, Token, RegistrationToken string
-	BindingGeneration, PolicyGeneration, RegistrationVersion, Sequence            int64
-	Attempts                                                                      int
-	Deadline                                                                      time.Time
+	ID, AccountID, MonitorID, InstallationID, SessionID, Token, RegistrationToken, Provider string
+	BindingGeneration, PolicyGeneration, RegistrationVersion, Sequence                      int64
+	Attempts                                                                                int
+	Deadline                                                                                time.Time
 }
 
 type pushDeliveryState struct {
 	PushAttempt
-	Status   string
-	Lease    *time.Time
-	Next     time.Time
-	Snapshot []byte
+	Status            string
+	Lease             *time.Time
+	Next              time.Time
+	Snapshot          []byte
+	Destination       []byte
+	CurrentVersion    int64
+	CurrentProvider   string
+	CurrentToken      []byte
+	CurrentTokenValid bool
 }
 
 // deliveryGuard follows billing -> account/auth -> monitor -> installation ->
@@ -137,7 +168,7 @@ func (p *Push) deliveryGuard(ctx context.Context, tx pgx.Tx, id, installationID 
 		return d, false, err
 	}
 	var binding, policyGeneration int64
-	err = tx.QueryRow(ctx, `SELECT id::text,status,attempts,next_attempt_at,lease_until,COALESCE(attempt_token::text,''),deadline_at,sequence,binding_generation,policy_generation,registration_version,encrypted_snapshot FROM notifications.push_deliveries WHERE id=$1 FOR UPDATE`, id).Scan(&d.ID, &d.Status, &d.Attempts, &d.Next, &d.Lease, &d.Token, &d.Deadline, &d.Sequence, &binding, &policyGeneration, &d.RegistrationVersion, &d.Snapshot)
+	err = tx.QueryRow(ctx, `SELECT id::text,status,attempts,next_attempt_at,lease_until,COALESCE(attempt_token::text,''),deadline_at,sequence,binding_generation,policy_generation,registration_version,encrypted_snapshot,COALESCE(delivery_provider,''),encrypted_destination FROM notifications.push_deliveries WHERE id=$1 FOR UPDATE`, id).Scan(&d.ID, &d.Status, &d.Attempts, &d.Next, &d.Lease, &d.Token, &d.Deadline, &d.Sequence, &binding, &policyGeneration, &d.RegistrationVersion, &d.Snapshot, &d.Provider, &d.Destination)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return d, false, nil
 	}
@@ -145,20 +176,21 @@ func (p *Push) deliveryGuard(ctx context.Context, tx pgx.Tx, id, installationID 
 		return d, false, err
 	}
 	d.BindingGeneration, d.PolicyGeneration = binding, policyGeneration
-	valid := enabled && rank > 0 && entitlement.Quota >= rank && monitorSequence >= d.Sequence && i.AccountID == d.AccountID && i.SessionID == d.SessionID && i.Status == "ready" && i.Permission == "granted" && i.TokenValid && i.Generation == binding && policyEnabled && generation == policyGeneration && d.Deadline.After(time.Now())
-	if valid {
-		token, e := p.open(i.ID, "token", i.Token)
+	valid := enabled && rank > 0 && entitlement.Quota >= rank && monitorSequence >= d.Sequence && i.AccountID == d.AccountID && i.SessionID == d.SessionID && i.Status == "ready" && i.Permission == "granted" && i.Generation == binding && policyEnabled && generation == policyGeneration && d.Deadline.After(time.Now())
+	d.CurrentVersion, d.CurrentProvider, d.CurrentToken, d.CurrentTokenValid = i.Version, i.Provider, i.Token, i.TokenValid && i.ProviderAvailable
+	if valid && len(d.Destination) > 0 {
+		token, e := p.open(d.ID, "destination", d.Destination)
 		if e != nil {
 			return d, false, e
 		}
 		d.RegistrationToken = string(token)
-		d.RegistrationVersion = i.Version
 	}
+
 	return d, valid, nil
 }
 
 func (p *Push) ClaimPush(ctx context.Context) (*PushAttempt, error) {
-	if !p.cfg.Enabled || p.cfg.Sender == nil {
+	if !p.cfg.Enabled || p.cfg.Sender == nil && len(p.cfg.Senders) == 0 {
 		return nil, nil
 	}
 	rows, err := p.pool.Query(ctx, `SELECT d.id::text FROM notifications.push_deliveries d WHERE d.status IN ('pending','leased') AND (d.status='pending' AND d.next_attempt_at<=now() OR d.status='leased' AND d.lease_until<=now()) AND NOT EXISTS(SELECT 1 FROM notifications.push_deliveries prior WHERE prior.monitor_id=d.monitor_id AND prior.installation_id=d.installation_id AND prior.sequence<d.sequence AND prior.status IN ('pending','leased')) ORDER BY d.next_attempt_at,d.id LIMIT 100`)
@@ -219,8 +251,24 @@ func (p *Push) ClaimPush(ctx context.Context) (*PushAttempt, error) {
 			if e == nil {
 				d.Token, e = outbox.ID()
 			}
+			if e == nil && len(d.Destination) == 0 {
+				if !d.CurrentTokenValid || p.sender(d.CurrentProvider) == nil {
+					tx.Rollback(ctx)
+					continue
+				}
+				var token []byte
+				token, e = p.open(d.InstallationID, "token", d.CurrentToken)
+				if e == nil {
+					d.Destination, e = p.seal(d.ID, "destination", token)
+				}
+				d.RegistrationToken, d.Provider, d.RegistrationVersion = string(token), d.CurrentProvider, d.CurrentVersion
+			}
+			if e == nil && p.sender(d.Provider) == nil {
+				tx.Rollback(ctx)
+				continue
+			}
 			if e == nil {
-				_, e = tx.Exec(ctx, `UPDATE notifications.push_deliveries SET status='leased',attempts=attempts+1,attempt_token=$2,lease_until=now()+interval '45 seconds',registration_version=$3 WHERE id=$1`, id, d.Token, d.RegistrationVersion)
+				_, e = tx.Exec(ctx, `UPDATE notifications.push_deliveries SET status='leased',attempts=attempts+1,attempt_token=$2,lease_until=now()+interval '45 seconds',registration_version=$3,delivery_provider=$4,encrypted_destination=$5 WHERE id=$1`, id, d.Token, d.RegistrationVersion, d.Provider, d.Destination)
 			}
 			if e == nil {
 				e = tx.Commit(ctx)
@@ -258,9 +306,8 @@ func (p *Push) beforePush(ctx context.Context, a PushAttempt) (bool, error) {
 	valid = valid && d.Status == "leased" && d.Token == a.Token && d.Lease != nil && d.Lease.After(time.Now())
 	if !valid {
 		_, err = tx.Exec(ctx, `UPDATE notifications.push_deliveries SET status='cancelled',attempt_token=NULL,lease_until=NULL,completed_at=now(),error_code='delivery_inactive' WHERE id=$1 AND status='leased' AND attempt_token=$2`, a.ID, a.Token)
-	} else if d.RegistrationVersion != a.RegistrationVersion {
-		valid = false
-		_, err = tx.Exec(ctx, `UPDATE notifications.push_deliveries SET status='pending',attempt_token=NULL,lease_until=NULL,next_attempt_at=now() WHERE id=$1 AND attempt_token=$2`, a.ID, a.Token)
+	} else if d.RegistrationVersion != a.RegistrationVersion || d.Provider != a.Provider {
+		return false, ErrPushConflict
 	}
 	if err != nil {
 		return false, err
@@ -283,8 +330,8 @@ func (p *Push) CompletePush(ctx context.Context, a PushAttempt, sendErr error) e
 	}
 	if !valid {
 		_, err = tx.Exec(ctx, `UPDATE notifications.push_deliveries SET status='cancelled',attempt_token=NULL,lease_until=NULL,completed_at=now(),error_code='delivery_inactive' WHERE id=$1`, a.ID)
-	} else if d.RegistrationVersion != a.RegistrationVersion {
-		_, err = tx.Exec(ctx, `UPDATE notifications.push_deliveries SET status='pending',attempt_token=NULL,lease_until=NULL,next_attempt_at=now() WHERE id=$1`, a.ID)
+	} else if d.RegistrationVersion != a.RegistrationVersion || d.Provider != a.Provider {
+		return ErrPushConflict
 	} else if sendErr == nil {
 		_, err = tx.Exec(ctx, `UPDATE notifications.push_deliveries SET status='accepted',attempt_token=NULL,lease_until=NULL,completed_at=now(),error_code='' WHERE id=$1`, a.ID)
 	} else {
@@ -332,7 +379,7 @@ func (p *Push) ProcessDelivery(ctx context.Context) (bool, error) {
 		return true, p.CompletePush(ctx, *a, pushProviderError{code: "deadline_exceeded", permanent: true})
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	err = p.cfg.Sender.Send(sendCtx, a.RegistrationToken, map[string]string{"v": "1", "deliveryId": a.ID, "installationId": a.InstallationID, "bindingGeneration": strconv.FormatInt(a.BindingGeneration, 10), "expiresAt": a.Deadline.UTC().Format(time.RFC3339Nano)}, ttl)
+	err = p.sender(a.Provider).Send(sendCtx, a.RegistrationToken, map[string]string{"v": "1", "deliveryId": a.ID, "installationId": a.InstallationID, "bindingGeneration": strconv.FormatInt(a.BindingGeneration, 10), "expiresAt": a.Deadline.UTC().Format(time.RFC3339Nano)}, ttl)
 	cancel()
 	if ctx.Err() != nil {
 		return true, ctx.Err()

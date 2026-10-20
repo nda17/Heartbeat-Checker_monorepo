@@ -12,25 +12,27 @@ import (
 )
 
 type messengerSnapshot struct {
-	CheckType   string     `json:"checkType,omitempty"`
-	Host        string     `json:"host,omitempty"`
-	Port        int        `json:"port,omitempty"`
-	RoundTripMS *int64     `json:"roundTripMs,omitempty"`
-	MonitorID   string     `json:"monitorId"`
-	IncidentID  string     `json:"incidentId"`
-	Number      int64      `json:"number"`
-	Kind        string     `json:"kind"`
-	Name        string     `json:"name"`
-	URL         string     `json:"url"`
-	Outcome     string     `json:"outcome"`
-	HTTPStatus  int        `json:"httpStatus"`
-	ErrorCode   string     `json:"errorCode"`
-	LatencyMS   int64      `json:"latencyMs"`
-	CheckedAt   time.Time  `json:"checkedAt"`
-	OpenedAt    time.Time  `json:"openedAt"`
-	ConfirmedAt time.Time  `json:"confirmedAt"`
-	ClosedAt    *time.Time `json:"closedAt,omitempty"`
-	Sequence    int64      `json:"sequence"`
+	TimeZone      string     `json:"timeZone,omitempty"`
+	ProviderNames []string   `json:"providerNames,omitempty"`
+	CheckType     string     `json:"checkType,omitempty"`
+	Host          string     `json:"host,omitempty"`
+	Port          int        `json:"port,omitempty"`
+	RoundTripMS   *int64     `json:"roundTripMs,omitempty"`
+	MonitorID     string     `json:"monitorId"`
+	IncidentID    string     `json:"incidentId"`
+	Number        int64      `json:"number"`
+	Kind          string     `json:"kind"`
+	Name          string     `json:"name"`
+	URL           string     `json:"url"`
+	Outcome       string     `json:"outcome"`
+	HTTPStatus    int        `json:"httpStatus"`
+	ErrorCode     string     `json:"errorCode"`
+	LatencyMS     int64      `json:"latencyMs"`
+	CheckedAt     time.Time  `json:"checkedAt"`
+	OpenedAt      time.Time  `json:"openedAt"`
+	ConfirmedAt   time.Time  `json:"confirmedAt"`
+	ClosedAt      *time.Time `json:"closedAt,omitempty"`
+	Sequence      int64      `json:"sequence"`
 }
 
 func (m *Messenger) Enqueue(ctx context.Context, tx pgx.Tx, n incidentcontracts.Notification) error {
@@ -161,6 +163,7 @@ func (m *Messenger) enqueueRoute(ctx context.Context, tx pgx.Tx, accountID, moni
 	var snapshot messengerSnapshot
 	snapshot.MonitorID, snapshot.IncidentID, snapshot.Kind = monitorID, incident.ID, kind
 	snapshot.Name, snapshot.URL, snapshot.Outcome = o.Name, o.URL, o.Outcome
+	snapshot.TimeZone, snapshot.ProviderNames = o.TimeZone, o.ProviderNames
 	snapshot.CheckType, snapshot.Host, snapshot.Port, snapshot.RoundTripMS = o.CheckType, o.Host, o.Port, o.RoundTripMS
 	snapshot.HTTPStatus, snapshot.ErrorCode, snapshot.LatencyMS = o.HTTPStatus, o.ErrorCode, o.LatencyMS
 	snapshot.CheckedAt, snapshot.Sequence = o.CheckedAt, sequence

@@ -5576,3 +5576,75 @@ html[data-installed-app="true"] .android-hero {
     white-space: normal;
   }
 }
+
+.monitor-timezone {
+  position: relative;
+  min-width: 0;
+}
+.monitor-timezone-label {
+  display: block;
+  margin-bottom: 9px;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+}
+.monitor-timezone-trigger {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 13px;
+  border: 1px solid color-mix(in srgb, var(--muted) 30%, transparent);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+}
+.monitor-timezone-trigger > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.monitor-timezone-trigger .field-hint {
+  display: block;
+  margin: 3px 0 0;
+}
+.monitor-timezone-popover {
+  position: absolute;
+  z-index: 5;
+  top: 79px;
+  left: 0;
+  right: 0;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--muted) 25%, transparent);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 16px 48px #0003;
+}
+.monitor-timezone-options {
+  max-height: min(260px, 35vh);
+  overflow-y: auto;
+  margin-top: 6px;
+  overscroll-behavior: contain;
+}
+.monitor-timezone-options button {
+  display: block;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.monitor-timezone-options button span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.monitor-timezone-options button:is(.is-active, [aria-selected="true"]) {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}

@@ -92,6 +92,146 @@ func TestApplyIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestMonitorMetadataMigrationBackfillsLegacyTimezoneAndCheckConfigVersion(t *testing.T) {
+	pool := testDatabase(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `CREATE TABLE public.schema_migrations(version text PRIMARY KEY,checksum text NOT NULL,applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
+		t.Fatal(err)
+	}
+	names, err := fs.Glob(files, "*.sql")
+	if err != nil {
+		t.Fatalf("list embedded migrations: %v", err)
+	}
+	for _, name := range names {
+		if name >= "0023_monitor_metadata.sql" {
+			break
+		}
+		data, err := files.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read legacy migration %s: %v", name, err)
+		}
+		if _, err := pool.Exec(ctx, string(data)); err != nil {
+			t.Fatalf("apply legacy migration %s: %v", name, err)
+		}
+		sum := sha256.Sum256(data)
+		if _, err := pool.Exec(ctx, `INSERT INTO public.schema_migrations(version,checksum) VALUES($1,$2)`, strings.TrimSuffix(name, ".sql"), hex.EncodeToString(sum[:])); err != nil {
+			t.Fatalf("record legacy migration %s: %v", name, err)
+		}
+	}
+	const accountID = "a2300000-0000-4000-8000-000000000001"
+	const monitorID = "b2300000-0000-4000-8000-000000000001"
+	if _, err := pool.Exec(ctx, `INSERT INTO accounts.accounts(id,name) VALUES($1,'Legacy timezone owner')`, accountID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO monitors.monitors(id,account_id,name,url,target_key,method,expected_status,version) VALUES($1,$2,'Legacy timezone monitor','https://migration.example.test/health','migration.example.test:443','GET',200,7)`, monitorID, accountID); err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(ctx, pool); err != nil {
+		t.Fatalf("apply metadata migration after legacy monitor exists: %v", err)
+	}
+	var zone, target string
+	var checkConfigVersion int64
+	if err := pool.QueryRow(ctx, `SELECT m.time_zone,m.check_config_version,p.target_host FROM monitors.monitors m JOIN monitors.provider_lookups p ON p.monitor_id=m.id WHERE m.id=$1`, monitorID).Scan(&zone, &checkConfigVersion, &target); err != nil {
+		t.Fatal(err)
+	}
+	if zone != "Europe/Moscow" || checkConfigVersion != 7 || target != "migration.example.test" {
+		t.Fatalf("legacy migration values zone=%q checkConfigVersion=%d providerTarget=%q", zone, checkConfigVersion, target)
+	}
+}
+
+func TestMultiProviderMigrationFailsOnlyAttemptedLegacyDeliveries(t *testing.T) {
+	pool := testDatabase(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `CREATE TABLE public.schema_migrations(version text PRIMARY KEY,checksum text NOT NULL,applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
+		t.Fatal(err)
+	}
+	names, err := fs.Glob(files, "*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if name >= "0024_multi_provider_push.sql" {
+			break
+		}
+		data, err := files.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, string(data)); err != nil {
+			t.Fatalf("apply legacy migration %s: %v", name, err)
+		}
+		sum := sha256.Sum256(data)
+		if _, err := pool.Exec(ctx, `INSERT INTO public.schema_migrations(version,checksum) VALUES($1,$2)`, strings.TrimSuffix(name, ".sql"), hex.EncodeToString(sum[:])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const accountID = "a2400000-0000-4000-8000-000000000001"
+	const monitorID = "b2400000-0000-4000-8000-000000000001"
+	const incidentID = "c2400000-0000-4000-8000-000000000001"
+	const installationID = "d2400000-0000-4000-8000-000000000001"
+	if _, err := pool.Exec(ctx, `INSERT INTO accounts.accounts(id,name) VALUES($1,'Legacy push owner')`, accountID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO monitors.monitors(id,account_id,name,url,target_key,method,expected_status) VALUES($1,$2,'Legacy push monitor','https://migration.example.test/health','migration.example.test:443','GET',200)`, monitorID, accountID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO incidents.incidents(id,monitor_id,account_id,opened_at,confirmed_at) VALUES($1,$2,$3,now(),now())`, incidentID, monitorID, accountID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO notifications.push_installations(id,credential_hash,account_id,provider,device_label,app_version) VALUES($1,$2,$3,'rustore','Legacy test','1.1.3')`, installationID, make([]byte, 32), accountID); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct {
+		id, status string
+		attempts   int
+	}{
+		{"e2400000-0000-4000-8000-000000000001", "pending", 1},
+		{"e2400000-0000-4000-8000-000000000002", "leased", 2},
+		{"e2400000-0000-4000-8000-000000000003", "pending", 0},
+	} {
+		_, err := pool.Exec(ctx, `INSERT INTO notifications.push_deliveries(id,event_id,account_id,monitor_id,incident_id,installation_id,kind,sequence,policy_generation,binding_generation,registration_version,encrypted_snapshot,status,attempts,lease_until,attempt_token,deadline_at) VALUES($1,$1,$2,$3,$4,$5,'down',1,1,1,1,$6,$7,$8,CASE WHEN $7='leased' THEN now()+interval '1 minute' END,CASE WHEN $7='leased' THEN $9::uuid END,now()+interval '1 day')`, row.id, accountID, monitorID, incidentID, installationID, []byte("snapshot"), row.status, row.attempts, "f2400000-0000-4000-8000-000000000001")
+		if err != nil {
+			t.Fatalf("seed legacy delivery %s: %v", row.id, err)
+		}
+	}
+	if err := Apply(ctx, pool); err != nil {
+		t.Fatalf("apply multi-provider migration: %v", err)
+	}
+	rows, err := pool.Query(ctx, `SELECT status,error_code,attempt_token IS NULL,lease_until IS NULL,delivery_provider IS NULL,encrypted_destination IS NULL FROM notifications.push_deliveries ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var results []struct {
+		status, reason                                        string
+		attemptNull, leaseNull, providerNull, destinationNull bool
+	}
+	for rows.Next() {
+		var value struct {
+			status, reason                                        string
+			attemptNull, leaseNull, providerNull, destinationNull bool
+		}
+		if err := rows.Scan(&value.status, &value.reason, &value.attemptNull, &value.leaseNull, &value.providerNull, &value.destinationNull); err != nil {
+			t.Fatal(err)
+		}
+		results = append(results, value)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("migrated delivery count = %d, want 3", len(results))
+	}
+	for i := 0; i < 2; i++ {
+		if results[i].status != "failed" || results[i].reason != "route_migration" || !results[i].attemptNull || !results[i].leaseNull || !results[i].providerNull || !results[i].destinationNull {
+			t.Errorf("attempted legacy delivery %d = %+v, want failed route_migration with cleared lease and no frozen route", i, results[i])
+		}
+	}
+	if results[2].status != "pending" || results[2].reason != "" || !results[2].attemptNull || !results[2].leaseNull || !results[2].providerNull || !results[2].destinationNull {
+		t.Errorf("unattempted legacy delivery = %+v, want pending and eligible for first route", results[2])
+	}
+}
+
 func TestMockBillingPriceMigrationPreservesLegacyAmountsAndChecksNewAmounts(t *testing.T) {
 	pool := testDatabase(t)
 	ctx := context.Background()

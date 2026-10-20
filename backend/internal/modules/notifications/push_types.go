@@ -80,6 +80,7 @@ type PushExchangeInput struct {
 
 type PushRegistrationInput struct {
 	RegistrationVersion int64   `json:"registrationVersion"`
+	Provider            string  `json:"provider,omitempty"`
 	Token               *string `json:"token,omitempty"`
 	Permission          string  `json:"permission"`
 }

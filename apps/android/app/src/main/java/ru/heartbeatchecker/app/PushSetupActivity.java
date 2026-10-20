@@ -156,7 +156,7 @@ public final class PushSetupActivity extends ComponentActivity {
             String status = state.optString("lastConnectionStatus");
             if (state.optBoolean("optedOut")) text(page, "Уведомления отключены. Включите их, чтобы подключить устройство заново.");
             else if ("permission_denied".equals(status)) text(page, "Уведомления запрещены в Android. Разрешите их в настройках приложения.");
-            else if ("provider_unavailable".equals(status)) text(page, "RuStore Push недоступен. Проверьте RuStore и повторите подключение.");
+            else if ("provider_unavailable".equals(status)) text(page, "Push недоступен. Проверьте сеть и сервисы уведомлений на устройстве, затем повторите подключение.");
             else if ("connecting".equals(status)) text(page, "Подключаем устройство в фоне. Можно продолжать работу в кабинете.");
             else if ("connection_failed".equals(status)) text(page, "Подключение не завершено. Проверьте интернет и повторите подключение.");
             else if (PushStore.ready(state, System.currentTimeMillis())) text(page, "Устройство подключено");
@@ -201,16 +201,9 @@ public final class PushSetupActivity extends ComponentActivity {
 
     private void diagnostics(LinearLayout page, JSONObject state) {
         JSONObject provider = state.optJSONObject("providerDiagnostic");
-        if (provider != null) {
-            String message;
-            switch (provider.optString("code")) {
-                case "DISTRIBUTOR_MISSING": message = "Установите или включите RuStore, затем повторите подключение."; break;
-                case "DISTRIBUTOR_AUTH_REQUIRED": message = "Откройте RuStore и войдите в аккаунт, затем повторите подключение."; break;
-                case "DISTRIBUTOR_BACKGROUND_RESTRICTED": message = "Разрешите RuStore работу в фоне в настройках Android, затем повторите подключение."; break;
-                default: message = "Проверьте доступность RuStore и сеть, затем повторите подключение.";
-            }
-            text(page, "Последняя ошибка RuStore (" + diagnosticTime(provider.optLong("at")) + "): " + message);
-        }
+        String providerMessage = providerDiagnosticMessage(state);
+        if (provider != null && !providerMessage.isEmpty())
+            text(page, "Последняя ошибка push (" + diagnosticTime(provider.optLong("at")) + "): " + providerMessage);
         JSONObject delivery = state.optJSONObject("deliveryDiagnostic");
         if (delivery == null) {
             text(page, "Получение сигнала приложением пока не зафиксировано. Разрешение Android само по себе не подтверждает доставку.");
@@ -236,20 +229,35 @@ public final class PushSetupActivity extends ComponentActivity {
         }
         text(page, "Последняя обработка (" + diagnosticTime(delivery.optLong("at")) + "): " + message);
         if (state.optLong("lastReceivedAt") > 0)
-            text(page, "Последний сигнал RuStore: " + diagnosticTime(state.optLong("lastReceivedAt")));
+            text(page, "Последний push-сигнал: " + diagnosticTime(state.optLong("lastReceivedAt")));
+    }
+
+    static String providerDiagnosticMessage(JSONObject state) {
+        JSONObject diagnostic = state.optJSONObject("providerDiagnostic");
+        if (diagnostic == null) return "";
+        String code = diagnostic.optString("code");
+        // An old RuStore diagnostic, or a late callback from its SDK, must not
+        // describe a currently selected Firebase route.
+        if (code.startsWith("DISTRIBUTOR_") && !"rustore".equals(PushSdk.provider(state))) return "";
+        switch (code) {
+            case "DISTRIBUTOR_MISSING": return "Установите или включите RuStore, затем повторите подключение.";
+            case "DISTRIBUTOR_AUTH_REQUIRED": return "Откройте RuStore и войдите в аккаунт, затем повторите подключение.";
+            case "DISTRIBUTOR_BACKGROUND_RESTRICTED": return "Разрешите RuStore работу в фоне в настройках Android, затем повторите подключение.";
+            default: return "Проверьте сеть и доступность сервисов уведомлений на устройстве, затем повторите подключение.";
+        }
     }
 
     private String invalidEnvelopeMessage(String reason) {
         switch (reason) {
-            case "NULL_MESSAGE": return "RuStore передал пустое сообщение; сигнал отклонён.";
-            case "NOTIFICATION_CONTENT": return "Сигнал содержит непустые поля уведомления RuStore; он отклонён.";
+            case "NULL_MESSAGE": return "Push-сервис передал пустое сообщение; сигнал отклонён.";
+            case "NOTIFICATION_CONTENT": return "Сигнал содержит непустые поля уведомления; он отклонён.";
             case "DATA_KEYS": return "Набор полей данных сигнала не совпадает с ожидаемым; он отклонён.";
             case "VERSION": return "Версия сигнала не поддерживается; он отклонён.";
             case "DELIVERY_ID": return "Идентификатор доставки в сигнале некорректен; он отклонён.";
             case "INSTALLATION_ID": return "Идентификатор установки в сигнале некорректен; он отклонён.";
             case "GENERATION": return "Поколение привязки в сигнале некорректно; он отклонён.";
             case "EXPIRY_FORMAT": return "Срок действия сигнала записан некорректно; он отклонён.";
-            case "SDK_MESSAGE": return "Не удалось прочитать сообщение RuStore; сигнал отклонён.";
+            case "SDK_MESSAGE": return "Не удалось прочитать push-сообщение; сигнал отклонён.";
             default: return "Получен некорректный сигнал; он отклонён.";
         }
     }

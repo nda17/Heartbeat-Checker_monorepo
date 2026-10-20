@@ -25,6 +25,10 @@ jobs:
       SOURCE_SHA: ${{ inputs.source_sha }}
       SIGNING_FINGERPRINT: ${{ vars.ANDROID_SIGNING_CERTIFICATE_SHA256 }}
       RUSTORE_PUSH_PROJECT_ID: ${{ vars.RUSTORE_PUSH_PROJECT_ID }}
+      FIREBASE_APP_ID: ${{ vars.FIREBASE_APP_ID }}
+      FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
+      FIREBASE_API_KEY: ${{ vars.FIREBASE_API_KEY }}
+      FIREBASE_SENDER_ID: ${{ vars.FIREBASE_SENDER_ID }}
     steps:
       - name: Validate release inputs
         shell: bash
@@ -92,7 +96,7 @@ jobs:
           assert fingerprint == os.environ['SIGNING_FINGERPRINT'], 'Release signing certificate mismatch'
           badging = Path(os.environ['RUNNER_TEMP'], 'android-badging.txt').read_text()
           match = re.search(r"^package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'", badging, re.M)
-          assert match and match.groups() == ('ru.heartbeatchecker.app', '5', '1.1.3'), 'Unexpected application/version'
+          assert match and match.groups() == ('ru.heartbeatchecker.app', '6', '1.2.0'), 'Unexpected application/version'
           assert 'application-debuggable' not in badging, 'Release APK must not be debuggable'
           apk = Path('android-release/Heartbeat-Checker.apk')
           value = dict(schemaVersion=1, packageName=match[1], versionCode=int(match[2]), versionName=match[3], sourceSha=os.environ['SOURCE_SHA'],

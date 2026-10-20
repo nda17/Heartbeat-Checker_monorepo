@@ -277,7 +277,7 @@ yookassa_test = sys.argv[6] == "true"
 email_notifications = sys.argv[7] == "true"
 android_push = sys.argv[8] == "true"
 yookassa_production = sys.argv[9] == "true"
-push_keys = {b"ANDROID_PUSH_ENABLED", b"RUSTORE_PUSH_PROJECT_ID", b"RUSTORE_PUSH_SERVICE_TOKEN"}
+push_keys = {b"ANDROID_PUSH_ENABLED", b"RUSTORE_PUSH_PROJECT_ID", b"RUSTORE_PUSH_SERVICE_TOKEN", b"FCM_PUSH_ENABLED", b"FCM_PROJECT_ID", b"FCM_SERVICE_ACCOUNT_BASE64", b"HUAWEI_PUSH_ENABLED", b"HUAWEI_PROJECT_ID", b"HUAWEI_CLIENT_ID", b"HUAWEI_CLIENT_SECRET"}
 email_key = b"EMAIL_NOTIFICATIONS_ENABLED"
 yookassa_keys = {b"BILLING_PROVIDER", b"BILLING_TEST_ACCOUNT_IDS", b"YOOKASSA_MODE", b"YOOKASSA_TEST_SHOP_ID", b"YOOKASSA_TEST_SECRET_KEY"}
 production_keys = {b"BILLING_PROVIDER", b"YOOKASSA_MODE", b"YOOKASSA_PRODUCTION_SHOP_ID", b"YOOKASSA_PRODUCTION_SECRET_KEY"}
@@ -326,7 +326,12 @@ if android_push:
     token = unquote_literal(new_values.get(b"RUSTORE_PUSH_SERVICE_TOKEN",b""))
     if not 32 <= len(token) <= 8192 or any(c < 33 or c > 126 for c in token):
         reject("invalid RuStore push service token")
-    for key in push_keys - {b"ANDROID_PUSH_ENABLED"}:
+    for flag in (b"FCM_PUSH_ENABLED", b"HUAWEI_PUSH_ENABLED"):
+        if unquote_literal(new_values.get(flag, b"false")) not in (b"true", b"false"):
+            reject("invalid cloud push flag")
+        if unquote_literal(old_values.get(flag,b"false")) == b"true" and unquote_literal(new_values.get(flag,b"false")) != b"true":
+            reject("Android push activation cannot disable existing providers")
+    for key in push_keys - {b"ANDROID_PUSH_ENABLED", b"FCM_PUSH_ENABLED", b"HUAWEI_PUSH_ENABLED"}:
         old = unquote_literal(old_values.get(key,b""))
         if old and old != unquote_literal(new_values.get(key,b"")):
             reject("Android push activation cannot rotate existing configuration")
@@ -467,6 +472,15 @@ if api_push == "true":
     token = c["worker"]["environment"].get("RUSTORE_PUSH_SERVICE_TOKEN", "")
     if not project or not 32 <= len(token) <= 8192 or any(ord(char) < 33 or ord(char) > 126 for char in token):
         raise SystemExit("Enabled Android push requires complete worker configuration")
+cloud_secrets = ("FCM_SERVICE_ACCOUNT_BASE64", "HUAWEI_CLIENT_ID", "HUAWEI_CLIENT_SECRET")
+if any(key in c.get(name, {}).get("environment", {}) for key in cloud_secrets for name in ("api","probe","postgres","caddy","migrate")):
+    raise SystemExit("Cloud push sending credentials must be worker-only")
+for flag, project, credentials in (("FCM_PUSH_ENABLED", "FCM_PROJECT_ID", ("FCM_SERVICE_ACCOUNT_BASE64",)), ("HUAWEI_PUSH_ENABLED", "HUAWEI_PROJECT_ID", ("HUAWEI_CLIENT_ID", "HUAWEI_CLIENT_SECRET"))):
+    api_env, worker_env = c["api"]["environment"], c["worker"]["environment"]
+    if api_env.get(flag,"false") not in ("true","false") or api_env.get(flag,"false") != worker_env.get(flag,"false") or api_env.get(project,"") != worker_env.get(project,""):
+        raise SystemExit("Cloud push public configuration must match API and worker")
+    if worker_env.get(flag,"false") == "true" and (api_push != "true" or not worker_env.get(project) or any(not worker_env.get(key) for key in credentials)):
+        raise SystemExit("Enabled cloud push requires complete worker configuration")
 if c["worker"]["environment"]["SMTP_TLS_MODE"] not in ("implicit_tls", "starttls"):
     raise SystemExit("SMTP_TLS_MODE must use verified TLS")
 try:

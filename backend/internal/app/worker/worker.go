@@ -74,14 +74,26 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 	if err != nil {
 		return err
 	}
-	var pushSender notifications.PushSender
+	pushSenders := map[string]notifications.PushSender{}
 	if cfg.AndroidPushEnabled {
-		pushSender, err = notifications.NewRuStorePushSender(cfg.RuStorePushProjectID, cfg.RuStorePushServiceToken)
+		pushSenders["rustore"], err = notifications.NewRuStorePushSender(cfg.RuStorePushProjectID, cfg.RuStorePushServiceToken)
 		if err != nil {
 			return err
 		}
+		if cfg.FCMPushEnabled {
+			pushSenders["fcm"], err = notifications.NewFCMPushSender(cfg.FCMProjectID, cfg.FCMServiceAccountBase64)
+			if err != nil {
+				return err
+			}
+		}
+		if cfg.HuaweiPushEnabled {
+			pushSenders["huawei"], err = notifications.NewHuaweiPushSender(cfg.HuaweiProjectID, cfg.HuaweiClientID, cfg.HuaweiClientSecret)
+			if err != nil {
+				return err
+			}
+		}
 	}
-	pushModule, err := notifications.NewPush(pool, cfg.WebhookEncryptionKey, notifications.PushConfig{Enabled: cfg.AndroidPushEnabled, ProjectID: cfg.RuStorePushProjectID, Origin: "https://heartbeat-checker.ru", SessionLease: auth.SessionLeaseTx, Sender: pushSender}, billingModule)
+	pushModule, err := notifications.NewPush(pool, cfg.WebhookEncryptionKey, notifications.PushConfig{Enabled: cfg.AndroidPushEnabled, ProjectID: cfg.RuStorePushProjectID, Providers: cfg.PushProviders(), Origin: "https://heartbeat-checker.ru", SessionLease: auth.SessionLeaseTx, Senders: pushSenders}, billingModule)
 	if err != nil {
 		return err
 	}
@@ -102,6 +114,7 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 		}
 	}
 	var wg sync.WaitGroup
+	monitorModule.StartProviderWorker(ctx, &wg, logger, cfg.ProviderASNCacheDir)
 	if cfg.AndroidPushEnabled {
 		for range 2 {
 			startDeliveryLoop(ctx, &wg, logger, "Android push", pushModule.ProcessDelivery)

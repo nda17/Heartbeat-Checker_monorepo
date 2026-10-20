@@ -19,7 +19,7 @@ export const pushStatusLabels: Record<PushInstallationStatus, string> = {
 
 export interface PushInstallation {
   id: string;
-  provider: "rustore";
+  provider: "rustore" | "fcm" | "huawei";
   deviceLabel: string;
   status: PushInstallationStatus;
   bindingGeneration: number;

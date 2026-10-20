@@ -16,6 +16,14 @@ if (pushProjectId && !(pushProjectId ==~ /[A-Za-z0-9_-]{8,128}/)) {
     throw new GradleException('Invalid public RUSTORE_PUSH_PROJECT_ID')
 }
 
+// Public client identifiers only; sending credentials never enter the APK.
+def publicOptions = [:]
+['FIREBASE_APP_ID', 'FIREBASE_PROJECT_ID', 'FIREBASE_API_KEY', 'FIREBASE_SENDER_ID'].each { name ->
+    def value = (System.getenv(name) ?: '').trim()
+    if (value && !(value ==~ /[A-Za-z0-9_:-]{1,256}/)) throw new GradleException('Invalid public push configuration: ' + name)
+    publicOptions[name] = value
+}
+
 android {
     namespace 'ru.heartbeatchecker.app'
     compileSdk 37
@@ -25,9 +33,10 @@ android {
         applicationId 'ru.heartbeatchecker.app'
         minSdk 29
         targetSdk 37
-        versionCode 5
-        versionName '1.1.3'
+        versionCode 6
+        versionName '1.2.0'
         buildConfigField 'String', 'RUSTORE_PUSH_PROJECT_ID', '"' + pushProjectId + '"'
+        publicOptions.each { name, value -> buildConfigField 'String', name, '"' + value + '"' }
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
     signingConfigs {
@@ -64,6 +73,9 @@ tasks.register('requireReleaseSigning') {
         if (!signingReady || !file(keystore).isFile()) {
             throw new GradleException('Release signing requires ANDROID_KEYSTORE_FILE, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD (passwords may use _FILE).')
         }
+        if (publicOptions.values().any { !it }) {
+            throw new GradleException('Release requires complete public Firebase client configuration.')
+        }
         if (!pushProjectId) {
             throw new GradleException('Release requires the public RUSTORE_PUSH_PROJECT_ID for the registered package and signing certificate.')
         }
@@ -79,6 +91,8 @@ dependencies {
     implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.7.3'
     implementation 'androidx.activity:activity:1.13.0'
     implementation 'ru.rustore.sdk:pushclient:7.5.0'
+    implementation 'com.google.firebase:firebase-messaging:26.0.0'
+    implementation 'com.google.android.gms:play-services-base:18.9.0'
     implementation 'androidx.work:work-runtime:2.12.0'
     constraints {
         implementation('androidx.work:work-runtime-ktx:2.12.0') {

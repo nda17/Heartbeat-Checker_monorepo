@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"net"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -18,13 +19,17 @@ type Row struct {
 	contracts.Monitor
 	AccountID           string
 	TargetKey           string
+	CheckConfigVersion  int64
 	Sequence            int64
 	Rank                int
 	RunID, AttemptToken *string
 	LeaseUntil          *time.Time
 }
 
-const columns = `id::text,account_id::text,name,COALESCE(url,''),COALESCE(method,''),COALESCE(expected_status,0),COALESCE(body_contains,''),interval_minutes,failure_threshold,enabled,version,outcome,last_checked_at,last_http_status,last_latency_ms,next_check_at,target_key,sequence,run_id::text,attempt_token::text,lease_until,check_type,COALESCE(host,''),COALESCE(port,0),last_round_trip_ms`
+const columns = `id::text,account_id::text,name,COALESCE(url,''),COALESCE(method,''),COALESCE(expected_status,0),COALESCE(body_contains,''),interval_minutes,failure_threshold,enabled,version,outcome,last_checked_at,last_http_status,last_latency_ms,next_check_at,target_key,sequence,run_id::text,attempt_token::text,lease_until,check_type,COALESCE(host,''),COALESCE(port,0),last_round_trip_ms,time_zone,check_config_version,
+ COALESCE((SELECT provider_names FROM monitors.provider_lookups p WHERE p.monitor_id=id),'{}'::text[]),
+ COALESCE((SELECT status FROM monitors.provider_lookups p WHERE p.monitor_id=id),'unknown'),
+ (SELECT checked_at FROM monitors.provider_lookups p WHERE p.monitor_id=id)`
 
 func scan(row pgx.Row) (Row, error) {
 	var m Row
@@ -32,7 +37,7 @@ func scan(row pgx.Row) (Row, error) {
 	return m, err
 }
 func (m *Row) scanFields() []any {
-	return []any{&m.ID, &m.AccountID, &m.Name, &m.URL, &m.Method, &m.ExpectedStatus, &m.BodyContains, &m.IntervalMinutes, &m.FailureThreshold, &m.Enabled, &m.Version, &m.State, &m.LastCheckedAt, &m.LastHTTPStatus, &m.LastLatencyMS, &m.NextCheckAt, &m.TargetKey, &m.Sequence, &m.RunID, &m.AttemptToken, &m.LeaseUntil, &m.CheckType, &m.Host, &m.Port, &m.LastRoundTripMS}
+	return []any{&m.ID, &m.AccountID, &m.Name, &m.URL, &m.Method, &m.ExpectedStatus, &m.BodyContains, &m.IntervalMinutes, &m.FailureThreshold, &m.Enabled, &m.Version, &m.State, &m.LastCheckedAt, &m.LastHTTPStatus, &m.LastLatencyMS, &m.NextCheckAt, &m.TargetKey, &m.Sequence, &m.RunID, &m.AttemptToken, &m.LeaseUntil, &m.CheckType, &m.Host, &m.Port, &m.LastRoundTripMS, &m.TimeZone, &m.CheckConfigVersion, &m.Provider.Names, &m.Provider.Status, &m.Provider.CheckedAt}
 }
 func (r *Repository) List(ctx context.Context, tx pgx.Tx, owner string) ([]Row, error) {
 	rows, err := tx.Query(ctx, `SELECT `+columns+` FROM monitors.monitors WHERE account_id=$1 ORDER BY created_at,id`, owner)
@@ -121,18 +126,24 @@ func (r *Repository) Rank(ctx context.Context, tx pgx.Tx, owner, id string) (int
 	return n, err
 }
 func (r *Repository) Insert(ctx context.Context, tx pgx.Tx, owner, id, target string, in contracts.MonitorInput) error {
-	_, err := tx.Exec(ctx, `INSERT INTO monitors.monitors(id,account_id,name,url,target_key,method,expected_status,body_contains,interval_minutes,failure_threshold,enabled,check_type,host,port) VALUES($1,$2,$3,NULLIF($4,''),$5,NULLIF($6,''),NULLIF($7,0),CASE WHEN $12='http' THEN $8 ELSE NULL END,$9,$10,$11,$12,NULLIF($13,''),NULLIF($14,0))`, id, owner, in.Name, in.URL, target, in.Method, in.ExpectedStatus, in.BodyContains, *in.IntervalMinutes, *in.FailureThreshold, in.Enabled, in.CheckType, in.Host, in.Port)
-	return err
+	_, err := tx.Exec(ctx, `INSERT INTO monitors.monitors(id,account_id,name,url,target_key,method,expected_status,body_contains,interval_minutes,failure_threshold,enabled,check_type,host,port,time_zone) VALUES($1,$2,$3,NULLIF($4,''),$5,NULLIF($6,''),NULLIF($7,0),CASE WHEN $12='http' THEN $8 ELSE NULL END,$9,$10,$11,$12,NULLIF($13,''),NULLIF($14,0),$15)`, id, owner, in.Name, in.URL, target, in.Method, in.ExpectedStatus, in.BodyContains, *in.IntervalMinutes, *in.FailureThreshold, in.Enabled, in.CheckType, in.Host, in.Port, in.TimeZone)
+	if err != nil {
+		return err
+	}
+	return r.queueProvider(ctx, tx, id, target)
 }
 func (r *Repository) Update(ctx context.Context, tx pgx.Tx, owner, id, target string, in contracts.MonitorInput, resetCheck bool) error {
-	_, err := tx.Exec(ctx, `UPDATE monitors.monitors SET name=$3,url=NULLIF($4,''),target_key=$5,method=NULLIF($6,''),expected_status=NULLIF($7,0),body_contains=CASE WHEN $13='http' THEN $8 ELSE NULL END,check_type=$13,host=NULLIF($14,''),port=NULLIF($15,0),interval_minutes=$9,failure_threshold=$10,enabled=$11,version=version+1,outcome=CASE WHEN $12 THEN 'UNKNOWN' ELSE outcome END,
+	_, err := tx.Exec(ctx, `UPDATE monitors.monitors SET name=$3,url=NULLIF($4,''),target_key=$5,method=NULLIF($6,''),expected_status=NULLIF($7,0),body_contains=CASE WHEN $13='http' THEN $8 ELSE NULL END,check_type=$13,host=NULLIF($14,''),port=NULLIF($15,0),interval_minutes=$9,failure_threshold=$10,enabled=$11,time_zone=$16,version=version+1,check_config_version=check_config_version+CASE WHEN $12 THEN 1 ELSE 0 END,outcome=CASE WHEN $12 THEN 'UNKNOWN' ELSE outcome END,
  last_checked_at=CASE WHEN $12 THEN NULL ELSE last_checked_at END,
  last_http_status=CASE WHEN $12 THEN NULL ELSE last_http_status END,
  last_latency_ms=CASE WHEN $12 THEN NULL ELSE last_latency_ms END,
  last_round_trip_ms=CASE WHEN $12 THEN NULL ELSE last_round_trip_ms END,
  next_check_at=CASE WHEN $12 THEN now() ELSE next_check_at END,
- run_id=NULL,attempt_token=NULL,lease_until=NULL,updated_at=now() WHERE account_id=$1 AND id=$2`, owner, id, in.Name, in.URL, target, in.Method, in.ExpectedStatus, in.BodyContains, *in.IntervalMinutes, *in.FailureThreshold, in.Enabled, resetCheck, in.CheckType, in.Host, in.Port)
-	return err
+ run_id=CASE WHEN $12 THEN NULL ELSE run_id END,attempt_token=CASE WHEN $12 THEN NULL ELSE attempt_token END,lease_until=CASE WHEN $12 THEN NULL ELSE lease_until END,updated_at=now() WHERE account_id=$1 AND id=$2`, owner, id, in.Name, in.URL, target, in.Method, in.ExpectedStatus, in.BodyContains, *in.IntervalMinutes, *in.FailureThreshold, in.Enabled, resetCheck, in.CheckType, in.Host, in.Port, in.TimeZone)
+	if err != nil {
+		return err
+	}
+	return r.queueProvider(ctx, tx, id, target)
 }
 func (r *Repository) Delete(ctx context.Context, tx pgx.Tx, owner, id string) error {
 	_, err := tx.Exec(ctx, `DELETE FROM monitors.monitors WHERE account_id=$1 AND id=$2`, owner, id)
@@ -186,7 +197,7 @@ func (r *Repository) Claim(ctx context.Context, tx pgx.Tx, owner, id, runID, tok
 	return err
 }
 func (r *Repository) StoreResult(ctx context.Context, tx pgx.Tx, m Row, eventID, runID, token, outcome string, checked time.Time, status *int, latency int64, code string, roundTrip *int64) error {
-	_, err := tx.Exec(ctx, `INSERT INTO monitors.results(id,monitor_id,account_id,run_id,attempt_token,config_version,sequence,outcome,checked_at,http_status,latency_ms,error_code,check_type,round_trip_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, eventID, m.ID, m.AccountID, runID, token, m.Version, m.Sequence+1, outcome, checked, status, latency, code, m.CheckType, roundTrip)
+	_, err := tx.Exec(ctx, `INSERT INTO monitors.results(id,monitor_id,account_id,run_id,attempt_token,config_version,sequence,outcome,checked_at,http_status,latency_ms,error_code,check_type,round_trip_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, eventID, m.ID, m.AccountID, runID, token, m.CheckConfigVersion, m.Sequence+1, outcome, checked, status, latency, code, m.CheckType, roundTrip)
 	if err != nil {
 		return err
 	}
@@ -222,5 +233,19 @@ func (r *Repository) Cleanup(ctx context.Context, tx pgx.Tx) error {
 
 func (r *Repository) Defer(ctx context.Context, tx pgx.Tx, owner, id string) error {
 	_, err := tx.Exec(ctx, `UPDATE monitors.monitors SET next_check_at=now()+interval_minutes*interval '1 minute',run_id=NULL,attempt_token=NULL,lease_until=NULL WHERE account_id=$1 AND id=$2`, owner, id)
+	return err
+}
+
+// queueProvider only invalidates enrichment when the normalized host changes.
+// All user writes already hold the monitor lock; network work happens in worker.
+func (r *Repository) queueProvider(ctx context.Context, tx pgx.Tx, id, target string) error {
+	host, _, err := net.SplitHostPort(target)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO monitors.provider_lookups(monitor_id,target_host) VALUES($1,$2)
+ ON CONFLICT(monitor_id) DO UPDATE SET target_host=excluded.target_host,generation=monitors.provider_lookups.generation+1,
+ status='pending',provider_names='{}',asns='{}',checked_at=NULL,dataset_version='',attempts=0,next_attempt_at=now(),lease_until=NULL,attempt_token=NULL
+ WHERE monitors.provider_lookups.target_host IS DISTINCT FROM excluded.target_host`, id, host)
 	return err
 }

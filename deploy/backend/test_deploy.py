@@ -2,6 +2,7 @@
 """Failure and recovery tests for the backend deployment transaction."""
 
 import json
+import base64
 import os
 from pathlib import Path
 import tempfile
@@ -80,6 +81,9 @@ if args and args[0] == "compose":
         if os.environ.get("COMPOSE_PUSH_KEYS") == "1":
             api_environment.update({"ANDROID_PUSH_ENABLED": "true", "RUSTORE_PUSH_PROJECT_ID": "synthetic-project"})
             worker_environment.update({"ANDROID_PUSH_ENABLED": "true", "RUSTORE_PUSH_PROJECT_ID": "synthetic-project", "RUSTORE_PUSH_SERVICE_TOKEN": "synthetic-push-service-token-0123456789"})
+        if os.environ.get("COMPOSE_FCM_PUSH_KEYS") == "1":
+            api_environment.update({"FCM_PUSH_ENABLED": "true", "FCM_PROJECT_ID": "synthetic-fcm-project"})
+            worker_environment.update({"FCM_PUSH_ENABLED": "true", "FCM_PROJECT_ID": "synthetic-fcm-project", "FCM_SERVICE_ACCOUNT_BASE64": "synthetic-fcm-service-account"})
         if os.environ.get("COMPOSE_YOOKASSA_KEYS") == "1":
             yookassa_environment = {"BILLING_PROVIDER": "yookassa", "BILLING_TEST_ACCOUNT_IDS": "51ec7d19-80c4-4fb6-8edb-79dc7abe3120", "YOOKASSA_MODE": "test", "YOOKASSA_TEST_SHOP_ID": "123456", "YOOKASSA_TEST_SECRET_KEY": "test_synthetic_secret_123"}
             api_environment.update(yookassa_environment)
@@ -326,6 +330,21 @@ class BackendDeployTests(unittest.TestCase):
     def push_payload(self, token="synthetic-service-token-0123456789-abcdefgh"):
         return "test-token\n" + json.dumps({"projectId": "synthetic-project", "serviceToken": token}) + "\n"
 
+    def cloud_push_payload(self, token="synthetic-service-token-0123456789-abcdefgh", fcm_secret="synthetic-fcm-service-account-v2"):
+        credentials = {
+            "type": "service_account",
+            "project_id": "synthetic-fcm-project",
+            "client_email": "worker@synthetic-fcm-project.iam.gserviceaccount.com",
+            "private_key": fcm_secret,
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+        encoded_credentials = base64.b64encode(json.dumps(credentials, separators=(",", ":")).encode()).decode()
+        return "test-token\n" + json.dumps({
+            "projectId": "synthetic-project",
+            "serviceToken": token,
+            "fcm": {"projectId": "synthetic-fcm-project", "serviceAccountBase64": encoded_credentials},
+        }) + "\n"
+
     def test_android_push_activation_is_allowlisted_separate_and_receipted(self):
         result = self.run_deploy(activate_android_push=True, stdin_payload=self.push_payload(), COMPOSE_PUSH_KEYS="1")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -338,6 +357,67 @@ class BackendDeployTests(unittest.TestCase):
         receipt = json.loads((self.backend / "receipts" / f"{SOURCE_SHA}.json").read_text())
         self.assertTrue(receipt["android_push_activated"])
         self.assertNotIn("synthetic-service-token", result.stdout + result.stderr + self.log.read_text())
+
+    def test_cloud_push_staging_preserves_production_billing_and_receipts_activation(self):
+        billing = (
+            "BILLING_PROVIDER=yookassa\n"
+            "YOOKASSA_MODE=production\n"
+            "YOOKASSA_PRODUCTION_SHOP_ID=654321\n"
+            "YOOKASSA_PRODUCTION_SECRET_KEY='production_synthetic_secret_123'\n"
+        )
+        rustore = (
+            "RUSTORE_PUSH_PROJECT_ID=synthetic-project\n"
+            "RUSTORE_PUSH_SERVICE_TOKEN='synthetic-service-token-0123456789-abcdefgh'\n"
+        )
+        original = BASE_ENV + "ANDROID_PUSH_ENABLED=false\n" + rustore + billing
+        (self.backend / ".env").write_text(original)
+        (self.backend / ".env").chmod(0o600)
+        result = self.run_deploy(
+            activate_android_push=True,
+            stdin_payload=self.cloud_push_payload(),
+            COMPOSE_PUSH_KEYS="1",
+            COMPOSE_FCM_PUSH_KEYS="1",
+            COMPOSE_YOOKASSA_PRODUCTION_KEYS="1",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        activated = (self.backend / ".env").read_text()
+        for line in billing.splitlines():
+            self.assertIn(line, activated.splitlines(), f"cloud activation changed unrelated billing bytes: {line!r}")
+        for line in rustore.splitlines():
+            self.assertIn(line, activated.splitlines(), f"FCM activation changed legacy RuStore bytes: {line!r}")
+        for line in (
+            "FCM_PUSH_ENABLED=true",
+            "FCM_PROJECT_ID=synthetic-fcm-project",
+            "FCM_SERVICE_ACCOUNT_BASE64=" + json.loads(self.cloud_push_payload().splitlines()[1])["fcm"]["serviceAccountBase64"],
+        ):
+            self.assertIn(line, activated)
+        self.assertNotIn("HUAWEI_PUSH_ENABLED=true", activated)
+        self.assertNotIn("HUAWEI_CLIENT_SECRET=", activated)
+        receipt = json.loads((self.backend / "receipts" / f"{SOURCE_SHA}.json").read_text())
+        self.assertTrue(receipt["android_push_activated"])
+        self.assertNotIn("synthetic-fcm-service-account-v2", result.stdout + result.stderr + self.log.read_text())
+
+    def test_cloud_push_activation_refuses_to_rotate_existing_credentials(self):
+        original = BASE_ENV + (
+            "ANDROID_PUSH_ENABLED=true\n"
+            "RUSTORE_PUSH_PROJECT_ID=synthetic-project\n"
+            "RUSTORE_PUSH_SERVICE_TOKEN='synthetic-service-token-0123456789-abcdefgh'\n"
+            "FCM_PUSH_ENABLED=true\n"
+            "FCM_PROJECT_ID=synthetic-fcm-project\n"
+            "FCM_SERVICE_ACCOUNT_BASE64=old-fcm-service-account\n"
+        )
+        (self.backend / ".env").write_text(original)
+        (self.backend / ".env").chmod(0o600)
+        result = self.run_deploy(
+            activate_android_push=True,
+            stdin_payload=self.cloud_push_payload(),
+            COMPOSE_PUSH_KEYS="1",
+            COMPOSE_FCM_PUSH_KEYS="1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Android push activation cannot rotate existing configuration", result.stderr)
+        self.assertEqual((self.backend / ".env").read_text(), original)
+        self.assertEqual(self.docker_calls(), [])
 
     def test_android_push_rejects_rotation_and_restores_env_on_preflight_failure(self):
         original = BASE_ENV + (

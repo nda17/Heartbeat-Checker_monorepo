@@ -218,21 +218,25 @@ public final class PushWorker extends Worker {
         if (PushWork.locallyBlocked || !state.optBoolean("enabled") || credential.isEmpty() || isStopped()) return Result.success();
         PushApi api = new PushApi();
         try {
+            if (PushNotifications.permitted(context))
+                awaitToken(30000, () -> !isStopped(), result -> PushSdk.token(context, result));
             JSONObject install = PushContract.installation(api.request("GET", "/api/v1/push/installation", credential, null));
             PushWork.accept(context, install, credential);
             if ("session_expired".equals(install.getString("status")) || "session_revoked".equals(install.getString("status")))
                 return Result.success();
             state = store.read();
             if (!state.optBoolean("enabled") || !credential.equals(state.optString("credential")) || isStopped()) return Result.success();
-            String token = state.optString("token"); String permission = PushNotifications.permitted(context) ? "granted" : "denied";
-            if (token.equals(state.optString("registeredToken")) && permission.equals(state.optString("registeredPermission"))) return Result.success();
-            JSONObject body = new JSONObject().put("registrationVersion", install.getLong("registrationVersion")).put("permission", permission);
+            String token = state.optString("token"); String provider = PushSdk.provider(state); String permission = PushNotifications.permitted(context) ? "granted" : "denied";
+            if (token.equals(state.optString("registeredToken")) && provider.equals(state.optString("registeredProvider", "rustore")) && permission.equals(state.optString("registeredPermission"))) return Result.success();
+            if (!PushContract.provider(provider) || !provider.equals(install.optString("provider")) && !PushContract.token(token)) return retry();
+            JSONObject body = new JSONObject().put("registrationVersion", install.getLong("registrationVersion"))
+                    .put("provider", provider).put("permission", permission);
             if (PushContract.token(token)) body.put("token", token);
             JSONObject result = api.request("PUT", "/api/v1/push/installation", credential, body);
             if (isStopped()) return Result.success();
             PushWork.accept(context, result, credential);
             store.update(current -> {
-                if (credential.equals(current.optString("credential"))) current.put("registeredToken", token).put("registeredPermission", permission);
+                if (credential.equals(current.optString("credential"))) current.put("registeredToken", token).put("registeredProvider", provider).put("registeredPermission", permission);
             });
             return Result.success();
         } catch (PushApi.Failure failure) {

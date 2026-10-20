@@ -6,6 +6,12 @@ export type Monitor = {
   checkType?: CheckType;
   name: string;
   url: string;
+  timeZone: string;
+  provider: {
+    names: string[];
+    status: "pending" | "ready" | "unknown";
+    checkedAt: string | null;
+  };
   host?: string;
   port?: number;
   method: "GET" | "HEAD" | "";
@@ -147,4 +153,45 @@ export function checkTiming(
     return `Длительность ICMP-проверки: ${latencyMs} мс`;
   }
   return `Длительность ${type.toUpperCase()}-проверки: ${latencyMs} мс`;
+}
+
+export function monitorDateTime(
+  value: string | null | undefined,
+  zone = "Europe/Moscow",
+) {
+  if (!value) return "—";
+  const at = new Date(value);
+  if (!Number.isFinite(at.getTime())) return "—";
+  const options: Intl.DateTimeFormatOptions = {
+    timeZone: zone,
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  };
+  try {
+    const offset =
+      new Intl.DateTimeFormat("en", {
+        timeZone: zone,
+        timeZoneName: "longOffset",
+      })
+        .formatToParts(at)
+        .find((part) => part.type === "timeZoneName")
+        ?.value.replace("GMT", "UTC") ?? "UTC";
+    const label = zone === "Europe/Moscow" ? "МСК" : zone;
+    return `${new Intl.DateTimeFormat("ru-RU", options).format(at)} ${label} (${offset})`;
+  } catch {
+    const number = (part: number) => String(part).padStart(2, "0");
+    const date = `${number(at.getUTCDate())}.${number(at.getUTCMonth() + 1)}.${at.getUTCFullYear()}`;
+    const time = `${number(at.getUTCHours())}:${number(at.getUTCMinutes())}`;
+    return `${date} ${time} UTC (пояс ${zone} недоступен)`;
+  }
+}
+
+export function monitorProvider(monitor: Monitor) {
+  return monitor.provider?.names.length
+    ? monitor.provider.names.join("; ")
+    : "Неизвестно";
 }

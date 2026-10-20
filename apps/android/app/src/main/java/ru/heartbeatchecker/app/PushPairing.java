@@ -180,7 +180,7 @@ final class PushPairing {
     static void exchange(Context context, String id, Transport api, long revocation,
                          java.util.function.BooleanSupplier active) throws Exception {
         PushStore store = new PushStore(context);
-        JSONObject pending; String credential; String token; boolean attempted;
+        JSONObject pending; String credential; String token; String provider; boolean attempted;
         synchronized (PushStore.LOCK) {
             JSONObject state = store.read(); pending = state.optJSONObject("pair");
             if (!active.getAsBoolean() || PushWork.locallyBlocked || revocation != PushWork.localRevocation || state.optBoolean("optedOut")
@@ -188,7 +188,7 @@ final class PushPairing {
                     || !PushContract.secret(pending.optString("completionCode"))) return;
             credential = state.getString("credential");
             attempted = pending.optBoolean("exchangeAttempted");
-            token = state.optString("token");
+            token = state.optString("token"); provider = PushSdk.provider(state);
             if (!attempted) {
                 if (PushContract.instant(pending.getString("expiresAt")) <= System.currentTimeMillis() || !PushContract.token(token)) return;
                 store.update(value -> {
@@ -208,7 +208,7 @@ final class PushPairing {
             if (attempted) result = api.request("GET", "/api/v1/push/installation", credential, null);
             else {
                 JSONObject body = new JSONObject().put("codeVerifier", pending.getString("verifier"))
-                        .put("completionCode", pending.getString("completionCode")).put("provider", "rustore")
+                        .put("completionCode", pending.getString("completionCode")).put("provider", provider)
                         .put("token", token).put("permission", "granted").put("appVersion", BuildConfig.VERSION_NAME);
                 result = api.request("POST", "/api/v1/push/pairings/" + id + "/exchange", credential, body);
             }

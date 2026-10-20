@@ -75,11 +75,39 @@ function loadComponent(relativePath, aliases, runtime = {}) {
   return fixtureModule.exports;
 }
 
+test("monitor timestamps fall back to finite UTC when Intl lacks longOffset", () => {
+  const nativeIntl = Intl;
+  const limitedIntl = {
+    DateTimeFormat: function (locale, options = {}) {
+      if (options.timeZoneName === "longOffset")
+        throw new RangeError("unsupported timeZoneName option");
+      return new nativeIntl.DateTimeFormat(locale, options);
+    },
+  };
+  const { monitorDateTime } = loadComponent(
+    "../src/entities/monitor/index.tsx",
+    {},
+    { Intl: limitedIntl },
+  );
+  const formatted = monitorDateTime(
+    "2026-01-15T12:34:00Z",
+    "Europe/Berlin",
+  );
+  assert.equal(
+    formatted,
+    "15.01.2026 12:34 UTC (пояс Europe/Berlin недоступен)",
+  );
+  assert.doesNotMatch(formatted, /NaN|Invalid Date|GMT/);
+  assert.equal(monitorDateTime("invalid", "Europe/Berlin"), "—");
+});
+
 function createHarness() {
   toastCalls.length = 0;
   const dom = new JSDOM("<!doctype html><html><body></body></html>", {
     url: "http://localhost/app",
   });
+  dom.window.HTMLElement.prototype.attachEvent ??= function attachEvent() {};
+  dom.window.HTMLElement.prototype.detachEvent ??= function detachEvent() {};
   globalThis.window = dom.window;
   globalThis.document = dom.window.document;
   Object.defineProperty(globalThis, "navigator", {
@@ -346,6 +374,132 @@ test("monitor list sends remote search, sort and page controls and renders activ
   assert.ok(
     harness.host.querySelector('[aria-label="Webhook: уведомления включены"]'),
   );
+});
+
+test("monitor timezone picker filters, selects by keyboard, and does not submit on Enter", async (t) => {
+  const harness = createHarness();
+  t.after(() => harness.unmount());
+  const calls = [];
+  const aliases = {
+    "@/entities/session": { useSession: () => ({ refresh: async () => {} }) },
+    "@/entities/monitor": monitorHelpers,
+    "@/shared/api": {
+      api: async (path, options = {}) => {
+        calls.push({ path, options });
+        if (path === "/monitor-time-zones")
+          return {
+            timeZones: [
+              { id: "Europe/Moscow", label: "Москва · Европа" },
+              { id: "Europe/Berlin", label: "Берлин · Европа" },
+            ],
+          };
+        return {};
+      },
+      ApiError,
+      errorMessage: (error) =>
+        error?.message ?? "Не удалось сохранить монитор.",
+    },
+    "@/shared/dialog": {
+      Dialog: ({ title, children }) =>
+        React.createElement(
+          "section",
+          { role: "dialog", "aria-label": title },
+          children,
+        ),
+    },
+    "@/shared/ui": {
+      Notice: ({ children }) =>
+        React.createElement("div", { role: "alert" }, children),
+      Spinner: () => React.createElement("span", null, "…"),
+    },
+  };
+  const MonitorForm = loadComponent(
+    "../src/features/monitor-form/index.tsx",
+    aliases,
+    { TextEncoder: globalThis.TextEncoder },
+  ).MonitorForm;
+  await harness.render(
+    React.createElement(MonitorForm, {
+      onClose() {},
+      onSaved: async () => {},
+    }),
+  );
+  await flush();
+
+  const setValue = async (selector, value) => {
+    const input = harness.host.querySelector(selector);
+    assert.ok(input, `missing input: ${selector}`);
+    const props =
+      input[Object.keys(input).find((key) => key.startsWith("__reactProps"))];
+    if (typeof props.onChange === "function") {
+      await act(async () => props.onChange({ target: { value } }));
+    } else {
+      input.value = value;
+    }
+    await flush();
+  };
+  await setValue('input[name="name"]', "Berlin monitor");
+  await setValue('input[name="url"]', "https://berlin.example.test/health");
+
+  const trigger = harness.host.querySelector(".monitor-timezone-trigger");
+  assert.ok(trigger, "timezone picker trigger should render");
+  await act(async () => trigger.click());
+  await flush();
+  const search = harness.host.querySelector('[role="combobox"]');
+  assert.ok(search, "timezone search should open");
+  await setValue('[role="combobox"]', "no such city");
+  assert.match(
+    harness.host.querySelector('[role="status"]').textContent,
+    /Ничего не найдено/,
+  );
+  const noMatchSearch = harness.host.querySelector('[role="combobox"]');
+  const noMatchEvent = new harness.dom.window.KeyboardEvent("keydown", {
+    key: "Enter",
+    bubbles: true,
+    cancelable: true,
+  });
+  await act(async () => noMatchSearch.dispatchEvent(noMatchEvent));
+  assert.equal(
+    noMatchEvent.defaultPrevented,
+    true,
+    "Enter with no match should be handled by the picker",
+  );
+  assert.equal(
+    calls.some((call) => call.options.method === "POST"),
+    false,
+    "Enter must not submit the monitor form",
+  );
+
+  await setValue('[role="combobox"]', "Berlin");
+  const matchingSearch = harness.host.querySelector('[role="combobox"]');
+  const matchingEvent = new harness.dom.window.KeyboardEvent("keydown", {
+    key: "Enter",
+    bubbles: true,
+    cancelable: true,
+  });
+  await act(async () => matchingSearch.dispatchEvent(matchingEvent));
+  await flush();
+  assert.equal(
+    matchingEvent.defaultPrevented,
+    true,
+    "Enter selection should not submit the parent form",
+  );
+  assert.match(trigger.textContent, /Берлин · Европа/);
+  assert.equal(
+    calls.some((call) => call.options.method === "POST"),
+    false,
+    "selecting a timezone must not submit the form",
+  );
+
+  const save = [...harness.host.querySelectorAll("button")].find((button) =>
+    button.textContent.includes("Добавить монитор"),
+  );
+  assert.ok(save, "monitor submit button should render");
+  await act(async () => save.click());
+  await flush();
+  const submission = calls.find((call) => call.options.method === "POST");
+  assert.ok(submission, "explicit submit should create the monitor");
+  assert.equal(submission.options.body.timeZone, "Europe/Berlin");
 });
 
 test("a superseded monitor-list response cannot replace the newer selection", async (t) => {

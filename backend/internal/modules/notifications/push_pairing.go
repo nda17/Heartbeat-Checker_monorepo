@@ -160,7 +160,7 @@ func (p *Push) ExchangePairing(ctx context.Context, bearer, id string, in PushEx
 	if err != nil {
 		return PushInstallationStatus{}, err
 	}
-	if !messengerValidID(id) || !pushChallenge(in.CodeVerifier) || !pushChallenge(in.CompletionCode) || in.Provider != "rustore" || !pushToken(in.Token) || in.Permission != "granted" || !pushAppVersion(in.AppVersion) {
+	if !messengerValidID(id) || !pushChallenge(in.CodeVerifier) || !pushChallenge(in.CompletionCode) || !p.providerEnabled(in.Provider) || !pushToken(in.Token) || in.Permission != "granted" || !pushAppVersion(in.AppVersion) {
 		return PushInstallationStatus{}, ErrPushInvalid
 	}
 	var accountID, sessionID string
@@ -238,7 +238,7 @@ func (p *Push) ExchangePairing(ctx context.Context, bearer, id string, in PushEx
 		return PushInstallationStatus{}, err
 	}
 	var generation, version int64
-	err = tx.QueryRow(ctx, `UPDATE notifications.push_installations SET account_id=$2,session_id=$3,encrypted_token=$4,token_fingerprint=$5,permission='granted',status='ready',token_valid=true,provider_available=true,binding_generation=binding_generation+CASE WHEN $8 THEN 1 ELSE 0 END,registration_version=registration_version+1,last_pairing_id=$6,app_version=$7,updated_at=now() WHERE id=$1 RETURNING binding_generation,registration_version`, i.ID, accountID, sessionID, sealed, p.fingerprint("registration:"+in.Token), id, in.AppVersion, changedBinding).Scan(&generation, &version)
+	err = tx.QueryRow(ctx, `UPDATE notifications.push_installations SET account_id=$2,session_id=$3,encrypted_token=$4,token_fingerprint=$5,permission='granted',status='ready',token_valid=true,provider_available=true,binding_generation=binding_generation+CASE WHEN $8 THEN 1 ELSE 0 END,registration_version=registration_version+1,last_pairing_id=$6,app_version=$7,provider=$9,updated_at=now() WHERE id=$1 RETURNING binding_generation,registration_version`, i.ID, accountID, sessionID, sealed, p.fingerprint("registration:"+in.Token), id, in.AppVersion, changedBinding, in.Provider).Scan(&generation, &version)
 	if err != nil {
 		return PushInstallationStatus{}, pushError(err)
 	}
@@ -248,7 +248,7 @@ func (p *Push) ExchangePairing(ctx context.Context, bearer, id string, in PushEx
 	if err = tx.Commit(ctx); err != nil {
 		return PushInstallationStatus{}, err
 	}
-	return PushInstallationStatus{ID: i.ID, Provider: "rustore", DeviceLabel: current.Label, LastSeenAt: time.Now().UTC(), BindingGeneration: generation, RegistrationVersion: version, LeaseExpiresAt: &expiry, Status: "ready", LastPairingID: &id}, nil
+	return PushInstallationStatus{ID: i.ID, Provider: in.Provider, DeviceLabel: current.Label, LastSeenAt: time.Now().UTC(), BindingGeneration: generation, RegistrationVersion: version, LeaseExpiresAt: &expiry, Status: "ready", LastPairingID: &id}, nil
 }
 
 func (p *Push) UpdateRegistration(ctx context.Context, bearer string, in PushRegistrationInput) (PushInstallationStatus, error) {
@@ -257,7 +257,10 @@ func (p *Push) UpdateRegistration(ctx context.Context, bearer string, in PushReg
 		return PushInstallationStatus{}, err
 	}
 	accountID, sourceSession, generation := i.AccountID, i.SessionID, i.Generation
-	if in.RegistrationVersion < 1 || (in.Permission != "granted" && in.Permission != "denied") || in.Token != nil && !pushToken(*in.Token) {
+	if in.Provider == "" {
+		in.Provider = "rustore"
+	}
+	if !p.providerEnabled(in.Provider) || in.RegistrationVersion < 1 || (in.Permission != "granted" && in.Permission != "denied") || in.Token != nil && !pushToken(*in.Token) {
 		return PushInstallationStatus{}, ErrPushInvalid
 	}
 	tx, err := p.pool.Begin(ctx)
@@ -286,6 +289,9 @@ func (p *Push) UpdateRegistration(ctx context.Context, bearer string, in PushReg
 	if i.AccountID == "" {
 		return PushInstallationStatus{}, ErrPushReconnect
 	}
+	if in.Provider != i.Provider && in.Token == nil {
+		return PushInstallationStatus{}, ErrPushInvalid
+	}
 	sealed := i.Token
 	var fingerprint []byte
 	if in.Token != nil {
@@ -298,7 +304,7 @@ func (p *Push) UpdateRegistration(ctx context.Context, bearer string, in PushReg
 	if in.Permission == "granted" && len(sealed) == 0 {
 		return PushInstallationStatus{}, ErrPushInvalid
 	}
-	_, err = tx.Exec(ctx, `UPDATE notifications.push_installations SET permission=$2,encrypted_token=$3,token_fingerprint=COALESCE($4,token_fingerprint),registration_version=registration_version+1,token_valid=CASE WHEN $4::bytea IS NOT NULL THEN true ELSE token_valid END,provider_available=true,updated_at=now() WHERE id=$1`, i.ID, in.Permission, sealed, fingerprint)
+	_, err = tx.Exec(ctx, `UPDATE notifications.push_installations SET permission=$2,encrypted_token=$3,token_fingerprint=COALESCE($4,token_fingerprint),registration_version=registration_version+1,token_valid=CASE WHEN $4::bytea IS NOT NULL THEN true ELSE token_valid END,provider_available=CASE WHEN $4::bytea IS NOT NULL THEN true ELSE provider_available END,provider=$5,updated_at=now() WHERE id=$1`, i.ID, in.Permission, sealed, fingerprint, in.Provider)
 	if err != nil {
 		return PushInstallationStatus{}, pushError(err)
 	}

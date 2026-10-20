@@ -36,18 +36,20 @@ type IncidentState struct {
 
 // Observation is copied from the accepted check while the monitor is locked.
 type Observation struct {
-	CheckType   string
-	Name        string
-	URL         string
-	Host        string
-	Port        int
-	Outcome     string
-	HTTPStatus  int
-	ErrorCode   string
-	LatencyMS   int64
-	RoundTripMS *int64
-	CheckedAt   time.Time
-	Sequence    int64
+	TimeZone      string
+	ProviderNames []string
+	CheckType     string
+	Name          string
+	URL           string
+	Host          string
+	Port          int
+	Outcome       string
+	HTTPStatus    int
+	ErrorCode     string
+	LatencyMS     int64
+	RoundTripMS   *int64
+	CheckedAt     time.Time
+	Sequence      int64
 }
 
 type Recorder interface {
