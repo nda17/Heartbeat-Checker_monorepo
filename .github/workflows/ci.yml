@@ -155,7 +155,7 @@ jobs:
           apk=apps/android/app/build/outputs/apk/ci/app-ci.apk
           test -s "$apk"
           unzip -p "$apk" assets/index.android.bundle | wc -c | awk '$1 > 100000 { found = 1 } END { exit !found }'
-          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | grep -F "package: name='ru.heartbeatchecker.app' versionCode='7' versionName='2.0.0'"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | grep -F "package: name='ru.heartbeatchecker.app' versionCode='8' versionName='2.0.1'"
           size=$(wc -c < "$apk" | tr -d ' ')
           [[ $size =~ ^[0-9]+$ ]]
           echo "Bundled CI APK bytes: $size"
@@ -229,6 +229,14 @@ jobs:
             set +e
             timeout 5 "$adb_bin" devices -l > "$report_dir/adb-devices.txt" 2>&1
             timeout 10 "$adb_bin" -s emulator-5554 logcat -d -t 200 > "$report_dir/logcat.txt" 2>&1
+            auth_qa="$report_dir/auth-qa"
+            remote_auth_qa=/sdcard/Android/data/ru.heartbeatchecker.app/files/auth-qa
+            for screenshot in login.png register.png password-visible.png reset-request.png reset-confirm.png captcha-login.png; do
+              if timeout 5 "$adb_bin" -s emulator-5554 shell test -f "$remote_auth_qa/$screenshot" > /dev/null 2>&1; then
+                mkdir -p "$auth_qa"
+                timeout 20 "$adb_bin" -s emulator-5554 pull "$remote_auth_qa/$screenshot" "$auth_qa/$screenshot" >> "$report_dir/auth-qa-pull.txt" 2>&1
+              fi
+            done
             tail -150 "$emulator_log" >&3 2>&3
             timeout 10 "$adb_bin" -s emulator-5554 emu kill > /dev/null 2>&1
             if [[ -n "$emulator_pid" ]]; then kill "$emulator_pid" 2>/dev/null; fi

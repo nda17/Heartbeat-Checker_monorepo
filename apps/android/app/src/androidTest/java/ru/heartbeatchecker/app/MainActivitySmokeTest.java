@@ -6,7 +6,11 @@ import android.content.res.AssetManager;
 import android.net.Uri;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.InputDevice;
+import android.view.MotionEvent;
 import android.widget.TextView;
+import android.widget.EditText;
+import android.graphics.Bitmap;
 
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.core.app.ApplicationProvider;
@@ -19,8 +23,11 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.time.Instant;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.*;
 
@@ -50,6 +57,39 @@ public final class MainActivitySmokeTest {
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
             assertTrue("a rendered React Native screen is required; Activity launch alone is insufficient",
                     awaitVisibleText(scenario, "Войти через Яндекс"));
+            scenario.onActivity(activity -> saveScreenshot(activity, "login.png"));
+        }
+    }
+
+    @Test
+    public void authModesAndPasswordVisibilityRenderInTheBundledReactNativeScreen() throws Exception {
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+            assertTrue(awaitVisibleText(scenario, "Войти через Яндекс"));
+
+            tapDescription(scenario, "Показать пароль");
+            assertTrue("password control must expose its visible state accessibly",
+                    awaitVisibleDescription(scenario, "Скрыть пароль"));
+            scenario.onActivity(activity -> saveScreenshot(activity, "password-visible.png"));
+
+            tapText(scenario, "Регистрация");
+            assertTrue("registration screen must render its primary action", awaitVisibleText(scenario, "Создать аккаунт"));
+            scenario.onActivity(activity -> saveScreenshot(activity, "register.png"));
+
+            tapText(scenario, "Ко входу");
+            assertTrue(awaitVisibleText(scenario, "Войти через Яндекс"));
+            tapText(scenario, "Забыли пароль?");
+            assertTrue("reset request mode must render its primary action", awaitVisibleText(scenario, "Отправить ссылку"));
+            scenario.onActivity(activity -> saveScreenshot(activity, "reset-request.png"));
+
+            tapText(scenario, "Ко входу");
+            assertTrue(awaitVisibleText(scenario, "Войти через Яндекс"));
+            setInputText(scenario, "Email", "person@example.com");
+            setInputText(scenario, "Пароль", "qa-password-for-screen-only");
+            assertTrue("login action must become enabled after React Native accepts both fields",
+                    awaitEnabledControl(scenario, "Войти"));
+            tapText(scenario, "Войти");
+            assertTrue(awaitVisibleText(scenario, "Проверка безопасности"));
+            scenario.onActivity(activity -> saveScreenshot(activity, "captcha-login.png"));
         }
     }
 
@@ -103,6 +143,7 @@ public final class MainActivitySmokeTest {
             try {
                 assertTrue("cold App Link must be consumed by the rendered React Native reset screen",
                         awaitVisibleText(scenario, "Новый пароль"));
+                scenario.onActivity(activity -> saveScreenshot(activity, "reset-confirm.png"));
                 assertNull("native reset flow durably signs out before rendering the reset form", auth.active());
                 assertFalse(auth.read().optBoolean("gate"));
                 assertEquals(SESSION, auth.pendingRevokes().getJSONObject(0).getString("sessionId"));
@@ -152,6 +193,120 @@ public final class MainActivitySmokeTest {
             Thread.sleep(100);
         }
         return false;
+    }
+
+    private static boolean awaitVisibleDescription(ActivityScenario<MainActivity> scenario, String expected) throws InterruptedException {
+        for (int attempt = 0; attempt < 100; attempt++) {
+            AtomicBoolean found = new AtomicBoolean();
+            scenario.onActivity(activity -> found.set(findDescription(activity.getWindow().getDecorView(), expected) != null));
+            if (found.get()) return true;
+            Thread.sleep(100);
+        }
+        return false;
+    }
+
+    private static boolean awaitEnabledControl(ActivityScenario<MainActivity> scenario, String label) throws InterruptedException {
+        for (int attempt = 0; attempt < 100; attempt++) {
+            AtomicBoolean enabled = new AtomicBoolean();
+            scenario.onActivity(activity -> enabled.set(isEnabledControl(activity.getWindow().getDecorView(), label)));
+            if (enabled.get()) return true;
+            Thread.sleep(50);
+        }
+        return false;
+    }
+
+    private static boolean isEnabledControl(View root, String label) {
+        View found = findTextView(root, label);
+        if (found == null) return false;
+        View current = found;
+        while (current != null) {
+            if (!current.isEnabled() || current.getAlpha() < 0.99f) return false;
+            if (current == root || !(current.getParent() instanceof View)) return true;
+            current = (View) current.getParent();
+        }
+        return false;
+    }
+
+    private static void tapText(ActivityScenario<MainActivity> scenario, String text) throws InterruptedException {
+        tapMatchingView(scenario, text, false);
+    }
+
+    private static void tapDescription(ActivityScenario<MainActivity> scenario, String description) throws InterruptedException {
+        tapMatchingView(scenario, description, true);
+    }
+
+    private static void tapMatchingView(ActivityScenario<MainActivity> scenario, String value, boolean description) throws InterruptedException {
+        AtomicReference<float[]> coordinates = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            View root = activity.getWindow().getDecorView();
+            View found = description ? findDescription(root, value) : findTextView(root, value);
+            assertNotNull("visible control not found: " + value, found);
+            int[] location = new int[2];
+            found.getLocationOnScreen(location);
+            float x = location[0] + found.getWidth() / 2f;
+            float y = location[1] + found.getHeight() / 2f;
+            coordinates.set(new float[] {x, y});
+        });
+        float[] point = coordinates.get();
+        assertNotNull(point);
+        long downTime = android.os.SystemClock.uptimeMillis();
+        MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, point[0], point[1], 0);
+        down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        InstrumentationRegistry.getInstrumentation().sendPointerSync(down);
+        down.recycle();
+        MotionEvent up = MotionEvent.obtain(downTime, android.os.SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, point[0], point[1], 0);
+        up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        InstrumentationRegistry.getInstrumentation().sendPointerSync(up);
+        up.recycle();
+        Thread.sleep(100);
+    }
+
+    private static void setInputText(ActivityScenario<MainActivity> scenario, String label, String value) {
+        AtomicBoolean changed = new AtomicBoolean();
+        scenario.onActivity(activity -> {
+            View field = findDescription(activity.getWindow().getDecorView(), label);
+            assertTrue("React Native field must expose an accessibility label: " + label, field instanceof EditText);
+            ((EditText) field).setText(value);
+            changed.set(true);
+        });
+        assertTrue(changed.get());
+    }
+
+    private static View findTextView(View view, String text) {
+        if (view instanceof TextView && text.contentEquals(((TextView) view).getText())) return view;
+        if (!(view instanceof ViewGroup)) return null;
+        ViewGroup group = (ViewGroup) view;
+        for (int index = 0; index < group.getChildCount(); index++) {
+            View found = findTextView(group.getChildAt(index), text);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static View findDescription(View view, String description) {
+        if (description.contentEquals(view.getContentDescription())) return view;
+        if (!(view instanceof ViewGroup)) return null;
+        ViewGroup group = (ViewGroup) view;
+        for (int index = 0; index < group.getChildCount(); index++) {
+            View found = findDescription(group.getChildAt(index), description);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static void saveScreenshot(MainActivity activity, String name) {
+        Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+        if (screenshot == null) throw new AssertionError("could not capture React Native screen: " + name);
+        File directory = new File(activity.getExternalFilesDir(null), "auth-qa");
+        if (!directory.isDirectory() && !directory.mkdirs()) throw new AssertionError("could not create auth screenshot directory");
+        File file = new File(directory, name);
+        try (FileOutputStream output = new FileOutputStream(file)) {
+            if (!screenshot.compress(Bitmap.CompressFormat.PNG, 100, output)) throw new AssertionError("could not encode screenshot: " + name);
+        } catch (Exception failure) {
+            throw new AssertionError("could not save auth screenshot: " + name, failure);
+        } finally {
+            screenshot.recycle();
+        }
     }
 
     private static boolean containsText(View view, String expected) {

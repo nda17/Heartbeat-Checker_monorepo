@@ -1,13 +1,15 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import {
   KeyboardAvoidingView,
   Pressable,
   ScrollView,
+  StyleProp,
   StyleSheet,
   Text,
   TextInput,
   useColorScheme,
   View,
+  ViewStyle,
 } from "react-native";
 
 export function usePalette() {
@@ -65,11 +67,21 @@ export function Page({
     </KeyboardAvoidingView>
   );
 }
-export function Card({ children }: { children: React.ReactNode }) {
+export function Card({
+  children,
+  style,
+}: {
+  children: React.ReactNode;
+  style?: StyleProp<ViewStyle>;
+}) {
   const c = usePalette();
   return (
     <View
-      style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}
+      style={[
+        styles.card,
+        { backgroundColor: c.card, borderColor: c.border },
+        style,
+      ]}
     >
       {children}
     </View>
@@ -118,25 +130,47 @@ export function Field({
   multiline?: boolean;
 }) {
   const c = usePalette();
+  const [passwordVisible, setPasswordVisible] = useState(false);
   return (
     <View style={styles.field}>
       <Label>{label}</Label>
-      <TextInput
-        accessibilityLabel={label}
-        style={[
-          styles.input,
-          { color: c.text, backgroundColor: c.card, borderColor: c.border },
-        ]}
-        value={value}
-        onChangeText={onChangeText}
-        secureTextEntry={secure}
-        keyboardType={keyboardType}
-        autoCapitalize="none"
-        autoCorrect={false}
-        placeholder={placeholder}
-        placeholderTextColor={c.subtle}
-        multiline={multiline}
-      />
+      <View style={styles.inputWrap}>
+        <TextInput
+          accessibilityLabel={label}
+          style={[
+            styles.input,
+            secure ? styles.passwordInput : null,
+            { color: c.text, backgroundColor: c.card, borderColor: c.border },
+          ]}
+          value={value}
+          onChangeText={onChangeText}
+          secureTextEntry={secure && !passwordVisible}
+          keyboardType={keyboardType}
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder={placeholder}
+          placeholderTextColor={c.subtle}
+          multiline={multiline}
+        />
+        {secure ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={
+              passwordVisible ? "Скрыть пароль" : "Показать пароль"
+            }
+            accessibilityState={{ selected: passwordVisible }}
+            onPress={() => setPasswordVisible((visible) => !visible)}
+            style={styles.passwordToggle}
+          >
+            <View style={[styles.eye, { borderColor: c.subtle }]}>
+              <View style={[styles.pupil, { backgroundColor: c.subtle }]} />
+            </View>
+            {passwordVisible ? (
+              <View style={[styles.eyeSlash, { backgroundColor: c.subtle }]} />
+            ) : null}
+          </Pressable>
+        ) : null}
+      </View>
     </View>
   );
 }
@@ -146,12 +180,14 @@ export function Button({
   disabled,
   secondary,
   danger,
+  icon,
 }: {
   label: string;
   onPress: () => void;
   disabled?: boolean;
   secondary?: boolean;
   danger?: boolean;
+  icon?: React.ReactNode;
 }) {
   const c = usePalette();
   return (
@@ -169,11 +205,14 @@ export function Button({
         },
       ]}
     >
-      <Text
-        style={[styles.buttonText, { color: secondary ? c.accent : "#fff" }]}
-      >
-        {label}
-      </Text>
+      <View style={styles.buttonContent}>
+        {icon}
+        <Text
+          style={[styles.buttonText, { color: secondary ? c.accent : "#fff" }]}
+        >
+          {label}
+        </Text>
+      </View>
     </Pressable>
   );
 }
@@ -204,6 +243,7 @@ export const styles = StyleSheet.create({
   card: { borderWidth: 1, borderRadius: 16, padding: 16, gap: 10 },
   label: { fontSize: 15, lineHeight: 22 },
   field: { gap: 5 },
+  inputWrap: { position: "relative" },
   input: {
     borderWidth: 1,
     borderRadius: 10,
@@ -212,8 +252,34 @@ export const styles = StyleSheet.create({
     fontSize: 16,
     minHeight: 48,
   },
+  passwordInput: { paddingRight: 58 },
+  passwordToggle: {
+    position: "absolute",
+    right: 0,
+    top: 0,
+    bottom: 0,
+    width: 48,
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  eye: {
+    width: 22,
+    height: 14,
+    borderWidth: 2,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pupil: { width: 7, height: 7, borderRadius: 4 },
+  eyeSlash: {
+    width: 28,
+    height: 2,
+    position: "absolute",
+    transform: [{ rotate: "-32deg" }],
+  },
   button: {
-    minHeight: 46,
+    minHeight: 48,
     paddingHorizontal: 16,
     paddingVertical: 11,
     alignItems: "center",
@@ -222,5 +288,11 @@ export const styles = StyleSheet.create({
     borderWidth: 1,
   },
   buttonText: { fontSize: 16, fontWeight: "600", textAlign: "center" },
+  buttonContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 9,
+  },
   notice: { fontSize: 14, lineHeight: 20 },
 });

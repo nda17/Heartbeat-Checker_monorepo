@@ -95,7 +95,7 @@ public final class HeartbeatBridge extends ReactContextBaseJavaModule {
     }
 
     @ReactMethod public void restore(Promise promise) { work(promise, () -> new AuthStore(context).active()); }
-    @ReactMethod public void authEpoch(Promise promise) {work(promise, () -> new AuthStore(context).epoch());}
+    @ReactMethod public void authEpoch(Promise promise) {work(promise, () -> (double) new AuthStore(context).epoch());}
     @ReactMethod public void saveSession(ReadableMap value, double expectedEpoch, Promise promise) {
         work(promise, () -> {
             if (expectedEpoch < 0 || expectedEpoch != Math.floor(expectedEpoch)) throw new IllegalArgumentException();
