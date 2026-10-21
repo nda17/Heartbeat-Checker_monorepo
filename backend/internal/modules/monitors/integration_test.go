@@ -25,6 +25,7 @@ import (
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth"
 	authcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing"
+	billingcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/incidents"
 	monitorcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/monitors/contracts"
 	monitorpostgres "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/monitors/internal/repository/postgres"
@@ -60,6 +61,25 @@ type monitorMailer struct{}
 
 func (monitorMailer) Send(context.Context, string, string, authcontracts.MailContent) error {
 	return nil
+}
+
+type monitorPaymentProvider struct{ orderID string }
+
+func (p *monitorPaymentProvider) CreatePayment(_ context.Context, key string, body []byte) (billingcontracts.ProviderPayment, error) {
+	var request struct {
+		Amount struct{ Value, Currency string } `json:"amount"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		return billingcontracts.ProviderPayment{}, err
+	}
+	p.orderID = key
+	testMode := false
+	return billingcontracts.ProviderPayment{ID: "monitor-payment-id-1234", Status: "pending", AmountValue: request.Amount.Value, Currency: request.Amount.Currency, OrderID: key, ShopID: "654321", Test: &testMode}, nil
+}
+
+func (p *monitorPaymentProvider) GetPayment(_ context.Context, id string) (billingcontracts.ProviderPayment, error) {
+	testMode := false
+	return billingcontracts.ProviderPayment{ID: id, Status: "succeeded", Paid: true, AmountValue: "58.00", Currency: "RUB", OrderID: p.orderID, ShopID: "654321", Test: &testMode}, nil
 }
 
 func newMonitorFixture(t *testing.T) *monitorFixture {
@@ -266,17 +286,20 @@ func TestMonitorHTTPQuotaIsolationCSRFAndLeaseInvalidation(t *testing.T) {
 	if status != http.StatusCreated || paused.State != "PAUSED" {
 		t.Fatalf("create paused monitor status=%d monitor=%+v", status, paused)
 	}
-	if _, status := f.create(t, owner, "over quota", "three.example", true); status != http.StatusForbidden {
-		t.Fatalf("create over quota status=%d, want 403", status)
+	third, status := f.create(t, owner, "saved paused capacity", "three.example", false)
+	if status != http.StatusCreated || third.ID == "" || third.State != "PAUSED" {
+		t.Fatalf("create paused monitor beyond active count status=%d monitor=%+v", status, third)
 	}
 	entitlement := f.request(t, owner, http.MethodGet, "/api/v1/entitlement", nil, "", "")
 	var entitlementResponse struct {
 		Entitlement struct {
-			Quota        int `json:"quota"`
-			MonitorCount int `json:"monitorCount"`
+			Quota               int `json:"quota"`
+			MonitorCount        int `json:"monitorCount"`
+			EnabledMonitorCount int `json:"enabledMonitorCount"`
+			ActiveMonitorCount  int `json:"activeMonitorCount"`
 		} `json:"entitlement"`
 	}
-	if entitlement.Code != http.StatusOK || json.Unmarshal(entitlement.Body.Bytes(), &entitlementResponse) != nil || entitlementResponse.Entitlement.Quota != 2 || entitlementResponse.Entitlement.MonitorCount != 2 {
+	if entitlement.Code != http.StatusOK || json.Unmarshal(entitlement.Body.Bytes(), &entitlementResponse) != nil || entitlementResponse.Entitlement.Quota != 2 || entitlementResponse.Entitlement.MonitorCount != 3 || entitlementResponse.Entitlement.EnabledMonitorCount != 1 || entitlementResponse.Entitlement.ActiveMonitorCount != 1 {
 		t.Fatalf("entitlement response = %d %s", entitlement.Code, entitlement.Body.String())
 	}
 	foreign := f.request(t, other, http.MethodGet, "/api/v1/monitors/"+first.ID, nil, "", "")
@@ -350,6 +373,226 @@ func TestMonitorHTTPQuotaIsolationCSRFAndLeaseInvalidation(t *testing.T) {
 	}
 	if f.complete(t, *deleteAttempt, "UP", "", time.Now()) {
 		t.Fatal("result from a deleted monitor was accepted")
+	}
+}
+
+func TestMonitorEnabledSlotsCanBeChosenAmongSavedMonitors(t *testing.T) {
+	f := newMonitorFixture(t)
+	owner := f.newActor(t, "Enabled Slot Owner")
+	f.grant(t, owner, 5)
+	monitors := make([]monitorcontracts.Monitor, 0, 10)
+	for i := 0; i < 10; i++ {
+		monitor, status := f.create(t, owner, fmt.Sprintf("slot-%02d", i), fmt.Sprintf("slot-%02d.example", i), i < 5)
+		if status != http.StatusCreated {
+			t.Fatalf("save monitor %d status=%d", i, status)
+		}
+		monitors = append(monitors, monitor)
+	}
+	if _, status := f.create(t, owner, "eleventh enabled", "slot-10.example", true); status != http.StatusForbidden {
+		t.Fatalf("create above enabled quota status=%d, want 403", status)
+	}
+	setEnabled := func(index int, enabled bool) {
+		t.Helper()
+		monitor := monitors[index]
+		response := f.request(t, owner, http.MethodPatch, "/api/v1/monitors/"+monitor.ID,
+			monitorcontracts.Patch{Version: monitor.Version, Enabled: &enabled}, owner.csrf, monitorTestOrigin)
+		wantStatus := http.StatusOK
+		if enabled && index == 5 {
+			wantStatus = http.StatusForbidden
+		}
+		if response.Code != wantStatus {
+			t.Fatalf("set monitor %d enabled=%t status=%d want=%d body=%s", index, enabled, response.Code, wantStatus, response.Body.String())
+		}
+		if response.Code == http.StatusOK {
+			var result struct {
+				Monitor monitorcontracts.Monitor `json:"monitor"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			monitors[index] = result.Monitor
+		}
+	}
+	setEnabled(5, true) // No slot is free yet.
+	setEnabled(0, false)
+	setEnabled(1, false)
+	setEnabled(8, true)
+	setEnabled(9, true)
+
+	// A smaller quota changes effective rank only. Reads must retain all saved
+	// monitor configurations and must not silently change enabled flags.
+	f.grant(t, owner, 3)
+	entitlement := f.request(t, owner, http.MethodGet, "/api/v1/entitlement", nil, "", "")
+	var entitlementBody struct {
+		Entitlement struct {
+			Quota               int `json:"quota"`
+			MonitorCount        int `json:"monitorCount"`
+			EnabledMonitorCount int `json:"enabledMonitorCount"`
+			ActiveMonitorCount  int `json:"activeMonitorCount"`
+		} `json:"entitlement"`
+	}
+	if entitlement.Code != http.StatusOK || json.Unmarshal(entitlement.Body.Bytes(), &entitlementBody) != nil || entitlementBody.Entitlement.Quota != 3 || entitlementBody.Entitlement.MonitorCount != 10 || entitlementBody.Entitlement.EnabledMonitorCount != 5 || entitlementBody.Entitlement.ActiveMonitorCount != 3 {
+		t.Fatalf("entitlement after quota change=%d %s", entitlement.Code, entitlement.Body.String())
+	}
+	list := f.request(t, owner, http.MethodGet, "/api/v1/monitors?page=1&pageSize=20&sort=created_asc", nil, "", "")
+	page := readMonitorPage(t, list.Body.Bytes())
+	if list.Code != http.StatusOK || len(page.Monitors) != 10 {
+		t.Fatalf("list after quota change status=%d count=%d body=%s", list.Code, len(page.Monitors), list.Body.String())
+	}
+	for i, listed := range page.Monitors {
+		wantEnabled := i >= 2 && i <= 4 || i >= 8
+		wantState := "PAUSED"
+		if wantEnabled && i <= 4 {
+			wantState = "UNKNOWN"
+		} else if wantEnabled {
+			wantState = "SUBSCRIPTION_REQUIRED"
+		}
+		if listed.ID != monitors[i].ID || listed.Name != fmt.Sprintf("slot-%02d", i) || listed.URL != monitors[i].URL || listed.Enabled != wantEnabled || listed.State != wantState {
+			t.Errorf("monitor %d changed after quota read: id=%s name=%q url=%q enabled=%t state=%q", i, listed.ID, listed.Name, listed.URL, listed.Enabled, listed.State)
+		}
+	}
+}
+
+func TestConcurrentMonitorCreatesCannotExceedEnabledQuota(t *testing.T) {
+	f := newMonitorFixture(t)
+	owner := f.newActor(t, "Concurrent Enabled Slot Owner")
+	f.grant(t, owner, 1)
+	start := make(chan struct{})
+	status := make(chan int, 2)
+	for i := 0; i < 2; i++ {
+		go func(i int) {
+			<-start
+			input := monitorcontracts.MonitorInput{Name: fmt.Sprintf("concurrent-%d", i), URL: fmt.Sprintf("https://concurrent-%d.example/health", i), Method: http.MethodGet, ExpectedStatus: http.StatusOK, Enabled: true}
+			body, err := json.Marshal(input)
+			if err != nil {
+				status <- 0
+				return
+			}
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/monitors", bytes.NewReader(body))
+			request.AddCookie(owner.cookie)
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Origin", monitorTestOrigin)
+			request.Header.Set("X-CSRF-Token", owner.csrf)
+			response := httptest.NewRecorder()
+			f.handler.ServeHTTP(response, request)
+			status <- response.Code
+		}(i)
+	}
+	close(start)
+	first, second := <-status, <-status
+	if !((first == http.StatusCreated && second == http.StatusForbidden) || (first == http.StatusForbidden && second == http.StatusCreated)) {
+		t.Fatalf("concurrent enabled monitor create statuses=%d,%d, want one 201 and one 403", first, second)
+	}
+	var total, enabled int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*),count(*) FILTER (WHERE enabled) FROM monitors.monitors WHERE account_id=$1`, owner.account.ID).Scan(&total, &enabled); err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || enabled != 1 {
+		t.Fatalf("concurrent create saved=%d enabled=%d, want 1/1", total, enabled)
+	}
+}
+
+func TestPaymentAndMonitorCreateConcurrentWritesRetainBothQuotaComponents(t *testing.T) {
+	f := newMonitorFixture(t)
+	owner := f.newActor(t, "Concurrent Paid And Monitor Owner")
+	provider := &monitorPaymentProvider{}
+	payments, err := billing.NewConfigured(f.pool, false, billing.Config{
+		Provider: "yookassa", Mode: "production", ShopID: "654321", PaymentProvider: provider,
+	}, f.accounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := payments.GrantAdminTx(context.Background(), tx, owner.account.ID, 0, 3, time.Now().Add(24*time.Hour), "approved concurrency fixture"); err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatal(err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f.billing = payments
+	f.module = New(f.pool, payments, incidents.New(f.pool), f.accounts)
+	mux := http.NewServeMux()
+	f.module.Register(mux, f.auth.Protect)
+	payments.Register(mux, f.auth.Protect)
+	f.handler = mux
+
+	orderResponse := f.request(t, owner, http.MethodPost, "/api/v1/billing/orders", map[string]any{
+		"monitorCount": 2, "idempotencyKey": "6d9a170b-9e9e-44c9-9b6f-8c42a99db512", "priceVersion": 1,
+	}, owner.csrf, monitorTestOrigin)
+	if orderResponse.Code != http.StatusCreated {
+		t.Fatalf("create production payment order status=%d body=%s", orderResponse.Code, orderResponse.Body.String())
+	}
+	var orderBody struct {
+		Order billingcontracts.Order `json:"order"`
+	}
+	if err := json.Unmarshal(orderResponse.Body.Bytes(), &orderBody); err != nil || orderBody.Order.ID == "" {
+		t.Fatalf("decode payment order: %v body=%s", err, orderResponse.Body.String())
+	}
+	if processed, err := payments.ProcessOnePayment(context.Background()); err != nil || !processed {
+		t.Fatalf("start payment attempt=(%t,%v)", processed, err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.orders SET next_reconcile_at=now() WHERE id=$1`, orderBody.Order.ID); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	type paymentResult struct {
+		processed bool
+		err       error
+	}
+	paid := make(chan paymentResult, 1)
+	created := make(chan int, 1)
+	go func() {
+		<-start
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		processed, err := payments.ProcessOnePayment(ctx)
+		paid <- paymentResult{processed: processed, err: err}
+	}()
+	go func() {
+		<-start
+		input := monitorcontracts.MonitorInput{Name: "during payment", URL: "https://during-payment.example/health", Method: http.MethodGet, ExpectedStatus: http.StatusOK, Enabled: true}
+		body, err := json.Marshal(input)
+		if err != nil {
+			created <- 0
+			return
+		}
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/monitors", bytes.NewReader(body))
+		request.AddCookie(owner.cookie)
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Origin", monitorTestOrigin)
+		request.Header.Set("X-CSRF-Token", owner.csrf)
+		response := httptest.NewRecorder()
+		f.handler.ServeHTTP(response, request)
+		created <- response.Code
+	}()
+	close(start)
+	payment := <-paid
+	createStatus := <-created
+	if payment.err != nil || !payment.processed {
+		t.Fatalf("concurrent payment result=(%t,%v)", payment.processed, payment.err)
+	}
+	if createStatus != http.StatusCreated {
+		t.Fatalf("monitor create during payment status=%d, want 201", createStatus)
+	}
+	readTx, err := f.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined, err := payments.Lock(context.Background(), readTx, owner.account.ID)
+	_ = readTx.Rollback(context.Background())
+	if err != nil || combined.Quota != 5 || combined.Source != "combined" || combined.Admin == nil || combined.Paid == nil || combined.Admin.Quota != 3 || combined.Paid.Quota != 2 {
+		t.Fatalf("payment/create lost entitlement component: %+v err=%v", combined, err)
+	}
+	var saved, enabled int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*),count(*) FILTER (WHERE enabled) FROM monitors.monitors WHERE account_id=$1`, owner.account.ID).Scan(&saved, &enabled); err != nil {
+		t.Fatal(err)
+	}
+	if saved != 1 || enabled != 1 || enabled > combined.Quota {
+		t.Fatalf("monitor count after concurrent payment saved=%d enabled=%d quota=%d", saved, enabled, combined.Quota)
 	}
 }
 

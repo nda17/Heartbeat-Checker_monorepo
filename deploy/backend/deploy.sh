@@ -125,6 +125,42 @@ on_exit() {
 }
 trap on_exit EXIT
 
+# Only a runner-built, checksum-transported binary from this exact source may
+# process deployment inputs. Never execute a mutable incoming path after copying.
+[[ ${HC_OPS_SHA256:-} =~ ^[0-9a-f]{64}$ && -f hc-ops.incoming && ! -L hc-ops.incoming ]] || {
+  echo 'Missing source-pinned deployment helper' >&2; exit 1;
+}
+[[ $(sha256sum hc-ops.incoming | awk '{print $1}') == "$HC_OPS_SHA256" ]] || {
+  echo 'Deployment helper transport checksum mismatch' >&2; exit 1;
+}
+ops="$workdir/hc-ops"
+cp -p hc-ops.incoming "$ops"
+chmod 700 "$ops"
+[[ $(sha256sum "$ops" | awk '{print $1}') == "$HC_OPS_SHA256" && $("$ops" version) == "$source_sha" ]] || {
+  echo 'Deployment helper source/checksum mismatch' >&2; exit 1;
+}
+for helper_stage in hc-ops.installing hc-ops.sha256.installing; do
+  [[ ! -e $helper_stage && ! -L $helper_stage ]] || { echo 'Resolve staged helper installation first' >&2; exit 1; }
+done
+had_previous_helper=false
+if [[ -e hc-ops || -L hc-ops || -e hc-ops.sha256 || -L hc-ops.sha256 ]]; then
+  [[ -f hc-ops && ! -L hc-ops && -f hc-ops.sha256 && ! -L hc-ops.sha256 && $(stat -c %a hc-ops.sha256) == 600 ]] || {
+    echo 'Incomplete installed deployment helper' >&2; exit 1;
+  }
+  cp -p hc-ops "$workdir/hc-ops.previous"
+  cp -p hc-ops.sha256 "$workdir/hc-ops.previous.sha256"
+  previous_helper_sha=$(cat "$workdir/hc-ops.previous.sha256")
+  previous_helper_source=$(awk -F= '$1 == "SOURCE_SHA" {print $2}' "$workdir/.release.env")
+  [[ $previous_helper_sha =~ ^[0-9a-f]{64}$ && $previous_helper_source =~ ^[0-9a-f]{40}$ && $(sha256sum "$workdir/hc-ops.previous" | awk '{print $1}') == "$previous_helper_sha" ]] || {
+    echo 'Installed deployment helper checksum mismatch' >&2; exit 1;
+  }
+  chmod 700 "$workdir/hc-ops.previous"
+  [[ $("$workdir/hc-ops.previous" version) == "$previous_helper_source" ]] || {
+    echo 'Installed deployment helper source mismatch' >&2; exit 1;
+  }
+  had_previous_helper=true
+fi
+
 # Framed stdin: one registry-token line, followed only by an optional bounded
 # YooKassa JSON payload. The token is never exported or passed as an argument.
 unset registry_token
@@ -136,24 +172,20 @@ if $activate_android_push; then
     echo 'Android push activation must be a separate configuration operation' >&2; exit 1
   fi
   [[ ! -e .env.next && ! -L .env.next ]] || { echo 'Resolve the existing staged configuration before Android push activation' >&2; exit 1; }
-  [[ -f stage-push.py.incoming && ! -L stage-push.py.incoming ]] || { echo 'Missing tracked Android push staging helper' >&2; exit 1; }
-  cp -p stage-push.py.incoming "$workdir/stage-push.py"
-  python3 "$workdir/stage-push.py" "$workdir"
+  "$ops" stage-push "$workdir"
   activation_generated=true
 elif $activate_yookassa_test || $activate_yookassa_production; then
   if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $provision_owner || $activate_email_notifications || ( $activate_yookassa_test && $activate_yookassa_production ); then
     echo 'YooKassa activation must be a separate configuration operation' >&2; exit 1
   fi
   [[ ! -e .env.next && ! -L .env.next ]] || { echo 'Resolve the existing staged configuration before YooKassa activation' >&2; exit 1; }
-  [[ -f stage-yookassa.py.incoming && ! -L stage-yookassa.py.incoming ]] || { echo 'Missing tracked YooKassa staging helper' >&2; exit 1; }
-  cp -p stage-yookassa.py.incoming "$workdir/stage-yookassa.py"
   billing_mode='test'
   if $activate_yookassa_production; then billing_mode='production'; fi
-  python3 "$workdir/stage-yookassa.py" "$workdir" "$billing_mode"
+  "$ops" stage-yookassa "$workdir" "$billing_mode"
   activation_generated=true
 else
   # Legacy deployment accepts only the original registry token, never a payload.
-  if ! python3 -c 'import sys; sys.exit(1 if sys.stdin.buffer.read(1) else 0)'; then
+  if ! "$ops" deploy-json stdin-empty; then
     echo 'Unexpected deployment input' >&2; exit 1
   fi
 fi
@@ -165,24 +197,7 @@ if $activate_email_notifications; then
     echo 'Email activation must be a separate configuration operation' >&2; exit 1
   fi
   [[ ! -e .env.next && ! -L .env.next ]] || { echo 'Resolve the existing staged configuration before email activation' >&2; exit 1; }
-  python3 - "$workdir/.env.next" <<'EMAIL'
-from pathlib import Path
-import sys
-raw = Path(".env").read_bytes()
-lines = raw.split(b"\n")
-indices = [i for i, line in enumerate(lines) if line.startswith(b"EMAIL_NOTIFICATIONS_ENABLED=")]
-if len(indices) > 1:
-    raise SystemExit("Duplicate email notification flag")
-if indices:
-    lines[indices[0]] = b"EMAIL_NOTIFICATIONS_ENABLED=true"
-else:
-    if lines[-1] == b"":
-        lines[-1] = b"EMAIL_NOTIFICATIONS_ENABLED=true"
-        lines.append(b"")
-    else:
-        lines.append(b"EMAIL_NOTIFICATIONS_ENABLED=true")
-Path(sys.argv[1]).write_bytes(b"\n".join(lines))
-EMAIL
+  "$ops" deploy-json email-enable "$workdir/.env.next"
   activation_generated=true
 fi
 
@@ -192,40 +207,7 @@ if $provision_owner; then
   }
   cp -p .owner-import.next.json "$workdir/.owner-import.json"
   cp -p import-owner.sql.incoming "$workdir/import-owner.sql"
-  python3 - "$workdir/.owner-import.json" <<'PY'
-import json
-from pathlib import Path
-import re
-import sys
-
-def unique(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate field")
-        result[key] = value
-    return result
-
-try:
-    raw = Path(sys.argv[1]).read_bytes()
-    if not 1 <= len(raw) <= 4096:
-        raise ValueError("payload size")
-    data = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
-    if set(data) != {"accountId", "name", "email", "passwordHash", "quota", "validUntil"}:
-        raise ValueError("payload fields")
-    if (data["accountId"] != "51ec7d19-80c4-4fb6-8edb-79dc7abe3120"
-            or data["email"] != "khv1702@gmail.com"
-            or type(data["quota"]) is not int or data["quota"] != 1000
-            or data["validUntil"] != "2027-10-18T00:00:00Z"):
-        raise ValueError("payload identity")
-    name = data["name"]
-    if not isinstance(name, str) or not 2 <= len(name) <= 100 or name != name.strip() or any(ord(c) < 32 or ord(c) == 127 for c in name):
-        raise ValueError("payload name")
-    if not isinstance(data["passwordHash"], str) or not re.fullmatch(r"\$argon2id\$v=19\$m=19456,t=2,p=1\$[A-Za-z0-9+/]{22}\$[A-Za-z0-9+/]{43}", data["passwordHash"]):
-        raise ValueError("payload hash")
-except (OSError, UnicodeError, ValueError, TypeError):
-    raise SystemExit("Owner import payload validation failed")
-PY
+  "$ops" deploy-json owner-validate "$workdir/.owner-import.json"
 fi
 
 if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $activate_yookassa_test || $activate_yookassa_production || $activate_email_notifications || $activate_android_push; then
@@ -243,181 +225,7 @@ if $activate_telegram_relay || $activate_messenger_notifications || $activate_ad
   [[ ! -e .env.activate.incoming && ! -L .env.activate.incoming && ! -e .env.rollback.incoming && ! -L .env.rollback.incoming ]] || {
     echo 'Resolve the previous configuration activation staging file' >&2; exit 1;
   }
-  python3 - "$workdir/.env.next" "$activate_telegram_relay" "$activate_messenger_notifications" "$activate_admin_mfa" "$activate_oauth" "$activate_yookassa_test" "$activate_email_notifications" "$activate_android_push" "$activate_yookassa_production" <<'PY'
-import base64
-import binascii
-from pathlib import Path
-import re
-import sys
-from urllib.parse import urlsplit
-
-relay_targets = {
-    b"TELEGRAM_API_BASE_URL": b"https://messengers-proxy.heartbeat-checker.ru/telegram-api",
-    b"TELEGRAM_API_PROXY_IP": b"185.184.122.62",
-}
-messenger_keys = {
-    b"MESSENGER_NOTIFICATIONS_ENABLED",
-    b"TELEGRAM_INFORMER_WEBHOOK_SECRET",
-    b"MAX_INFORMER_WEBHOOK_SECRET",
-    b"TELEGRAM_BOT_INFORMER_TOKEN",
-    b"MAX_BOT_INFORMER_TOKEN",
-    b"TELEGRAM_INFORMER_BOT_USERNAME",
-    b"MAX_INFORMER_BOT_URL",
-}
-relay = sys.argv[2] == "true"
-messenger = sys.argv[3] == "true"
-admin_mfa = sys.argv[4] == "true"
-mfa_key = b"AUTH_MFA_ENCRYPTION_KEY"
-oauth_keys = {
-    b"YANDEX_CLIENT_ID", b"YANDEX_CLIENT_SECRET", b"YANDEX_REDIRECT_URI",
-    b"YANDEX_SCOPES", b"VK_CLIENT_ID", b"VK_CALLBACK_URL",
-}
-oauth = sys.argv[5] == "true"
-yookassa_test = sys.argv[6] == "true"
-email_notifications = sys.argv[7] == "true"
-android_push = sys.argv[8] == "true"
-yookassa_production = sys.argv[9] == "true"
-push_keys = {b"ANDROID_PUSH_ENABLED", b"RUSTORE_PUSH_PROJECT_ID", b"RUSTORE_PUSH_SERVICE_TOKEN", b"FCM_PUSH_ENABLED", b"FCM_PROJECT_ID", b"FCM_SERVICE_ACCOUNT_BASE64", b"HUAWEI_PUSH_ENABLED", b"HUAWEI_PROJECT_ID", b"HUAWEI_CLIENT_ID", b"HUAWEI_CLIENT_SECRET"}
-email_key = b"EMAIL_NOTIFICATIONS_ENABLED"
-yookassa_keys = {b"BILLING_PROVIDER", b"BILLING_TEST_ACCOUNT_IDS", b"YOOKASSA_MODE", b"YOOKASSA_TEST_SHOP_ID", b"YOOKASSA_TEST_SECRET_KEY"}
-production_keys = {b"BILLING_PROVIDER", b"YOOKASSA_MODE", b"YOOKASSA_PRODUCTION_SHOP_ID", b"YOOKASSA_PRODUCTION_SECRET_KEY"}
-allowed = (set(relay_targets) if relay else set()) | (messenger_keys if messenger else set()) | ({mfa_key} if admin_mfa else set()) | (oauth_keys if oauth else set()) | (yookassa_keys if yookassa_test else set()) | (production_keys if yookassa_production else set()) | ({email_key} if email_notifications else set()) | (push_keys if android_push else set())
-prefix = "Relay activation rejected" if relay and not messenger else "Configuration activation rejected"
-
-def reject(message):
-    raise SystemExit(f"{prefix}: {message}")
-
-def unquote_literal(value):
-    # Accept one dotenv-style outer quote pair without interpreting escapes or variables.
-    if len(value) >= 2 and value[:1] in (b"'", b'"') and value[-1:] == value[:1]:
-        return value[1:-1]
-    return value
-
-def parse(path):
-    data = Path(path).read_bytes()
-    if any((c < 32 and c != 10) or c == 127 for c in data):
-        reject("invalid env content")
-    ordinary = []
-    values = {}
-    for line in data.split(b"\n"):
-        if not line.strip(b" \t") or line.lstrip(b" \t").startswith(b"#"):
-            ordinary.append(line)
-            continue
-        match = re.fullmatch(rb"([A-Za-z_][A-Za-z0-9_]*)=(.*)", line)
-        if match is None:
-            reject("invalid env line")
-        key, value = match.groups()
-        if key in values:
-            reject("duplicate env key")
-        values[key] = value
-        if key not in allowed:
-            ordinary.append(line)
-    return ordinary, values
-
-old_lines, old_values = parse(".env")
-new_lines, new_values = parse(sys.argv[1])
-if old_lines != new_lines:
-    reject("changes outside selected keys")
-if android_push:
-    if unquote_literal(new_values.get(b"ANDROID_PUSH_ENABLED",b"")) != b"true":
-        reject("Android push flag must be true")
-    if not re.fullmatch(rb"[A-Za-z0-9_-]{1,128}", unquote_literal(new_values.get(b"RUSTORE_PUSH_PROJECT_ID",b""))):
-        reject("invalid RuStore push project")
-    token = unquote_literal(new_values.get(b"RUSTORE_PUSH_SERVICE_TOKEN",b""))
-    if not 32 <= len(token) <= 8192 or any(c < 33 or c > 126 for c in token):
-        reject("invalid RuStore push service token")
-    for flag in (b"FCM_PUSH_ENABLED", b"HUAWEI_PUSH_ENABLED"):
-        if unquote_literal(new_values.get(flag, b"false")) not in (b"true", b"false"):
-            reject("invalid cloud push flag")
-        if unquote_literal(old_values.get(flag,b"false")) == b"true" and unquote_literal(new_values.get(flag,b"false")) != b"true":
-            reject("Android push activation cannot disable existing providers")
-    for key in push_keys - {b"ANDROID_PUSH_ENABLED", b"FCM_PUSH_ENABLED", b"HUAWEI_PUSH_ENABLED"}:
-        old = unquote_literal(old_values.get(key,b""))
-        if old and old != unquote_literal(new_values.get(key,b"")):
-            reject("Android push activation cannot rotate existing configuration")
-if email_notifications and new_values.get(email_key) != b"true":
-    reject("email notification flag must be true")
-if yookassa_test:
-    target = {b"BILLING_PROVIDER": b"yookassa", b"YOOKASSA_MODE": b"test", b"BILLING_TEST_ACCOUNT_IDS": b"51ec7d19-80c4-4fb6-8edb-79dc7abe3120"}
-    for key, expected in target.items():
-        if unquote_literal(new_values.get(key, b"")) != expected:
-            reject("YooKassa activation must use the reviewed test mode and owner account")
-    shop = unquote_literal(new_values.get(b"YOOKASSA_TEST_SHOP_ID", b""))
-    secret = unquote_literal(new_values.get(b"YOOKASSA_TEST_SECRET_KEY", b""))
-    if not re.fullmatch(rb"[0-9]{1,32}", shop) or not re.fullmatch(rb"test_[^\s]{11,507}", secret):
-        reject("complete YooKassa test credentials are required")
-    for key in (b"YOOKASSA_TEST_SHOP_ID", b"YOOKASSA_TEST_SECRET_KEY"):
-        previous = unquote_literal(old_values.get(key, b""))
-        if previous and previous != unquote_literal(new_values.get(key, b"")):
-            reject("YooKassa activation cannot rotate existing credentials")
-if yookassa_production:
-    if unquote_literal(new_values.get(b"BILLING_PROVIDER", b"")) != b"yookassa" or unquote_literal(new_values.get(b"YOOKASSA_MODE", b"")) != b"production":
-        reject("YooKassa production mode is required")
-    shop = unquote_literal(new_values.get(b"YOOKASSA_PRODUCTION_SHOP_ID", b""))
-    secret = unquote_literal(new_values.get(b"YOOKASSA_PRODUCTION_SECRET_KEY", b""))
-    if not re.fullmatch(rb"[0-9]{1,32}", shop) or not 16 <= len(secret) <= 512 or secret.startswith(b"test_") or any(c < 33 or c > 126 or c in b"'\\" for c in secret):
-        reject("complete YooKassa production credentials are required")
-    for key in (b"YOOKASSA_PRODUCTION_SHOP_ID", b"YOOKASSA_PRODUCTION_SECRET_KEY"):
-        previous = unquote_literal(old_values.get(key, b""))
-        if previous and previous != unquote_literal(new_values.get(key, b"")):
-            reject("YooKassa production activation cannot rotate existing credentials")
-if oauth:
-    for key in oauth_keys:
-        previous = old_values.get(key, b"")
-        if unquote_literal(previous) and new_values.get(key) != previous:
-            reject("existing OAuth credential cannot be rotated")
-    if not re.fullmatch(rb"[A-Za-z0-9_-]{16,128}", new_values.get(b"YANDEX_CLIENT_ID", b"")):
-        reject("invalid Yandex client ID")
-    secret = new_values.get(b"YANDEX_CLIENT_SECRET", b"")
-    if not 16 <= len(secret) <= 512 or any(c < 33 or c > 126 or c in b"'\"$`\\#" for c in secret):
-        reject("invalid Yandex client secret")
-    if new_values.get(b"YANDEX_REDIRECT_URI") != b"https://heartbeat-checker.ru/api/v1/auth/oauth/yandex/callback":
-        reject("invalid Yandex callback URL")
-    if unquote_literal(new_values.get(b"YANDEX_SCOPES", b"")) != b"login:email login:info":
-        reject("invalid Yandex scopes")
-    if not re.fullmatch(rb"[0-9]{4,32}", new_values.get(b"VK_CLIENT_ID", b"")):
-        reject("invalid VK client ID")
-    if new_values.get(b"VK_CALLBACK_URL") != b"https://heartbeat-checker.ru/api/v1/auth/oauth/vk/callback":
-        reject("invalid VK callback URL")
-if relay and any(new_values.get(key) != value for key, value in relay_targets.items()):
-    reject("unexpected Telegram endpoint")
-if admin_mfa:
-    if unquote_literal(old_values.get(mfa_key, b"")):
-        reject("existing admin MFA key cannot be rotated")
-    value = new_values.get(mfa_key, b"")
-    try:
-        if len(base64.b64decode(value, validate=True)) != 32 or base64.b64encode(base64.b64decode(value, validate=True)) != value:
-            reject("invalid admin MFA key")
-    except (ValueError, binascii.Error):
-        reject("invalid admin MFA key")
-if messenger:
-    if new_values.get(b"MESSENGER_NOTIFICATIONS_ENABLED") != b"true":
-        reject("messenger flag must be true")
-    secrets = (b"TELEGRAM_INFORMER_WEBHOOK_SECRET", b"MAX_INFORMER_WEBHOOK_SECRET")
-    for key in secrets:
-        value = new_values.get(key, b"")
-        if not re.fullmatch(rb"[A-Za-z0-9_-]{32,256}", value):
-            reject("invalid Informer webhook secret")
-        support_key = key.replace(b"INFORMER", b"SUPPORT")
-        if value == unquote_literal(old_values.get(support_key, b"")):
-            reject("Informer webhook secret matches Support")
-    telegram_token = old_values.get(b"TELEGRAM_BOT_INFORMER_TOKEN", b"")
-    if not re.fullmatch(rb"[0-9]+:[A-Za-z0-9_-]+", unquote_literal(telegram_token)) or new_values.get(b"TELEGRAM_BOT_INFORMER_TOKEN") != telegram_token:
-        reject("existing Telegram Informer token must remain unchanged")
-    max_token = new_values.get(b"MAX_BOT_INFORMER_TOKEN", b"")
-    if not 16 <= len(max_token) <= 512 or any(c < 33 or c > 126 or c in b"'\"$`\\#" for c in max_token):
-        reject("invalid MAX Informer token")
-    username = new_values.get(b"TELEGRAM_INFORMER_BOT_USERNAME", b"")
-    if not re.fullmatch(rb"[A-Za-z][A-Za-z0-9_]{4,31}", username) or not username.lower().endswith(b"bot"):
-        reject("invalid Telegram Informer bot username")
-    try:
-        url = urlsplit(new_values.get(b"MAX_INFORMER_BOT_URL", b"").decode("ascii"))
-    except (UnicodeDecodeError, ValueError):
-        reject("invalid MAX Informer bot URL")
-    if (url.scheme != "https" or url.netloc != "max.ru" or not re.fullmatch(r"/[A-Za-z0-9_-]+", url.path)
-            or url.query or url.fragment or url.username or url.password):
-        reject("invalid MAX Informer bot URL")
-PY
+  "$ops" deploy-json activation-check "$workdir/.env.next" "$activate_telegram_relay" "$activate_messenger_notifications" "$activate_admin_mfa" "$activate_oauth" "$activate_yookassa_test" "$activate_email_notifications" "$activate_android_push" "$activate_yookassa_production"
   cp -p .env "$workdir/.env"
   activation_stage_created=true
   cp -p "$workdir/.env.next" .env.activate.incoming
@@ -440,77 +248,10 @@ FIREWALL_IMAGE=$firewall_image
 FIREWALL_POLICY_SHA256=$firewall_policy_sha
 EOF
 chmod 600 .release.env.incoming
-bash backup.sh.incoming preflight
+HC_OPS_PATH="$ops" bash backup.sh.incoming preflight
 compose_new=(docker compose --env-file .env --env-file .release.env.incoming -f compose.yaml.incoming)
 "${compose_new[@]}" config -q
-"${compose_new[@]}" config --format json | python3 -c '
-import base64, binascii, json, sys
-from urllib.parse import urlparse, parse_qs
-c = json.load(sys.stdin)["services"]
-u = urlparse(c["api"]["environment"]["DATABASE_URL"])
-p = c["postgres"]["environment"]["POSTGRES_PASSWORD"]
-if (u.scheme not in ("postgres", "postgresql") or u.hostname != "postgres" or
-    u.port != 5432 or u.username != "heartbeat" or u.password != p or
-    u.path != "/heartbeat" or parse_qs(u.query) != {"sslmode": ["disable"]}):
-    raise SystemExit("DATABASE_URL must target this Compose PostgreSQL with matching credentials")
-email_flag = "EMAIL_NOTIFICATIONS_ENABLED"
-if c["api"]["environment"].get(email_flag) not in ("true", "false") or c["api"]["environment"].get(email_flag) != c["worker"]["environment"].get(email_flag):
-    raise SystemExit("API and worker email notification flags must match")
-if any(email_flag in c.get(name, {}).get("environment", {}) for name in ("probe", "postgres", "caddy", "migrate")):
-    raise SystemExit("Email notifications must be scoped to API and worker only")
-push_flag = "ANDROID_PUSH_ENABLED"
-api_push = c["api"]["environment"].get(push_flag, "false")
-worker_push = c["worker"]["environment"].get(push_flag, "false")
-if api_push not in ("true", "false") or api_push != worker_push:
-    raise SystemExit("API and worker Android push flags must match")
-if c["api"]["environment"].get("RUSTORE_PUSH_PROJECT_ID", "") != c["worker"]["environment"].get("RUSTORE_PUSH_PROJECT_ID", ""):
-    raise SystemExit("API and worker RuStore project identifiers must match")
-if "RUSTORE_PUSH_SERVICE_TOKEN" in c["api"]["environment"] or any(key in c.get(name, {}).get("environment", {}) for key in (push_flag,"RUSTORE_PUSH_PROJECT_ID","RUSTORE_PUSH_SERVICE_TOKEN") for name in ("probe","postgres","caddy","migrate")):
-    raise SystemExit("RuStore credentials must be scoped to the worker only")
-if api_push == "true":
-    project = c["worker"]["environment"].get("RUSTORE_PUSH_PROJECT_ID", "")
-    token = c["worker"]["environment"].get("RUSTORE_PUSH_SERVICE_TOKEN", "")
-    if not project or not 32 <= len(token) <= 8192 or any(ord(char) < 33 or ord(char) > 126 for char in token):
-        raise SystemExit("Enabled Android push requires complete worker configuration")
-cloud_secrets = ("FCM_SERVICE_ACCOUNT_BASE64", "HUAWEI_CLIENT_ID", "HUAWEI_CLIENT_SECRET")
-if any(key in c.get(name, {}).get("environment", {}) for key in cloud_secrets for name in ("api","probe","postgres","caddy","migrate")):
-    raise SystemExit("Cloud push sending credentials must be worker-only")
-for flag, project, credentials in (("FCM_PUSH_ENABLED", "FCM_PROJECT_ID", ("FCM_SERVICE_ACCOUNT_BASE64",)), ("HUAWEI_PUSH_ENABLED", "HUAWEI_PROJECT_ID", ("HUAWEI_CLIENT_ID", "HUAWEI_CLIENT_SECRET"))):
-    api_env, worker_env = c["api"]["environment"], c["worker"]["environment"]
-    if api_env.get(flag,"false") not in ("true","false") or api_env.get(flag,"false") != worker_env.get(flag,"false") or api_env.get(project,"") != worker_env.get(project,""):
-        raise SystemExit("Cloud push public configuration must match API and worker")
-    if worker_env.get(flag,"false") == "true" and (api_push != "true" or not worker_env.get(project) or any(not worker_env.get(key) for key in credentials)):
-        raise SystemExit("Enabled cloud push requires complete worker configuration")
-if c["worker"]["environment"]["SMTP_TLS_MODE"] not in ("implicit_tls", "starttls"):
-    raise SystemExit("SMTP_TLS_MODE must use verified TLS")
-try:
-    mfa_key = c["api"]["environment"]["AUTH_MFA_ENCRYPTION_KEY"]
-    if len(base64.b64decode(mfa_key, validate=True)) != 32:
-        raise ValueError()
-except (KeyError, ValueError, binascii.Error):
-    raise SystemExit("Production admin MFA key is required")
-if any("AUTH_MFA_ENCRYPTION_KEY" in c[name]["environment"] for name in ("worker", "probe")):
-    raise SystemExit("Admin MFA key must be scoped to API only")
-oauth_keys = ("YANDEX_CLIENT_ID", "YANDEX_CLIENT_SECRET", "YANDEX_REDIRECT_URI", "YANDEX_SCOPES", "VK_CLIENT_ID", "VK_CALLBACK_URL")
-if any(key in c[name]["environment"] for key in oauth_keys for name in ("worker", "probe")):
-    raise SystemExit("OAuth configuration must be scoped to API only")
-yookassa_keys = ("BILLING_TEST_ACCOUNT_IDS", "YOOKASSA_MODE", "YOOKASSA_TEST_SHOP_ID", "YOOKASSA_TEST_SECRET_KEY", "YOOKASSA_PRODUCTION_SHOP_ID", "YOOKASSA_PRODUCTION_SECRET_KEY")
-if any(c["api"]["environment"].get(key, "") != c["worker"]["environment"].get(key, "") for key in yookassa_keys):
-    raise SystemExit("API and worker must share the same YooKassa policy")
-if any(key in c.get(name, {}).get("environment", {}) for key in yookassa_keys for name in ("probe", "postgres", "caddy", "migrate")):
-    raise SystemExit("YooKassa configuration must be scoped to API and worker only")
-if c["api"]["environment"].get("BILLING_PROVIDER") == "yookassa":
-    e = c["api"]["environment"]
-    mode = e.get("YOOKASSA_MODE")
-    if mode == "test":
-        if e.get("BILLING_TEST_ACCOUNT_IDS") != "51ec7d19-80c4-4fb6-8edb-79dc7abe3120" or not e.get("YOOKASSA_TEST_SHOP_ID", "").isdigit() or not e.get("YOOKASSA_TEST_SECRET_KEY", "").startswith("test_"):
-            raise SystemExit("YooKassa test mode requires the reviewed owner-only sandbox")
-    elif mode == "production":
-        if not e.get("YOOKASSA_PRODUCTION_SHOP_ID", "").isdigit() or not 16 <= len(e.get("YOOKASSA_PRODUCTION_SECRET_KEY", "")) <= 512 or e.get("YOOKASSA_PRODUCTION_SECRET_KEY", "").startswith("test_"):
-            raise SystemExit("YooKassa production mode requires the selected production shop")
-    else:
-        raise SystemExit("YooKassa mode must be explicit")
-'
+"${compose_new[@]}" config --format json | "$ops" compose-check
 "${compose_new[@]}" pull postgres caddy api worker probe migrate
 docker pull "$backup_image"
 docker pull "$firewall_image"
@@ -576,6 +317,14 @@ mkdir -p recovery
 candidate_recovery="recovery/${source_sha}-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -m 700 "$candidate_recovery"
 recovery_dir=$candidate_recovery
+# Keep both the previous helper and the exact next helper for forward recovery.
+# Legacy releases legitimately have no previous helper.
+if $had_previous_helper; then
+  cp -p "$workdir/hc-ops.previous" "$recovery_dir/hc-ops"
+  cp -p "$workdir/hc-ops.previous.sha256" "$recovery_dir/hc-ops.sha256"
+fi
+cp -p "$ops" "$recovery_dir/hc-ops.next"
+printf '%s\n' "$HC_OPS_SHA256" > "$recovery_dir/hc-ops.next.sha256"
 if $activation_applied; then
   cp -p "$workdir/.env" "$recovery_dir/.env"
 else
@@ -599,21 +348,9 @@ printf 'source_sha=%s\nbackup=%s\nbackup_sha256=%s\nrecovery=%s\nphase=migration
 if $provision_owner; then
   # The JSON remains in a private snapshot. Only hex data travels over stdin;
   # psql output and diagnostics stay in the protected workdir on failure.
-  if ! python3 - "$workdir/.owner-import.json" "$workdir/import-owner.sql" "$source_sha" <<'PY' \
+  if ! "$ops" deploy-json owner-sql "$workdir/.owner-import.json" "$workdir/import-owner.sql" "$source_sha" \
       | "${compose[@]}" exec -T postgres psql -X -q -At -v ON_ERROR_STOP=1 -U heartbeat -d heartbeat \
           > "$workdir/owner-import.stdout" 2> "$workdir/owner-import.stderr"; then
-import hashlib
-from pathlib import Path
-import sys
-
-payload = Path(sys.argv[1]).read_bytes()
-template = Path(sys.argv[2]).read_bytes()
-marker = b"__OWNER_PAYLOAD_ROW__"
-if template.count(marker) != 1:
-    raise SystemExit("Invalid tracked owner import SQL")
-row = payload.hex().encode() + b"\t" + hashlib.sha256(payload).hexdigest().encode() + b"\t" + sys.argv[3].encode()
-sys.stdout.buffer.write(template.replace(marker, row))
-PY
     echo 'Owner import transaction failed; retain pending and protected payload' >&2; exit 1
   fi
   owner_import_result=$(tr -d '\r\n' < "$workdir/owner-import.stdout")
@@ -646,30 +383,7 @@ $ready || { echo 'API readiness failed' >&2; exit 1; }
 curl -fsS --max-time 3 -o /dev/null http://172.30.80.2:8090/readyz || {
   echo 'Probe readiness failed' >&2; exit 1;
 }
-"${compose[@]}" config --format json | python3 -c '
-import json, sys, urllib.error, urllib.request
-c = json.load(sys.stdin)["services"]
-secret = c["probe"]["environment"]["PROBE_SHARED_SECRET"]
-opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-endpoint = "http://172.30.80.2:8090/internal/v1/check"
-def check(url):
-    body = json.dumps({"runId":"release-smoke", "attemptToken":"release-smoke", "configVersion":1,
-                       "url":url, "method":"GET", "expectedStatus":200, "bodyContains":""}).encode()
-    req = urllib.request.Request(endpoint, data=body, method="POST",
-                                 headers={"Authorization":"Bearer " + secret, "Content-Type":"application/json"})
-    try:
-        with opener.open(req, timeout=20) as response:
-            return response.status, json.load(response)
-    except urllib.error.HTTPError as response:
-        return response.code, json.load(response)
-status, result = check("https://heartbeat-checker.ru/")
-if status != 200 or result.get("outcome") != "UP" or result.get("httpStatus") != 200:
-    raise SystemExit("Probe could not resolve and GET the own public site")
-status, result = check("http://169.254.169.254/")
-if status != 400 or result.get("error") != "unsupported_target":
-    raise SystemExit("Probe did not reject metadata address")
-print("Probe public GET and metadata rejection passed")
-'
+"${compose[@]}" config --format json | "$ops" deploy-json probe-smoke
 sleep 5
 worker_id=$("${compose[@]}" ps -q worker)
 [[ -n $worker_id && $(docker inspect --format '{{.State.Running}}' "$worker_id") == true ]] || {
@@ -705,6 +419,14 @@ jq -n --arg source_sha "$source_sha" --arg api "$api_image" \
   --argjson yookassa_production_activated "$activate_yookassa_production" \
   '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image,firewall:$firewall_image},firewall_policy_sha256:$firewall_policy_sha256,backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,messenger_notifications_activated:$messenger_notifications_activated,email_notifications_activated:$email_notifications_activated,android_push_activated:$android_push_activated,owner_import_requested:$owner_import_requested,admin_mfa_activated:$admin_mfa_activated,oauth_activated:$oauth_activated,yookassa_test_activated:$yookassa_test_activated,yookassa_production_activated:$yookassa_production_activated,completed_at:(now|todate)}' \
   > "receipts/$source_sha.json.incoming"
+# Install helpers only after migration/readiness, so every pre-migration rollback
+# leaves the prior helper (or its legitimate absence) unchanged.
+cp -p "$ops" hc-ops.installing
+printf '%s\n' "$HC_OPS_SHA256" > hc-ops.sha256.installing
+chmod 700 hc-ops.installing
+chmod 600 hc-ops.sha256.installing
+mv hc-ops.installing hc-ops
+mv hc-ops.sha256.installing hc-ops.sha256
 mv compose.backup.yaml.incoming compose.backup.yaml
 mv backup.sh.incoming backup.sh
 chmod 700 backup.sh

@@ -766,6 +766,43 @@ func TestMessengerAcceptedDownAndRecoveryDeliverImmutableSnapshotsInOrder(t *tes
 	}
 }
 
+func TestMessengerDeliveryRanksEnabledMonitorsOnly(t *testing.T) {
+	f := newWebhookFixture(t)
+	accountID, pausedMonitorID := f.addMonitor(t, "enabled rank delivery")
+	if err := billing.New(f.pool, true).GrantLocal(context.Background(), accountID, 1, time.Now().Add(time.Hour), "one enabled slot"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `UPDATE monitors.monitors SET enabled=false WHERE id=$1`, pausedMonitorID); err != nil {
+		t.Fatal(err)
+	}
+	enabledMonitorID := "00000000-0000-4000-8000-000000000092"
+	if _, err := f.pool.Exec(context.Background(), `INSERT INTO monitors.monitors(id,account_id,name,url,target_key,method,expected_status)
+		VALUES($1,$2,'Enabled after pause','https://enabled-messenger.example.test/health','enabled-messenger.example.test:443','GET',200)`, enabledMonitorID, accountID); err != nil {
+		t.Fatal(err)
+	}
+	m := testMessenger(t, f, true)
+	destination := confirmPrivateTelegramTarget(t, f, m, accountID, 3981)
+	if _, err := m.PutRoute(context.Background(), accountID, enabledMonitorID, "telegram", PutMessengerRoute{
+		DestinationID: destination.ID, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+	observation := incidentcontracts.Observation{
+		Name: "Enabled after pause", URL: "https://enabled-messenger.example.test/health",
+		Outcome: "DOWN", HTTPStatus: 503, ErrorCode: "unexpected_status", CheckedAt: at, Sequence: 1,
+	}
+	applyMessengerObservation(t, f.pool, incidents.New(f.pool, NewRecorder(m)), accountID, enabledMonitorID, 1, "DOWN", at, observation)
+	attempt, err := m.ClaimDelivery(context.Background())
+	if err != nil || attempt == nil || attempt.MonitorID != enabledMonitorID {
+		t.Fatalf("claim enabled monitor after older pause: attempt=%+v err=%v", attempt, err)
+	}
+	eligible, err := m.deliveryStillEligible(context.Background(), *attempt)
+	if err != nil || !eligible {
+		t.Fatalf("prepare guard rejected enabled monitor after older pause: eligible=%t err=%v", eligible, err)
+	}
+}
+
 func TestMessengerDueReminderIsQueuedThenCancelledWhenDisabled(t *testing.T) {
 	f := newWebhookFixture(t)
 	accountID, monitorID := f.addMonitor(t, "reminder cancellation")

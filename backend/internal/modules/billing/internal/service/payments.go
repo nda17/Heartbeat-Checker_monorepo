@@ -82,9 +82,11 @@ func (s *Service) Overview(ctx context.Context, accountID string) (contracts.Bil
 	if pricing, err := s.Pricing(ctx); err == nil {
 		result.PricePerMonitorMinor, result.PriceVersion = pricing.PricePerMonitorMinor, pricing.Version
 	}
-	if result.CanPay {
+	// Paid capacity is additive, so checkout can change access even while an
+	// administrative grant is active. Keep the legacy field false on the wire.
+	if result.CanPay && result.Test {
 		var paidAccess bool
-		if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM billing.entitlements WHERE account_id=$1 AND source='admin_grant' AND valid_until>now()), EXISTS(SELECT 1 FROM billing.entitlements WHERE account_id=$1 AND source='yookassa' AND valid_until>now())`, accountID).Scan(&result.AccessUnchanged, &paidAccess); err != nil {
+		if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM billing.entitlements WHERE account_id=$1 AND source='yookassa' AND valid_until>now())`, accountID).Scan(&paidAccess); err != nil {
 			return result, err
 		}
 		if result.Test && paidAccess {
@@ -93,7 +95,7 @@ func (s *Service) Overview(ctx context.Context, accountID string) (contracts.Bil
 	}
 	if result.CanSimulate {
 		var protectedAccess bool
-		if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM billing.entitlements WHERE account_id=$1 AND source IN ('admin_grant','yookassa') AND valid_until>now())`, accountID).Scan(&protectedAccess); err != nil {
+		if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM billing.admin_grants WHERE account_id=$1 AND valid_until>now()) OR EXISTS(SELECT 1 FROM billing.entitlements WHERE account_id=$1 AND source='yookassa' AND valid_until>now())`, accountID).Scan(&protectedAccess); err != nil {
 			return result, err
 		}
 		result.CanSimulate = !protectedAccess
@@ -124,7 +126,8 @@ func (s *Service) beginMock(ctx context.Context, accountID string) (pgx.Tx, cont
 	}
 	entitlement, err := s.Lock(ctx, tx, accountID)
 	if err == nil {
-		if (entitlement.Source == "admin_grant" || entitlement.Source == "yookassa") && entitlement.Quota > 0 && entitlement.ActiveUntil != nil && entitlement.ActiveUntil.After(time.Now()) {
+		if (entitlement.Admin != nil && entitlement.Admin.ActiveUntil != nil && entitlement.Admin.ActiveUntil.After(time.Now())) ||
+			(s.activeSubscription(accountID, entitlement.Paid, time.Now()) && entitlement.Paid.Source == "yookassa") {
 			err = ErrForbidden
 		}
 	}
@@ -175,7 +178,7 @@ func (s *Service) CreateOrder(ctx context.Context, accountID string, count int, 
 		return contracts.Order{}, ErrOrderAmount
 	}
 	// No proration: an active subscription can only be renewed at the same capacity.
-	if entitlement.Quota > 0 && entitlement.Quota != count {
+	if s.activeSubscription(accountID, entitlement.Paid, time.Now()) && entitlement.Paid.Quota != count {
 		return contracts.Order{}, ErrConflict
 	}
 	if _, err = tx.Exec(ctx, `UPDATE billing.orders SET status='canceled',completed_at=now() WHERE account_id=$1 AND status='pending' AND expires_at<=now()`, accountID); err != nil {
@@ -233,15 +236,17 @@ func (s *Service) Simulate(ctx context.Context, accountID, orderID, outcome stri
 	}
 	var until *time.Time
 	if outcome == "succeeded" {
-		if entitlement.Quota > 0 && entitlement.Quota != order.MonitorCount {
+		paid := entitlement.Paid
+		paidActive := s.activeSubscription(accountID, paid, now)
+		if paidActive && paid.Quota != order.MonitorCount {
 			return order, ErrConflict
 		}
 		start := now
 		anchorDay := now.In(moscow).Day()
-		if entitlement.Source == "mock_test" && entitlement.Quota > 0 && entitlement.ActiveUntil != nil && entitlement.ActiveUntil.After(start) {
-			start = *entitlement.ActiveUntil
-			if entitlement.RenewalAnchorDay > 0 {
-				anchorDay = entitlement.RenewalAnchorDay
+		if paidActive && paid.Source == "mock_test" {
+			start = *paid.ActiveUntil
+			if paid.RenewalAnchorDay > 0 {
+				anchorDay = paid.RenewalAnchorDay
 			}
 		}
 		expiry := nextMockMonth(start, anchorDay)

@@ -578,7 +578,7 @@ func TestAdminMFAFenceVersionedMutationsAndAuditAtomicity(t *testing.T) {
 		t.Fatalf("audit trigger response status=%d body=%s, want 5xx", failedGrant.Code, failedGrant.Body.String())
 	}
 	var entitlementRows, auditRows int
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.entitlements WHERE account_id=$1 AND source='admin_grant'`, rollback.id).Scan(&entitlementRows); err != nil {
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.admin_grants WHERE account_id=$1`, rollback.id).Scan(&entitlementRows); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM admin.audit_events WHERE target_account_id=$1 AND action='entitlement.granted'`, rollback.id).Scan(&auditRows); err != nil {

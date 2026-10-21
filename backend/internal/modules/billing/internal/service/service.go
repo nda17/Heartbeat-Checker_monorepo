@@ -35,20 +35,64 @@ func (s *Service) Lock(ctx context.Context, tx pgx.Tx, accountID string) (contra
 		return contracts.Entitlement{}, err
 	}
 	var e contracts.Entitlement
-	var until time.Time
-	err := tx.QueryRow(ctx, `SELECT monitor_limit,valid_until,source,COALESCE(renewal_anchor_day,0),version FROM billing.entitlements WHERE account_id=$1 FOR UPDATE`, accountID).Scan(&e.Quota, &until, &e.Source, &e.RenewalAnchorDay, &e.Version)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return e, nil
-	}
-	if err != nil {
+	var paid contracts.Subscription
+	var paidUntil time.Time
+	err := tx.QueryRow(ctx, `SELECT monitor_limit,valid_until,source,COALESCE(renewal_anchor_day,0),version FROM billing.entitlements WHERE account_id=$1 FOR UPDATE`, accountID).
+		Scan(&paid.Quota, &paidUntil, &paid.Source, &paid.RenewalAnchorDay, &paid.Version)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return e, err
 	}
-	e.ActiveUntil = &until
-	validSource := e.Source == "admin_grant" || e.Source == "yookassa" || (s.local && e.Source == "local_test") || (s.provider == "mock" && s.allowed[accountID] && e.Source == "mock_test") || (s.provider == "yookassa" && s.mode == "test" && s.allowed[accountID] && e.Source == "yookassa_test")
-	if !validSource || !until.After(time.Now()) {
-		e.Quota = 0
+	if err == nil {
+		paid.ActiveUntil = &paidUntil
+		e.Paid = &paid
+		e.Version = paid.Version
+		e.Source = paid.Source
+		e.RenewalAnchorDay = paid.RenewalAnchorDay
+	}
+	var admin contracts.AdminGrant
+	var adminUntil time.Time
+	err = tx.QueryRow(ctx, `SELECT monitor_limit,valid_until,version FROM billing.admin_grants WHERE account_id=$1 FOR UPDATE`, accountID).
+		Scan(&admin.Quota, &adminUntil, &admin.Version)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return e, err
+	}
+	if err == nil {
+		admin.ActiveUntil = &adminUntil
+		e.Admin = &admin
+		e.Version += admin.Version
+		if e.Paid == nil {
+			e.Source = "admin_grant"
+		}
+	}
+	now := time.Now()
+	activePaid := s.activeSubscription(accountID, e.Paid, now)
+	activeAdmin := e.Admin != nil && adminUntil.After(now)
+	switch {
+	case activePaid && activeAdmin:
+		e.Quota = paid.Quota + admin.Quota
+		e.Source = "combined"
+		if paidUntil.Before(adminUntil) {
+			e.ActiveUntil = &paidUntil
+		} else {
+			e.ActiveUntil = &adminUntil
+		}
+	case activePaid:
+		e.Quota = paid.Quota
+		e.Source = paid.Source
+		e.ActiveUntil = &paidUntil
+	case activeAdmin:
+		e.Quota = admin.Quota
+		e.Source = "admin_grant"
+		e.ActiveUntil = &adminUntil
 	}
 	return e, nil
+}
+
+func (s *Service) activeSubscription(accountID string, paid *contracts.Subscription, now time.Time) bool {
+	return paid != nil && paid.ActiveUntil != nil && paid.ActiveUntil.After(now) &&
+		(paid.Source == "yookassa" || (s.local && paid.Source == "local_test") ||
+			(s.provider == "mock" && s.allowed[accountID] && paid.Source == "mock_test") ||
+			(s.provider == "yookassa" && s.mode == "test" && s.allowed[accountID] && paid.Source == "yookassa_test"))
 }
 
 // GrantLocal is available only to the local command, never an HTTP endpoint.
@@ -101,15 +145,14 @@ func (s *Service) GrantAdminTx(ctx context.Context, tx pgx.Tx, accountID string,
 	if e.Version != version {
 		return e, ErrAdminGrantConflict
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason,renewal_anchor_day)
-		VALUES($1,$2,$3,'admin_grant',$4,NULL)
+	_, err = tx.Exec(ctx, `INSERT INTO billing.admin_grants(account_id,monitor_limit,valid_until,reason)
+		VALUES($1,$2,$3,$4)
 		ON CONFLICT(account_id) DO UPDATE SET monitor_limit=excluded.monitor_limit,valid_until=excluded.valid_until,
-			source='admin_grant',reason=excluded.reason,renewal_anchor_day=NULL,version=billing.entitlements.version+1,granted_at=now()`, accountID, quota, until, reason)
+			reason=excluded.reason,version=billing.admin_grants.version+1,granted_at=now()`, accountID, quota, until, reason)
 	if err != nil {
 		return e, err
 	}
-	e.Quota, e.ActiveUntil, e.Source, e.Version, e.RenewalAnchorDay = quota, &until, "admin_grant", version+1, 0
-	return e, nil
+	return s.Lock(ctx, tx, accountID)
 }
 
 // ExpireAdminTx revokes only an administrative grant; paid history is untouched.
@@ -121,10 +164,10 @@ func (s *Service) ExpireAdminTx(ctx context.Context, tx pgx.Tx, accountID string
 	if err != nil {
 		return err
 	}
-	if e.Version != version || e.Source != "admin_grant" {
+	if e.Admin == nil || e.Version != version {
 		return ErrAdminGrantConflict
 	}
-	_, err = tx.Exec(ctx, `UPDATE billing.entitlements SET valid_until=now(),version=version+1,
+	_, err = tx.Exec(ctx, `UPDATE billing.admin_grants SET valid_until=now(),version=version+1,
 		granted_at=now(),reason=$2 WHERE account_id=$1`, accountID, reason)
 	return err
 }

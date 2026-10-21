@@ -966,6 +966,35 @@ func TestPushDownUpDeliveriesStayOrderedWithSyntheticSender(t *testing.T) {
 	}
 }
 
+func TestPushDeliveryGuardRanksEnabledMonitorsOnly(t *testing.T) {
+	f := newPushIntegrationFixture(t)
+	actor, _, installation := f.addDeliveryOwner(t, "enabled-rank")
+	if err := billing.New(f.webhook.pool, true).GrantLocal(context.Background(), actor.accountID, 1, time.Now().Add(time.Hour), "one enabled slot"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.webhook.pool.Exec(context.Background(), `UPDATE monitors.monitors SET enabled=false WHERE id=$1`, actor.monitorID); err != nil {
+		t.Fatal(err)
+	}
+	monitorID := "00000000-0000-4000-8000-000000000091"
+	if _, err := f.webhook.pool.Exec(context.Background(), `INSERT INTO monitors.monitors(id,account_id,name,url,target_key,method,expected_status)
+		VALUES($1,$2,'Enabled after pause','https://enabled.example.test/health','enabled.example.test:443','GET',200)`, monitorID, actor.accountID); err != nil {
+		t.Fatal(err)
+	}
+	actor.monitorID = monitorID
+	deliveryID := f.addDeliveryEvent(t, actor, installation.ID, "down", 1, "Enabled after pause")
+	sent := 0
+	f.push.cfg.Sender = pushSenderFunc(func(context.Context, string, map[string]string, time.Duration) error {
+		sent++
+		return nil
+	})
+	processed, err := f.push.ProcessDelivery(context.Background())
+	if err != nil || !processed || sent != 1 {
+		var status, reason string
+		_ = f.webhook.pool.QueryRow(context.Background(), `SELECT status,error_code FROM notifications.push_deliveries WHERE id=$1`, deliveryID).Scan(&status, &reason)
+		t.Fatalf("enabled monitor notification with older paused row: processed=%t sent=%d err=%v state=%s/%s", processed, sent, err, status, reason)
+	}
+}
+
 func TestPushAcceptedProviderTimeoutCanStillFetchAttemptedContent(t *testing.T) {
 	f := newPushIntegrationFixture(t)
 	actor, pair, installation := f.addDeliveryOwner(t, "accepted-timeout")

@@ -391,31 +391,29 @@ func TestAdminGrantVersionAndPendingMockOrderCannotReplaceGrant(t *testing.T) {
 		t.Fatalf("grant=%+v, want active admin_grant quota 7 version 1", grant)
 	}
 
-	// A delayed mock completion must not replace an administrative decision
-	// that was made after the order was created.
+	// Mock billing stays blocked for admin-grant accounts. A delayed test
+	// payment cannot replace or alter the administrative decision.
 	if _, err := module.service.Simulate(context.Background(), owner.id, order.ID, "succeeded"); !errors.Is(err, service.ErrForbidden) {
-		t.Fatalf("stale pending mock payment error=%v, want forbidden", err)
+		t.Fatalf("pending mock payment with admin grant error=%v, want forbidden", err)
 	}
 	var orderStatus, source string
 	var quota, reportCount int
 	if err := f.pool.QueryRow(context.Background(), `SELECT status FROM billing.orders WHERE id=$1`, order.ID).Scan(&orderStatus); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.pool.QueryRow(context.Background(), `SELECT source,monitor_limit FROM billing.entitlements WHERE account_id=$1`, owner.id).Scan(&source, &quota); err != nil {
+	if err := f.pool.QueryRow(context.Background(), `SELECT monitor_limit FROM billing.admin_grants WHERE account_id=$1`, owner.id).Scan(&quota); err != nil {
 		t.Fatal(err)
 	}
+	source = "admin_grant"
 	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.payment_reports WHERE order_id=$1`, order.ID).Scan(&reportCount); err != nil {
 		t.Fatal(err)
 	}
 	if orderStatus != "pending" || source != "admin_grant" || quota != 7 || reportCount != 0 {
-		t.Fatalf("stale payment changed state: order=%s source=%s quota=%d report rows=%d", orderStatus, source, quota, reportCount)
+		t.Fatalf("blocked mock payment changed state: order=%s source=%s quota=%d reports=%d", orderStatus, source, quota, reportCount)
 	}
 	if _, err := module.service.CreateOrder(context.Background(), owner.id, 7, "09f96250-84ca-447a-9a67-27db06fb6750", 1); !errors.Is(err, service.ErrForbidden) {
 		t.Fatalf("mock order while admin grant active error=%v, want forbidden", err)
 	}
-
-	// Optimistic versions prevent a stale admin form from replacing/revoking a
-	// newer grant. The valid current version remains revocable.
 	tx, err = f.pool.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -446,8 +444,78 @@ func TestAdminGrantVersionAndPendingMockOrderCannotReplaceGrant(t *testing.T) {
 		t.Fatalf("stale revoke version error=%v, want conflict", err)
 	}
 	var expired bool
-	if err := f.pool.QueryRow(context.Background(), `SELECT valid_until<=now() FROM billing.entitlements WHERE account_id=$1`, owner.id).Scan(&expired); err != nil || !expired {
+	if err := f.pool.QueryRow(context.Background(), `SELECT valid_until<=now() FROM billing.admin_grants WHERE account_id=$1`, owner.id).Scan(&expired); err != nil || !expired {
 		t.Fatalf("admin grant expiry state=%t err=%v", expired, err)
+	}
+}
+
+func TestConcurrentAdminGrantReplacementUsesAggregateVersionCAS(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Concurrent Administrative Grant Owner")
+	until := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Second)
+	tx, err := f.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := f.module.GrantAdminTx(context.Background(), tx, owner.id, 0, 3, until, "initial grant")
+	if err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatal(err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	type result struct {
+		quota int
+		err   error
+	}
+	results := make(chan result, 2)
+	for _, quota := range []int{5, 7} {
+		go func(quota int) {
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			tx, err := f.pool.Begin(ctx)
+			if err != nil {
+				results <- result{quota: quota, err: err}
+				return
+			}
+			defer tx.Rollback(ctx)
+			_, err = f.module.GrantAdminTx(ctx, tx, owner.id, initial.Version, quota, until.Add(time.Duration(quota)*time.Hour), "concurrent replacement")
+			if err == nil {
+				err = tx.Commit(ctx)
+			}
+			results <- result{quota: quota, err: err}
+		}(quota)
+	}
+	close(start)
+
+	var succeeded, conflicted int
+	winnerQuota := 0
+	for range 2 {
+		result := <-results
+		switch {
+		case result.err == nil:
+			succeeded++
+			winnerQuota = result.quota
+		case errors.Is(result.err, service.ErrAdminGrantConflict):
+			conflicted++
+		default:
+			t.Fatalf("unexpected concurrent admin grant result for quota %d: %v", result.quota, result.err)
+		}
+	}
+	if succeeded != 1 || conflicted != 1 {
+		t.Fatalf("CAS winners=%d conflicts=%d, want 1/1", succeeded, conflicted)
+	}
+	var quota int
+	var version int64
+	if err := f.pool.QueryRow(context.Background(), `SELECT monitor_limit,version FROM billing.admin_grants WHERE account_id=$1`, owner.id).Scan(&quota, &version); err != nil {
+		t.Fatal(err)
+	}
+	if quota != winnerQuota || version != initial.Version+1 {
+		t.Fatalf("stored grant quota/version=%d/%d, winner=%d initial=%+v", quota, version, winnerQuota, initial)
 	}
 }
 

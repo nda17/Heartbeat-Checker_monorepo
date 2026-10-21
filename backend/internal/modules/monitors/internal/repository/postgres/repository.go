@@ -60,13 +60,13 @@ func (r *Repository) List(ctx context.Context, tx pgx.Tx, owner string) ([]Row, 
 const searchMatch = `($2='' OR position(lower($2) IN lower(name || ' ' ||
  CASE check_type WHEN 'http' THEN COALESCE(url,'') WHEN 'tcp' THEN COALESCE(host,'') || ':' || COALESCE(port::text,'') ELSE COALESCE(host,'') END))>0)`
 
-// PageSummary ranks the entire account before applying search. Paused monitors
-// consume the same quota position as in List, Get and the worker scheduler.
+// PageSummary ranks enabled monitors across the entire account before search.
+// Paused saved records remain visible without consuming a quota position.
 func (r *Repository) PageSummary(ctx context.Context, tx pgx.Tx, owner string, options contracts.ListOptions, quota int, asOf time.Time) (contracts.MonitorSummary, int, error) {
 	var summary contracts.MonitorSummary
 	var total int
 	err := tx.QueryRow(ctx, `WITH ranked AS (
- SELECT *,row_number() OVER (ORDER BY created_at,id) AS quota_rank
+ SELECT *,sum(enabled::integer) OVER (ORDER BY created_at,id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS quota_rank
  FROM monitors.monitors WHERE account_id=$1
  ), states AS (
  SELECT *,CASE WHEN NOT enabled THEN 'PAUSED'
@@ -90,7 +90,7 @@ func (r *Repository) ListPage(ctx context.Context, tx pgx.Tx, owner string, opti
 		return nil, errors.New("invalid monitor ordering")
 	}
 	rows, err := tx.Query(ctx, `WITH ranked AS (
- SELECT *,row_number() OVER (ORDER BY created_at,id) AS quota_rank FROM monitors.monitors WHERE account_id=$1
+ SELECT *,sum(enabled::integer) OVER (ORDER BY created_at,id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS quota_rank FROM monitors.monitors WHERE account_id=$1
  ) SELECT `+columns+`,quota_rank FROM ranked WHERE account_id=$1 AND `+searchMatch+`
  ORDER BY `+order+` LIMIT $3 OFFSET $4`, owner, options.Query, options.PageSize, (options.Page-1)*options.PageSize)
 	if err != nil {
@@ -120,9 +120,14 @@ func (r *Repository) Count(ctx context.Context, tx pgx.Tx, owner string) (int, e
 	err := tx.QueryRow(ctx, `SELECT count(*) FROM monitors.monitors WHERE account_id=$1`, owner).Scan(&n)
 	return n, err
 }
+func (r *Repository) CountEnabled(ctx context.Context, tx pgx.Tx, owner string) (int, error) {
+	var n int
+	err := tx.QueryRow(ctx, `SELECT count(*) FROM monitors.monitors WHERE account_id=$1 AND enabled`, owner).Scan(&n)
+	return n, err
+}
 func (r *Repository) Rank(ctx context.Context, tx pgx.Tx, owner, id string) (int, error) {
 	var n int
-	err := tx.QueryRow(ctx, `SELECT position FROM (SELECT id,row_number() OVER (ORDER BY created_at,id) AS position FROM monitors.monitors WHERE account_id=$1) ranked WHERE id=$2`, owner, id).Scan(&n)
+	err := tx.QueryRow(ctx, `SELECT position FROM (SELECT id,sum(enabled::integer) OVER (ORDER BY created_at,id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS position FROM monitors.monitors WHERE account_id=$1) ranked WHERE id=$2`, owner, id).Scan(&n)
 	return n, err
 }
 func (r *Repository) Insert(ctx context.Context, tx pgx.Tx, owner, id, target string, in contracts.MonitorInput) error {

@@ -55,6 +55,20 @@ export type Entitlement = {
   activeUntil: string | null;
   source: string;
   monitorCount: number;
+  enabledMonitorCount: number;
+  activeMonitorCount: number;
+  version: number;
+  admin: {
+    quota: number;
+    activeUntil: string | null;
+    version: number;
+  } | null;
+  paid: {
+    quota: number;
+    activeUntil: string | null;
+    source: string;
+    version: number;
+  } | null;
 };
 export type CheckResult = {
   id: string;

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/jackc/pgx/v5/pgtype"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing/contracts"
@@ -74,7 +75,9 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return contracts.Order{}, err
 	}
-	if s.mode == "test" && entitlement.Source == "yookassa" && entitlement.Quota > 0 {
+	paid := entitlement.Paid
+	paidActive := s.activeSubscription(account, paid, time.Now())
+	if s.mode == "test" && paidActive && paid.Source == "yookassa" {
 		return contracts.Order{}, ErrForbidden
 	}
 	pricing, err := s.PricingTx(ctx, tx, true)
@@ -87,9 +90,9 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	if count*pricing.PricePerMonitorMinor > MaxOrderAmountMinor {
 		return contracts.Order{}, ErrOrderAmount
 	}
-	// An administrative grant is deliberately not sold or overwritten. The owner
-	// may still exercise checkout; finalization records blocked fulfillment.
-	if entitlement.Quota > 0 && entitlement.Source != "admin_grant" && entitlement.Quota != count {
+	// Only the paid component has a fixed renewal capacity. An administrative
+	// grant is independent and contributes additional monitor capacity.
+	if paidActive && paid.Quota != count {
 		return contracts.Order{}, ErrConflict
 	}
 	if _, err = tx.Exec(ctx, `UPDATE billing.orders SET status='canceled',completed_at=now(),fulfillment_status='not_required',reconciliation_status='complete' WHERE account_id=$1 AND provider='mock' AND status='pending' AND expires_at<=now()`, account); err != nil {

@@ -203,16 +203,16 @@ func (s *Service) finishPayment(ctx context.Context, a paymentAttempt, p contrac
 		status, fulfillment, completed = "canceled", "not_required", &now
 	case "succeeded":
 		status, completed = "succeeded", &now
+		paid := entitlement.Paid
+		paidActive := s.activeSubscription(a.AccountID, paid, now)
 		switch {
 		case reason == "account_deleted":
 			fulfillment = "blocked"
 		case !active || !s.canPay(a.AccountID):
 			fulfillment, reason = "blocked", "account_inactive"
-		case order.Test && entitlement.Source == "yookassa" && entitlement.ActiveUntil != nil && entitlement.ActiveUntil.After(now):
+		case order.Test && paidActive && paid.Source == "yookassa":
 			fulfillment, reason = "blocked", "paid_entitlement"
-		case entitlement.Source == "admin_grant" && entitlement.ActiveUntil != nil && entitlement.ActiveUntil.After(now):
-			fulfillment, reason = "blocked", "admin_grant"
-		case entitlement.Quota > 0 && entitlement.Quota != order.MonitorCount:
+		case paidActive && paid.Quota != order.MonitorCount:
 			fulfillment, reason = "blocked", "capacity_changed"
 		default:
 			start, anchor := now, now.In(moscow).Day()
@@ -221,10 +221,10 @@ func (s *Service) finishPayment(ctx context.Context, a paymentAttempt, p contrac
 			if order.Test {
 				source, entitlementReason = "yookassa_test", "YooKassa test payment: no money charged"
 			}
-			if entitlement.Source == source && entitlement.Quota > 0 && entitlement.ActiveUntil != nil && entitlement.ActiveUntil.After(start) {
-				start = *entitlement.ActiveUntil
-				if entitlement.RenewalAnchorDay > 0 {
-					anchor = entitlement.RenewalAnchorDay
+			if paidActive && paid.Source == source {
+				start = *paid.ActiveUntil
+				if paid.RenewalAnchorDay > 0 {
+					anchor = paid.RenewalAnchorDay
 				}
 			}
 			expiry := nextMockMonth(start, anchor)

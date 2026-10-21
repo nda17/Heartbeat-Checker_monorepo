@@ -157,7 +157,7 @@ func (p *Push) deliveryGuard(ctx context.Context, tx pgx.Tx, id, installationID 
 		return d, false, err
 	}
 	var rank int
-	if err = tx.QueryRow(ctx, `SELECT count(*) FROM monitors.monitors WHERE account_id=$1 AND (created_at,id)<=(SELECT created_at,id FROM monitors.monitors WHERE id=$2)`, d.AccountID, d.MonitorID).Scan(&rank); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM monitors.monitors WHERE account_id=$1 AND enabled AND (created_at,id)<=(SELECT created_at,id FROM monitors.monitors WHERE id=$2)`, d.AccountID, d.MonitorID).Scan(&rank); err != nil {
 		return d, false, err
 	}
 	i, err := scanPushInstallation(tx.QueryRow(ctx, `SELECT `+pushInstallationColumns+` FROM notifications.push_installations WHERE id=$1 FOR UPDATE`, d.InstallationID))

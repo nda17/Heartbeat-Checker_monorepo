@@ -8,9 +8,11 @@ import (
 
 func (s *Service) DeleteAccountTx(ctx context.Context, tx pgx.Tx, accountID string) error {
 	queries := []string{
-		`UPDATE billing.orders SET fulfillment_status='blocked',fulfillment_reason='account_deleted',reconciliation_status=CASE WHEN provider_payment_id IS NULL AND reconcile_token IS NULL THEN 'stopped' ELSE reconciliation_status END WHERE account_id=$1 AND provider='yookassa' AND status='pending'`,
 		`UPDATE billing.entitlements SET valid_until=now(),renewal_anchor_day=NULL,
 			reason='Account deleted',version=version+1 WHERE account_id=$1`,
+		`UPDATE billing.admin_grants SET valid_until=now(),reason='Account deleted',
+			version=version+1 WHERE account_id=$1`,
+		`UPDATE billing.orders SET fulfillment_status='blocked',fulfillment_reason='account_deleted',reconciliation_status=CASE WHEN provider_payment_id IS NULL AND reconcile_token IS NULL THEN 'stopped' ELSE reconciliation_status END WHERE account_id=$1 AND provider='yookassa' AND status='pending'`,
 		`UPDATE billing.orders SET status='canceled',completed_at=now() WHERE account_id=$1 AND provider='mock' AND status='pending'`,
 		`UPDATE billing.payment_reports SET status='failed',attempt_token=NULL,lease_until=NULL,
 			finished_at=now(),last_error_code='request_invalid'

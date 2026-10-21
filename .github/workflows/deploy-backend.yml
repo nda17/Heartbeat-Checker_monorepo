@@ -162,6 +162,32 @@ jobs:
               '.workflow_runs | any(.[]; .event == "push" and .head_sha == $sha and .conclusion == "success")' >/dev/null \
             || { echo 'No successful push CI run for the exact SHA'; exit 1; }
 
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.2'
+          cache-dependency-path: tools/go.sum
+      - name: Build exact-source static operations binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          make build-ops OPS_OUTPUT="$RUNNER_TEMP/hc-ops/hc-ops" OPS_SOURCE_SHA="$SOURCE_SHA"
+          [[ "$("$RUNNER_TEMP/hc-ops/hc-ops" version)" == "$SOURCE_SHA" ]]
+          (cd tools && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c \
+            -ldflags="-X github.com/nda17/Heartbeat-Checker_monorepo/tools/internal/s3store.liveSourceSHA=$SOURCE_SHA" \
+            -o "$RUNNER_TEMP/hc-ops/s3-compat.test" ./internal/s3store)
+          [[ "$(HC_LIVE_S3_SOURCE_ONLY=1 "$RUNNER_TEMP/hc-ops/s3-compat.test")" == "$SOURCE_SHA" ]]
+          (cd "$RUNNER_TEMP/hc-ops" && sha256sum s3-compat.test > s3-compat.test.sha256)
+      - name: Retain exact-source operations binary and transport checksum
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hc-ops-backend-${{ inputs.source_sha }}
+          path: |
+            ${{ runner.temp }}/hc-ops/hc-ops
+            ${{ runner.temp }}/hc-ops/hc-ops.sha256
+            ${{ runner.temp }}/hc-ops/s3-compat.test
+            ${{ runner.temp }}/hc-ops/s3-compat.test.sha256
+          if-no-files-found: error
+          retention-days: 90
       - name: Build and publish immutable backend images
         id: images
         shell: bash
@@ -185,7 +211,7 @@ jobs:
           done
           image="ghcr.io/${GITHUB_REPOSITORY,,}/backup"
           docker build -f deploy/backend/backup/Dockerfile \
-            --build-arg "VCS_REF=$SOURCE_SHA" -t "$image:$SOURCE_SHA" deploy/backend/backup
+            --build-arg "VCS_REF=$SOURCE_SHA" -t "$image:$SOURCE_SHA" tools
           [[ "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image:$SOURCE_SHA")" == "$SOURCE_SHA" ]]
           docker push "$image:$SOURCE_SHA"
           digest=$(docker buildx imagetools inspect "$image:$SOURCE_SHA" | awk '$1 == "Digest:" { print $2; exit }')
@@ -213,6 +239,44 @@ jobs:
           echo "image=$image@$digest" >> "$GITHUB_OUTPUT"
           policy_sha=$(sha256sum deploy/backend/probe-firewall.sh | awk '{print $1}')
           echo "policy_sha=$policy_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Verify S3 Go adapter before configuration activation or migration
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.BACKEND_DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.BACKEND_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ -n "$SSH_PRIVATE_KEY" && -n "$SSH_KNOWN_HOSTS" ]] || { echo 'Missing scoped SSH credentials'; exit 1; }
+          umask 077
+          ssh_dir=$(mktemp -d)
+          trap 'rm -rf "$ssh_dir"' EXIT
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$ssh_dir/key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          chmod 600 "$ssh_dir/key" "$ssh_dir/known_hosts"
+          ssh_opts=(-i "$ssh_dir/key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$ssh_dir/known_hosts" -o BatchMode=yes)
+          ops_sha=$(sha256sum "$RUNNER_TEMP/hc-ops/hc-ops" | awk '{print $1}')
+          test_sha=$(sha256sum "$RUNNER_TEMP/hc-ops/s3-compat.test" | awk '{print $1}')
+          [[ $ops_sha =~ ^[0-9a-f]{64}$ && $test_sha =~ ^[0-9a-f]{64}$ && $GITHUB_RUN_ID =~ ^[0-9]+$ && $GITHUB_RUN_ATTEMPT =~ ^[0-9]+$ ]]
+          target="$DEPLOY_USER@$DEPLOY_HOST"
+          run_token="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          stage="/opt/heartbeat-checker/backend/s3-compat/$SOURCE_SHA-$run_token"
+          # shellcheck disable=SC2029 # Public source/run values are validated before expansion.
+          ssh "${ssh_opts[@]}" "$target" "umask 077; test ! -L /opt/heartbeat-checker/backend/s3-compat; mkdir -p /opt/heartbeat-checker/backend/s3-compat; mkdir '$stage'"
+          scp "${ssh_opts[@]}" "$RUNNER_TEMP/hc-ops/hc-ops" "$RUNNER_TEMP/hc-ops/s3-compat.test" deploy/backend/check-s3.sh "$target:$stage/"
+          # This is the only live test: synthetic private keys under a unique
+          # namespace, never existing daily backups or published Android objects.
+          # shellcheck disable=SC2029 # Exact source/checksum/run pins expand locally.
+          ssh "${ssh_opts[@]}" "$target" "bash '$stage/check-s3.sh' '$SOURCE_SHA' '$ops_sha' '$test_sha' '$run_token'" > "$RUNNER_TEMP/s3-compatibility.json"
+          jq -e --arg source "$SOURCE_SHA" --arg test "$test_sha" --arg helper "$ops_sha" '.status=="PASS" and .sourceSha==$source and .testBinarySha256==$test and .helperSha256==$helper and .syntheticObjects==2 and .multipartBytes==9437184 and .cleanupVerified==true' "$RUNNER_TEMP/s3-compatibility.json" >/dev/null
+      - name: Retain source-pinned S3 compatibility receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: s3-compatibility-${{ inputs.source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/s3-compatibility.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Deploy and verify on backend VPS
         shell: bash
@@ -251,50 +315,14 @@ jobs:
           scp "${ssh_opts[@]}" deploy/backend/compose.backup.yaml "$target:/opt/heartbeat-checker/backend/compose.backup.yaml.incoming"
           scp "${ssh_opts[@]}" deploy/backend/backup.sh "$target:/opt/heartbeat-checker/backend/backup.sh.incoming"
           scp "${ssh_opts[@]}" deploy/backend/deploy.sh "$target:/opt/heartbeat-checker/backend/deploy.sh.incoming"
-          if [[ "$ACTIVATE_YOOKASSA_TEST" == true || "$ACTIVATE_YOOKASSA_PRODUCTION" == true ]]; then
-            scp "${ssh_opts[@]}" deploy/backend/stage-yookassa.py "$target:/opt/heartbeat-checker/backend/stage-yookassa.py.incoming"
-          fi
-          if [[ "$ACTIVATE_ANDROID_PUSH" == true ]]; then
-            scp "${ssh_opts[@]}" deploy/backend/stage-push.py "$target:/opt/heartbeat-checker/backend/stage-push.py.incoming"
-          fi
+          ops_sha=$(sha256sum "$RUNNER_TEMP/hc-ops/hc-ops" | awk '{print $1}')
+          [[ $ops_sha =~ ^[0-9a-f]{64}$ ]]
+          scp "${ssh_opts[@]}" "$RUNNER_TEMP/hc-ops/hc-ops" "$target:/opt/heartbeat-checker/backend/hc-ops.incoming"
           if [[ "$PROVISION_OWNER" == true ]]; then
             scp "${ssh_opts[@]}" deploy/backend/import-owner.sql "$target:/opt/heartbeat-checker/backend/import-owner.sql.incoming"
           fi
-          python3 - <<'PY' | ssh "${ssh_opts[@]}" "$target" \
-            "bash /opt/heartbeat-checker/backend/deploy.sh.incoming '$SOURCE_SHA' '$API_IMAGE' '$WORKER_IMAGE' '$PROBE_IMAGE' '$MIGRATE_IMAGE' '$GITHUB_ACTOR' '$BACKUP_IMAGE' '$ACTIVATE_TELEGRAM_RELAY' '$ACTIVATE_MESSENGER_NOTIFICATIONS' '$PROVISION_OWNER' '$ACTIVATE_ADMIN_MFA' '$ACTIVATE_OAUTH' '$FIREWALL_IMAGE' '$FIREWALL_POLICY_SHA' '$ACTIVATE_YOOKASSA_TEST' '$ACTIVATE_EMAIL_NOTIFICATIONS' '$ACTIVATE_ANDROID_PUSH' '$ACTIVATE_YOOKASSA_PRODUCTION'"
-          import json
-          import os
-          import re
-          import sys
-          token = os.environ["GH_TOKEN"]
-          if not re.fullmatch(r"[A-Za-z0-9_.-]{1,4096}", token):
-              raise SystemExit("Invalid registry credential framing")
-          activate_test = os.environ["ACTIVATE_YOOKASSA_TEST"] == "true"
-          activate_production = os.environ["ACTIVATE_YOOKASSA_PRODUCTION"] == "true"
-          payload = None
-          if activate_test or activate_production:
-              prefix = "YOOKASSA_TEST" if activate_test else "YOOKASSA_PRODUCTION"
-              shop = os.environ.get(prefix + "_SHOP_ID", "")
-              secret = os.environ.get(prefix + "_SECRET_KEY", "")
-              if not shop or not secret:
-                  raise SystemExit("Missing protected YooKassa configuration")
-              payload = {"shopId": shop, "secretKey": secret}
-          if os.environ["ACTIVATE_ANDROID_PUSH"] == "true":
-              project = os.environ.get("RUSTORE_PUSH_PROJECT_ID", "")
-              service_token = os.environ.get("RUSTORE_PUSH_SERVICE_TOKEN", "")
-              if not project or not service_token:
-                  raise SystemExit("Missing protected RuStore push configuration")
-              fcm_project = os.environ.get("FCM_PROJECT_ID", "")
-              fcm_credentials = os.environ.get("FCM_SERVICE_ACCOUNT_BASE64", "")
-              if not all((fcm_project, fcm_credentials)):
-                  raise SystemExit("Missing protected Firebase push configuration")
-              payload = {"projectId": project, "serviceToken": service_token,
-                         "fcm": {"projectId": fcm_project, "serviceAccountBase64": fcm_credentials}}
-          sys.stdout.write(token + "\n")
-          if payload is not None:
-              json.dump(payload, sys.stdout, ensure_ascii=True)
-              sys.stdout.write("\n")
-          PY
+          "$RUNNER_TEMP/hc-ops/hc-ops" deploy-json frame | ssh "${ssh_opts[@]}" "$target" \
+            "HC_OPS_SHA256='$ops_sha' bash /opt/heartbeat-checker/backend/deploy.sh.incoming '$SOURCE_SHA' '$API_IMAGE' '$WORKER_IMAGE' '$PROBE_IMAGE' '$MIGRATE_IMAGE' '$GITHUB_ACTOR' '$BACKUP_IMAGE' '$ACTIVATE_TELEGRAM_RELAY' '$ACTIVATE_MESSENGER_NOTIFICATIONS' '$PROVISION_OWNER' '$ACTIVATE_ADMIN_MFA' '$ACTIVATE_OAUTH' '$FIREWALL_IMAGE' '$FIREWALL_POLICY_SHA' '$ACTIVATE_YOOKASSA_TEST' '$ACTIVATE_EMAIL_NOTIFICATIONS' '$ACTIVATE_ANDROID_PUSH' '$ACTIVATE_YOOKASSA_PRODUCTION'"
 
       - name: Verify public backend denies runner traffic
         shell: bash

@@ -92,6 +92,143 @@ func TestApplyIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestSeparateAdminGrantsMovesOnlyAdminRowsAndPreservesPaymentHistory(t *testing.T) {
+	pool := testDatabase(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `CREATE TABLE public.schema_migrations(version text PRIMARY KEY,checksum text NOT NULL,applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
+		t.Fatal(err)
+	}
+	names, err := fs.Glob(files, "*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if name >= "0025_separate_admin_grants.sql" {
+			break
+		}
+		data, err := files.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", name, err)
+		}
+		if _, err := pool.Exec(ctx, string(data)); err != nil {
+			t.Fatalf("apply migration %s: %v", name, err)
+		}
+		sum := sha256.Sum256(data)
+		if _, err := pool.Exec(ctx, `INSERT INTO public.schema_migrations(version,checksum) VALUES($1,$2)`, strings.TrimSuffix(name, ".sql"), hex.EncodeToString(sum[:])); err != nil {
+			t.Fatalf("record migration %s: %v", name, err)
+		}
+	}
+	const liveAdmin = "a2500000-0000-4000-8000-000000000001"
+	const expiredAdmin = "a2500000-0000-4000-8000-000000000002"
+	const paid = "a2500000-0000-4000-8000-000000000003"
+	const local = "a2500000-0000-4000-8000-000000000004"
+	const mock = "a2500000-0000-4000-8000-000000000005"
+	for _, account := range []struct{ id, name string }{
+		{liveAdmin, "Live admin grant migration fixture"},
+		{expiredAdmin, "Expired admin grant migration fixture"},
+		{paid, "Paid fixture migration"},
+		{local, "Local fixture migration"},
+		{mock, "Mock fixture migration"},
+	} {
+		if _, err := pool.Exec(ctx, `INSERT INTO accounts.accounts(id,name) VALUES($1,$2)`, account.id, account.name); err != nil {
+			t.Fatalf("insert account %s: %v", account.name, err)
+		}
+	}
+	seed := `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,version,granted_at,reason,renewal_anchor_day)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`
+	grantedAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, row := range []struct {
+		id, source, reason string
+		quota              int
+		version            int
+		until              time.Time
+		anchor             int
+	}{
+		{liveAdmin, "admin_grant", "preserve live grant", 17, 4, time.Date(2027, 1, 2, 3, 4, 5, 0, time.UTC), 0},
+		{expiredAdmin, "admin_grant", "preserve expired grant", 9, 8, time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC), 0},
+		{paid, "yookassa_test", "keep paid renewal", 3, 12, time.Date(2027, 2, 3, 4, 5, 6, 0, time.UTC), 31},
+		{local, "local_test", "keep local fixture", 2, 6, time.Date(2027, 3, 4, 5, 6, 7, 0, time.UTC), 0},
+		{mock, "mock_test", "keep mock fixture", 4, 10, time.Date(2027, 4, 5, 6, 7, 8, 0, time.UTC), 0},
+	} {
+		var anchor any
+		if row.anchor != 0 {
+			anchor = row.anchor
+		}
+		if _, err := pool.Exec(ctx, seed, row.id, row.quota, row.until, row.source, row.version, grantedAt, row.reason, anchor); err != nil {
+			t.Fatalf("seed %s entitlement: %v", row.source, err)
+		}
+	}
+	const orderID = "b2500000-0000-4000-8000-000000000001"
+	reportCreated := time.Date(2026, 4, 5, 6, 7, 8, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor)
+		VALUES($1,$2,'c2500000-0000-4000-8000-000000000001','mock',3,8700)`, orderID, paid); err != nil {
+		t.Fatalf("seed historical payment order: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO billing.payment_reports(order_id,created_at) VALUES($1,$2)`, orderID, reportCreated); err != nil {
+		t.Fatalf("seed historical payment report: %v", err)
+	}
+	if err := Apply(ctx, pool); err != nil {
+		t.Fatalf("apply admin-grant separation migration: %v", err)
+	}
+	for _, expected := range []struct {
+		id, reason string
+		quota      int
+		version    int
+		until      time.Time
+	}{
+		{liveAdmin, "preserve live grant", 17, 4, time.Date(2027, 1, 2, 3, 4, 5, 0, time.UTC)},
+		{expiredAdmin, "preserve expired grant", 9, 8, time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)},
+	} {
+		var reason string
+		var quota int
+		var version int
+		var until time.Time
+		if err := pool.QueryRow(ctx, `SELECT monitor_limit,valid_until,version,reason FROM billing.admin_grants WHERE account_id=$1`, expected.id).Scan(&quota, &until, &version, &reason); err != nil {
+			t.Fatalf("read moved admin grant: %v", err)
+		}
+		if quota != expected.quota || version != expected.version || !until.Equal(expected.until) || reason != expected.reason {
+			t.Errorf("moved grant changed: quota=%d version=%d until=%s reason=%q", quota, version, until, reason)
+		}
+	}
+	for _, expected := range []struct {
+		id, source, reason     string
+		quota, version, anchor int
+	}{
+		{paid, "yookassa_test", "keep paid renewal", 3, 12, 31},
+		{local, "local_test", "keep local fixture", 2, 6, 0},
+		{mock, "mock_test", "keep mock fixture", 4, 10, 0},
+	} {
+		var source, reason string
+		var quota, version int
+		var anchor *int16
+		if err := pool.QueryRow(ctx, `SELECT monitor_limit,source,version,reason,renewal_anchor_day FROM billing.entitlements WHERE account_id=$1`, expected.id).Scan(&quota, &source, &version, &reason, &anchor); err != nil {
+			t.Fatalf("read retained %s entitlement: %v", expected.source, err)
+		}
+		if quota != expected.quota || source != expected.source || version != expected.version || reason != expected.reason || (expected.anchor == 0 && anchor != nil) || (expected.anchor != 0 && (anchor == nil || int(*anchor) != expected.anchor)) {
+			t.Errorf("retained entitlement changed: source=%s quota=%d version=%d reason=%q anchor=%v", source, quota, version, reason, anchor)
+		}
+	}
+	var adminRows, paymentRows, orderCount, reportCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM billing.admin_grants`).Scan(&adminRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM billing.entitlements`).Scan(&paymentRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM billing.orders WHERE id=$1 AND status='pending'`, orderID).Scan(&orderCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM billing.payment_reports WHERE order_id=$1 AND created_at=$2`, orderID, reportCreated).Scan(&reportCount); err != nil {
+		t.Fatal(err)
+	}
+	if adminRows != 2 || paymentRows != 3 || orderCount != 1 || reportCount != 1 {
+		t.Fatalf("migration row counts admin=%d payment=%d order=%d report=%d", adminRows, paymentRows, orderCount, reportCount)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason) VALUES($1,1,now()+interval '1 day','admin_grant','must use separate table')`, local); err == nil {
+		t.Fatal("post-migration entitlement source check still accepts admin_grant")
+	}
+}
+
 func TestMonitorMetadataMigrationBackfillsLegacyTimezoneAndCheckConfigVersion(t *testing.T) {
 	pool := testDatabase(t)
 	ctx := context.Background()

@@ -40,7 +40,7 @@ func TestMonitorPagedListSearchOrderingQuotaSummaryAndClamp(t *testing.T) {
 	f.grant(t, owner, 10)
 	f.grant(t, other, 2)
 
-	names := []string{"Zeta", "Alpha", "Beta", "Gamma", "Special %_ 東京"}
+	names := []string{"Zeta", "Alpha", "Beta", "Gamma", "Special %_ 東京", "Omega"}
 	monitors := make([]contracts.Monitor, 0, len(names))
 	for i, name := range names {
 		m, status := f.create(t, owner, name, fmt.Sprintf("list-%d.example", i), i != 0)
@@ -70,8 +70,8 @@ func TestMonitorPagedListSearchOrderingQuotaSummaryAndClamp(t *testing.T) {
 			t.Fatalf("set deterministic monitor state for %q: %v", monitor.Name, err)
 		}
 	}
-	// Paused Zeta consumes the first quota position. Gamma stays in quota but
-	// has stale data; the final search match remains out of quota.
+	// Paused Zeta does not consume an enabled slot. Four enabled monitors fit
+	// the quota; the fifth enabled monitor remains visible but out of quota.
 	f.grant(t, owner, 4)
 	channels := testChannelReader(t, f)
 	if _, err := f.pool.Exec(context.Background(), `INSERT INTO notifications.webhooks(id,account_id,monitor_id,version,enabled,encrypted_url,encrypted_secret,normalized_host) VALUES
@@ -110,10 +110,10 @@ func TestMonitorPagedListSearchOrderingQuotaSummaryAndClamp(t *testing.T) {
 	}
 
 	orders := map[string][]string{
-		"created_asc":  {"Zeta", "Alpha", "Beta", "Gamma", "Special %_ 東京"},
-		"created_desc": {"Special %_ 東京", "Gamma", "Beta", "Alpha", "Zeta"},
-		"name_asc":     {"Alpha", "Beta", "Gamma", "Special %_ 東京", "Zeta"},
-		"name_desc":    {"Zeta", "Special %_ 東京", "Gamma", "Beta", "Alpha"},
+		"created_asc":  {"Zeta", "Alpha", "Beta", "Gamma", "Special %_ 東京", "Omega"},
+		"created_desc": {"Omega", "Special %_ 東京", "Gamma", "Beta", "Alpha", "Zeta"},
+		"name_asc":     {"Alpha", "Beta", "Gamma", "Omega", "Special %_ 東京", "Zeta"},
+		"name_desc":    {"Zeta", "Special %_ 東京", "Omega", "Gamma", "Beta", "Alpha"},
 	}
 	for sort, expected := range orders {
 		path := "/api/v1/monitors?page=1&pageSize=100&sort=" + sort
@@ -153,12 +153,12 @@ func TestMonitorPagedListSearchOrderingQuotaSummaryAndClamp(t *testing.T) {
 	if filteredPage.Monitors[0].State != "UNKNOWN" {
 		t.Errorf("stale in-quota monitor state=%q, want UNKNOWN", filteredPage.Monitors[0].State)
 	}
-	if summary := filteredPage.Summary; summary.Total != 5 || summary.Paused != 1 || summary.Up != 1 || summary.Down != 1 || summary.SubscriptionRequired != 1 || summary.Unknown != 1 {
+	if summary := filteredPage.Summary; summary.Total != 6 || summary.Paused != 1 || summary.Up != 2 || summary.Down != 1 || summary.SubscriptionRequired != 1 || summary.Unknown != 1 {
 		t.Errorf("filtered query must retain global status summary: %+v", summary)
 	}
-	outOfQuota := f.request(t, owner, http.MethodGet, "/api/v1/monitors?q="+url.QueryEscape("Special"), nil, "", "")
+	outOfQuota := f.request(t, owner, http.MethodGet, "/api/v1/monitors?q="+url.QueryEscape("Omega"), nil, "", "")
 	outOfQuotaPage := readMonitorPage(t, outOfQuota.Body.Bytes())
-	if outOfQuota.Code != http.StatusOK || len(outOfQuotaPage.Monitors) != 1 || outOfQuotaPage.Monitors[0].State != "SUBSCRIPTION_REQUIRED" {
+	if outOfQuota.Code != http.StatusOK || len(outOfQuotaPage.Monitors) != 1 || outOfQuotaPage.Monitors[0].Name != "Omega" || outOfQuotaPage.Monitors[0].State != "SUBSCRIPTION_REQUIRED" {
 		t.Fatalf("search match outside global quota rank: status=%d page=%+v", outOfQuota.Code, outOfQuotaPage)
 	}
 
@@ -175,7 +175,7 @@ func TestMonitorPagedListSearchOrderingQuotaSummaryAndClamp(t *testing.T) {
 
 	clamped := f.request(t, owner, http.MethodGet, "/api/v1/monitors?page=99&pageSize=2&sort=created_desc", nil, "", "")
 	clampedPage := readMonitorPage(t, clamped.Body.Bytes())
-	if clamped.Code != http.StatusOK || clampedPage.Pagination.Page != 3 || clampedPage.Pagination.TotalPages != 3 || len(clampedPage.Monitors) != 1 {
+	if clamped.Code != http.StatusOK || clampedPage.Pagination.Page != 3 || clampedPage.Pagination.TotalPages != 3 || len(clampedPage.Monitors) != 2 {
 		t.Fatalf("oversized page clamp=%d/%d count=%d status=%d", clampedPage.Pagination.Page, clampedPage.Pagination.TotalPages, len(clampedPage.Monitors), clamped.Code)
 	}
 
@@ -191,7 +191,7 @@ func TestMonitorPagedListSearchOrderingQuotaSummaryAndClamp(t *testing.T) {
 	}
 	afterDelete := f.request(t, owner, http.MethodGet, "/api/v1/monitors?page=3&pageSize=2&sort=created_desc", nil, "", "")
 	lastPage := readMonitorPage(t, afterDelete.Body.Bytes())
-	if afterDelete.Code != http.StatusOK || lastPage.Pagination.Page != 2 || lastPage.Pagination.TotalPages != 2 || len(lastPage.Monitors) != 2 {
+	if afterDelete.Code != http.StatusOK || lastPage.Pagination.Page != 3 || lastPage.Pagination.TotalPages != 3 || len(lastPage.Monitors) != 1 {
 		t.Fatalf("post-delete page clamp page=%d totalPages=%d count=%d status=%d", lastPage.Pagination.Page, lastPage.Pagination.TotalPages, len(lastPage.Monitors), afterDelete.Code)
 	}
 }

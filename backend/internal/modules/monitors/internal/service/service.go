@@ -183,8 +183,12 @@ func (s *Service) List(ctx context.Context, owner string) ([]contracts.Monitor, 
 		return nil, err
 	}
 	items := make([]contracts.Monitor, 0, len(rows))
-	for i, m := range rows {
-		items = append(items, view(m, e, i+1))
+	rank := 0
+	for _, m := range rows {
+		if m.Enabled {
+			rank++
+		}
+		items = append(items, view(m, e, rank))
 	}
 	return items, tx.Commit(ctx)
 }
@@ -249,6 +253,11 @@ func (s *Service) Entitlement(ctx context.Context, owner string) (billing.Entitl
 	if err != nil {
 		return e, err
 	}
+	e.EnabledMonitorCount, err = s.repo.CountEnabled(ctx, tx, owner)
+	if err != nil {
+		return e, err
+	}
+	e.ActiveMonitorCount = min(e.EnabledMonitorCount, e.Quota)
 	return e, tx.Commit(ctx)
 }
 func (s *Service) Get(ctx context.Context, owner, id string) (contracts.Monitor, error) {
@@ -301,12 +310,14 @@ func (s *Service) CreateTx(ctx context.Context, tx pgx.Tx, owner string, e billi
 	if e.Quota == 0 {
 		return contracts.Monitor{}, ErrEntitlement
 	}
-	count, err := s.repo.Count(ctx, tx, owner)
-	if err != nil {
-		return contracts.Monitor{}, err
-	}
-	if count >= e.Quota {
-		return contracts.Monitor{}, ErrQuota
+	if in.Enabled {
+		enabled, err := s.repo.CountEnabled(ctx, tx, owner)
+		if err != nil {
+			return contracts.Monitor{}, err
+		}
+		if enabled >= e.Quota {
+			return contracts.Monitor{}, ErrQuota
+		}
 	}
 	id, err := outbox.ID()
 	if err != nil {
@@ -319,7 +330,11 @@ func (s *Service) CreateTx(ctx context.Context, tx pgx.Tx, owner string, e billi
 	if err != nil {
 		return contracts.Monitor{}, err
 	}
-	return view(m, e, count+1), nil
+	rank, err := s.repo.Rank(ctx, tx, owner, id)
+	if err != nil {
+		return contracts.Monitor{}, err
+	}
+	return view(m, e, rank), nil
 }
 func (s *Service) Patch(ctx context.Context, owner, id string, p contracts.Patch) (contracts.Monitor, error) {
 	tx, e, err := s.begin(ctx, owner)
@@ -400,15 +415,15 @@ func (s *Service) PatchTx(ctx context.Context, tx pgx.Tx, owner, id string, e bi
 	if err != nil {
 		return contracts.Monitor{}, err
 	}
-	rank, err := s.repo.Rank(ctx, tx, owner, id)
-	if err != nil {
-		return contracts.Monitor{}, err
-	}
 	if in.Enabled && !m.Enabled {
 		if e.Quota == 0 {
 			return contracts.Monitor{}, ErrEntitlement
 		}
-		if rank > e.Quota {
+		enabled, err := s.repo.CountEnabled(ctx, tx, owner)
+		if err != nil {
+			return contracts.Monitor{}, err
+		}
+		if enabled >= e.Quota {
 			return contracts.Monitor{}, ErrQuota
 		}
 	}
@@ -430,6 +445,10 @@ func (s *Service) PatchTx(ctx context.Context, tx pgx.Tx, owner, id string, e bi
 		}
 	}
 	m, err = s.repo.Get(ctx, tx, owner, id, false)
+	if err != nil {
+		return contracts.Monitor{}, err
+	}
+	rank, err := s.repo.Rank(ctx, tx, owner, id)
 	if err != nil {
 		return contracts.Monitor{}, err
 	}

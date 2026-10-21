@@ -59,8 +59,8 @@ BEGIN
     VALUES (owner_id, payload->>'name', 'admin', 'active');
     INSERT INTO auth.credentials (account_id, email, password_hash)
     VALUES (owner_id, 'khv1702@gmail.com', payload->>'passwordHash');
-    INSERT INTO billing.entitlements (account_id, monitor_limit, valid_until, source, reason)
-    VALUES (owner_id, 1000, '2027-10-18T00:00:00Z', 'admin_grant',
+    INSERT INTO billing.admin_grants (account_id, monitor_limit, valid_until, reason)
+    VALUES (owner_id, 1000, '2027-10-18T00:00:00Z',
             'Owner account transfer authorized by owner');
     INSERT INTO admin.audit_events
         (operation_id, actor_account_id, actor_session_id, target_account_id, target_id,

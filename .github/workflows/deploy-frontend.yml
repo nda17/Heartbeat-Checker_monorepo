@@ -82,13 +82,32 @@ jobs:
             | jq -e --arg sha "$SOURCE_SHA" '.workflow_runs | any(.[]; .event == "push" and .head_sha == $sha and .conclusion == "success")' >/dev/null \
             || { echo 'No successful CI workflow run for the exact SHA'; exit 1; }
 
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.2'
+          cache-dependency-path: tools/go.sum
+      - name: Build exact-source static operations binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          make build-ops OPS_OUTPUT="$RUNNER_TEMP/hc-ops/hc-ops" OPS_SOURCE_SHA="$SOURCE_SHA"
+          [[ "$("$RUNNER_TEMP/hc-ops/hc-ops" version)" == "$SOURCE_SHA" ]]
+      - name: Retain exact-source operations binary and transport checksum
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hc-ops-frontend-${{ inputs.source_sha }}
+          path: |
+            ${{ runner.temp }}/hc-ops/hc-ops
+            ${{ runner.temp }}/hc-ops/hc-ops.sha256
+          if-no-files-found: error
+          retention-days: 90
       - name: Validate committed Android release provenance
         shell: bash
         run: |
           set -euo pipefail
           manifest=apps/web/src/shared/android/release.json
           if jq -e '. != null' "$manifest" >/dev/null; then
-            python3 deploy/android/release.py "$manifest" --frontend-sha "$SOURCE_SHA" \
+            "$RUNNER_TEMP/hc-ops/hc-ops" android-release "$manifest" --frontend-sha "$SOURCE_SHA" \
               --fingerprint "$ANDROID_SIGNING_CERTIFICATE_SHA256"
           fi
           digest=$(sha256sum "$manifest" | cut -d' ' -f1)

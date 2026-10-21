@@ -13,6 +13,7 @@ export function MonitorForm({
   basePath = "/monitors",
   requireReason = false,
   successMessage = "Монитор сохранён.",
+  canEnable = true,
 }: {
   monitor?: Monitor;
   onClose: () => void;
@@ -20,6 +21,7 @@ export function MonitorForm({
   basePath?: string;
   requireReason?: boolean;
   successMessage?: string;
+  canEnable?: boolean;
 }) {
   const { refresh } = useSession();
   const httpMonitor = monitorCheckType(monitor?.checkType) === "http";
@@ -420,11 +422,14 @@ export function MonitorForm({
                 type="checkbox"
                 name="enabled"
                 defaultChecked={monitor?.enabled ?? true}
+                disabled={!monitor?.enabled && !canEnable}
               />
               <span>
                 Включить проверки
                 <span className="field-hint">
-                  Проверки выполняются при действующей квоте.
+                  {canEnable || monitor?.enabled
+                    ? "Проверки выполняются при действующей квоте."
+                    : "Все места заняты. Поставьте другой монитор на паузу, чтобы включить этот."}
                 </span>
               </span>
             </label>

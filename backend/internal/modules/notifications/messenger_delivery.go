@@ -120,7 +120,7 @@ func (m *Messenger) claimDelivery(ctx context.Context, tx pgx.Tx, c struct{ id, 
 		return nil, err
 	}
 	var rank int
-	err = tx.QueryRow(ctx, `SELECT count(*) FROM monitors.monitors m WHERE m.account_id=$1 AND (m.created_at,m.id)<=(SELECT created_at,id FROM monitors.monitors WHERE id=$2)`, c.account, c.monitor).Scan(&rank)
+	err = tx.QueryRow(ctx, `SELECT count(*) FROM monitors.monitors m WHERE m.account_id=$1 AND m.enabled AND (m.created_at,m.id)<=(SELECT created_at,id FROM monitors.monitors WHERE id=$2)`, c.account, c.monitor).Scan(&rank)
 	if err != nil {
 		return nil, err
 	}
@@ -423,7 +423,7 @@ func (m *Messenger) deliveryStillEligible(ctx context.Context, a MessengerAttemp
 	if err != nil {
 		return false, err
 	}
-	err = tx.QueryRow(ctx, `SELECT count(*) FROM monitors.monitors m WHERE m.account_id=$1 AND (m.created_at,m.id)<=(SELECT created_at,id FROM monitors.monitors WHERE id=$2)`, a.AccountID, a.MonitorID).Scan(&rank)
+	err = tx.QueryRow(ctx, `SELECT count(*) FROM monitors.monitors m WHERE m.account_id=$1 AND m.enabled AND (m.created_at,m.id)<=(SELECT created_at,id FROM monitors.monitors WHERE id=$2)`, a.AccountID, a.MonitorID).Scan(&rank)
 	if err != nil {
 		return false, err
 	}

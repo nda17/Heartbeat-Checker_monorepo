@@ -1458,6 +1458,81 @@ test("invalid entitlement dates are shown inline without issuing a grant", async
   );
 });
 
+test("admin quota editor uses admin values and submits the aggregate entitlement version", async (t) => {
+  const account = {
+    id: "target-1",
+    name: "Target account",
+    email: "target@example.test",
+    role: "user",
+    status: "active",
+    version: 1,
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+  let saved;
+  const entitlement = {
+    quota: 8,
+    activeUntil: "2099-03-01T00:00:00Z",
+    source: "combined",
+    monitorCount: 9,
+    version: 8,
+    admin: {
+      quota: 3,
+      activeUntil: "2099-02-01T00:00:00Z",
+      version: 3,
+    },
+    paid: {
+      quota: 5,
+      activeUntil: "2099-03-01T00:00:00Z",
+      source: "yookassa",
+      version: 5,
+    },
+  };
+  const fixture = adminPageHarness({
+    account,
+    apiHandler: (path, options) => {
+      if (path === `/admin/accounts/${account.id}`)
+        return { account, entitlement, sessionsCount: 1 };
+      if (
+        path === `/admin/accounts/${account.id}/entitlement` &&
+        options.method === "PUT"
+      ) {
+        saved = options.body;
+        return { entitlement };
+      }
+      return undefined;
+    },
+  });
+  const { harness } = fixture;
+  t.after(() => harness.unmount());
+  await fixture.render();
+  await selectAdminAccount(harness, account.name);
+  const quotaTab = [
+    ...harness.host.querySelectorAll(".admin-detail-nav button"),
+  ].find((button) => button.textContent === "Квота");
+  assert.ok(quotaTab);
+  await act(async () => quotaTab.click());
+
+  const form = [...harness.host.querySelectorAll("form")].find((item) =>
+    item.elements.namedItem("validUntil"),
+  );
+  assert.ok(form);
+  assert.equal(form.elements.namedItem("quota").value, "3");
+  assert.equal(
+    Date.parse(form.elements.namedItem("validUntil").value),
+    Date.parse(entitlement.admin.activeUntil),
+  );
+  fill(form, "reason", "approved admin-only change");
+  await submit(form);
+
+  assert.equal(saved?.version, 8, "admin write uses aggregate CAS version");
+  assert.equal(
+    saved?.quota,
+    3,
+    "admin write uses only the admin component size",
+  );
+  assert.equal(saved?.reason, "approved admin-only change");
+});
+
 test("deleting an admin monitor keeps the operator in the admin page", async (t) => {
   const account = {
     id: "target-1",

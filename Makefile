@@ -1,4 +1,24 @@
-.PHONY: db-up mail-up local-up db-down migrate run check test-integration test-live-auth test-smtp-auth init-local build-backend web-dev worker probe grant local-admin
+.PHONY: db-up mail-up local-up db-down migrate run check test-integration test-live-auth test-smtp-auth init-local build-backend build-ops check-ops web-dev worker probe grant local-admin
+.DEFAULT_GOAL := db-up
+
+OPS_SOURCE_SHA ?= $(shell git rev-parse HEAD)
+OPS_OUTPUT ?= $(CURDIR)/.local/bin/hc-ops
+OPS_GOOS ?= linux
+OPS_GOARCH ?= amd64
+
+# CI builds this artifact from an exact clean source; VPS hosts never run Go.
+build-ops:
+	@printf '%s\n' "$(OPS_SOURCE_SHA)" | grep -Eq '^[0-9a-f]{40}$$'
+	@test "$$(git rev-parse HEAD)" = "$(OPS_SOURCE_SHA)"
+	@test -z "$$(git status --porcelain --untracked-files=all -- tools)"
+	@mkdir -p "$(dir $(OPS_OUTPUT))"
+	cd tools && CGO_ENABLED=0 GOOS="$(OPS_GOOS)" GOARCH="$(OPS_GOARCH)" go build -trimpath -ldflags="-s -w -X main.sourceSHA=$(OPS_SOURCE_SHA)" -o "$(OPS_OUTPUT)" ./cmd/hc-ops
+	cd "$(dir $(OPS_OUTPUT))" && sha256sum "$(notdir $(OPS_OUTPUT))" > "$(notdir $(OPS_OUTPUT)).sha256"
+
+check-ops:
+	cd tools && test -z "$$(gofmt -l .)"
+	cd tools && go vet ./...
+	cd tools && go test -race ./...
 
 DATABASE_URL ?= postgres://heartbeat_local:heartbeat_local_only@127.0.0.1:55432/heartbeat_local?sslmode=disable
 export DATABASE_URL
