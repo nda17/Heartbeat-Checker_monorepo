@@ -184,7 +184,6 @@ jobs:
           bash -n deploy/android/publish.sh deploy/android/setup-sdk.sh
 
   android-emulator:
-    needs: android
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:

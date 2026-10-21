@@ -29,7 +29,7 @@ public final class MainActivitySmokeTest {
     private static final String MONITOR = "123e4567-e89b-12d3-a456-426614174000";
     private static final String INCIDENT = "987e6543-e21b-12d3-a456-426614174000";
     private static final String ORDER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    private static final String STATE = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
+    private static final String STATE = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFE";
     private static final String CODE = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
     private static final String ACCOUNT = "11111111-1111-4111-8111-111111111111";
     private static final String SESSION = "22222222-2222-4222-8222-222222222222";
@@ -100,13 +100,22 @@ public final class MainActivitySmokeTest {
                 .setData(Uri.parse("https://heartbeat-checker.ru/android/auth/reset#token=" + STATE));
 
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(reset)) {
-            assertTrue("cold App Link must be consumed by the rendered React Native reset screen",
-                    awaitVisibleText(scenario, "Новый пароль"));
-            assertNull("native reset flow durably signs out before rendering the reset form", auth.active());
-            assertFalse(auth.read().optBoolean("gate"));
-            assertEquals(SESSION, auth.pendingRevokes().getJSONObject(0).getString("sessionId"));
-            assertTrue("logout advances the local push fence immediately", PushWork.localRevocation > revocationBefore);
-            assertTrue("logout keeps background delivery blocked", PushWork.locallyBlocked);
+            try {
+                assertTrue("cold App Link must be consumed by the rendered React Native reset screen",
+                        awaitVisibleText(scenario, "Новый пароль"));
+                assertNull("native reset flow durably signs out before rendering the reset form", auth.active());
+                assertFalse(auth.read().optBoolean("gate"));
+                assertEquals(SESSION, auth.pendingRevokes().getJSONObject(0).getString("sessionId"));
+                assertTrue("logout advances the local push fence immediately", PushWork.localRevocation > revocationBefore);
+                assertTrue("logout keeps background delivery blocked", PushWork.locallyBlocked);
+                scenario.onActivity(activity -> assertNull(
+                        "the consumed reset link must be removed from the Activity intent",
+                        activity.getIntent().getData()));
+            } finally {
+                // ActivityScenario 1.7 keeps this same launch Intent and matches it to lifecycle callbacks.
+                // The app intentionally clears Activity.getIntent().data after consuming the sensitive link.
+                reset.setData(null);
+            }
         } finally {
             clearAuthStore(auth);
         }
