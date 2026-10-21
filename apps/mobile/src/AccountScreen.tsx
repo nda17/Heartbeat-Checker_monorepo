@@ -378,7 +378,7 @@ export function AccountScreen({ onLogout }: { onLogout: () => Promise<void> }) {
           secondary
         />
         <Label>
-          Версия Android: 2.0.0 (7) · тема:{" "}
+          Версия Android: 2.0.1 (8) · тема:{" "}
           {Appearance.getColorScheme() === "dark" ? "тёмная" : "светлая"}{" "}
           (системная)
         </Label>

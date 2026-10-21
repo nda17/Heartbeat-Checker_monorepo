@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit",
     "format": "prettier --write app src scripts *.ts *.json *.mjs",
     "format:check": "prettier --check app src scripts *.ts *.json *.mjs",
-    "test:ui": "node --test scripts/admin-ui.test.mjs scripts/account-deletion.test.mjs scripts/android-download.test.mjs scripts/android-push-ui.test.mjs scripts/auth-entry.test.mjs scripts/messenger-email.test.mjs scripts/monitors-pagination.test.mjs scripts/pricing.test.mjs"
+    "test:ui": "node --test scripts/admin-ui.test.mjs scripts/account-deletion.test.mjs scripts/android-auth.test.mjs scripts/android-download.test.mjs scripts/android-push-ui.test.mjs scripts/auth-entry.test.mjs scripts/messenger-email.test.mjs scripts/monitors-pagination.test.mjs scripts/pricing.test.mjs"
   },
   "dependencies": {
     "next": "16.4.2",

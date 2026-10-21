@@ -72,7 +72,7 @@ final class PushNative {
                 body = new JSONObject().put("installationCredential", credential).put("provider", provider)
                         .put("token", found.get()).put("permission", "granted")
                         .put("deviceLabel", (Build.MANUFACTURER + " " + Build.MODEL).trim())
-                        .put("appVersion", "2.0.0");
+                        .put("appVersion", BuildConfig.VERSION_NAME);
                 if (installation != null) body.put("bindingGeneration", installation.getLong("bindingGeneration"))
                         .put("registrationVersion", installation.getLong("registrationVersion"));
                 if (allowAccountChange) body.put("allowAccountChange", true);

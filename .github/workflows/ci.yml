@@ -155,7 +155,7 @@ jobs:
           apk=apps/android/app/build/outputs/apk/ci/app-ci.apk
           test -s "$apk"
           unzip -p "$apk" assets/index.android.bundle | wc -c | awk '$1 > 100000 { found = 1 } END { exit !found }'
-          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | grep -F "package: name='ru.heartbeatchecker.app' versionCode='7' versionName='2.0.0'"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | grep -F "package: name='ru.heartbeatchecker.app' versionCode='8' versionName='2.0.1'"
           size=$(wc -c < "$apk" | tr -d ' ')
           [[ $size =~ ^[0-9]+$ ]]
           echo "Bundled CI APK bytes: $size"
@@ -273,7 +273,15 @@ jobs:
           "$adb_bin" -s emulator-5554 shell svc data disable
           test -n "$(find app/src/androidTest -type f -name '*.java' -print -quit)"
           echo 'Emulator boot complete; running native instrumentation tests'
-          ANDROID_SERIAL=emulator-5554 ./gradlew --no-daemon :app:connectedCiAndroidTest
+          ANDROID_SERIAL=emulator-5554 ./gradlew --no-daemon -Pandroid.enableAdditionalTestOutput=true :app:connectedCiAndroidTest
+          additional_output=app/build/outputs/connected_android_test_additional_output
+          test -d "$additional_output" || { echo 'Android test output was not exported'; exit 1; }
+          for screenshot in login.png register.png password-visible.png reset-request.png reset-confirm.png captcha-login.png; do
+            count=$(find "$additional_output" -type f -path "*/auth-qa/$screenshot" | wc -l)
+            test "$count" -eq 1 || { echo "Expected one exported auth screenshot for $screenshot, got $count"; exit 1; }
+            path=$(find "$additional_output" -type f -path "*/auth-qa/$screenshot" -print -quit)
+            test -s "$path" || { echo "Empty exported auth screenshot: $screenshot"; exit 1; }
+          done
       - name: Retain instrumentation reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -282,6 +290,7 @@ jobs:
           path: |
             apps/android/app/build/reports/androidTests/
             apps/android/app/build/outputs/androidTest-results/
+            apps/android/app/build/outputs/connected_android_test_additional_output/
             apps/android/app/build/reports/emulator/
           if-no-files-found: warn
           retention-days: 30
