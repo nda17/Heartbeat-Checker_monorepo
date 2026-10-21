@@ -6,11 +6,16 @@ import (
 )
 
 type Order struct {
+	ProviderMode         string     `json:"-"`
+	ProviderShopID       string     `json:"-"`
 	ID                   string     `json:"id"`
 	PurchaseKind         string     `json:"purchaseKind"`
 	PackageID            *string    `json:"packageId,omitempty"`
 	FulfilledPackageID   *string    `json:"fulfilledPackageId,omitempty"`
 	Provider             string     `json:"provider"`
+	ReturnTarget         string     `json:"returnTarget"`
+	CheckoutKind         string     `json:"checkoutKind"`
+	SDK                  *SDKOrder  `json:"sdk,omitempty"`
 	Status               string     `json:"status"`
 	FulfillmentStatus    string     `json:"fulfillmentStatus"`
 	ReconciliationStatus string     `json:"reconciliationStatus"`
@@ -27,27 +32,57 @@ type Order struct {
 	ActiveUntil          *time.Time `json:"activeUntil"`
 }
 
+type SDKOrder struct {
+	State             string    `json:"state"`
+	ShopID            string    `json:"shopId"`
+	Environment       string    `json:"environment"`
+	PaymentMethodType string    `json:"paymentMethodType,omitempty"`
+	DraftExpiresAt    time.Time `json:"draftExpiresAt"`
+	RequestExpiresAt  time.Time `json:"requestExpiresAt"`
+}
+
+type NativeCheckout struct {
+	Enabled        bool     `json:"enabled"`
+	ShopID         string   `json:"shopId"`
+	Environment    string   `json:"environment"`
+	PaymentMethods []string `json:"paymentMethods"`
+}
+
+type SDKQuote struct {
+	ShopID                string    `json:"shopId"`
+	Environment           string    `json:"environment"`
+	AmountMinor           int       `json:"amountMinor"`
+	Currency              string    `json:"currency"`
+	Title                 string    `json:"title"`
+	Subtitle              string    `json:"subtitle"`
+	SavePaymentMethod     string    `json:"savePaymentMethod"`
+	AllowedPaymentMethods []string  `json:"allowedPaymentMethods"`
+	DraftExpiresAt        time.Time `json:"draftExpiresAt"`
+}
+
 type Billing struct {
-	Provider             string  `json:"provider"`
-	CanSimulate          bool    `json:"canSimulate"`
-	CanPay               bool    `json:"canPay"`
-	Test                 bool    `json:"test"`
-	AccessUnchanged      bool    `json:"accessUnchanged"`
-	PricePerMonitorMinor int     `json:"pricePerMonitorMinor"`
-	PriceVersion         int64   `json:"priceVersion"`
-	Orders               []Order `json:"orders"`
+	Provider             string         `json:"provider"`
+	CanSimulate          bool           `json:"canSimulate"`
+	CanPay               bool           `json:"canPay"`
+	Test                 bool           `json:"test"`
+	AccessUnchanged      bool           `json:"accessUnchanged"`
+	PricePerMonitorMinor int            `json:"pricePerMonitorMinor"`
+	PriceVersion         int64          `json:"priceVersion"`
+	Orders               []Order        `json:"orders"`
+	NativeCheckout       NativeCheckout `json:"nativeCheckout"`
 }
 
 type ProviderPayment struct {
-	ID              string
-	Status          string
-	AmountValue     string
-	Currency        string
-	OrderID         string
-	ShopID          string
-	ConfirmationURL string
-	Test            *bool
-	Paid            bool
+	ID                string
+	Status            string
+	AmountValue       string
+	Currency          string
+	OrderID           string
+	ShopID            string
+	ConfirmationURL   string
+	Test              *bool
+	Paid              bool
+	PaymentMethodType string
 }
 
 type Provider interface {

@@ -37,7 +37,10 @@ final class PushNotifications {
     static void clear(Context context) { context.getSystemService(NotificationManager.class).cancelAll(); }
 
     static void display(Context context, JSONObject delivery) throws JSONException {
-        if (PushWork.locallyBlocked || !permitted(context)) {
+        boolean owner;
+        try { owner = new AuthStore(context).ownsPush(new PushStore(context).read()); }
+        catch (Exception ignored) { owner = false; }
+        if (PushWork.locallyBlocked || !owner || !permitted(context)) {
             new PushStore(context).deliveryStage(PushWork.locallyBlocked ? PushStore.DeliveryStage.LOCALLY_BLOCKED
                     : PushStore.DeliveryStage.PERMISSION_DENIED);
             return;

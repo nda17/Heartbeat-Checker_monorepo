@@ -19,4 +19,7 @@ type paymentResponse struct {
 		Type            string `json:"type"`
 		ConfirmationURL string `json:"confirmation_url"`
 	} `json:"confirmation"`
+	PaymentMethod struct {
+		Type string `json:"type"`
+	} `json:"payment_method"`
 }

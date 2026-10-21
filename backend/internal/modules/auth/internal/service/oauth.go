@@ -407,15 +407,31 @@ func (s *Service) OAuthRegistration(ctx context.Context, browser string) (OAuthR
 	return OAuthRegistrationInfo{c.Provider, c.Email, c.Name, c.ExpiresAt}, nil
 }
 func (s *Service) OAuthConfirm(ctx context.Context, browser, token string, client Client, previousToken string) (OAuthConfirmResult, error) {
+	return s.oauthConfirm(ctx, browser, token, client, previousToken, "web")
+}
+
+func (s *Service) NativeOAuthConfirm(ctx context.Context, browser, token string, client Client) (OAuthConfirmResult, error) {
+	return s.oauthConfirm(ctx, browser, token, client, "", "android")
+}
+
+func (s *Service) oauthConfirm(ctx context.Context, browser, token string, client Client, previousToken, clientKind string) (OAuthConfirmResult, error) {
 	if len(browser) != 43 || len(token) != 43 {
 		return OAuthConfirmResult{}, ErrOAuthRegistrationExpired
 	}
 	if err := s.allow(ctx, "oauth_confirm", "", client.IP, 30, 0, 15*time.Minute); err != nil {
 		return OAuthConfirmResult{}, err
 	}
-	session, raw, err := oauthSession(client, s.cfg.SessionTTL)
+	session, raw, err := oauthSession(client, s.sessionTTL(clientKind))
 	if err != nil {
 		return OAuthConfirmResult{}, ErrUnavailable
+	}
+	revokeToken := ""
+	if clientKind == "android" {
+		revokeToken, err = security.Token()
+		if err != nil {
+			return OAuthConfirmResult{}, ErrUnavailable
+		}
+		session.ClientKind, session.RevokeHash = "android", security.Digest(revokeToken)
 	}
 	id, err := security.ID()
 	if err != nil {
@@ -438,7 +454,7 @@ func (s *Service) OAuthConfirm(ctx context.Context, browser, token string, clien
 	if err != nil {
 		return OAuthConfirmResult{}, ErrUnavailable
 	}
-	return OAuthConfirmResult{LoginResult{Account: account, Token: raw, CSRF: security.CSRF(raw)}, returnTo}, nil
+	return OAuthConfirmResult{LoginResult{Account: account, Token: raw, CSRF: security.CSRF(raw), SessionID: session.ID, ExpiresAt: session.ExpiresAt, RevokeToken: revokeToken}, returnTo}, nil
 }
 func (s *Service) OAuthIdentities(ctx context.Context, p Principal) ([]OAuthIdentity, error) {
 	v, err := s.repo.OAuthIdentities(ctx, p.AccountID)

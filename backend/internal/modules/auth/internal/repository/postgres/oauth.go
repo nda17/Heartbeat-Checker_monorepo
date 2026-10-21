@@ -35,6 +35,8 @@ type OAuthRegistration struct {
 type OAuthSession struct {
 	ID, IP, Agent string
 	Hash          []byte
+	RevokeHash    []byte
+	ClientKind    string
 	ExpiresAt     time.Time
 }
 
@@ -129,7 +131,10 @@ func (r *Repository) OAuthLoginSession(ctx context.Context, i OAuthIdentity, c C
 	return tx.Commit(ctx)
 }
 func insertOAuthSession(ctx context.Context, tx pgx.Tx, accountID string, version int64, s OAuthSession) error {
-	_, err := tx.Exec(ctx, `INSERT INTO auth.sessions(id,account_id,token_hash,credential_version,expires_at,ip,user_agent) VALUES($1,$2,$3,$4,$5,NULLIF($6,'')::inet,$7)`, s.ID, accountID, s.Hash, version, s.ExpiresAt, s.IP, s.Agent)
+	if s.ClientKind == "" {
+		s.ClientKind = "web"
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO auth.sessions(id,account_id,token_hash,credential_version,expires_at,ip,user_agent,client_kind,revoke_token_hash) VALUES($1,$2,$3,$4,$5,NULLIF($6,'')::inet,$7,$8,$9)`, s.ID, accountID, s.Hash, version, s.ExpiresAt, s.IP, s.Agent, s.ClientKind, s.RevokeHash)
 	return err
 }
 func (r *Repository) InsertOAuthRegistration(ctx context.Context, c OAuthRegistration, payload []byte, jobID string) error {
@@ -208,6 +213,10 @@ func (r *Repository) CompleteOAuthRegistration(ctx context.Context, tokenHash, b
 }
 
 func (r *Repository) LinkOAuth(ctx context.Context, a OAuthAttempt, c Credential, id, provider, subject string, newHash []byte, lock OAuthAccountLock, audit OAuthAudit) error {
+	return r.LinkOAuthKind(ctx, a, c, id, provider, subject, newHash, lock, audit)
+}
+
+func (r *Repository) LinkOAuthKind(ctx context.Context, a OAuthAttempt, c Credential, id, provider, subject string, newHash []byte, lock OAuthAccountLock, audit OAuthAudit) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -296,7 +305,8 @@ func rotateOAuthSession(ctx context.Context, tx pgx.Tx, a OAuthAttempt, c Creden
 	if _, err := tx.Exec(ctx, `UPDATE auth.credentials SET version=version+1 WHERE account_id=$1`, c.AccountID); err != nil {
 		return err
 	}
-	result, err := tx.Exec(ctx, `UPDATE auth.sessions SET credential_version=credential_version+1,token_hash=$2 WHERE id=$1 AND revoked_at IS NULL AND expires_at>clock_timestamp()`, *a.SessionID, newHash)
+	result, err := tx.Exec(ctx, `UPDATE auth.sessions SET credential_version=credential_version+1,token_hash=$2
+		WHERE id=$1 AND revoked_at IS NULL AND expires_at>clock_timestamp()`, *a.SessionID, newHash)
 	if err != nil {
 		return err
 	}
@@ -307,6 +317,10 @@ func rotateOAuthSession(ctx context.Context, tx pgx.Tx, a OAuthAttempt, c Creden
 	return err
 }
 func (r *Repository) UnlinkOAuth(ctx context.Context, a OAuthAttempt, c Credential, provider, id string, newHash []byte, lock OAuthAccountLock, audit OAuthAudit) error {
+	return r.UnlinkOAuthKind(ctx, a, c, provider, id, newHash, lock, audit)
+}
+
+func (r *Repository) UnlinkOAuthKind(ctx context.Context, a OAuthAttempt, c Credential, provider, id string, newHash []byte, lock OAuthAccountLock, audit OAuthAudit) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err

@@ -33,6 +33,7 @@ func New(s *service.Service, origin string, secure bool, ttl time.Duration) *Ser
 }
 
 func (s *Server) Register(mux *http.ServeMux) {
+	s.registerNative(mux)
 	mux.HandleFunc("GET /api/v1/auth/oauth/providers", s.oauthProviders)
 	mux.HandleFunc("POST /api/v1/auth/oauth/{provider}/start", s.oauthStart)
 	mux.HandleFunc("GET /api/v1/auth/oauth/{provider}/callback", s.oauthCallback)
@@ -182,6 +183,10 @@ func (s *Server) clearCookie(w http.ResponseWriter) {
 }
 
 func (s *Server) require(w http.ResponseWriter, r *http.Request, mutation bool) (service.Principal, string, bool) {
+	if r.Header.Get("Authorization") != "" {
+		fail(w, 401, "unauthorized")
+		return service.Principal{}, "", false
+	}
 	if mutation && !s.originOK(w, r) {
 		return service.Principal{}, "", false
 	}
@@ -204,6 +209,32 @@ func (s *Server) require(w http.ResponseWriter, r *http.Request, mutation bool) 
 		}
 	}
 	return p, cookie.Value, true
+}
+
+func (s *Server) requireNative(w http.ResponseWriter, r *http.Request) (service.Principal, string, bool) {
+	if r.Header.Get("Cookie") != "" || r.Header.Get("X-CSRF-Token") != "" {
+		fail(w, 401, "unauthorized")
+		return service.Principal{}, "", false
+	}
+	header := r.Header.Get("Authorization")
+	if !strings.HasPrefix(header, "Bearer ") || len(header) != len("Bearer ")+43 {
+		fail(w, 401, "unauthorized")
+		return service.Principal{}, "", false
+	}
+	token := strings.TrimPrefix(header, "Bearer ")
+	p, err := s.service.AuthenticateNative(r.Context(), token)
+	if err != nil {
+		failService(w, err)
+		return service.Principal{}, "", false
+	}
+	return p, token, true
+}
+
+func (s *Server) requireAny(w http.ResponseWriter, r *http.Request, mutation bool) (service.Principal, string, bool) {
+	if r.Header.Get("Authorization") != "" {
+		return s.requireNative(w, r)
+	}
+	return s.require(w, r, mutation)
 }
 
 // Admin authorization remains closed until MFA is enforced here.
@@ -311,7 +342,7 @@ func (s *Server) csrf(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"csrfToken": security.CSRF(raw)})
 }
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
-	p, _, ok := s.require(w, r, false)
+	p, _, ok := s.requireAny(w, r, false)
 	if !ok {
 		return
 	}
@@ -324,7 +355,7 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) requestEmailVerification(w http.ResponseWriter, r *http.Request) {
-	p, _, ok := s.require(w, r, true)
+	p, _, ok := s.requireAny(w, r, true)
 	if !ok {
 		return
 	}
@@ -340,7 +371,7 @@ func (s *Server) requestEmailVerification(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) confirmEmailVerification(w http.ResponseWriter, r *http.Request) {
-	p, _, ok := s.require(w, r, true)
+	p, _, ok := s.requireAny(w, r, true)
 	if !ok {
 		return
 	}
@@ -357,7 +388,7 @@ func (s *Server) confirmEmailVerification(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) editMe(w http.ResponseWriter, r *http.Request) {
-	p, _, ok := s.require(w, r, true)
+	p, _, ok := s.requireAny(w, r, true)
 	if !ok {
 		return
 	}
@@ -376,7 +407,7 @@ func (s *Server) editMe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteMe(w http.ResponseWriter, r *http.Request) {
-	p, _, ok := s.require(w, r, true)
+	p, _, ok := s.requireAny(w, r, true)
 	if !ok {
 		return
 	}
@@ -391,11 +422,13 @@ func (s *Server) deleteMe(w http.ResponseWriter, r *http.Request) {
 		failService(w, err)
 		return
 	}
-	s.clearCookie(w)
+	if p.ClientKind == "web" {
+		s.clearCookie(w)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
-	p, _, ok := s.require(w, r, false)
+	p, _, ok := s.requireAny(w, r, false)
 	if !ok {
 		return
 	}
@@ -407,7 +440,7 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"sessions": items})
 }
 func (s *Server) revokeSession(w http.ResponseWriter, r *http.Request) {
-	p, _, ok := s.require(w, r, true)
+	p, _, ok := s.requireAny(w, r, true)
 	if !ok {
 		return
 	}
@@ -422,7 +455,7 @@ func (s *Server) revokeSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) revokeAllSessions(w http.ResponseWriter, r *http.Request) {
-	p, _, ok := s.require(w, r, true)
+	p, _, ok := s.requireAny(w, r, true)
 	if !ok {
 		return
 	}
@@ -491,7 +524,7 @@ func (s *Server) passwordChange(w http.ResponseWriter, r *http.Request) {
 // Protect uses the same cookie, account-state, Origin and CSRF checks as auth routes.
 func (s *Server) Protect(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p, _, ok := s.require(w, r, r.Method != http.MethodGet && r.Method != http.MethodHead)
+		p, _, ok := s.requireAny(w, r, r.Method != http.MethodGet && r.Method != http.MethodHead)
 		if !ok {
 			return
 		}

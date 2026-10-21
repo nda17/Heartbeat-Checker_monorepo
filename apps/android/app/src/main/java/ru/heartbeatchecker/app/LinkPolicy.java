@@ -11,7 +11,7 @@ import java.util.regex.Pattern;
 
 final class LinkPolicy {
     static final String HOME = "https://heartbeat-checker.ru/app";
-    private static final Set<String> PATHS = new HashSet<>(Arrays.asList("/app", "/app/settings", "/app/billing", "/app/admin"));
+    private static final Set<String> PATHS = new HashSet<>(Arrays.asList("/app", "/app/settings", "/app/billing"));
     private static final Pattern UUID_PATTERN = Pattern.compile(
             "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
 

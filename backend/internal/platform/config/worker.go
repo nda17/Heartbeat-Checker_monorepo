@@ -108,7 +108,7 @@ func LocalGrantDatabase(raw string) error {
 // allowlist prevents PostgreSQL host/service options from overriding that address.
 func localDatabase(raw string) error {
 	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.Path != "/heartbeat_local" || u.Port() != "55432" || u.RawQuery != "sslmode=disable" || u.Fragment != "" || u.Opaque != "" {
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || (u.Path != "/heartbeat_local" && u.Path != "/heartbeat_sdk_local") || u.Port() != "55432" || u.RawQuery != "sslmode=disable" || u.Fragment != "" || u.Opaque != "" {
 		return errors.New("APP_ENV=local requires the project loopback PostgreSQL database")
 	}
 	ip, err := netip.ParseAddr(u.Hostname())

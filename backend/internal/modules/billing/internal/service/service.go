@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/cipher"
 	"errors"
 	"strings"
 	"time"
@@ -13,14 +14,21 @@ import (
 )
 
 type Service struct {
-	pool     *pgxpool.Pool
-	local    bool
-	provider string
-	allowed  map[string]bool
-	accounts accounts.ActiveGuard
-	payments contracts.Provider
-	shopID   string
-	mode     string
+	pool         *pgxpool.Pool
+	local        bool
+	provider     string
+	allowed      map[string]bool
+	accounts     accounts.ActiveGuard
+	payments     contracts.Provider
+	shopID       string
+	mode         string
+	profiles     map[string]paymentProfile
+	nativeMode   string
+	nativeShopID string
+	testAllowed  map[string]bool
+	sdkEnabled   bool
+	sdkBox       cipher.AEAD
+	sessionLease func(context.Context, pgx.Tx, string, string) (time.Time, error)
 }
 
 var ErrAdminGrant = errors.New("invalid administrative grant")
@@ -141,7 +149,7 @@ func (s *Service) activeSubscription(accountID string, paid *contracts.Subscript
 	return paid != nil && paid.ActiveUntil != nil && paid.ActiveUntil.After(now) &&
 		(paid.Source == "yookassa" || (s.local && paid.Source == "local_test") ||
 			(s.provider == "mock" && s.allowed[accountID] && paid.Source == "mock_test") ||
-			(s.provider == "yookassa" && s.mode == "test" && s.allowed[accountID] && paid.Source == "yookassa_test"))
+			(s.provider == "yookassa" && (s.mode == "test" || (s.sdkEnabled && s.nativeMode == "test")) && s.testAllowed[accountID] && paid.Source == "yookassa_test"))
 }
 
 // GrantLocal is available only to the local command, never an HTTP endpoint.

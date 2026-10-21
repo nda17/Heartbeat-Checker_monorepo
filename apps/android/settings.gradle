@@ -1,15 +1,28 @@
 pluginManagement {
+    includeBuild('../mobile/node_modules/@react-native/gradle-plugin')
     repositories {
         google()
         mavenCentral()
         gradlePluginPortal()
     }
 }
+plugins { id('com.facebook.react.settings') }
+extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
+    ex.autolinkLibrariesFromCommand(
+        ['node', file('../mobile/node_modules/@react-native-community/cli/build/bin.js').absolutePath, 'config'],
+        file('../mobile'),
+        files('../mobile/package.json', '../mobile/package-lock.json', '../mobile/react-native.config.js')
+    )
+}
 dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
     repositories {
         google()
         mavenCentral()
+        maven {
+            url = uri('https://repo.yoomoney.ru/repository/android-libraries/')
+            content { includeGroupByRegex 'ru\\.yoomoney\\.sdk\\..*' }
+        }
         maven {
             url = uri('https://nexus-external.rustore.ru/repository/maven-rustore-exposed/')
             content {
@@ -21,3 +34,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = 'HeartbeatChecker'
 include ':app'
+includeBuild('../mobile/node_modules/@react-native/gradle-plugin')

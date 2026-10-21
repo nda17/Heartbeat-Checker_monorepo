@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+    <application android:usesCleartextTraffic="true"
+        android:networkSecurityConfig="@xml/sdk_test_network_security"
+        tools:replace="android:usesCleartextTraffic" />
+</manifest>

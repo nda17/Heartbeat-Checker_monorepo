@@ -12,13 +12,14 @@ import (
 	"github.com/nda17/Heartbeat-Checker_monorepo/tools/internal/deploydata"
 )
 
-type Activation struct{ Relay, Messenger, AdminMFA, OAuth, YooKassaTest, Email, AndroidPush, YooKassaProduction bool }
+type Activation struct{ Relay, Messenger, AdminMFA, OAuth, YooKassaTest, Email, AndroidPush, YooKassaProduction, NativeSDKTest bool }
 
 var pushKeys = []string{"ANDROID_PUSH_ENABLED", "RUSTORE_PUSH_PROJECT_ID", "RUSTORE_PUSH_SERVICE_TOKEN", "FCM_PUSH_ENABLED", "FCM_PROJECT_ID", "FCM_SERVICE_ACCOUNT_BASE64", "HUAWEI_PUSH_ENABLED", "HUAWEI_PROJECT_ID", "HUAWEI_CLIENT_ID", "HUAWEI_CLIENT_SECRET"}
 var messengerKeys = []string{"MESSENGER_NOTIFICATIONS_ENABLED", "TELEGRAM_INFORMER_WEBHOOK_SECRET", "MAX_INFORMER_WEBHOOK_SECRET", "TELEGRAM_BOT_INFORMER_TOKEN", "MAX_BOT_INFORMER_TOKEN", "TELEGRAM_INFORMER_BOT_USERNAME", "MAX_INFORMER_BOT_URL"}
 var oauthKeys = []string{"YANDEX_CLIENT_ID", "YANDEX_CLIENT_SECRET", "YANDEX_REDIRECT_URI", "YANDEX_SCOPES", "VK_CLIENT_ID", "VK_CALLBACK_URL"}
 var testKeys = []string{"BILLING_PROVIDER", "BILLING_TEST_ACCOUNT_IDS", "YOOKASSA_MODE", "YOOKASSA_TEST_SHOP_ID", "YOOKASSA_TEST_SECRET_KEY"}
 var productionKeys = []string{"BILLING_PROVIDER", "YOOKASSA_MODE", "YOOKASSA_PRODUCTION_SHOP_ID", "YOOKASSA_PRODUCTION_SECRET_KEY"}
+var nativeSDKTestKeys = []string{"BILLING_TEST_ACCOUNT_IDS", "YOOKASSA_TEST_SHOP_ID", "YOOKASSA_TEST_SECRET_KEY", "YOOKASSA_NATIVE_SDK_ENABLED", "YOOKASSA_NATIVE_SDK_MODE"}
 var relayTargets = map[string]string{"TELEGRAM_API_BASE_URL": "https://messengers-proxy.heartbeat-checker.ru/telegram-api", "TELEGRAM_API_PROXY_IP": "185.184.122.62"}
 
 func match(p, s string) bool { return regexp.MustCompile(p).MatchString(s) }
@@ -50,6 +51,7 @@ func ValidateEnv(candidate string, a Activation) error {
 	add(a.OAuth, oauthKeys)
 	add(a.YooKassaTest, testKeys)
 	add(a.YooKassaProduction, productionKeys)
+	add(a.NativeSDKTest, nativeSDKTestKeys)
 	add(a.Email, []string{"EMAIL_NOTIFICATIONS_ENABLED"})
 	add(a.AndroidPush, pushKeys)
 	old, err := deploydata.ReadPrivate(".env", 256<<10)
@@ -134,6 +136,22 @@ func ValidateEnv(candidate string, a Activation) error {
 		for _, key := range []string{"YOOKASSA_PRODUCTION_SHOP_ID", "YOOKASSA_PRODUCTION_SECRET_KEY"} {
 			if old := u(ov[key]); old != "" && old != u(nv[key]) {
 				return reject("YooKassa production activation cannot rotate existing credentials")
+			}
+		}
+	}
+	if a.NativeSDKTest {
+		if u(ov["BILLING_PROVIDER"]) != "yookassa" || u(ov["YOOKASSA_MODE"]) != "production" || u(nv["BILLING_PROVIDER"]) != "yookassa" || u(nv["YOOKASSA_MODE"]) != "production" {
+			return reject("native SDK test activation requires unchanged hosted production billing")
+		}
+		if u(defaultValue(ov, "YOOKASSA_NATIVE_SDK_ENABLED", "false")) != "false" || u(nv["YOOKASSA_NATIVE_SDK_ENABLED"]) != "true" || u(nv["YOOKASSA_NATIVE_SDK_MODE"]) != "test" || u(nv["BILLING_TEST_ACCOUNT_IDS"]) != deploydata.OwnerID {
+			return reject("native SDK test activation requires the reviewed owner-only profile")
+		}
+		if !match(`^[0-9]{1,32}$`, u(nv["YOOKASSA_TEST_SHOP_ID"])) || !match(`^test_[^\s]{11,507}$`, u(nv["YOOKASSA_TEST_SECRET_KEY"])) {
+			return reject("complete native SDK test credentials are required")
+		}
+		for _, key := range []string{"YOOKASSA_TEST_SHOP_ID", "YOOKASSA_TEST_SECRET_KEY"} {
+			if old := u(ov[key]); old != "" && old != u(nv[key]) {
+				return reject("native SDK activation cannot rotate existing credentials")
 			}
 		}
 	}

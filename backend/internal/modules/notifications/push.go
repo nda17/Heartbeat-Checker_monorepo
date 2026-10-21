@@ -29,6 +29,7 @@ var (
 	ErrPushUnavailable     = errors.New("push unavailable")
 	ErrPushReconnect       = errors.New("push session requires reconnect")
 	ErrPushRateLimited     = errors.New("push rate limited")
+	ErrPushAccountChange   = errors.New("push account change needs confirmation")
 )
 
 type PushSender interface {

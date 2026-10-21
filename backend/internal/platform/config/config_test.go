@@ -18,6 +18,7 @@ func clearConfigEnv(t *testing.T) {
 		"BILLING_PROVIDER", "BILLING_MOCK_ACCOUNT_IDS", "BILLING_TEST_ACCOUNT_IDS",
 		"YOOKASSA_MODE", "YOOKASSA_TEST_SHOP_ID", "YOOKASSA_TEST_SECRET_KEY",
 		"YOOKASSA_PRODUCTION_SHOP_ID", "YOOKASSA_PRODUCTION_SECRET_KEY",
+		"YOOKASSA_NATIVE_SDK_ENABLED", "YOOKASSA_NATIVE_SDK_MODE",
 	} {
 		old, existed := os.LookupEnv(key)
 		t.Cleanup(func() {
@@ -107,6 +108,80 @@ func TestLoadIntegrationsSelectsIndependentProductionCredentialsWithoutOwnerGate
 	}
 }
 
+func TestLoadIntegrationsKeepsHostedProductionAndNativeSDKTestProfilesInParity(t *testing.T) {
+	const owner = "51ec7d19-80c4-4fb6-8edb-79dc7abe3120"
+	clearConfigEnv(t)
+	for key, value := range map[string]string{
+		"BILLING_PROVIDER": "yookassa", "YOOKASSA_MODE": "production",
+		"YOOKASSA_PRODUCTION_SHOP_ID": "654321", "YOOKASSA_PRODUCTION_SECRET_KEY": "production_synthetic_secret_123",
+		"YOOKASSA_TEST_SHOP_ID": "123456", "YOOKASSA_TEST_SECRET_KEY": "test_synthetic_secret_123",
+		"YOOKASSA_NATIVE_SDK_ENABLED": "true", "YOOKASSA_NATIVE_SDK_MODE": "test",
+		"BILLING_TEST_ACCOUNT_IDS": owner,
+	} {
+		if err := os.Setenv(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, worker := range []bool{false, true} {
+		cfg, err := loadIntegrations(worker)
+		if err != nil {
+			t.Fatalf("loadIntegrations(worker=%t): %v", worker, err)
+		}
+		if cfg.YooKassaMode != "production" || cfg.YooKassaProductionShopID != "654321" || cfg.YooKassaProductionSecretKey != "production_synthetic_secret_123" ||
+			!cfg.YooKassaNativeSDKEnabled || cfg.YooKassaNativeSDKMode != "test" || cfg.YooKassaTestShopID != "123456" || cfg.YooKassaTestSecretKey != "test_synthetic_secret_123" ||
+			len(cfg.BillingTestAccountIDs) != 1 || cfg.BillingTestAccountIDs[0] != owner {
+			t.Fatalf("worker/API did not load the same split billing profiles: %+v", cfg)
+		}
+	}
+}
+
+func TestLoadIntegrationsRejectsUnsafeNativeSDKProfileCombinations(t *testing.T) {
+	const owner = "51ec7d19-80c4-4fb6-8edb-79dc7abe3120"
+	base := map[string]string{
+		"BILLING_PROVIDER": "yookassa", "YOOKASSA_MODE": "production",
+		"YOOKASSA_PRODUCTION_SHOP_ID": "654321", "YOOKASSA_PRODUCTION_SECRET_KEY": "production_synthetic_secret_123",
+		"YOOKASSA_TEST_SHOP_ID": "123456", "YOOKASSA_TEST_SECRET_KEY": "test_synthetic_secret_123",
+		"YOOKASSA_NATIVE_SDK_ENABLED": "true", "YOOKASSA_NATIVE_SDK_MODE": "test", "BILLING_TEST_ACCOUNT_IDS": owner,
+	}
+	tests := []struct {
+		name   string
+		mutate func(map[string]string)
+	}{
+		{"missing explicit mode", func(m map[string]string) { m["YOOKASSA_NATIVE_SDK_MODE"] = "" }},
+		{"unknown mode", func(m map[string]string) { m["YOOKASSA_NATIVE_SDK_MODE"] = "sandbox" }},
+		{"non-owner test scope", func(m map[string]string) {
+			m["BILLING_TEST_ACCOUNT_IDS"] = owner + ",61ec7d19-80c4-4fb6-8edb-79dc7abe3120"
+		}},
+		{"missing test shop", func(m map[string]string) { m["YOOKASSA_TEST_SHOP_ID"] = "" }},
+		{"test mode with live secret", func(m map[string]string) { m["YOOKASSA_TEST_SECRET_KEY"] = "production_synthetic_secret_123" }},
+		{"native production against hosted test", func(m map[string]string) {
+			m["YOOKASSA_MODE"] = "test"
+			m["YOOKASSA_NATIVE_SDK_MODE"] = "production"
+			m["YOOKASSA_TEST_SHOP_ID"] = "123456"
+			m["YOOKASSA_TEST_SECRET_KEY"] = "test_synthetic_secret_123"
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			values := map[string]string{}
+			for key, value := range base {
+				values[key] = value
+			}
+			tc.mutate(values)
+			for key, value := range values {
+				if err := os.Setenv(key, value); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := loadIntegrations(false); err == nil {
+				t.Fatal("unsafe hosted/native YooKassa profile combination accepted")
+			}
+		})
+	}
+}
+
 func TestLoadIntegrationsRejectsIncompleteOrCrossModeProductionCredentials(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -186,6 +261,32 @@ func setRequiredConfigEnv(t *testing.T) {
 		"WEBHOOK_ENCRYPTION_KEY":    "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
 	} {
 		_ = os.Setenv(key, value)
+	}
+}
+
+func TestWorkerDatabaseAllowlistAcceptsOnlyExactLocalAndSDKDatabases(t *testing.T) {
+	for _, database := range []string{
+		"postgres://fixture:fixture@127.0.0.1:55432/heartbeat_local?sslmode=disable",
+		"postgres://fixture:fixture@127.0.0.1:55432/heartbeat_sdk_local?sslmode=disable",
+	} {
+		if err := localDatabase(database); err != nil {
+			t.Errorf("localDatabase(%q) rejected allowlisted DB: %v", database, err)
+		}
+	}
+	for _, database := range []string{
+		"postgres://fixture:fixture@127.0.0.1:55432/heartbeat_local_test?sslmode=disable",
+		"postgres://fixture:fixture@127.0.0.1:55432/heartbeat_sdk_local_test?sslmode=disable",
+		"postgres://fixture:fixture@127.0.0.1:55432/heartbeat_sdk_local/extra?sslmode=disable",
+		"postgres://fixture:fixture@localhost:55432/heartbeat_sdk_local?sslmode=disable",
+		"postgres://fixture:fixture@192.0.2.10:55432/heartbeat_sdk_local?sslmode=disable",
+		"postgres://fixture:fixture@127.0.0.1:5432/heartbeat_sdk_local?sslmode=disable",
+		"postgres://fixture:fixture@127.0.0.1:55432/heartbeat_sdk_local?sslmode=disable&host=192.0.2.10",
+		"postgres://fixture:fixture@127.0.0.1:55432/heartbeat_sdk_local?sslmode=disable&sslrootcert=/tmp/cert",
+		"postgres://fixture:fixture@127.0.0.1:55432/heartbeat_sdk_local?sslmode=disable#fragment",
+	} {
+		if err := localDatabase(database); err == nil {
+			t.Errorf("localDatabase(%q) accepted non-allowlisted URL", database)
+		}
 	}
 }
 

@@ -121,9 +121,9 @@ func Frame(output io.Writer, lookup func(string) string) error {
 		return errors.New("Invalid registry credential framing")
 	}
 	var payload any
-	if lookup("ACTIVATE_YOOKASSA_TEST") == "true" || lookup("ACTIVATE_YOOKASSA_PRODUCTION") == "true" {
+	if lookup("ACTIVATE_YOOKASSA_TEST") == "true" || lookup("ACTIVATE_YOOKASSA_PRODUCTION") == "true" || lookup("ACTIVATE_NATIVE_SDK_TEST") == "true" {
 		prefix := "YOOKASSA_PRODUCTION"
-		if lookup("ACTIVATE_YOOKASSA_TEST") == "true" {
+		if lookup("ACTIVATE_YOOKASSA_TEST") == "true" || lookup("ACTIVATE_NATIVE_SDK_TEST") == "true" {
 			prefix = "YOOKASSA_TEST"
 		}
 		shop, secret := lookup(prefix+"_SHOP_ID"), lookup(prefix+"_SECRET_KEY")
@@ -199,17 +199,17 @@ func run(ctx context.Context, args []string, input io.Reader, output io.Writer) 
 		}
 		return OwnerSQL(args[1], args[2], args[3], output)
 	case "activation-check":
-		if len(args) != 10 {
+		if len(args) != 10 && len(args) != 11 {
 			return deploydata.ErrInvalid
 		}
-		v := make([]bool, 8)
+		v := make([]bool, 9)
 		for i, s := range args[2:] {
 			if s != "true" && s != "false" {
 				return deploydata.ErrInvalid
 			}
 			v[i] = s == "true"
 		}
-		return ValidateEnv(args[1], Activation{v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]})
+		return ValidateEnv(args[1], Activation{v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8]})
 	case "backup-env-check":
 		if len(args) != 2 {
 			return deploydata.ErrInvalid

@@ -219,7 +219,9 @@ func (s *smtpTestServer) serve() {
 func TestProductionSendWithIDHonorsEarlierContextDeadline(t *testing.T) {
 	srv := newSMTPTestServer(t, "implicit_tls", "", 0, false, "MAIL")
 	sender := srv.sender(t, productionTestHost)
-	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	// Keep the caller deadline earlier than SendWithID's five-second timeout,
+	// while leaving ample time for the local TLS handshake and SMTP AUTH.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	started := time.Now()
 	result := make(chan error, 1)
@@ -228,7 +230,7 @@ func TestProductionSendWithIDHonorsEarlierContextDeadline(t *testing.T) {
 	}()
 	select {
 	case <-srv.paused:
-	case <-time.After(time.Second):
+	case <-time.After(4 * time.Second):
 		t.Fatal("SMTP server did not receive the message before deadline")
 	}
 	select {
@@ -236,10 +238,10 @@ func TestProductionSendWithIDHonorsEarlierContextDeadline(t *testing.T) {
 		if err == nil {
 			t.Fatal("SendWithID() error = nil after context deadline")
 		}
-		if elapsed := time.Since(started); elapsed > time.Second {
+		if elapsed := time.Since(started); elapsed >= 4*time.Second {
 			t.Fatalf("SendWithID() ignored earlier context deadline for %v", elapsed)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(4 * time.Second):
 		t.Fatal("SendWithID() did not stop when its context deadline expired")
 	}
 }

@@ -137,8 +137,12 @@ final class PushStore {
     }
 
     void acceptInstallation(JSONObject installation, String expectedCredential) throws IOException {
+        acceptInstallation(installation, expectedCredential, null, null);
+    }
+
+    void acceptInstallation(JSONObject installation, String expectedCredential, String accountId, String sessionId) throws IOException {
         update(state -> {
-            if (!expectedCredential.equals(state.optString("credential"))) return;
+            if (!expectedCredential.equals(state.optString("credential"))) throw new JSONException("Installation credential changed");
             JSONObject previous = state.optJSONObject("installation");
             if (previous != null && (installation.getLong("bindingGeneration") < previous.optLong("bindingGeneration")
                     || installation.getLong("registrationVersion") < previous.optLong("registrationVersion")))
@@ -147,6 +151,11 @@ final class PushStore {
                 state.remove("pending"); state.remove("seen"); state.remove("sequences");
             }
             state.put("installation", installation);
+            if (accountId != null && sessionId != null) {
+                state.put("accountId", accountId).put("sessionId", sessionId)
+                        .put("enabled", true).put("optedOut", false);
+                state.remove("pair"); state.remove("pendingBind");
+            }
         });
     }
 

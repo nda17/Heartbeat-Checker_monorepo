@@ -1694,6 +1694,9 @@ func TestOAuthCandidateIgnoreProviderContractAndCredentialRotation(t *testing.T)
 	if err := os.WriteFile(candidate, []byte(valid), 0o640); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(candidate, 0o640); err != nil {
+		t.Fatal(err)
+	}
 	r = f4.runResult("test-token\n", nil, flags...)
 	if r.code == 0 || !strings.Contains(r.stderr, "regular mode-600 .env.next") || len(f4.dockerCalls()) != 0 {
 		t.Fatalf("non-600 OAuth candidate accepted: %+v", r)

@@ -41,6 +41,7 @@ type Challenge struct {
 }
 type Session struct {
 	ID               string
+	ClientKind       string
 	AccountID        string
 	Email            string
 	IP               string
@@ -184,6 +185,10 @@ func (r *Repository) CredentialByAccount(ctx context.Context, accountID string) 
 
 // LoginSession takes the account lock before credentials, as deletion does.
 func (r *Repository) LoginSession(ctx context.Context, c Credential, sessionID string, tokenHash []byte, expires time.Time, ip, agent string, previousHash []byte) error {
+	return r.LoginSessionKind(ctx, c, sessionID, tokenHash, expires, ip, agent, previousHash, "web", nil)
+}
+
+func (r *Repository) LoginSessionKind(ctx context.Context, c Credential, sessionID string, tokenHash []byte, expires time.Time, ip, agent string, previousHash []byte, clientKind string, revokeHash []byte) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -212,8 +217,8 @@ func (r *Repository) LoginSession(ctx context.Context, c Credential, sessionID s
 	if hash == "" || hash != c.PasswordHash || version != c.Version {
 		return ErrConflict
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO auth.sessions (id,account_id,token_hash,credential_version,expires_at,ip,user_agent)
-		VALUES ($1,$2,$3,$4,$5,NULLIF($6,'')::inet,$7)`, sessionID, c.AccountID, tokenHash, version, expires, ip, agent)
+	_, err = tx.Exec(ctx, `INSERT INTO auth.sessions (id,account_id,token_hash,credential_version,expires_at,ip,user_agent,client_kind,revoke_token_hash)
+		VALUES ($1,$2,$3,$4,$5,NULLIF($6,'')::inet,$7,$8,$9)`, sessionID, c.AccountID, tokenHash, version, expires, ip, agent, clientKind, revokeHash)
 	if err != nil {
 		return err
 	}
@@ -284,11 +289,11 @@ func SessionLeaseTx(ctx context.Context, tx pgx.Tx, accountID, sessionID string)
 
 func (r *Repository) SessionByToken(ctx context.Context, tokenHash []byte) (Session, error) {
 	var s Session
-	err := r.pool.QueryRow(ctx, `SELECT s.id,s.account_id,c.email,s.credential_version,s.created_at,s.last_used_at,s.expires_at,
+	err := r.pool.QueryRow(ctx, `SELECT s.id,s.account_id,c.email,s.credential_version,s.created_at,s.last_used_at,s.expires_at,s.client_kind,
 		s.mfa_version,f.version,s.mfa_verified_until,s.mfa_step_up_until
 		FROM auth.sessions s JOIN auth.credentials c ON c.account_id=s.account_id AND c.version=s.credential_version
 		LEFT JOIN auth.mfa_factors f ON f.account_id=s.account_id
-		WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now()`, tokenHash).Scan(&s.ID, &s.AccountID, &s.Email, &s.Version, &s.CreatedAt, &s.LastUsedAt, &s.ExpiresAt, &s.MFAVersion, &s.FactorVersion, &s.MFAVerifiedUntil, &s.MFAStepUpUntil)
+		WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now()`, tokenHash).Scan(&s.ID, &s.AccountID, &s.Email, &s.Version, &s.CreatedAt, &s.LastUsedAt, &s.ExpiresAt, &s.ClientKind, &s.MFAVersion, &s.FactorVersion, &s.MFAVerifiedUntil, &s.MFAStepUpUntil)
 	return s, err
 }
 
@@ -319,6 +324,14 @@ func (r *Repository) Sessions(ctx context.Context, accountID string) ([]Session,
 func (r *Repository) RevokeSession(ctx context.Context, accountID, sessionID string) (bool, error) {
 	cmd, err := r.pool.Exec(ctx, `UPDATE auth.sessions SET revoked_at=now() WHERE id=$1 AND account_id=$2 AND revoked_at IS NULL`, sessionID, accountID)
 	return cmd.RowsAffected() != 0, err
+}
+
+// RevokeNativeSession uses a separate revocation credential, which never
+// authenticates requests or grants access to account data.
+func (r *Repository) RevokeNativeSession(ctx context.Context, sessionID string, revokeHash []byte) error {
+	_, err := r.pool.Exec(ctx, `UPDATE auth.sessions SET revoked_at=now()
+		WHERE id=$1 AND client_kind='android' AND revoke_token_hash=$2 AND revoked_at IS NULL`, sessionID, revokeHash)
+	return err
 }
 
 func (r *Repository) RevokeAllSessions(ctx context.Context, accountID string) error {
@@ -554,6 +567,7 @@ func Cleanup(ctx context.Context, tx pgx.Tx) error {
 		`DELETE FROM auth.email_verification_tokens WHERE token_hash IN (SELECT token_hash FROM auth.email_verification_tokens WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.password_reset_tokens WHERE token_hash IN (SELECT token_hash FROM auth.password_reset_tokens WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.oauth_attempts WHERE state_hash IN (SELECT state_hash FROM auth.oauth_attempts WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
+		`DELETE FROM auth.native_oauth_attempts WHERE id IN (SELECT id FROM auth.native_oauth_attempts WHERE expires_at<=now() OR consumed_at IS NOT NULL ORDER BY expires_at LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM auth.rate_limits WHERE (scope,key_hash) IN (SELECT scope,key_hash FROM auth.rate_limits WHERE window_end<=now() ORDER BY window_end LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 	} {
 		if _, err := tx.Exec(ctx, query); err != nil {

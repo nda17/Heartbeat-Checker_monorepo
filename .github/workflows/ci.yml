@@ -133,18 +133,57 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.21.0'
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - name: Install locked React Native dependencies
+        working-directory: apps/mobile
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck React Native
+        working-directory: apps/mobile
+        run: npm run typecheck
       - name: Install explicit Android SDK components
         run: bash deploy/android/setup-sdk.sh
-      - name: Android lint, tests and debug build without release credentials
+      - name: Android lint, tests and bundled CI build without release credentials
         working-directory: apps/android
-        run: ./gradlew --no-daemon :app:lint :app:testDebugUnitTest :app:assembleDebug
+        run: ./gradlew --no-daemon :app:lint :app:testCiUnitTest :app:assembleCi
+      - name: Verify CI APK contains an offline React Native bundle
+        run: |
+          set -euo pipefail
+          apk=apps/android/app/build/outputs/apk/ci/app-ci.apk
+          test -s "$apk"
+          unzip -p "$apk" assets/index.android.bundle | wc -c | awk '$1 > 100000 { found = 1 } END { exit !found }'
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | grep -F "package: name='ru.heartbeatchecker.app' versionCode='7' versionName='2.0.0'"
+          size=$(wc -c < "$apk" | tr -d ' ')
+          [[ $size =~ ^[0-9]+$ ]]
+          echo "Bundled CI APK bytes: $size"
+          sha256sum "$apk"
+      - name: Retain exact-source bundled CI APK for size inspection
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-ci-apk-${{ github.sha }}
+          path: apps/android/app/build/outputs/apk/ci/app-ci.apk
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
+      - name: Enforce existing public APK size ceiling on CI candidate
+        run: |
+          set -euo pipefail
+          apk=apps/android/app/build/outputs/apk/ci/app-ci.apk
+          size=$(wc -c < "$apk" | tr -d ' ')
+          (( size > 0 && size < 100 * 1024 * 1024 )) || {
+            echo 'Bundled CI APK is outside the existing public size ceiling'
+            exit 1
+          }
       - name: Validate Android delivery scripts
         run: |
           shellcheck deploy/android/publish.sh deploy/android/setup-sdk.sh
           bash -n deploy/android/publish.sh deploy/android/setup-sdk.sh
 
   android-emulator:
-    needs: android
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -153,6 +192,14 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.21.0'
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - name: Install locked React Native dependencies
+        working-directory: apps/mobile
+        run: npm ci --no-audit --no-fund
       - name: Install Android SDK and API 35 emulator image
         run: bash deploy/android/setup-sdk.sh 'emulator' 'system-images;android-35;google_apis;x86_64'
       - name: Prepare accelerated Android emulator
@@ -226,7 +273,7 @@ jobs:
           "$adb_bin" -s emulator-5554 shell svc data disable
           test -n "$(find app/src/androidTest -type f -name '*.java' -print -quit)"
           echo 'Emulator boot complete; running native instrumentation tests'
-          ANDROID_SERIAL=emulator-5554 ./gradlew --no-daemon :app:connectedDebugAndroidTest
+          ANDROID_SERIAL=emulator-5554 ./gradlew --no-daemon :app:connectedCiAndroidTest
       - name: Retain instrumentation reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

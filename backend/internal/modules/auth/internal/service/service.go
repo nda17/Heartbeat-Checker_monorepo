@@ -51,10 +51,21 @@ type Client struct {
 }
 type Principal = authcontracts.Principal
 type LoginResult struct {
-	Account contracts.Account
-	Token   string
-	CSRF    string
+	Account     contracts.Account
+	Token       string
+	CSRF        string
+	SessionID   string
+	ExpiresAt   time.Time
+	RevokeToken string
 }
+
+func (s *Service) sessionTTL(clientKind string) time.Duration {
+	if clientKind == "android" && s.cfg.SessionTTL > 30*24*time.Hour {
+		return 30 * 24 * time.Hour
+	}
+	return s.cfg.SessionTTL
+}
+
 type Profile struct {
 	Account       contracts.Account `json:"account"`
 	Email         string            `json:"email"`
@@ -264,6 +275,14 @@ func previousSessionHash(token string) []byte {
 }
 
 func (s *Service) Login(ctx context.Context, email, password, captchaToken string, client Client, previousToken string) (LoginResult, error) {
+	return s.login(ctx, email, password, captchaToken, client, previousToken, "web")
+}
+
+func (s *Service) NativeLogin(ctx context.Context, email, password, captchaToken string, client Client) (LoginResult, error) {
+	return s.login(ctx, email, password, captchaToken, client, "", "android")
+}
+
+func (s *Service) login(ctx context.Context, email, password, captchaToken string, client Client, previousToken, clientKind string) (LoginResult, error) {
 	email = security.NormalizeEmail(email)
 	if !security.ValidEmail(email) || len(password) == 0 || len(password) > 1024 {
 		return LoginResult{}, ErrInvalid
@@ -320,17 +339,35 @@ func (s *Service) Login(ctx context.Context, email, password, captchaToken strin
 	if len(agent) > 500 {
 		agent = agent[:500]
 	}
-	err = s.repo.LoginSession(ctx, c, id, security.Digest(token), time.Now().Add(s.cfg.SessionTTL), client.IP, string(agent), previousSessionHash(previousToken))
+	expires := time.Now().Add(s.sessionTTL(clientKind))
+	revokeToken := ""
+	var revokeHash []byte
+	if clientKind == "android" {
+		revokeToken, err = security.Token()
+		if err != nil {
+			return LoginResult{}, ErrUnavailable
+		}
+		revokeHash = security.Digest(revokeToken)
+	}
+	err = s.repo.LoginSessionKind(ctx, c, id, security.Digest(token), expires, client.IP, string(agent), previousSessionHash(previousToken), clientKind, revokeHash)
 	if errors.Is(err, postgres.ErrConflict) {
 		return LoginResult{}, ErrCredentials
 	}
 	if err != nil {
 		return LoginResult{}, ErrUnavailable
 	}
-	return LoginResult{Account: a, Token: token, CSRF: security.CSRF(token)}, nil
+	return LoginResult{Account: a, Token: token, CSRF: security.CSRF(token), SessionID: id, ExpiresAt: expires, RevokeToken: revokeToken}, nil
 }
 
 func (s *Service) Authenticate(ctx context.Context, rawToken string) (Principal, error) {
+	return s.authenticate(ctx, rawToken, "web")
+}
+
+func (s *Service) AuthenticateNative(ctx context.Context, rawToken string) (Principal, error) {
+	return s.authenticate(ctx, rawToken, "android")
+}
+
+func (s *Service) authenticate(ctx context.Context, rawToken, clientKind string) (Principal, error) {
 	if len(rawToken) != 43 {
 		return Principal{}, ErrUnauthorized
 	}
@@ -341,6 +378,9 @@ func (s *Service) Authenticate(ctx context.Context, rawToken string) (Principal,
 	}
 	if err != nil {
 		return Principal{}, ErrUnavailable
+	}
+	if session.ClientKind != clientKind {
+		return Principal{}, ErrUnauthorized
 	}
 	a, err := s.accounts.Get(ctx, session.AccountID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -355,7 +395,7 @@ func (s *Service) Authenticate(ctx context.Context, rawToken string) (Principal,
 	if err := s.repo.TouchSession(ctx, session.ID); err != nil {
 		return Principal{}, ErrUnavailable
 	}
-	p := Principal{AccountID: session.AccountID, SessionID: session.ID, Email: session.Email, Role: a.Role, MFAEnabled: session.FactorVersion != nil, TokenHash: tokenHash}
+	p := Principal{AccountID: session.AccountID, SessionID: session.ID, ClientKind: clientKind, Email: session.Email, Role: a.Role, MFAEnabled: session.FactorVersion != nil, TokenHash: tokenHash}
 	if session.FactorVersion != nil && session.MFAVersion != nil && *session.FactorVersion == *session.MFAVersion {
 		p.MFAVerifiedUntil, p.MFAStepUpUntil = session.MFAVerifiedUntil, session.MFAStepUpUntil
 	}
@@ -416,6 +456,19 @@ func (s *Service) RevokeSession(ctx context.Context, p Principal, id string) err
 	return nil
 }
 
+func (s *Service) RevokeNativeSession(ctx context.Context, id, revokeToken string, client Client) error {
+	if !security.ValidID(id) || len(revokeToken) != 43 {
+		return ErrInvalid
+	}
+	if err := s.allow(ctx, "native_revoke", "", client.IP, 100, 0, 15*time.Minute); err != nil {
+		return err
+	}
+	if err := s.repo.RevokeNativeSession(ctx, id, security.Digest(revokeToken)); err != nil {
+		return ErrUnavailable
+	}
+	return nil
+}
+
 func (s *Service) RevokeAllSessions(ctx context.Context, p Principal) error {
 	if err := s.repo.RevokeAllSessions(ctx, p.AccountID); err != nil {
 		return ErrUnavailable
@@ -424,6 +477,14 @@ func (s *Service) RevokeAllSessions(ctx context.Context, p Principal) error {
 }
 
 func (s *Service) ResetRequest(ctx context.Context, email, captchaToken string, client Client) error {
+	return s.resetRequest(ctx, email, captchaToken, client, "web")
+}
+
+func (s *Service) NativeResetRequest(ctx context.Context, email, captchaToken string, client Client) error {
+	return s.resetRequest(ctx, email, captchaToken, client, "android")
+}
+
+func (s *Service) resetRequest(ctx context.Context, email, captchaToken string, client Client, clientKind string) error {
 	email = security.NormalizeEmail(email)
 	if !security.ValidEmail(email) {
 		return ErrInvalid
@@ -446,7 +507,11 @@ func (s *Service) ResetRequest(ctx context.Context, email, captchaToken string, 
 	if err != nil {
 		return ErrUnavailable
 	}
-	link := s.cfg.Origin + "/reset-password#token=" + token
+	path := "/reset-password#token="
+	if clientKind == "android" {
+		path = "/android/auth/reset#token="
+	}
+	link := s.cfg.Origin + path + token
 	subject, content, err := RenderAuthMail("password_reset", AuthMailData{ActionURL: link, ExpiresAt: time.Now().Add(s.cfg.ResetTTL)})
 	if err != nil {
 		return ErrUnavailable

@@ -137,6 +137,46 @@ func TestValidateEnvRequiresReviewedYooKassaModesAndBlocksCredentialRotation(t *
 	}
 }
 
+func TestValidateEnvActivatesNativeSDKTestWithoutChangingHostedProduction(t *testing.T) {
+	old := map[string]string{
+		"BILLING_PROVIDER": "yookassa", "YOOKASSA_MODE": "production",
+		"YOOKASSA_PRODUCTION_SHOP_ID": "654321", "YOOKASSA_PRODUCTION_SECRET_KEY": "production_existing_secret",
+		"YOOKASSA_NATIVE_SDK_ENABLED": "false", "YOOKASSA_TEST_SHOP_ID": "123456", "YOOKASSA_TEST_SECRET_KEY": "'test_synthetic_secret_123'",
+	}
+	candidate := mergeEnv(old, map[string]string{
+		"BILLING_TEST_ACCOUNT_IDS": "51ec7d19-80c4-4fb6-8edb-79dc7abe3120",
+		"YOOKASSA_TEST_SHOP_ID":    "123456", "YOOKASSA_TEST_SECRET_KEY": "'test_synthetic_secret_123'",
+		"YOOKASSA_NATIVE_SDK_ENABLED": "true", "YOOKASSA_NATIVE_SDK_MODE": "test",
+	})
+	path := writeEnvFixture(t, envText(old), envText(candidate))
+	if err := ValidateEnv(path, Activation{NativeSDKTest: true}); err != nil {
+		t.Fatalf("valid hosted-live/native-test activation rejected: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(map[string]string)
+	}{
+		{"hosted production mode drift", func(m map[string]string) { m["YOOKASSA_MODE"] = "test" }},
+		{"wrong owner", func(m map[string]string) { m["BILLING_TEST_ACCOUNT_IDS"] = "61ec7d19-80c4-4fb6-8edb-79dc7abe3120" }},
+		{"test credential rotation", func(m map[string]string) { m["YOOKASSA_TEST_SECRET_KEY"] = "'test_changed_secret_123'" }},
+		{"SDK is not explicitly enabled in test mode", func(m map[string]string) { m["YOOKASSA_NATIVE_SDK_MODE"] = "production" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mutated := mergeEnv(old, map[string]string{
+				"BILLING_TEST_ACCOUNT_IDS": "51ec7d19-80c4-4fb6-8edb-79dc7abe3120",
+				"YOOKASSA_TEST_SHOP_ID":    "123456", "YOOKASSA_TEST_SECRET_KEY": "'test_synthetic_secret_123'",
+				"YOOKASSA_NATIVE_SDK_ENABLED": "true", "YOOKASSA_NATIVE_SDK_MODE": "test",
+			})
+			tc.mutate(mutated)
+			path := writeEnvFixture(t, envText(old), envText(mutated))
+			if err := ValidateEnv(path, Activation{NativeSDKTest: true}); err == nil {
+				t.Fatal("unsafe native SDK activation accepted")
+			}
+		})
+	}
+}
+
 func TestValidateEnvRequiresRelayTargetsAndRejectsSymlinkOrBadModeCandidate(t *testing.T) {
 	old := map[string]string{"DATABASE_URL": "postgresql://fixture", "TELEGRAM_API_BASE_URL": "", "TELEGRAM_API_PROXY_IP": ""}
 	candidate := mergeEnv(old, relayTargets)
@@ -164,6 +204,9 @@ func TestValidateEnvRequiresRelayTargetsAndRejectsSymlinkOrBadModeCandidate(t *t
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(link, []byte(envText(candidate)), 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(link, 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := ValidateEnv(link, Activation{Relay: true}); err == nil {

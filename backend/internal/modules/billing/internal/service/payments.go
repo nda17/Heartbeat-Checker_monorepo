@@ -68,11 +68,30 @@ func newID() (string, error) {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[:4], b[4:6], b[6:8], b[8:10], b[10:]), nil
 }
 
-const orderColumns = `id,provider,status,monitor_count,amount_minor,currency,created_at,expires_at,completed_at,active_until,confirmation_url,fulfillment_status,fulfillment_reason,(provider_mode='test'),last_error_code,reconciliation_status,purchase_kind,renew_package_id::text,fulfilled_package_id::text`
+const orderColumns = `id,provider,status,monitor_count,amount_minor,currency,created_at,expires_at,completed_at,active_until,confirmation_url,fulfillment_status,fulfillment_reason,COALESCE(provider_mode,''),COALESCE(provider_shop_id,''),COALESCE(provider_mode='test',false),last_error_code,reconciliation_status,purchase_kind,renew_package_id::text,fulfilled_package_id::text,return_target,checkout_kind,(SELECT draft_expires_at FROM billing.sdk_payment_requests WHERE order_id=billing.orders.id),(SELECT request_expires_at FROM billing.sdk_payment_requests WHERE order_id=billing.orders.id),(SELECT payment_method_type FROM billing.sdk_payment_requests WHERE order_id=billing.orders.id)`
 
 func scanOrder(row pgx.Row) (contracts.Order, error) {
 	var order contracts.Order
-	err := row.Scan(&order.ID, &order.Provider, &order.Status, &order.MonitorCount, &order.AmountMinor, &order.Currency, &order.CreatedAt, &order.ExpiresAt, &order.CompletedAt, &order.ActiveUntil, &order.ConfirmationURL, &order.FulfillmentStatus, &order.FulfillmentReason, &order.Test, &order.LastErrorCode, &order.ReconciliationStatus, &order.PurchaseKind, &order.PackageID, &order.FulfilledPackageID)
+	var draftExpires, requestExpires *time.Time
+	var method *string
+	err := row.Scan(&order.ID, &order.Provider, &order.Status, &order.MonitorCount, &order.AmountMinor, &order.Currency, &order.CreatedAt, &order.ExpiresAt, &order.CompletedAt, &order.ActiveUntil, &order.ConfirmationURL, &order.FulfillmentStatus, &order.FulfillmentReason, &order.ProviderMode, &order.ProviderShopID, &order.Test, &order.LastErrorCode, &order.ReconciliationStatus, &order.PurchaseKind, &order.PackageID, &order.FulfilledPackageID, &order.ReturnTarget, &order.CheckoutKind, &draftExpires, &requestExpires, &method)
+	if err == nil && order.CheckoutKind == "android_sdk" && draftExpires != nil && requestExpires != nil {
+		state := "processing"
+		switch {
+		case order.ReconciliationStatus == "awaiting_token":
+			state = "awaiting_token"
+		case order.ReconciliationStatus == "manual_review":
+			state = "manual_review"
+		case order.Status != "pending":
+			state = "complete"
+		case order.ConfirmationURL != "":
+			state = "confirmation_required"
+		}
+		order.SDK = &contracts.SDKOrder{State: state, ShopID: order.ProviderShopID, Environment: sdkEnvironment(order.ProviderMode), DraftExpiresAt: *draftExpires, RequestExpiresAt: *requestExpires}
+		if method != nil {
+			order.SDK.PaymentMethodType = *method
+		}
+	}
 	return order, err
 }
 
@@ -101,6 +120,7 @@ func (s *Service) Overview(ctx context.Context, accountID string) (contracts.Bil
 		}
 		result.CanSimulate = !protectedAccess
 	}
+	result.NativeCheckout = contracts.NativeCheckout{Enabled: s.sdkEnabled && s.canPayNative(accountID), ShopID: s.nativeShopID, Environment: sdkEnvironment(s.nativeMode), PaymentMethods: []string{"BANK_CARD"}}
 	rows, err := s.pool.Query(ctx, `SELECT `+orderColumns+` FROM billing.orders WHERE account_id=$1 ORDER BY created_at DESC,id DESC LIMIT 100`, accountID)
 	if err != nil {
 		return result, err
@@ -149,6 +169,13 @@ func (s *Service) CreateOrder(ctx context.Context, accountID string, count int, 
 }
 
 func (s *Service) CreateSelectedOrder(ctx context.Context, accountID string, count int, key string, version int64, kind, packageID string) (contracts.Order, error) {
+	return s.CreateSelectedOrderWithTarget(ctx, accountID, count, key, version, kind, packageID, "web")
+}
+
+func (s *Service) CreateSelectedOrderWithTarget(ctx context.Context, accountID string, count int, key string, version int64, kind, packageID, returnTarget string) (contracts.Order, error) {
+	if returnTarget != "web" && returnTarget != "android" {
+		return contracts.Order{}, ErrInvalid
+	}
 	if kind != "" && kind != "purchase" && kind != "renew" {
 		return contracts.Order{}, ErrInvalid
 	}
@@ -156,7 +183,7 @@ func (s *Service) CreateSelectedOrder(ctx context.Context, accountID string, cou
 		return contracts.Order{}, ErrInvalid
 	}
 	if s.provider == "yookassa" {
-		return s.createYooKassaOrder(ctx, accountID, count, key, version, kind, packageID)
+		return s.createYooKassaOrder(ctx, accountID, count, key, version, kind, packageID, returnTarget)
 	}
 
 	if count < 1 || count > 1000 || !validID(key) {
@@ -169,7 +196,7 @@ func (s *Service) CreateSelectedOrder(ctx context.Context, accountID string, cou
 	defer tx.Rollback(ctx)
 	existing, err := scanOrder(tx.QueryRow(ctx, `SELECT `+orderColumns+` FROM billing.orders WHERE account_id=$1 AND idempotency_key=$2`, accountID, key))
 	if err == nil {
-		if existing.Provider != "mock" || existing.MonitorCount != count || !samePackageSelection(existing, kind, packageID) {
+		if existing.Provider != "mock" || existing.MonitorCount != count || existing.ReturnTarget != returnTarget || !samePackageSelection(existing, kind, packageID) {
 			return contracts.Order{}, ErrConflict
 		}
 		return existing, tx.Commit(ctx)
@@ -187,7 +214,7 @@ func (s *Service) CreateSelectedOrder(ctx context.Context, accountID string, cou
 	if count*pricing.PricePerMonitorMinor > MaxOrderAmountMinor {
 		return contracts.Order{}, ErrOrderAmount
 	}
-	kind, packageID, err = s.selectPackage(entitlement, kind, packageID, count)
+	kind, packageID, err = s.selectPackage(entitlement, kind, packageID, count, "mock_test")
 	if err != nil {
 		return contracts.Order{}, err
 	}
@@ -206,7 +233,7 @@ func (s *Service) CreateSelectedOrder(ctx context.Context, accountID string, cou
 	if err != nil {
 		return contracts.Order{}, err
 	}
-	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,purchase_kind,renew_package_id) VALUES($1,$2,$3,'mock',$4,$5,$6,NULLIF($7,'')::uuid) RETURNING `+orderColumns, id, accountID, key, count, count*pricing.PricePerMonitorMinor, kind, packageID))
+	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,purchase_kind,renew_package_id,return_target) VALUES($1,$2,$3,'mock',$4,$5,$6,NULLIF($7,'')::uuid,$8) RETURNING `+orderColumns, id, accountID, key, count, count*pricing.PricePerMonitorMinor, kind, packageID, returnTarget))
 	if err != nil {
 		return contracts.Order{}, err
 	}
@@ -294,8 +321,7 @@ func samePackageSelection(order contracts.Order, kind, packageID string) bool {
 	}
 	return order.PurchaseKind == kind && target == packageID
 }
-func (s *Service) selectPackage(e contracts.Entitlement, kind, packageID string, count int) (string, string, error) {
-	source := s.packageSource()
+func (s *Service) selectPackage(e contracts.Entitlement, kind, packageID string, count int, source string) (string, string, error) {
 	if kind == "" {
 		var selected *contracts.Subscription
 		for i := range e.Packages {

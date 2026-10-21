@@ -15,16 +15,86 @@ import (
 )
 
 func (s *Service) ConfigureYooKassa(provider contracts.Provider, mode, shopID string, ids []string) error {
-	if s.provider != "yookassa" || provider == nil || (mode != "test" && mode != "production") || shopID == "" || len(shopID) > 32 || strings.Trim(shopID, "0123456789") != "" || (mode == "test" && (len(ids) != 1 || !validID(ids[0]))) {
+	if s.provider != "yookassa" || provider == nil || !validProfile(mode, shopID) || len(ids) > 1 || (mode == "test" && len(ids) != 1) || (len(ids) == 1 && !validID(ids[0])) {
 		return ErrInvalid
 	}
 	s.payments, s.mode, s.shopID = provider, mode, shopID
-	if mode == "test" {
+	s.profiles = map[string]paymentProfile{profileKey(mode, shopID): {Mode: mode, ShopID: shopID, Provider: provider}}
+	if len(ids) == 1 {
 		var owner pgtype.UUID
 		_ = owner.Scan(ids[0])
-		s.allowed = map[string]bool{owner.String(): true}
+		s.testAllowed = map[string]bool{owner.String(): true}
+		if mode == "test" {
+			s.allowed = s.testAllowed
+		}
 	}
 	return nil
+}
+
+type paymentProfile struct {
+	Mode, ShopID string
+	Provider     contracts.Provider
+}
+
+func validProfile(mode, shopID string) bool {
+	return (mode == "test" || mode == "production") && shopID != "" && len(shopID) <= 32 && strings.Trim(shopID, "0123456789") == ""
+}
+
+func profileKey(mode, shopID string) string { return mode + ":" + shopID }
+
+func sdkEnvironment(mode string) string {
+	if mode == "production" {
+		return "live"
+	}
+	return "test"
+}
+
+func (s *Service) ConfigureTestProfile(provider contracts.Provider, shopID string) error {
+	if s.provider != "yookassa" || provider == nil || !validProfile("test", shopID) || len(s.testAllowed) != 1 {
+		return ErrInvalid
+	}
+	key := profileKey("test", shopID)
+	if _, ok := s.profiles[key]; ok {
+		return ErrInvalid
+	}
+	s.profiles[key] = paymentProfile{Mode: "test", ShopID: shopID, Provider: provider}
+	return nil
+}
+
+func (s *Service) ConfigureNativeProfile(mode, shopID string) error {
+	if !validProfile(mode, shopID) || s.profiles[profileKey(mode, shopID)].Provider == nil {
+		return ErrInvalid
+	}
+	s.nativeMode, s.nativeShopID = mode, shopID
+	return nil
+}
+
+func (s *Service) profile(mode, shopID string) (paymentProfile, bool) {
+	p, ok := s.profiles[profileKey(mode, shopID)]
+	return p, ok
+}
+
+func (s *Service) testShopID() string {
+	for _, p := range s.profiles {
+		if p.Mode == "test" {
+			return p.ShopID
+		}
+	}
+	return ""
+}
+
+func (s *Service) canPayNative(account string) bool {
+	if _, ok := s.profile(s.nativeMode, s.nativeShopID); !ok {
+		return false
+	}
+	return s.nativeMode == "production" || (s.nativeMode == "test" && s.testAllowed[account])
+}
+
+func (s *Service) canPayOrder(account string, order contracts.Order) bool {
+	if _, ok := s.profile(order.ProviderMode, order.ProviderShopID); !ok {
+		return false
+	}
+	return order.ProviderMode == "production" || (order.ProviderMode == "test" && s.testAllowed[account])
 }
 
 func (s *Service) canPay(account string) bool {
@@ -42,7 +112,7 @@ func (s *Service) GetOrder(ctx context.Context, account, id string) (contracts.O
 	return order, err
 }
 
-func (s *Service) createYooKassaOrder(ctx context.Context, account string, count int, key string, version int64, kind, packageID string) (contracts.Order, error) {
+func (s *Service) createYooKassaOrder(ctx context.Context, account string, count int, key string, version int64, kind, packageID, returnTarget string) (contracts.Order, error) {
 	if count < 1 || count > 1000 || !validID(key) {
 		return contracts.Order{}, ErrInvalid
 	}
@@ -67,7 +137,7 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	}
 	existing, err := scanOrder(tx.QueryRow(ctx, `SELECT `+orderColumns+` FROM billing.orders WHERE account_id=$1 AND idempotency_key=$2`, account, key))
 	if err == nil {
-		if existing.Provider != "yookassa" || existing.MonitorCount != count || !samePackageSelection(existing, kind, packageID) {
+		if existing.Provider != "yookassa" || existing.MonitorCount != count || existing.ReturnTarget != returnTarget || !samePackageSelection(existing, kind, packageID) {
 			return contracts.Order{}, ErrConflict
 		}
 		return existing, tx.Commit(ctx)
@@ -89,12 +159,15 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	if count*pricing.PricePerMonitorMinor > MaxOrderAmountMinor {
 		return contracts.Order{}, ErrOrderAmount
 	}
-	kind, packageID, err = s.selectPackage(entitlement, kind, packageID, count)
+	kind, packageID, err = s.selectPackage(entitlement, kind, packageID, count, s.packageSource())
 	if err != nil {
 		return contracts.Order{}, err
 	}
 
 	if _, err = tx.Exec(ctx, `UPDATE billing.orders SET status='canceled',completed_at=now(),fulfillment_status='not_required',reconciliation_status='complete' WHERE account_id=$1 AND provider='mock' AND status='pending' AND expires_at<=now()`, account); err != nil {
+		return contracts.Order{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE billing.orders SET status='canceled',completed_at=now(),fulfillment_status='not_required',reconciliation_status='complete' WHERE account_id=$1 AND checkout_kind='android_sdk' AND status='pending' AND reconciliation_status='awaiting_token' AND id IN (SELECT order_id FROM billing.sdk_payment_requests WHERE token_hash IS NULL AND draft_expires_at<=now())`, account); err != nil {
 		return contracts.Order{}, err
 	}
 	var pending bool
@@ -108,17 +181,21 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	if err != nil {
 		return contracts.Order{}, err
 	}
+	returnURL := "https://heartbeat-checker.ru/app"
+	if returnTarget == "android" {
+		returnURL = "https://heartbeat-checker.ru/android/payments/return?order=" + id
+	}
 	body, err := json.Marshal(map[string]any{
 		"amount":       map[string]string{"value": moneyValue(count * pricing.PricePerMonitorMinor), "currency": "RUB"},
 		"capture":      true,
-		"confirmation": map[string]string{"type": "redirect", "return_url": "https://heartbeat-checker.ru/app"},
+		"confirmation": map[string]string{"type": "redirect", "return_url": returnURL},
 		"description":  "Heartbeat Checker: мониторинг",
 		"metadata":     map[string]string{"order_id": id},
 	})
 	if err != nil {
 		return contracts.Order{}, err
 	}
-	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,provider_mode,provider_shop_id,provider_request,expires_at,purchase_kind,renew_package_id) VALUES($1,$2,$3,'yookassa',$4,$5,$6,$7,$8,NULL,$9,NULLIF($10,'')::uuid) RETURNING `+orderColumns, id, account, key, count, count*pricing.PricePerMonitorMinor, s.mode, s.shopID, body, kind, packageID))
+	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,provider_mode,provider_shop_id,provider_request,expires_at,purchase_kind,renew_package_id,return_target) VALUES($1,$2,$3,'yookassa',$4,$5,$6,$7,$8,NULL,$9,NULLIF($10,'')::uuid,$11) RETURNING `+orderColumns, id, account, key, count, count*pricing.PricePerMonitorMinor, s.mode, s.shopID, body, kind, packageID, returnTarget))
 	if err != nil {
 		return contracts.Order{}, err
 	}
@@ -146,7 +223,8 @@ func (s *Service) ReceiveNotification(ctx context.Context, n contracts.ProviderN
 	}
 	defer tx.Rollback(ctx)
 	var id string
-	err = tx.QueryRow(ctx, `SELECT id::text FROM billing.orders WHERE provider='yookassa' AND provider_mode=$4 AND provider_shop_id=$2 AND (provider_payment_id=$1 OR (id=NULLIF($3,'')::uuid AND status='pending' AND (provider_payment_id IS NULL OR provider_payment_id=$1))) ORDER BY (provider_payment_id=$1) DESC NULLS LAST LIMIT 1`, n.Object.ID, s.shopID, hint, s.mode).Scan(&id)
+	testShop := s.testShopID()
+	err = tx.QueryRow(ctx, `SELECT id::text FROM billing.orders WHERE provider='yookassa' AND ((provider_mode=$4 AND provider_shop_id=$2) OR (provider_mode='test' AND provider_shop_id=$5)) AND (provider_payment_id=$1 OR (id=NULLIF($3,'')::uuid AND status='pending' AND (provider_payment_id IS NULL OR provider_payment_id=$1))) ORDER BY (provider_payment_id=$1) DESC NULLS LAST LIMIT 1`, n.Object.ID, s.shopID, hint, s.mode, testShop).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return tx.Commit(ctx)
 	}
@@ -170,7 +248,7 @@ func (s *Service) ReceiveNotification(ctx context.Context, n contracts.ProviderN
 	if _, err = tx.Exec(ctx, `INSERT INTO billing.webhook_inbox(order_id,payment_id,event,processed_at,result) VALUES($1,$2,$3,CASE WHEN $4 THEN now() ELSE NULL END,$5) ON CONFLICT DO NOTHING`, id, n.Object.ID, n.Event, processed, result); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE billing.orders SET next_reconcile_at=LEAST(next_reconcile_at,now()),reconciliation_status='pending' WHERE id=$1 AND status='pending' AND reconciliation_status IN ('pending','stopped')`, id); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE billing.orders SET next_reconcile_at=LEAST(next_reconcile_at,now()),reconciliation_status='pending' WHERE id=$1 AND status='pending' AND (reconciliation_status IN ('pending','stopped') OR (checkout_kind='android_sdk' AND reconciliation_status='manual_review'))`, id); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

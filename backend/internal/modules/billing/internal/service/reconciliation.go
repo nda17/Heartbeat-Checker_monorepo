@@ -16,16 +16,20 @@ type paymentAttempt struct {
 	CreationDeadline            *time.Time
 	LeaseUntil                  time.Time
 	Order                       contracts.Order
+	Profile                     paymentProfile
 	AccountID, Token, PaymentID string
 	Request                     []byte
 	InboxID                     *int64
 	Attempts                    int
+	RequestExpiresAt            *time.Time
+	RequestClosed               bool
 }
 
 // claimPayment releases every transaction lock before making provider requests.
 func (s *Service) claimPayment(ctx context.Context) (*paymentAttempt, error) {
 	var id, account string
-	err := s.pool.QueryRow(ctx, `SELECT id::text,account_id::text FROM billing.orders WHERE provider='yookassa' AND provider_mode=$2 AND provider_shop_id=$1 AND status='pending' AND reconciliation_status='pending' AND next_reconcile_at<=now() AND (reconcile_lease_until IS NULL OR reconcile_lease_until<=now()) ORDER BY next_reconcile_at,id LIMIT 1`, s.shopID, s.mode).Scan(&id, &account)
+	testShop := s.testShopID()
+	err := s.pool.QueryRow(ctx, `SELECT id::text,account_id::text FROM billing.orders WHERE provider='yookassa' AND ((provider_mode=$2 AND provider_shop_id=$1) OR (provider_mode='test' AND provider_shop_id=$3)) AND status='pending' AND reconciliation_status='pending' AND next_reconcile_at<=now() AND (reconcile_lease_until IS NULL OR reconcile_lease_until<=now()) ORDER BY next_reconcile_at,id LIMIT 1`, s.shopID, s.mode, testShop).Scan(&id, &account)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -44,18 +48,38 @@ func (s *Service) claimPayment(ctx context.Context) (*paymentAttempt, error) {
 	if err != nil {
 		return nil, err
 	}
-	order, err := scanOrder(tx.QueryRow(ctx, `SELECT `+orderColumns+` FROM billing.orders WHERE id=$1 AND provider='yookassa' AND provider_mode=$3 AND provider_shop_id=$2 AND status='pending' AND reconciliation_status='pending' AND next_reconcile_at<=now() AND (reconcile_lease_until IS NULL OR reconcile_lease_until<=now()) FOR UPDATE SKIP LOCKED`, id, s.shopID, s.mode))
+	order, err := scanOrder(tx.QueryRow(ctx, `SELECT `+orderColumns+` FROM billing.orders WHERE id=$1 AND provider='yookassa' AND ((provider_mode=$3 AND provider_shop_id=$2) OR (provider_mode='test' AND provider_shop_id=$4)) AND status='pending' AND reconciliation_status='pending' AND next_reconcile_at<=now() AND (reconcile_lease_until IS NULL OR reconcile_lease_until<=now()) FOR UPDATE SKIP LOCKED`, id, s.shopID, s.mode, testShop))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, tx.Commit(ctx)
 	}
 	if err != nil {
 		return nil, err
 	}
-	a := &paymentAttempt{Order: order, AccountID: account}
+	profile, ok := s.profile(order.ProviderMode, order.ProviderShopID)
+	if !ok {
+		return nil, ErrInvalid
+	}
+	a := &paymentAttempt{Order: order, Profile: profile, AccountID: account}
 	var deadline *time.Time
 	var now time.Time
 	if err = tx.QueryRow(ctx, `SELECT COALESCE(provider_payment_id,''),provider_request,idempotency_deadline,reconcile_attempts,clock_timestamp() FROM billing.orders WHERE id=$1`, id).Scan(&a.PaymentID, &a.Request, &deadline, &a.Attempts, &now); err != nil {
 		return nil, err
+	}
+	if order.CheckoutKind == "android_sdk" {
+		// The order's provider_request is only a nonsecret quote. It must never
+		// become the wire CREATE body if the encrypted token is unavailable.
+		a.Request = nil
+		var sealed, hash []byte
+		if err = tx.QueryRow(ctx, `SELECT request_expires_at,encrypted_request,request_hash FROM billing.sdk_payment_requests WHERE order_id=$1 FOR UPDATE`, id).Scan(&a.RequestExpiresAt, &sealed, &hash); err != nil {
+			return nil, err
+		}
+		a.RequestClosed = sealed == nil
+		if a.PaymentID == "" && sealed != nil && a.RequestExpiresAt.After(now) {
+			a.Request, err = s.openSDK(account, id, order.ProviderMode, order.ProviderShopID, sealed, hash)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	if a.PaymentID == "" {
 		var inboxID int64
@@ -66,19 +90,54 @@ func (s *Service) claimPayment(ctx context.Context) (*paymentAttempt, error) {
 			return nil, err
 		}
 	}
-	if a.PaymentID == "" && (!active || !s.canPay(account)) {
+	if a.PaymentID == "" && (!active || !s.canPayOrder(account, order)) {
+		if order.CheckoutKind == "android_sdk" {
+			if _, err = tx.Exec(ctx, `UPDATE billing.sdk_payment_requests SET encrypted_request=NULL WHERE order_id=$1`, id); err != nil {
+				return nil, err
+			}
+			if a.Attempts == 0 {
+				_, err = tx.Exec(ctx, `UPDATE billing.orders SET status='canceled',completed_at=now(),fulfillment_status='not_required',reconciliation_status='complete',last_error_code='account_inactive' WHERE id=$1`, id)
+			} else {
+				_, err = tx.Exec(ctx, `UPDATE billing.orders SET reconciliation_status='manual_review',last_error_code='payment_create_uncertain',fulfillment_status='blocked',fulfillment_reason='account_inactive' WHERE id=$1`, id)
+			}
+			if err != nil {
+				return nil, err
+			}
+			return nil, tx.Commit(ctx)
+		}
 		_, err = tx.Exec(ctx, `UPDATE billing.orders SET reconciliation_status='stopped',fulfillment_status='blocked',fulfillment_reason=CASE WHEN fulfillment_reason='account_deleted' THEN fulfillment_reason ELSE 'account_inactive' END,reconcile_token=NULL,reconcile_lease_until=NULL WHERE id=$1`, id)
 		if err != nil {
 			return nil, err
 		}
 		return nil, tx.Commit(ctx)
 	}
-	if a.PaymentID == "" && deadline != nil && !deadline.After(now) {
+	createExpired := a.PaymentID == "" && ((deadline != nil && !deadline.After(now)) || (a.RequestExpiresAt != nil && !a.RequestExpiresAt.After(now)))
+	if createExpired {
+		if order.CheckoutKind == "android_sdk" {
+			_, err = tx.Exec(ctx, `UPDATE billing.sdk_payment_requests SET encrypted_request=NULL WHERE order_id=$1`, id)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if order.CheckoutKind == "android_sdk" && a.Attempts == 0 {
+			_, err = tx.Exec(ctx, `UPDATE billing.orders SET status='canceled',completed_at=now(),fulfillment_status='not_required',reconciliation_status='complete',last_error_code='sdk_draft_expired',reconcile_token=NULL,reconcile_lease_until=NULL WHERE id=$1`, id)
+		} else {
+			_, err = tx.Exec(ctx, `UPDATE billing.orders SET reconciliation_status='manual_review',last_error_code='payment_create_uncertain',reconcile_token=NULL,reconcile_lease_until=NULL WHERE id=$1`, id)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return nil, tx.Commit(ctx)
+	}
+	if order.CheckoutKind == "android_sdk" && a.PaymentID == "" && a.RequestClosed {
 		_, err = tx.Exec(ctx, `UPDATE billing.orders SET reconciliation_status='manual_review',last_error_code='payment_create_uncertain',reconcile_token=NULL,reconcile_lease_until=NULL WHERE id=$1`, id)
 		if err != nil {
 			return nil, err
 		}
 		return nil, tx.Commit(ctx)
+	}
+	if order.CheckoutKind == "android_sdk" && a.PaymentID == "" && len(a.Request) == 0 {
+		return nil, ErrSDKUnavailable
 	}
 	a.Token, err = newID()
 	if err != nil {
@@ -91,6 +150,9 @@ func (s *Service) claimPayment(ctx context.Context) (*paymentAttempt, error) {
 	if err = tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+	if a.RequestExpiresAt != nil && a.CreationDeadline != nil && a.RequestExpiresAt.Before(*a.CreationDeadline) {
+		a.CreationDeadline = a.RequestExpiresAt
+	}
 	return a, nil
 }
 
@@ -100,6 +162,12 @@ func (s *Service) ProcessOnePayment(ctx context.Context) (bool, error) {
 	}
 	// Pending or quarantined evidence is retained for investigation.
 	if _, err := s.pool.Exec(ctx, `DELETE FROM billing.webhook_inbox WHERE id IN (SELECT id FROM billing.webhook_inbox WHERE processed_at<now()-interval '90 days' ORDER BY processed_at,id LIMIT 100)`); err != nil {
+		return false, err
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE billing.sdk_payment_requests SET encrypted_request=NULL WHERE request_expires_at<=now() AND encrypted_request IS NOT NULL`); err != nil {
+		return false, err
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE billing.orders SET status='canceled',completed_at=now(),fulfillment_status='not_required',reconciliation_status='complete' WHERE checkout_kind='android_sdk' AND status='pending' AND reconciliation_status='awaiting_token' AND id IN (SELECT order_id FROM billing.sdk_payment_requests WHERE token_hash IS NULL AND draft_expires_at<=now())`); err != nil {
 		return false, err
 	}
 	a, err := s.claimPayment(ctx)
@@ -122,12 +190,12 @@ func (s *Service) ProcessOnePayment(ctx context.Context) (bool, error) {
 			if createCtx.Err() != nil {
 				err = createCtx.Err()
 			} else {
-				payment, err = s.payments.CreatePayment(createCtx, a.Order.ID, a.Request)
+				payment, err = a.Profile.Provider.CreatePayment(createCtx, a.Order.ID, a.Request)
 			}
 			createCancel()
 		}
 	} else {
-		payment, err = s.payments.GetPayment(providerCtx, a.PaymentID)
+		payment, err = a.Profile.Provider.GetPayment(providerCtx, a.PaymentID)
 	}
 	cancel()
 	finishCtx, finishCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -136,7 +204,11 @@ func (s *Service) ProcessOnePayment(ctx context.Context) (bool, error) {
 }
 
 func (s *Service) validPayment(a paymentAttempt, p contracts.ProviderPayment) bool {
-	return yookassa.ValidPaymentID(p.ID) && (a.PaymentID == "" || p.ID == a.PaymentID) && p.OrderID == a.Order.ID && p.ShopID == s.shopID && p.Test != nil && *p.Test == (s.mode == "test") && a.Order.Test == (s.mode == "test") && p.AmountValue == moneyValue(a.Order.AmountMinor) && p.Currency == a.Order.Currency && (p.Status == "pending" || p.Status == "waiting_for_capture" || p.Status == "succeeded" || p.Status == "canceled") && (p.Status != "succeeded" || p.Paid) && (p.ConfirmationURL == "" || yookassa.ValidConfirmationURL(p.ConfirmationURL))
+	validURL := p.ConfirmationURL == "" || yookassa.ValidConfirmationURL(p.ConfirmationURL)
+	if a.Order.CheckoutKind == "android_sdk" {
+		validURL = p.PaymentMethodType == "bank_card" && (p.ConfirmationURL == "" || yookassa.ValidSDKConfirmationURL(p.ConfirmationURL))
+	}
+	return yookassa.ValidPaymentID(p.ID) && (a.PaymentID == "" || p.ID == a.PaymentID) && p.OrderID == a.Order.ID && p.ShopID == a.Profile.ShopID && p.Test != nil && *p.Test == (a.Profile.Mode == "test") && a.Order.Test == (a.Profile.Mode == "test") && p.AmountValue == moneyValue(a.Order.AmountMinor) && p.Currency == a.Order.Currency && (p.Status == "pending" || p.Status == "waiting_for_capture" || p.Status == "succeeded" || p.Status == "canceled") && (p.Status != "succeeded" || p.Paid) && validURL
 }
 
 func (s *Service) finishPayment(ctx context.Context, a paymentAttempt, p contracts.ProviderPayment, providerErr error) error {
@@ -159,7 +231,7 @@ func (s *Service) finishPayment(ctx context.Context, a paymentAttempt, p contrac
 	}
 	var fenced bool
 	var storedID string
-	if err = tx.QueryRow(ctx, `SELECT COALESCE(status='pending' AND reconciliation_status='pending' AND reconcile_token=$2 AND reconcile_lease_until>clock_timestamp() AND provider_shop_id=$3 AND provider_mode=$4,false),COALESCE(provider_payment_id,'') FROM billing.orders WHERE id=$1`, order.ID, a.Token, s.shopID, s.mode).Scan(&fenced, &storedID); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(status='pending' AND reconciliation_status='pending' AND reconcile_token=$2 AND reconcile_lease_until>clock_timestamp() AND provider_shop_id=$3 AND provider_mode=$4,false),COALESCE(provider_payment_id,'') FROM billing.orders WHERE id=$1`, order.ID, a.Token, a.Profile.ShopID, a.Profile.Mode).Scan(&fenced, &storedID); err != nil {
 		return err
 	}
 	if !fenced {
@@ -167,18 +239,60 @@ func (s *Service) finishPayment(ctx context.Context, a paymentAttempt, p contrac
 	}
 	invalid := providerErr == nil && (!s.validPayment(a, p) || (storedID != "" && storedID != p.ID))
 	if providerErr != nil || invalid {
+		if order.CheckoutKind == "android_sdk" && a.PaymentID == "" && a.InboxID == nil && (errors.Is(providerErr, yookassa.ErrPaymentTokenRejected) || errors.Is(providerErr, yookassa.ErrRequestRejected) || errors.Is(providerErr, yookassa.ErrConfiguration)) {
+			if _, err = tx.Exec(ctx, `UPDATE billing.sdk_payment_requests SET encrypted_request=NULL WHERE order_id=$1`, order.ID); err != nil {
+				return err
+			}
+			if a.Attempts == 0 {
+				code := "payment_token_rejected"
+				if errors.Is(providerErr, yookassa.ErrRequestRejected) {
+					code = "payment_request_rejected"
+				}
+				if errors.Is(providerErr, yookassa.ErrConfiguration) {
+					code = "payment_configuration_error"
+				}
+				_, err = tx.Exec(ctx, `UPDATE billing.orders SET status='canceled',completed_at=now(),fulfillment_status='not_required',reconciliation_status='complete',last_error_code=$2,reconcile_token=NULL,reconcile_lease_until=NULL WHERE id=$1`, order.ID, code)
+			} else {
+				_, err = tx.Exec(ctx, `UPDATE billing.orders SET reconciliation_status='manual_review',last_error_code='payment_create_uncertain',reconcile_token=NULL,reconcile_lease_until=NULL WHERE id=$1`, order.ID)
+			}
+			if err != nil {
+				return err
+			}
+			return tx.Commit(ctx)
+		}
 		code, state := "payment_provider_unavailable", "pending"
 		rejectHint := a.InboxID != nil && (invalid || errors.Is(providerErr, yookassa.ErrInvalidResponse) || errors.Is(providerErr, yookassa.ErrNotFound))
 		if rejectHint {
-			if _, err = tx.Exec(ctx, `UPDATE billing.webhook_inbox SET processed_at=now(),result='rejected' WHERE id=$1`, *a.InboxID); err != nil {
+			query := `UPDATE billing.webhook_inbox SET processed_at=now(),result='rejected' WHERE id=$1`
+			args := []any{*a.InboxID}
+			if a.RequestClosed && errors.Is(providerErr, yookassa.ErrNotFound) {
+				// Both succeeded/canceled notifications for one nonexistent ID
+				// carry the same disproven routing hint.
+				query = `UPDATE billing.webhook_inbox SET processed_at=now(),result='rejected' WHERE order_id=$1 AND payment_id=$2 AND processed_at IS NULL`
+				args = []any{order.ID, a.PaymentID}
+			}
+			if _, err = tx.Exec(ctx, query, args...); err != nil {
 				return err
 			}
 			// A forged hint must not quarantine or bind a legitimate order.
 			code = ""
+			if a.RequestClosed {
+				state = "manual_review"
+				code = "payment_create_uncertain"
+			}
+		} else if a.RequestClosed && a.InboxID != nil {
+			// A late hint permits one authoritative GET, never reopening the
+			// closed CREATE operation or leaving the order in ordinary pending.
+			code, state = "payment_create_uncertain", "manual_review"
 		} else if errors.Is(providerErr, errCreateWindowExpired) {
 			code, state = "payment_create_uncertain", "manual_review"
 		} else if invalid || errors.Is(providerErr, yookassa.ErrInvalidResponse) || (errors.Is(providerErr, yookassa.ErrNotFound) && a.Attempts >= 3) {
 			code, state = "payment_provider_response_invalid", "manual_review"
+		}
+		if order.CheckoutKind == "android_sdk" && state == "manual_review" && a.PaymentID == "" {
+			if _, err = tx.Exec(ctx, `UPDATE billing.sdk_payment_requests SET encrypted_request=NULL WHERE order_id=$1`, order.ID); err != nil {
+				return err
+			}
 		}
 		_, err = tx.Exec(ctx, `UPDATE billing.orders SET reconcile_token=NULL,reconcile_lease_until=NULL,last_error_code=$2,reconciliation_status=$3,next_reconcile_at=now()+interval '1 minute' WHERE id=$1`, order.ID, code, state)
 		if err != nil {
@@ -206,9 +320,9 @@ func (s *Service) finishPayment(ctx context.Context, a paymentAttempt, p contrac
 		switch {
 		case reason == "account_deleted":
 			fulfillment = "blocked"
-		case !active || !s.canPay(a.AccountID):
+		case !active || !s.canPayOrder(a.AccountID, order):
 			fulfillment, reason = "blocked", "account_inactive"
-		case order.Test && activeRealPackage(entitlement, now):
+		case order.Test && activeRealPackage(entitlement, now) && !(order.CheckoutKind == "android_sdk" && s.testAllowed[a.AccountID]):
 			fulfillment, reason = "blocked", "paid_entitlement"
 		default:
 			source, entitlementReason := "yookassa", "YooKassa payment"
@@ -235,6 +349,11 @@ func (s *Service) finishPayment(ctx context.Context, a paymentAttempt, p contrac
 	_, err = tx.Exec(ctx, `UPDATE billing.orders SET provider_payment_id=$2,confirmation_url=CASE WHEN $3='' THEN confirmation_url ELSE $3 END,status=$4,completed_at=$5,active_until=$6,fulfillment_status=$7,fulfillment_reason=$8,fulfilled_at=$9,fulfilled_package_id=$10,reconciliation_status=CASE WHEN $4='pending' THEN 'pending' ELSE 'complete' END,last_error_code='',reconcile_token=NULL,reconcile_lease_until=NULL,next_reconcile_at=now()+interval '1 minute' WHERE id=$1`, order.ID, p.ID, p.ConfirmationURL, status, completed, until, fulfillment, reason, fulfilled, order.FulfilledPackageID)
 	if err != nil {
 		return err
+	}
+	if order.CheckoutKind == "android_sdk" {
+		if _, err = tx.Exec(ctx, `UPDATE billing.sdk_payment_requests SET encrypted_request=NULL WHERE order_id=$1`, order.ID); err != nil {
+			return err
+		}
 	}
 	// Once the canonical ID is bound, no alternative hint may remain pending.
 	// Webhook ingestion takes this same order lock before inserting another row.
