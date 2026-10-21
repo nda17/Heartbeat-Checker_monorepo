@@ -45,7 +45,6 @@
                 <data android:path="/app" />
                 <data android:path="/app/settings" />
                 <data android:path="/app/billing" />
-                <data android:path="/app/admin" />
                 <data android:path="/android/auth/complete" />
                 <data android:path="/android/auth/reset" />
                 <data android:path="/android/auth/verify" />

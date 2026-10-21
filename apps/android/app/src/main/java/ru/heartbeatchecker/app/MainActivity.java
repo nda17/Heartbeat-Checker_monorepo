@@ -46,7 +46,7 @@ public class MainActivity extends ReactActivity {
                 || uri.getUserInfo() != null || uri.getPort() != -1 || uri.toString().length() > 16 * 1024) return null;
         String path = uri.getEncodedPath();
         if (path == null) return null;
-        if (path.equals("/app") || path.equals("/app/settings") || path.equals("/app/billing") || path.equals("/app/admin"))
+        if (path.equals("/app") || path.equals("/app/settings") || path.equals("/app/billing"))
             return LinkPolicy.appLink(uri.toString());
         String token = uri.getFragment();
         if (token == null || token.isEmpty()) {
