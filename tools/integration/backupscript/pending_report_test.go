@@ -232,6 +232,7 @@ case "$1" in
   version) printf '%%s\n' '%s' ;;
   deploy-json) [ "$2" = backup-env-check ] ;;
   compose-field)
+    cat >/dev/null
     case "$2" in
       backup.image) printf '%%s\n' "$HC_TEST_BACKUP_IMAGE" ;;
       backup.source) printf '%%s\n' "$HC_TEST_SOURCE" ;;
