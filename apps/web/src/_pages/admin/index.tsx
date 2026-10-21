@@ -663,6 +663,17 @@ export function AdminPage() {
                       ? "активен"
                       : "заблокирован"}
                   </p>
+                  {(detail.entitlement?.packages ?? []).map((part, index) => (
+                    <p className="small muted" key={part.id}>
+                      Пакет {index + 1} ·{" "}
+                      {part.source === "yookassa"
+                        ? "оплаченные места"
+                        : "тестовая или демонстрационная квота"}
+                      : {part.quota} · до{" "}
+                      {dateTime(part.activeUntil, { year: true })}
+                      {!part.active ? " · сейчас не действует" : ""}.
+                    </p>
+                  ))}
                   {canWrite && (
                     <>
                       <form
@@ -772,16 +783,6 @@ export function AdminPage() {
                       ? `${detail.entitlement.admin.quota} мест · до ${dateTime(detail.entitlement.admin.activeUntil, { year: true })}`
                       : "нет"}
                     .{" "}
-                    {detail.entitlement?.paid?.source === "yookassa"
-                      ? "Оплаченная подписка"
-                      : detail.entitlement?.paid
-                        ? "Тестовая или демонстрационная квота"
-                        : "Подписка"}
-                    :{" "}
-                    {detail.entitlement?.paid
-                      ? `${detail.entitlement.paid.quota} мест · до ${dateTime(detail.entitlement.paid.activeUntil, { year: true })}`
-                      : "нет"}
-                    .
                   </p>
                   {canWrite && (
                     <>

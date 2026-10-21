@@ -7,6 +7,9 @@ import (
 
 type Order struct {
 	ID                   string     `json:"id"`
+	PurchaseKind         string     `json:"purchaseKind"`
+	PackageID            *string    `json:"packageId,omitempty"`
+	FulfilledPackageID   *string    `json:"fulfilledPackageId,omitempty"`
 	Provider             string     `json:"provider"`
 	Status               string     `json:"status"`
 	FulfillmentStatus    string     `json:"fulfillmentStatus"`

@@ -1979,6 +1979,171 @@ test("billing recovers its initial data load and retries both required GETs", as
   await harness.unmount();
 });
 
+test("billing keeps new purchases editable and renews only the selected package", async () => {
+  const harness = createHarness("http://localhost/app/billing");
+  const calls = [];
+  const packages = [
+    {
+      id: "11111111-1111-4111-8111-111111111111",
+      source: "yookassa",
+      quota: 2,
+      activeUntil: "2026-11-01T00:00:00Z",
+      active: true,
+    },
+    {
+      id: "22222222-2222-4222-8222-222222222222",
+      source: "yookassa",
+      quota: 3,
+      activeUntil: "2026-12-01T00:00:00Z",
+      active: true,
+    },
+  ];
+  let postCount = 0;
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === "/billing")
+      return {
+        provider: "yookassa",
+        canPay: true,
+        canSimulate: false,
+        test: false,
+        pricePerMonitorMinor: 2900,
+        priceVersion: 1,
+        orders: [],
+      };
+    if (path === "/entitlement")
+      return {
+        entitlement: {
+          quota: 5,
+          activeUntil: "2026-11-01T00:00:00Z",
+          source: "yookassa",
+          packages,
+        },
+      };
+    if (path === "/billing/orders" && options.method === "POST") {
+      postCount += 1;
+      const body = options.body;
+      return {
+        order: {
+          id: `aaaaaaaa-aaaa-4aaa-8aaa-${String(postCount).padStart(12, "0")}`,
+          provider: "yookassa",
+          status: "pending",
+          reconciliationStatus: "pending",
+          monitorCount: body.monitorCount,
+          amountMinor: body.monitorCount * 2900,
+          currency: "RUB",
+          confirmationUrl: "https://yookassa.ru/checkout/packages",
+          createdAt: "2026-10-20T00:00:00Z",
+          expiresAt: null,
+          completedAt: null,
+          activeUntil: null,
+          purchaseKind: body.purchaseKind,
+          packageId: body.packageId ?? null,
+        },
+      };
+    }
+    if (path.startsWith("/billing/orders/"))
+      return {
+        order: {
+          id: path.split("/").at(-1),
+          provider: "yookassa",
+          status: "pending",
+          reconciliationStatus: "pending",
+          monitorCount: 4,
+          amountMinor: 11600,
+          currency: "RUB",
+          confirmationUrl: "https://yookassa.ru/checkout/packages",
+          createdAt: "2026-10-20T00:00:00Z",
+          expiresAt: null,
+          completedAt: null,
+          activeUntil: null,
+        },
+      };
+    throw new Error(`Unexpected billing API call: ${path}`);
+  };
+  const shared = compile("../src/shared/api/index.ts", {});
+  const page = compile(
+    "../src/_pages/billing/index.tsx",
+    {
+      "@/entities/session": {
+        useSession: () => ({
+          profile: { account: { id: "package-selection-owner" } },
+        }),
+      },
+      "@/shared/api": {
+        api: billingPricingApi(api),
+        errorMessage: (error) => String(error?.message ?? error),
+        paymentConfirmationUrl: shared.paymentConfirmationUrl,
+      },
+      "@/entities/monitor": {},
+      "@/shared/ui": {
+        Icon: () => null,
+        dateTime: (value) => value ?? "—",
+        Loading: ({ text }) =>
+          React.createElement("div", { role: "status" }, text),
+        Notice: ({ children }) =>
+          React.createElement("div", { role: "alert" }, children),
+      },
+    },
+    { crypto: { randomUUID: () => "33333333-3333-4333-8333-333333333333" } },
+  );
+  await harness.render(React.createElement(page.BillingPage));
+  await settle();
+  assert.match(harness.host.textContent, /2026-11-01/);
+  assert.match(harness.host.textContent, /2026-12-01/);
+  const count = harness.host.querySelector('input[name="monitorCount"]');
+  assert.ok(count);
+  assert.equal(count.readOnly, false, "a new purchase starts editable");
+  await setReactInputValue(count, "4");
+  const renew = [...harness.host.querySelectorAll("button")].find(
+    (button) =>
+      button.getAttribute("aria-label") === "Продлить пакет 1 на месяц",
+  );
+  assert.ok(
+    renew,
+    `renew button missing; buttons=${[...harness.host.querySelectorAll("button")].map((button) => `${button.textContent}/${button.getAttribute("aria-label")}`).join(" | ")}`,
+  );
+  await act(async () => renew.click());
+  assert.equal(count.readOnly, true, "renewal fixes the selected package size");
+  assert.equal(count.value, "2");
+  const buyMore = [...harness.host.querySelectorAll("button")].find((button) =>
+    button.textContent.includes("Купить ещё места на месяц"),
+  );
+  await act(async () => buyMore.click());
+  assert.equal(count.readOnly, false, "switching to purchase unlocks quantity");
+  assert.equal(
+    count.value,
+    "4",
+    "purchase keeps the separately selected quantity",
+  );
+  await act(async () => renew.click());
+  assert.equal(count.readOnly, true);
+  assert.equal(count.value, "2");
+  const form = harness.host.querySelector(".billing-checkout form");
+  await act(async () => {
+    form.dispatchEvent(
+      new harness.dom.window.Event("submit", {
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  });
+  await settle();
+  const post = calls.find(
+    (call) => call.path === "/billing/orders" && call.options.method === "POST",
+  );
+  assert.equal(post?.options.body.purchaseKind, "renew");
+  assert.equal(post?.options.body.packageId, packages[0].id);
+  assert.equal(post?.options.body.monitorCount, 2);
+  assert.ok(
+    [...harness.host.querySelectorAll("button")]
+      .filter((button) => button.textContent.includes("Продлить"))
+      .every((button) => button.disabled),
+    "an accepted pending order locks package selection",
+  );
+  await harness.unmount();
+});
+
 test("YooKassa checkout retries an ambiguous create with the same key and never starts a mock timer", async () => {
   const harness = createHarness("http://localhost/app/billing");
   const timers = [];
@@ -2785,7 +2950,7 @@ test("definitive YooKassa create rejections clear retry intent and refresh the c
       );
     } else {
       const retryButton = [...harness.host.querySelectorAll("button")].find(
-        (button) => button.textContent.includes("Оформить заказ"),
+        (button) => button.textContent.includes("Купить ещё"),
       );
       assert.ok(
         retryButton,

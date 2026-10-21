@@ -454,20 +454,21 @@ export function MonitorsPage() {
               : "нет"}
             .
           </p>
-          <p>
-            {entitlement.paid?.source === "local_test"
-              ? "Локальная тестовая квота, без оплаты"
-              : entitlement.paid?.source === "mock_test"
-                ? "Демонстрационная квота, без списания"
-                : entitlement.paid?.source === "yookassa_test"
-                  ? "Тестовый платёж ЮKassa, без списания"
-                  : "Оплаченных мест"}
-            :{" "}
-            {entitlement.paid
-              ? `${entitlement.paid.quota} · до ${dateTime(entitlement.paid.activeUntil, { year: true })}${entitlement.paid.activeUntil && Date.parse(entitlement.paid.activeUntil) > (updatedAt?.getTime() ?? 0) ? "" : " (срок истёк)"}`
-              : "нет"}
-            .
-          </p>
+          {(entitlement.packages ?? []).map((part, index) => (
+            <p key={part.id}>
+              Пакет {index + 1} ·{" "}
+              {part.source === "yookassa"
+                ? "оплаченные места"
+                : part.source === "local_test"
+                  ? "локальная тестовая квота, без оплаты"
+                  : part.source === "mock_test"
+                    ? "демонстрационная квота, без списания"
+                    : "тестовый платёж ЮKassa, без списания"}
+              : {part.quota} · до {dateTime(part.activeUntil, { year: true })}
+              {!part.active ? " (сейчас не действует)" : ""}.
+            </p>
+          ))}
+
           <p>
             Сохранено мониторов: {entitlement.monitorCount}. Включено:{" "}
             {entitlement.enabledMonitorCount}.

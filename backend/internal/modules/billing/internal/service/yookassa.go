@@ -42,7 +42,7 @@ func (s *Service) GetOrder(ctx context.Context, account, id string) (contracts.O
 	return order, err
 }
 
-func (s *Service) createYooKassaOrder(ctx context.Context, account string, count int, key string, version int64) (contracts.Order, error) {
+func (s *Service) createYooKassaOrder(ctx context.Context, account string, count int, key string, version int64, kind, packageID string) (contracts.Order, error) {
 	if count < 1 || count > 1000 || !validID(key) {
 		return contracts.Order{}, ErrInvalid
 	}
@@ -67,7 +67,7 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	}
 	existing, err := scanOrder(tx.QueryRow(ctx, `SELECT `+orderColumns+` FROM billing.orders WHERE account_id=$1 AND idempotency_key=$2`, account, key))
 	if err == nil {
-		if existing.Provider != "yookassa" || existing.MonitorCount != count {
+		if existing.Provider != "yookassa" || existing.MonitorCount != count || !samePackageSelection(existing, kind, packageID) {
 			return contracts.Order{}, ErrConflict
 		}
 		return existing, tx.Commit(ctx)
@@ -75,11 +75,10 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return contracts.Order{}, err
 	}
-	paid := entitlement.Paid
-	paidActive := s.activeSubscription(account, paid, time.Now())
-	if s.mode == "test" && paidActive && paid.Source == "yookassa" {
+	if s.mode == "test" && activeRealPackage(entitlement, time.Now()) {
 		return contracts.Order{}, ErrForbidden
 	}
+
 	pricing, err := s.PricingTx(ctx, tx, true)
 	if err != nil {
 		return contracts.Order{}, err
@@ -90,11 +89,11 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	if count*pricing.PricePerMonitorMinor > MaxOrderAmountMinor {
 		return contracts.Order{}, ErrOrderAmount
 	}
-	// Only the paid component has a fixed renewal capacity. An administrative
-	// grant is independent and contributes additional monitor capacity.
-	if paidActive && paid.Quota != count {
-		return contracts.Order{}, ErrConflict
+	kind, packageID, err = s.selectPackage(entitlement, kind, packageID, count)
+	if err != nil {
+		return contracts.Order{}, err
 	}
+
 	if _, err = tx.Exec(ctx, `UPDATE billing.orders SET status='canceled',completed_at=now(),fulfillment_status='not_required',reconciliation_status='complete' WHERE account_id=$1 AND provider='mock' AND status='pending' AND expires_at<=now()`, account); err != nil {
 		return contracts.Order{}, err
 	}
@@ -119,7 +118,7 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	if err != nil {
 		return contracts.Order{}, err
 	}
-	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,provider_mode,provider_shop_id,provider_request,expires_at) VALUES($1,$2,$3,'yookassa',$4,$5,$6,$7,$8,NULL) RETURNING `+orderColumns, id, account, key, count, count*pricing.PricePerMonitorMinor, s.mode, s.shopID, body))
+	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,provider_mode,provider_shop_id,provider_request,expires_at,purchase_kind,renew_package_id) VALUES($1,$2,$3,'yookassa',$4,$5,$6,$7,$8,NULL,$9,NULLIF($10,'')::uuid) RETURNING `+orderColumns, id, account, key, count, count*pricing.PricePerMonitorMinor, s.mode, s.shopID, body, kind, packageID))
 	if err != nil {
 		return contracts.Order{}, err
 	}

@@ -229,6 +229,86 @@ func TestSeparateAdminGrantsMovesOnlyAdminRowsAndPreservesPaymentHistory(t *test
 	}
 }
 
+func TestIndependentPackagesMigrationPreservesLegacyEntitlementAndBlockedOrder(t *testing.T) {
+	pool := testDatabase(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `CREATE TABLE public.schema_migrations(version text PRIMARY KEY,checksum text NOT NULL,applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
+		t.Fatal(err)
+	}
+	names, err := fs.Glob(files, "*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if name >= "0026_independent_packages.sql" {
+			break
+		}
+		data, err := files.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", name, err)
+		}
+		if _, err := pool.Exec(ctx, string(data)); err != nil {
+			t.Fatalf("apply migration %s: %v", name, err)
+		}
+		sum := sha256.Sum256(data)
+		if _, err := pool.Exec(ctx, `INSERT INTO public.schema_migrations(version,checksum) VALUES($1,$2)`, strings.TrimSuffix(name, ".sql"), hex.EncodeToString(sum[:])); err != nil {
+			t.Fatalf("record migration %s: %v", name, err)
+		}
+	}
+	const accountID = "a2600000-0000-4000-8000-000000000001"
+	const orderID = "a2600000-0000-4000-8000-000000000002"
+	const idempotencyKey = "a2600000-0000-4000-8000-000000000003"
+	if _, err := pool.Exec(ctx, `INSERT INTO accounts.accounts(id,name) VALUES($1,'Independent package migration fixture')`, accountID); err != nil {
+		t.Fatalf("insert account: %v", err)
+	}
+	legacyExpiry := time.Date(2027, time.January, 31, 10, 11, 12, 123000, time.UTC)
+	legacyGranted := time.Date(2026, time.October, 20, 9, 8, 7, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,version,granted_at,reason,renewal_anchor_day)
+		VALUES($1,4,$2,'yookassa_test',7,$3,'legacy paid package',31)`, accountID, legacyExpiry, legacyGranted); err != nil {
+		t.Fatalf("insert legacy entitlement: %v", err)
+	}
+	completed := time.Date(2026, time.October, 21, 9, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `INSERT INTO billing.orders(
+		id,account_id,idempotency_key,provider,status,monitor_count,amount_minor,completed_at,fulfillment_status,fulfillment_reason,reconciliation_status,provider_mode,provider_shop_id,provider_request)
+		VALUES($1,$2,$3,'yookassa','succeeded',4,9600,$4,'blocked','admin_grant','complete','test','123456','{}'::bytea)`,
+		orderID, accountID, idempotencyKey, completed); err != nil {
+		t.Fatalf("insert terminal blocked order: %v", err)
+	}
+
+	if err := Apply(ctx, pool); err != nil {
+		t.Fatalf("apply independent packages migration: %v", err)
+	}
+	var packageID, packageSource, packageReason string
+	var packageQuota, packageVersion, anchor int
+	var packageUntil, packageGranted time.Time
+	var packageOrigin *string
+	if err := pool.QueryRow(ctx, `SELECT id::text,monitor_limit,valid_until,source,version,granted_at,renewal_anchor_day,reason,origin_order_id::text
+		FROM billing.entitlements WHERE account_id=$1`, accountID).
+		Scan(&packageID, &packageQuota, &packageUntil, &packageSource, &packageVersion, &packageGranted, &anchor, &packageReason, &packageOrigin); err != nil {
+		t.Fatalf("read migrated entitlement: %v", err)
+	}
+	if packageID != accountID || packageQuota != 4 || !packageUntil.Equal(legacyExpiry) || packageSource != "yookassa_test" || packageVersion != 7 || !packageGranted.Equal(legacyGranted) || anchor != 31 || packageReason != "legacy paid package" || packageOrigin != nil {
+		t.Fatalf("legacy entitlement changed during package migration: id=%s quota=%d until=%s source=%s version=%d granted=%s anchor=%d reason=%s origin=%v", packageID, packageQuota, packageUntil, packageSource, packageVersion, packageGranted, anchor, packageReason, packageOrigin)
+	}
+	var status, fulfillment, reason, purchaseKind string
+	var renewPackage, fulfilledPackage *string
+	var orderCount int
+	var monitorCount int
+	var amount int64
+	var providerRequest []byte
+	if err := pool.QueryRow(ctx, `SELECT status,fulfillment_status,fulfillment_reason,purchase_kind,renew_package_id::text,fulfilled_package_id::text,monitor_count,amount_minor,provider_request
+		FROM billing.orders WHERE id=$1`, orderID).
+		Scan(&status, &fulfillment, &reason, &purchaseKind, &renewPackage, &fulfilledPackage, &monitorCount, &amount, &providerRequest); err != nil {
+		t.Fatalf("read migrated blocked order: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM billing.entitlements WHERE account_id=$1`, accountID).Scan(&orderCount); err != nil {
+		t.Fatal(err)
+	}
+	if status != "succeeded" || fulfillment != "blocked" || reason != "admin_grant" || purchaseKind != "legacy" || renewPackage != nil || fulfilledPackage != nil || monitorCount != 4 || amount != 9600 || string(providerRequest) != "{}" || orderCount != 1 {
+		t.Fatalf("terminal order or package rows changed during migration: status=%s fulfillment=%s reason=%s kind=%s renew=%v fulfilled=%v count=%d amount=%d request=%q rows=%d", status, fulfillment, reason, purchaseKind, renewPackage, fulfilledPackage, monitorCount, amount, providerRequest, orderCount)
+	}
+}
+
 func TestMonitorMetadataMigrationBackfillsLegacyTimezoneAndCheckConfigVersion(t *testing.T) {
 	pool := testDatabase(t)
 	ctx := context.Background()
