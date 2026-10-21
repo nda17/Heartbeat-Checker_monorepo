@@ -1,6 +1,7 @@
 package ru.heartbeatchecker.app;
 
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -42,18 +43,29 @@ public final class PushStoreTest {
     private static final String OWNER = "11111111-1111-4111-8111-111111111111";
     private static final String SESSION = "22222222-2222-4222-8222-222222222222";
     private static final String CREDENTIAL = INSTALLATION + ".abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
+    private Context applicationContext;
     private Context context;
+    private File isolatedNoBackupDir;
     private PushStore store;
     private AuthStore authStore;
     private boolean previousLocallyBlocked;
 
     @Before
     public void setUp() throws Exception {
-        context = ApplicationProvider.getApplicationContext();
+        previousLocallyBlocked = PushWork.locallyBlocked;
+        applicationContext = ApplicationProvider.getApplicationContext();
+        isolatedNoBackupDir = new File(applicationContext.getNoBackupFilesDir(),
+                "push-store-test-" + java.util.UUID.randomUUID());
+        if (!isolatedNoBackupDir.mkdirs() && !isolatedNoBackupDir.isDirectory())
+            throw new IOException("Could not create isolated push store directory");
+        assertEquals(applicationContext.getNoBackupFilesDir(), isolatedNoBackupDir.getParentFile());
+        context = new ContextWrapper(applicationContext) {
+            @Override public File getNoBackupFilesDir() { return isolatedNoBackupDir; }
+        };
+        assertSame(WorkManager.getInstance(applicationContext), WorkManager.getInstance(context));
         authStore = new AuthStore(context);
         clearAuthStore();
         authStore.saveSession(authSession(OWNER, SESSION), authStore.epoch());
-        previousLocallyBlocked = PushWork.locallyBlocked;
         PushWork.locallyBlocked = false;
         store = new PushStore(context);
         store.update(state -> {
@@ -69,6 +81,14 @@ public final class PushStoreTest {
     public void restoreDeliveryState() {
         PushWork.locallyBlocked = previousLocallyBlocked;
         try { clearAuthStore(); } catch (Exception ignored) { }
+        deleteDirectory(isolatedNoBackupDir);
+    }
+
+    private static void deleteDirectory(File directory) {
+        if (directory == null || !directory.exists()) return;
+        File[] children = directory.listFiles();
+        if (children != null) for (File child : children) deleteDirectory(child);
+        directory.delete();
     }
 
     @Test

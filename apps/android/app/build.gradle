@@ -164,6 +164,11 @@ tasks.register('requireSdkTestConfig') {
     }
 }
 tasks.configureEach {
+    if (name.startsWith('configureCMake')) {
+        // A cold native build needs generated React headers before CMake configures autolinked libraries.
+        dependsOn ':react-native-safe-area-context:generateCodegenArtifactsFromSchema',
+                ':react-native-webview:generateCodegenArtifactsFromSchema'
+    }
     if (name in ['packageRelease', 'packageReleaseBundle', 'signReleaseBundle', 'assembleRelease', 'bundleRelease']) {
         dependsOn tasks.named('requireReleaseSigning')
     }
