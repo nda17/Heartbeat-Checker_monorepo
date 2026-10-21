@@ -570,22 +570,25 @@ public final class PushStoreTest {
     @Test
     public void oversizedEncryptedStateWritePreservesPreviousFileAndDoesNotDisplay() throws Exception {
         String id = deliveryId(1);
-        assertTrue(store.reserve(envelope(id, 1, System.currentTimeMillis() + 300_000)));
-        File file = new File(context.getNoBackupFilesDir(), "push-state.enc");
-        byte[] before = java.nio.file.Files.readAllBytes(file.toPath());
-        AtomicInteger displayed = new AtomicInteger();
+        // Keep the raw-file comparison atomic with respect to legitimate background store updates.
+        synchronized (PushStore.LOCK) {
+            assertTrue(store.reserve(envelope(id, 1, System.currentTimeMillis() + 300_000)));
+            File file = new File(context.getNoBackupFilesDir(), "push-state.enc");
+            byte[] before = java.nio.file.Files.readAllBytes(file.toPath());
+            AtomicInteger displayed = new AtomicInteger();
 
-        try {
-            store.update(state -> state.put("oversized", repeat("x", 1024 * 1024)));
-            fail("a state larger than the encrypted storage cap was accepted");
-        } catch (IOException expected) { }
+            try {
+                store.update(state -> state.put("oversized", repeat("x", 1024 * 1024)));
+                fail("a state larger than the encrypted storage cap was accepted");
+            } catch (IOException expected) { }
 
-        assertArrayEquals("failed write must leave the last committed ciphertext intact", before,
-                java.nio.file.Files.readAllBytes(file.toPath()));
-        JSONObject readable = store.read();
-        assertTrue(readable.getJSONObject("pending").has(id));
-        assertFalse(readable.has("oversized"));
-        assertEquals("a failed storage write must not run a display callback", 0, displayed.get());
+            assertArrayEquals("failed write must leave the last committed ciphertext intact", before,
+                    java.nio.file.Files.readAllBytes(file.toPath()));
+            JSONObject readable = store.read();
+            assertTrue(readable.getJSONObject("pending").has(id));
+            assertFalse(readable.has("oversized"));
+            assertEquals("a failed storage write must not run a display callback", 0, displayed.get());
+        }
     }
 
     private void install(long generation, long registrationVersion) throws Exception {
