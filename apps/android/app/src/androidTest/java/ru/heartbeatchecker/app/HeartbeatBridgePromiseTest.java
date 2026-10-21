@@ -7,6 +7,7 @@ import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 
 import com.facebook.react.bridge.Arguments;
+import com.facebook.react.bridge.BridgeReactContext;
 import com.facebook.react.bridge.Callback;
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.PromiseImpl;
@@ -45,7 +46,7 @@ public final class HeartbeatBridgePromiseTest {
             @Override public File getNoBackupFilesDir() { return testNoBackupDir; }
             @Override public Context getApplicationContext() { return this; }
         };
-        reactContext = new ReactApplicationContext(isolated) {};
+        reactContext = new BridgeReactContext(isolated);
         assertEquals(testNoBackupDir, reactContext.getNoBackupFilesDir());
         bridge = new HeartbeatBridge(reactContext);
     }
