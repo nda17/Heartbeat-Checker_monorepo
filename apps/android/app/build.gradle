@@ -63,6 +63,11 @@ android {
             version '3.30.5'
         }
     }
+    packaging {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
 
     defaultConfig {
         applicationId 'ru.heartbeatchecker.app'
