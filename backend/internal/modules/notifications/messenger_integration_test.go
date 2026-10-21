@@ -780,6 +780,9 @@ func TestMessengerDeliveryRanksEnabledMonitorsOnly(t *testing.T) {
 		VALUES($1,$2,'Enabled after pause','https://enabled-messenger.example.test/health','enabled-messenger.example.test:443','GET',200)`, enabledMonitorID, accountID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := f.pool.Exec(context.Background(), `UPDATE monitors.monitors SET created_at=(SELECT created_at FROM monitors.monitors WHERE id=$2)+interval '1 second' WHERE id=$1`, enabledMonitorID, pausedMonitorID); err != nil {
+		t.Fatal(err)
+	}
 	m := testMessenger(t, f, true)
 	destination := confirmPrivateTelegramTarget(t, f, m, accountID, 3981)
 	if _, err := m.PutRoute(context.Background(), accountID, enabledMonitorID, "telegram", PutMessengerRoute{
@@ -793,6 +796,9 @@ func TestMessengerDeliveryRanksEnabledMonitorsOnly(t *testing.T) {
 		Outcome: "DOWN", HTTPStatus: 503, ErrorCode: "unexpected_status", CheckedAt: at, Sequence: 1,
 	}
 	applyMessengerObservation(t, f.pool, incidents.New(f.pool, NewRecorder(m)), accountID, enabledMonitorID, 1, "DOWN", at, observation)
+	if _, err := f.pool.Exec(context.Background(), `UPDATE notifications.messenger_deliveries SET next_attempt_at=now()-interval '1 minute' WHERE monitor_id=$1`, enabledMonitorID); err != nil {
+		t.Fatal(err)
+	}
 	attempt, err := m.ClaimDelivery(context.Background())
 	if err != nil || attempt == nil || attempt.MonitorID != enabledMonitorID {
 		t.Fatalf("claim enabled monitor after older pause: attempt=%+v err=%v", attempt, err)
