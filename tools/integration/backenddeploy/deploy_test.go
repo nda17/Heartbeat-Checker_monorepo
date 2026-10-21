@@ -395,12 +395,16 @@ func mockCommand(name string, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		return 0
 	case "stat":
-		if len(args) == 3 && args[0] == "-c" && args[1] == "%a" {
+		if len(args) == 3 && args[0] == "-c" && (args[1] == "%a" || args[1] == "%u") {
 			info, err := os.Stat(args[2])
 			if err != nil {
 				return 1
 			}
-			fmt.Fprintf(stdout, "%o\n", info.Mode().Perm())
+			if args[1] == "%a" {
+				fmt.Fprintf(stdout, "%o\n", info.Mode().Perm())
+			} else {
+				fmt.Fprintf(stdout, "%d\n", os.Getuid())
+			}
 			return 0
 		}
 		return 1
@@ -524,7 +528,7 @@ func mockDocker(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if len(args) > 0 && args[0] == "compose" {
 		if strings.Contains(joined, "config") && strings.Contains(joined, "--format") {
-			api := map[string]string{"DATABASE_URL": "postgres://heartbeat:testpass@postgres:5432/heartbeat?sslmode=disable", "AUTH_MFA_ENCRYPTION_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "EMAIL_NOTIFICATIONS_ENABLED": "false", "ANDROID_PUSH_ENABLED": "false", "RUSTORE_PUSH_PROJECT_ID": ""}
+			api := map[string]string{"DATABASE_URL": "postgres://heartbeat:testpass@postgres:5432/heartbeat?sslmode=disable", "AUTH_MFA_ENCRYPTION_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "EMAIL_NOTIFICATIONS_ENABLED": "false", "ANDROID_PUSH_ENABLED": "false", "RUSTORE_PUSH_PROJECT_ID": "", "ANDROID_DEV_RELEASE_DIR": "/run/android-dev"}
 			worker := map[string]string{"SMTP_TLS_MODE": "implicit_tls", "EMAIL_NOTIFICATIONS_ENABLED": "false", "ANDROID_PUSH_ENABLED": "false", "RUSTORE_PUSH_PROJECT_ID": ""}
 			if os.Getenv("COMPOSE_EMAIL_KEYS") == "1" {
 				api["EMAIL_NOTIFICATIONS_ENABLED"] = "true"
@@ -568,7 +572,8 @@ func mockDocker(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 					}
 				}
 			}
-			payload := map[string]any{"services": map[string]any{"api": map[string]any{"environment": api}, "postgres": map[string]any{"environment": map[string]string{"POSTGRES_PASSWORD": "testpass"}}, "worker": map[string]any{"environment": worker}, "probe": map[string]any{"environment": map[string]string{"PROBE_SHARED_SECRET": "test-probe-secret"}}, "caddy": map[string]any{"environment": map[string]string{}}, "migrate": map[string]any{"environment": map[string]string{}}, "backup": map[string]any{"environment": map[string]string{}}}}
+			apiVolumes := []map[string]any{{"type": "bind", "source": "/opt/heartbeat-checker/backend/android-dev-private/payload", "target": "/run/android-dev", "read_only": true}}
+			payload := map[string]any{"services": map[string]any{"api": map[string]any{"environment": api, "volumes": apiVolumes}, "postgres": map[string]any{"environment": map[string]string{"POSTGRES_PASSWORD": "testpass"}}, "worker": map[string]any{"environment": worker}, "probe": map[string]any{"environment": map[string]string{"PROBE_SHARED_SECRET": "test-probe-secret"}}, "caddy": map[string]any{"environment": map[string]string{}}, "migrate": map[string]any{"environment": map[string]string{}}, "backup": map[string]any{"environment": map[string]string{}}}}
 			encoded, _ := json.Marshal(payload)
 			if path := os.Getenv("COMPOSE_JSON_CAPTURE"); path != "" {
 				_ = os.WriteFile(path, encoded, 0o600)

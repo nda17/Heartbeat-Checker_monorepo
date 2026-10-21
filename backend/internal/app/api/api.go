@@ -106,6 +106,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	admin.New(pool, accountModule, authModule, billingModule, monitorModule).Register(handler, func(next http.Handler) http.Handler {
 		return authModule.RequireRole("admin", next)
 	})
+	admin.RegisterDevAPK(handler, cfg.AndroidDevReleaseDir, func(next http.Handler) http.Handler {
+		return authModule.RequireRole("admin", next)
+	})
 	if cfg.SupportEnabled {
 		supportModule, err := support.NewWebhook(pool, support.Config{EncryptionKey: cfg.SupportEncryptionKey, TelegramWebhookSecret: cfg.TelegramSupportWebhookSecret, MAXWebhookSecret: cfg.MAXSupportWebhookSecret, InternalChatID: cfg.TelegramInternalChatID, SupportTopicID: cfg.TelegramSupportTopicID, MAXSupportChatID: cfg.MAXSupportChatID})
 		if err != nil {

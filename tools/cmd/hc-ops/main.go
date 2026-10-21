@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/nda17/Heartbeat-Checker_monorepo/tools/internal/androiddev"
 	"github.com/nda17/Heartbeat-Checker_monorepo/tools/internal/androidpublish"
 	"github.com/nda17/Heartbeat-Checker_monorepo/tools/internal/androidrelease"
 	"github.com/nda17/Heartbeat-Checker_monorepo/tools/internal/backup"
@@ -45,6 +46,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return backup.Run(ctx, args[1:], stdout, stderr)
 	case "android-publish":
 		return androidpublish.Run(ctx, args[1:], stdout, stderr)
+	case "android-dev-manifest":
+		return androiddev.Build(ctx, args[1:], stdout, stderr)
+	case "android-dev-publish":
+		return androiddev.RunPublish(ctx, args[1:], stdout, stderr)
 	case "seo-smoke":
 		return seosmoke.Run(ctx, args[1:], stdout, stderr)
 	case "font-check":

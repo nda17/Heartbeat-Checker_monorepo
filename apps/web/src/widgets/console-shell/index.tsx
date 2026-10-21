@@ -3,7 +3,11 @@ import { notify } from "@/shared/notifications";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Profile, SessionContext } from "@/entities/session";
+import {
+  Profile,
+  SessionContext,
+  signalSessionTransition,
+} from "@/entities/session";
 import { ThemeToggle } from "@/features/theme-toggle";
 import {
   api,
@@ -27,11 +31,15 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
   const sessionTransitions = useRef(0);
   const beginSessionTransition = useCallback(() => {
     ++sessionTransitions.current;
+    if (sessionTransitions.current === 1) signalSessionTransition("begin");
     ++profileRequest.current;
     profileController.current?.abort();
   }, []);
   const endSessionTransition = useCallback(() => {
+    const wasTransitioning = sessionTransitions.current > 0;
     sessionTransitions.current = Math.max(0, sessionTransitions.current - 1);
+    if (wasTransitioning && sessionTransitions.current === 0)
+      signalSessionTransition("end");
     ++profileRequest.current;
   }, []);
   const refresh = useCallback(async () => {

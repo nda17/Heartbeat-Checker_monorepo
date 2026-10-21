@@ -4,6 +4,7 @@ import type { AuthResult, OAuthPending, Registration } from "./types";
 type Bridge = {
   API_ORIGIN: string;
   CHALLENGE_ORIGIN: string;
+  DEV_CLIENT: boolean;
   restore(): Promise<AuthResult | null>;
   authEpoch(): Promise<number>;
   saveSession(value: AuthResult, expectedEpoch: number): Promise<void>;

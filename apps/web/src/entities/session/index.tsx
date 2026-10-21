@@ -1,5 +1,21 @@
 "use client";
 import { createContext, useContext } from "react";
+
+export const sessionTransitionStorageKey = "heartbeat-session-transition";
+export const sessionTransitionEvent = "heartbeat-session-transition";
+
+let transitionSequence = 0;
+export function signalSessionTransition(phase: "begin" | "end") {
+  const value = `${phase}:${Date.now()}:${++transitionSequence}`;
+  try {
+    window.localStorage.setItem(sessionTransitionStorageKey, value);
+  } catch {
+    // Same-tab invalidation still works when browser storage is unavailable.
+  }
+  window.dispatchEvent(
+    new window.CustomEvent(sessionTransitionEvent, { detail: value }),
+  );
+}
 export type Profile = {
   account: {
     id: string;

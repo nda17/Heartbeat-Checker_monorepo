@@ -28,7 +28,7 @@ final class PushNative {
     private PushNative() {}
 
     static void toggle(Context context, boolean enabled, boolean allowAccountChange) throws Exception {
-        if (BuildConfig.ISOLATED_API) throw new IOException("Push disabled in isolated API app");
+        if (BuildConfig.ISOLATED_API || BuildConfig.DEV_CLIENT) throw new IOException("Push unavailable in this app");
         if (!enabled) {PushWork.disable(context); return;}
         AuthStore auth = new AuthStore(context); JSONObject current = auth.active();
         if (current == null || !PushNotifications.permitted(context)) throw new IOException("Push permission or session unavailable");

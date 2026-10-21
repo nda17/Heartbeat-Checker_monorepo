@@ -773,9 +773,9 @@ test("a focus refresh that returns 401 during MFA rotation cannot sign the sessi
     if (calls.length === 2) return pendingProfile.promise;
     return profile;
   };
-  const sessionModule = loadComponent("../src/entities/session/index.tsx", {});
   const harness = createHarness();
   t.after(() => harness.unmount());
+  const sessionModule = loadComponent("../src/entities/session/index.tsx", {});
   const { ConsoleShell } = loadComponent(
     "../src/widgets/console-shell/index.tsx",
     {

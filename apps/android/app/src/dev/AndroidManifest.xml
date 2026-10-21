@@ -1,0 +1,18 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+    <application
+        android:usesCleartextTraffic="true"
+        android:networkSecurityConfig="@xml/dev_network_security"
+        tools:replace="android:usesCleartextTraffic">
+        <service android:name=".FirebasePushService" android:enabled="false" tools:replace="android:enabled" />
+        <service android:name=".HeartbeatMessagingService" android:enabled="false" tools:replace="android:enabled" />
+        <activity android:name=".MainActivity"
+            android:exported="true" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize"
+            tools:node="replace">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

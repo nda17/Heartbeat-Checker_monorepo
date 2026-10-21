@@ -54,6 +54,7 @@ final class YooCheckout extends BaseActivityEventListener {
     }
 
     private static boolean configured() {
+        if (BuildConfig.DEV_CLIENT) return false;
         String key = BuildConfig.YOOKASSA_SDK_CLIENT_KEY, shop = BuildConfig.YOOKASSA_SHOP_ID;
         return !shop.isEmpty() && shop.matches("[0-9]{4,16}")
                 && ("test".equals(BuildConfig.YOOKASSA_SDK_ENVIRONMENT) && key.startsWith("test_")

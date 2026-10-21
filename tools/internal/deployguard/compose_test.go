@@ -162,9 +162,10 @@ func mustFileMode(t *testing.T, path string) os.FileMode {
 }
 
 func validComposeFixture() map[string]any {
-	api := map[string]string{"DATABASE_URL": "postgresql://heartbeat:testpass@postgres:5432/heartbeat?sslmode=disable", "EMAIL_NOTIFICATIONS_ENABLED": "false", "ANDROID_PUSH_ENABLED": "false", "RUSTORE_PUSH_PROJECT_ID": "", "AUTH_MFA_ENCRYPTION_KEY": base64.StdEncoding.EncodeToString(make([]byte, 32))}
+	api := map[string]string{"DATABASE_URL": "postgresql://heartbeat:testpass@postgres:5432/heartbeat?sslmode=disable", "EMAIL_NOTIFICATIONS_ENABLED": "false", "ANDROID_PUSH_ENABLED": "false", "RUSTORE_PUSH_PROJECT_ID": "", "AUTH_MFA_ENCRYPTION_KEY": base64.StdEncoding.EncodeToString(make([]byte, 32)), "ANDROID_DEV_RELEASE_DIR": "/run/android-dev"}
 	worker := map[string]string{"EMAIL_NOTIFICATIONS_ENABLED": "false", "ANDROID_PUSH_ENABLED": "false", "RUSTORE_PUSH_PROJECT_ID": "", "SMTP_TLS_MODE": "implicit_tls"}
-	return map[string]any{"services": map[string]any{"api": map[string]any{"environment": api}, "worker": map[string]any{"environment": worker}, "postgres": map[string]any{"environment": map[string]string{"POSTGRES_PASSWORD": "testpass"}}, "probe": map[string]any{"environment": map[string]string{"PROBE_SHARED_SECRET": "synthetic-probe-secret"}}, "caddy": map[string]any{"environment": map[string]string{}}, "migrate": map[string]any{"environment": map[string]string{}}, "backup": map[string]any{"environment": map[string]string{}}}}
+	apiVolumes := []any{map[string]any{"type": "bind", "source": "/srv/heartbeat/android-dev-private/payload", "target": "/run/android-dev", "read_only": true}}
+	return map[string]any{"services": map[string]any{"api": map[string]any{"environment": api, "volumes": apiVolumes}, "worker": map[string]any{"environment": worker}, "postgres": map[string]any{"environment": map[string]string{"POSTGRES_PASSWORD": "testpass"}}, "probe": map[string]any{"environment": map[string]string{"PROBE_SHARED_SECRET": "synthetic-probe-secret"}}, "caddy": map[string]any{"environment": map[string]string{}}, "migrate": map[string]any{"environment": map[string]string{}}, "backup": map[string]any{"environment": map[string]string{}}}}
 }
 
 func composeBytes(t *testing.T, value any) []byte {
@@ -210,6 +211,42 @@ func TestCheckComposeRequiresMatchedScopedDatabaseAndNotificationConfiguration(t
 			tc.mutate(copy)
 			if err := CheckCompose(bytes.NewReader(composeBytes(t, copy))); err == nil {
 				t.Fatal("invalid Compose configuration accepted")
+			}
+		})
+	}
+}
+
+func TestCheckComposeRequiresReadOnlyPrivateAndroidDevMountOnlyOnAPI(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{"missing API mount", func(m map[string]any) {
+			delete(m["services"].(map[string]any)["api"].(map[string]any), "volumes")
+		}},
+		{"wrong API release path", func(m map[string]any) {
+			m["services"].(map[string]any)["api"].(map[string]any)["environment"].(map[string]string)["ANDROID_DEV_RELEASE_DIR"] = "/tmp/android-dev"
+		}},
+		{"writable mount", func(m map[string]any) {
+			volume := m["services"].(map[string]any)["api"].(map[string]any)["volumes"].([]any)[0].(map[string]any)
+			volume["read_only"] = false
+		}},
+		{"wrong private source", func(m map[string]any) {
+			volume := m["services"].(map[string]any)["api"].(map[string]any)["volumes"].([]any)[0].(map[string]any)
+			volume["source"] = "/srv/heartbeat/public/android"
+		}},
+		{"worker receives private mount", func(m map[string]any) {
+			m["services"].(map[string]any)["worker"].(map[string]any)["volumes"] = []any{map[string]any{"type": "bind", "source": "/srv/heartbeat/android-dev-private/payload", "target": "/run/android-dev", "read_only": true}}
+		}},
+		{"worker receives path config", func(m map[string]any) {
+			m["services"].(map[string]any)["worker"].(map[string]any)["environment"].(map[string]string)["ANDROID_DEV_RELEASE_DIR"] = "/run/android-dev"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := validComposeFixture()
+			tc.mutate(fixture)
+			if err := CheckCompose(bytes.NewReader(composeBytes(t, fixture))); err == nil {
+				t.Fatal("unsafe Android dev artifact Compose configuration accepted")
 			}
 		})
 	}

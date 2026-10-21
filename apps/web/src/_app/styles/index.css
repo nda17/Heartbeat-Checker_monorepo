@@ -3297,6 +3297,19 @@ html[data-installed-app="true"] .android-hero {
   margin-top: 24px;
   font-size: 14px;
 }
+.android-dev-download {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.android-dev-download .android-apk-button {
+  margin-top: 0;
+}
+.android-dev-download p {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
 .android-release-facts {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

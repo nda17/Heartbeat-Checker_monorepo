@@ -18,6 +18,7 @@ public final class PushWorker extends Worker {
     public PushWorker(@NonNull Context context, @NonNull WorkerParameters parameters) { super(context, parameters); }
 
     @NonNull @Override public Result doWork() {
+        if (BuildConfig.DEV_CLIENT) return Result.success();
         try {
             String kind = getInputData().getString("kind");
             if ("delivery".equals(kind)) return delivery();
