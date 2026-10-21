@@ -15,16 +15,86 @@ import (
 )
 
 func (s *Service) ConfigureYooKassa(provider contracts.Provider, mode, shopID string, ids []string) error {
-	if s.provider != "yookassa" || provider == nil || (mode != "test" && mode != "production") || shopID == "" || len(shopID) > 32 || strings.Trim(shopID, "0123456789") != "" || (mode == "test" && (len(ids) != 1 || !validID(ids[0]))) {
+	if s.provider != "yookassa" || provider == nil || !validProfile(mode, shopID) || len(ids) > 1 || (mode == "test" && len(ids) != 1) || (len(ids) == 1 && !validID(ids[0])) {
 		return ErrInvalid
 	}
 	s.payments, s.mode, s.shopID = provider, mode, shopID
-	if mode == "test" {
+	s.profiles = map[string]paymentProfile{profileKey(mode, shopID): {Mode: mode, ShopID: shopID, Provider: provider}}
+	if len(ids) == 1 {
 		var owner pgtype.UUID
 		_ = owner.Scan(ids[0])
-		s.allowed = map[string]bool{owner.String(): true}
+		s.testAllowed = map[string]bool{owner.String(): true}
+		if mode == "test" {
+			s.allowed = s.testAllowed
+		}
 	}
 	return nil
+}
+
+type paymentProfile struct {
+	Mode, ShopID string
+	Provider     contracts.Provider
+}
+
+func validProfile(mode, shopID string) bool {
+	return (mode == "test" || mode == "production") && shopID != "" && len(shopID) <= 32 && strings.Trim(shopID, "0123456789") == ""
+}
+
+func profileKey(mode, shopID string) string { return mode + ":" + shopID }
+
+func sdkEnvironment(mode string) string {
+	if mode == "production" {
+		return "live"
+	}
+	return "test"
+}
+
+func (s *Service) ConfigureTestProfile(provider contracts.Provider, shopID string) error {
+	if s.provider != "yookassa" || provider == nil || !validProfile("test", shopID) || len(s.testAllowed) != 1 {
+		return ErrInvalid
+	}
+	key := profileKey("test", shopID)
+	if _, ok := s.profiles[key]; ok {
+		return ErrInvalid
+	}
+	s.profiles[key] = paymentProfile{Mode: "test", ShopID: shopID, Provider: provider}
+	return nil
+}
+
+func (s *Service) ConfigureNativeProfile(mode, shopID string) error {
+	if !validProfile(mode, shopID) || s.profiles[profileKey(mode, shopID)].Provider == nil {
+		return ErrInvalid
+	}
+	s.nativeMode, s.nativeShopID = mode, shopID
+	return nil
+}
+
+func (s *Service) profile(mode, shopID string) (paymentProfile, bool) {
+	p, ok := s.profiles[profileKey(mode, shopID)]
+	return p, ok
+}
+
+func (s *Service) testShopID() string {
+	for _, p := range s.profiles {
+		if p.Mode == "test" {
+			return p.ShopID
+		}
+	}
+	return ""
+}
+
+func (s *Service) canPayNative(account string) bool {
+	if _, ok := s.profile(s.nativeMode, s.nativeShopID); !ok {
+		return false
+	}
+	return s.nativeMode == "production" || (s.nativeMode == "test" && s.testAllowed[account])
+}
+
+func (s *Service) canPayOrder(account string, order contracts.Order) bool {
+	if _, ok := s.profile(order.ProviderMode, order.ProviderShopID); !ok {
+		return false
+	}
+	return order.ProviderMode == "production" || (order.ProviderMode == "test" && s.testAllowed[account])
 }
 
 func (s *Service) canPay(account string) bool {
@@ -89,7 +159,7 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	if count*pricing.PricePerMonitorMinor > MaxOrderAmountMinor {
 		return contracts.Order{}, ErrOrderAmount
 	}
-	kind, packageID, err = s.selectPackage(entitlement, kind, packageID, count)
+	kind, packageID, err = s.selectPackage(entitlement, kind, packageID, count, s.packageSource())
 	if err != nil {
 		return contracts.Order{}, err
 	}
@@ -153,7 +223,8 @@ func (s *Service) ReceiveNotification(ctx context.Context, n contracts.ProviderN
 	}
 	defer tx.Rollback(ctx)
 	var id string
-	err = tx.QueryRow(ctx, `SELECT id::text FROM billing.orders WHERE provider='yookassa' AND provider_mode=$4 AND provider_shop_id=$2 AND (provider_payment_id=$1 OR (id=NULLIF($3,'')::uuid AND status='pending' AND (provider_payment_id IS NULL OR provider_payment_id=$1))) ORDER BY (provider_payment_id=$1) DESC NULLS LAST LIMIT 1`, n.Object.ID, s.shopID, hint, s.mode).Scan(&id)
+	testShop := s.testShopID()
+	err = tx.QueryRow(ctx, `SELECT id::text FROM billing.orders WHERE provider='yookassa' AND ((provider_mode=$4 AND provider_shop_id=$2) OR (provider_mode='test' AND provider_shop_id=$5)) AND (provider_payment_id=$1 OR (id=NULLIF($3,'')::uuid AND status='pending' AND (provider_payment_id IS NULL OR provider_payment_id=$1))) ORDER BY (provider_payment_id=$1) DESC NULLS LAST LIMIT 1`, n.Object.ID, s.shopID, hint, s.mode, testShop).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return tx.Commit(ctx)
 	}

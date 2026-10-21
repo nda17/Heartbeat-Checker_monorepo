@@ -93,8 +93,11 @@ public final class PushStoreTest {
     @Test
     public void legacyInstallationWithoutNativeSessionOwnerStaysBehindMigrationGate() throws Exception {
         String legacyToken = "legacy-provider-token-for-upgrade-test";
-        store.update(state -> state.remove("accountId").remove("sessionId")
-                .put("token", legacyToken).put("registeredToken", legacyToken));
+        store.update(state -> {
+            state.remove("accountId");
+            state.remove("sessionId");
+            state.put("token", legacyToken).put("registeredToken", legacyToken);
+        });
         clearAuthStore(); // Simulate a TWA installation upgraded before native login.
         PushWork.locallyBlocked = false;
         ensureNotificationPermission();

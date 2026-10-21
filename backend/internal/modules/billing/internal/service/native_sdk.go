@@ -75,7 +75,7 @@ func (s *Service) CreateNativeOrder(ctx context.Context, p auth.Principal, count
 	if count < 1 || count > 1000 || !validID(key) {
 		return contracts.Order{}, contracts.SDKQuote{}, ErrInvalid
 	}
-	if s.provider != "yookassa" || !s.canPay(p.AccountID) {
+	if s.provider != "yookassa" {
 		return contracts.Order{}, contracts.SDKQuote{}, ErrSDKUnavailable
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -100,14 +100,14 @@ func (s *Service) CreateNativeOrder(ctx context.Context, p auth.Principal, count
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return contracts.Order{}, contracts.SDKQuote{}, err
 	}
-	if !s.sdkEnabled {
+	if !s.sdkEnabled || !s.canPayNative(p.AccountID) {
 		return contracts.Order{}, contracts.SDKQuote{}, ErrSDKUnavailable
 	}
 	active, err := s.accounts.Active(ctx, tx, p.AccountID)
 	if err != nil {
 		return contracts.Order{}, contracts.SDKQuote{}, err
 	}
-	if !active || (s.mode == "test" && activeRealPackage(entitlement, time.Now())) {
+	if !active {
 		return contracts.Order{}, contracts.SDKQuote{}, ErrForbidden
 	}
 	pricing, err := s.PricingTx(ctx, tx, true)
@@ -120,7 +120,11 @@ func (s *Service) CreateNativeOrder(ctx context.Context, p auth.Principal, count
 	if count*pricing.PricePerMonitorMinor > MaxOrderAmountMinor {
 		return contracts.Order{}, contracts.SDKQuote{}, ErrOrderAmount
 	}
-	kind, packageID, err = s.selectPackage(entitlement, kind, packageID, count)
+	source := "yookassa"
+	if s.nativeMode == "test" {
+		source = "yookassa_test"
+	}
+	kind, packageID, err = s.selectPackage(entitlement, kind, packageID, count, source)
 	if err != nil {
 		return contracts.Order{}, contracts.SDKQuote{}, err
 	}
@@ -145,7 +149,7 @@ func (s *Service) CreateNativeOrder(ctx context.Context, p auth.Principal, count
 	if err != nil {
 		return contracts.Order{}, contracts.SDKQuote{}, err
 	}
-	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,provider_mode,provider_shop_id,provider_request,expires_at,purchase_kind,renew_package_id,return_target,checkout_kind,reconciliation_status) VALUES($1,$2,$3,'yookassa',$4,$5,$6,$7,$8,NULL,$9,NULLIF($10,'')::uuid,'android','android_sdk','awaiting_token') RETURNING `+orderColumns, id, p.AccountID, key, count, count*pricing.PricePerMonitorMinor, s.mode, s.shopID, body, kind, packageID))
+	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,provider_mode,provider_shop_id,provider_request,expires_at,purchase_kind,renew_package_id,return_target,checkout_kind,reconciliation_status) VALUES($1,$2,$3,'yookassa',$4,$5,$6,$7,$8,NULL,$9,NULLIF($10,'')::uuid,'android','android_sdk','awaiting_token') RETURNING `+orderColumns, id, p.AccountID, key, count, count*pricing.PricePerMonitorMinor, s.nativeMode, s.nativeShopID, body, kind, packageID))
 	if err != nil {
 		return contracts.Order{}, contracts.SDKQuote{}, err
 	}
@@ -153,12 +157,12 @@ func (s *Service) CreateNativeOrder(ctx context.Context, p auth.Principal, count
 	if err = tx.QueryRow(ctx, `INSERT INTO billing.sdk_payment_requests(order_id,draft_expires_at,request_expires_at) VALUES($1,now()+interval '15 minutes',now()+interval '55 minutes') RETURNING draft_expires_at,request_expires_at`, id).Scan(&draft, &request); err != nil {
 		return contracts.Order{}, contracts.SDKQuote{}, err
 	}
-	order.SDK = &contracts.SDKOrder{State: "awaiting_token", DraftExpiresAt: draft, RequestExpiresAt: request}
+	order.SDK = &contracts.SDKOrder{State: "awaiting_token", ShopID: order.ProviderShopID, Environment: sdkEnvironment(order.ProviderMode), DraftExpiresAt: draft, RequestExpiresAt: request}
 	return order, s.sdkQuote(order), tx.Commit(ctx)
 }
 
 func (s *Service) sdkQuote(order contracts.Order) contracts.SDKQuote {
-	q := contracts.SDKQuote{ShopID: s.shopID, AmountMinor: order.AmountMinor, Currency: order.Currency, Title: "Heartbeat Checker", Subtitle: "Мониторинг", SavePaymentMethod: "off", AllowedPaymentMethods: []string{"BANK_CARD"}}
+	q := contracts.SDKQuote{ShopID: order.ProviderShopID, Environment: sdkEnvironment(order.ProviderMode), AmountMinor: order.AmountMinor, Currency: order.Currency, Title: "Heartbeat Checker", Subtitle: "Мониторинг", SavePaymentMethod: "off", AllowedPaymentMethods: []string{"BANK_CARD"}}
 	if order.SDK != nil {
 		q.DraftExpiresAt = order.SDK.DraftExpiresAt
 	}
@@ -177,10 +181,10 @@ func validPaymentToken(token string) bool {
 	return true
 }
 
-func (s *Service) sdkAAD(account, order string, hash []byte) []byte {
-	return []byte(fmt.Sprintf("v1|%s|%s|%s|%s|%x", account, order, s.shopID, s.mode, hash))
+func (s *Service) sdkAAD(account, order, mode, shop string, hash []byte) []byte {
+	return []byte(fmt.Sprintf("v1|%s|%s|%s|%s|%x", account, order, shop, mode, hash))
 }
-func (s *Service) sealSDK(account, order string, body, hash []byte) ([]byte, error) {
+func (s *Service) sealSDK(account, order, mode, shop string, body, hash []byte) ([]byte, error) {
 	if s.sdkBox == nil {
 		return nil, ErrSDKUnavailable
 	}
@@ -188,14 +192,14 @@ func (s *Service) sealSDK(account, order string, body, hash []byte) ([]byte, err
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	return s.sdkBox.Seal(nonce, nonce, body, s.sdkAAD(account, order, hash)), nil
+	return s.sdkBox.Seal(nonce, nonce, body, s.sdkAAD(account, order, mode, shop, hash)), nil
 }
-func (s *Service) openSDK(account, order string, sealed, hash []byte) ([]byte, error) {
+func (s *Service) openSDK(account, order, mode, shop string, sealed, hash []byte) ([]byte, error) {
 	if s.sdkBox == nil || len(sealed) < s.sdkBox.NonceSize()+s.sdkBox.Overhead() {
 		return nil, ErrSDKUnavailable
 	}
 	nonce := sealed[:s.sdkBox.NonceSize()]
-	body, err := s.sdkBox.Open(nil, nonce, sealed[s.sdkBox.NonceSize():], s.sdkAAD(account, order, hash))
+	body, err := s.sdkBox.Open(nil, nonce, sealed[s.sdkBox.NonceSize():], s.sdkAAD(account, order, mode, shop, hash))
 	if err != nil {
 		return nil, ErrSDKUnavailable
 	}
@@ -247,7 +251,7 @@ func (s *Service) AttachNativeToken(ctx context.Context, p auth.Principal, id, t
 		}
 		return order, tx.Commit(ctx)
 	}
-	if !s.sdkEnabled || !s.canPay(p.AccountID) {
+	if !s.sdkEnabled || !s.canPayNative(p.AccountID) || order.ProviderMode != s.nativeMode || order.ProviderShopID != s.nativeShopID {
 		return contracts.Order{}, ErrSDKUnavailable
 	}
 	if order.Status != "pending" || order.ReconciliationStatus != "awaiting_token" {
@@ -270,7 +274,7 @@ func (s *Service) AttachNativeToken(ctx context.Context, p auth.Principal, id, t
 		return contracts.Order{}, ErrInvalid
 	}
 	requestHash := sha256.Sum256(body)
-	sealed, err := s.sealSDK(p.AccountID, id, body, requestHash[:])
+	sealed, err := s.sealSDK(p.AccountID, id, order.ProviderMode, order.ProviderShopID, body, requestHash[:])
 	if err != nil {
 		return contracts.Order{}, err
 	}

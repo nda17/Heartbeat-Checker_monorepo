@@ -41,6 +41,7 @@ jobs:
       FIREBASE_SENDER_ID: ${{ vars.FIREBASE_SENDER_ID }}
       YOOKASSA_SDK_CLIENT_KEY: ${{ vars.YOOKASSA_SDK_CLIENT_KEY }}
       YOOKASSA_SHOP_ID: ${{ vars.YOOKASSA_SHOP_ID }}
+      YOOKASSA_SDK_ENVIRONMENT: ${{ vars.YOOKASSA_SDK_ENVIRONMENT }}
     steps:
       - name: Validate release inputs
         shell: bash

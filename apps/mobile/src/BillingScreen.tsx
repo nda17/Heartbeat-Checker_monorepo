@@ -19,6 +19,8 @@ type PaymentOrder = Order & {
   fulfillmentReason?: string;
   sdk?: {
     state: SDKState;
+    shopId: string;
+    environment: "test" | "live";
     paymentMethodType?: "BANK_CARD";
     draftExpiresAt: string;
     requestExpiresAt: string;
@@ -27,10 +29,12 @@ type PaymentOrder = Order & {
 type NativeCheckout = {
   enabled: boolean;
   shopId: string;
+  environment: "test" | "live";
   paymentMethods: string[];
 };
 type SDKQuote = {
   shopId: string;
+  environment: "test" | "live";
   amountMinor: number;
   currency: string;
   title: string;
@@ -45,7 +49,6 @@ type SDKCapabilities = {
   environment: "test" | "live";
 };
 type NativeBilling = Billing & {
-  test?: boolean;
   nativeCheckout?: NativeCheckout;
 };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -116,14 +119,39 @@ function sdkReady(
     !!capabilities?.configured &&
     !!server.shopId &&
     server.shopId === capabilities.shopId &&
-    capabilities.environment === (overview.test ? "test" : "live") &&
+    server.environment === capabilities.environment &&
     server.paymentMethods.includes("BANK_CARD")
   );
 }
-function validSDKQuote(quote: SDKQuote, order: PaymentOrder, shopId: string) {
+function checkoutRoute(
+  overview: NativeBilling,
+  capabilities: SDKCapabilities | null,
+  kind: "add" | "renew",
+  selected: Subscription | null,
+): PaymentIntent["checkoutKind"] | null {
+  const available = sdkReady(overview, capabilities);
+  if (kind === "add") return available ? "android_sdk" : "redirect";
+  if (selected?.source === "yookassa")
+    return available && overview.nativeCheckout?.environment === "live"
+      ? "android_sdk"
+      : "redirect";
+  if (selected?.source === "yookassa_test")
+    return available && overview.nativeCheckout?.environment === "test"
+      ? "android_sdk"
+      : null;
+  return null;
+}
+function validSDKQuote(
+  quote: SDKQuote,
+  order: PaymentOrder,
+  capabilities: SDKCapabilities,
+) {
   return (
-    quote.shopId === shopId &&
+    quote.shopId === capabilities.shopId &&
+    quote.environment === capabilities.environment &&
     order.checkoutKind === "android_sdk" &&
+    order.sdk?.shopId === quote.shopId &&
+    order.sdk.environment === quote.environment &&
     quote.amountMinor === order.amountMinor &&
     quote.currency === "RUB" &&
     order.currency === "RUB" &&
@@ -312,10 +340,9 @@ export function BillingScreen({
     authEpoch: number,
   ) => {
     if (
-      !billing ||
-      !sdkReady(billing, sdkCapabilities) ||
       !sdkCapabilities ||
-      !validSDKQuote(quote, created, sdkCapabilities.shopId) ||
+      !sdkCapabilities.configured ||
+      !validSDKQuote(quote, created, sdkCapabilities) ||
       !currentSession(current.accountId, current.sessionId, epoch)
     ) {
       setError("Не удалось проверить условия оплаты. Проверьте статус заказа.");
@@ -329,6 +356,7 @@ export function BillingScreen({
         authEpoch,
         orderId: created.id,
         shopId: quote.shopId,
+        environment: quote.environment,
         amountMinor: quote.amountMinor,
         currency: "RUB",
         title: quote.title,
@@ -429,7 +457,10 @@ export function BillingScreen({
       )
         return;
       if (
+        !sdkCapabilities?.configured ||
         latest.sdk?.state !== "confirmation_required" ||
+        latest.sdk.shopId !== sdkCapabilities.shopId ||
+        latest.sdk.environment !== sdkCapabilities.environment ||
         latest.sdk.paymentMethodType !== "BANK_CARD" ||
         !latest.confirmationUrl ||
         !validSDKConfirmationURL(latest.confirmationUrl)
@@ -443,6 +474,8 @@ export function BillingScreen({
           accountId: activeSession.account.id,
           sessionId: activeSession.session.id,
           authEpoch,
+          shopId: latest.sdk.shopId,
+          environment: latest.sdk.environment,
           confirmationUrl: latest.confirmationUrl,
           paymentMethodType: "BANK_CARD",
         });
@@ -507,7 +540,13 @@ export function BillingScreen({
   };
 
   const submit = async () => {
-    if (request.current || restoring || !billing || !billing.canPay) return;
+    if (
+      request.current ||
+      restoring ||
+      !billing ||
+      (!billing.canPay && !intentRef.current)
+    )
+      return;
     const activeSession = session();
     if (!activeSession) return;
     const saved = intentRef.current;
@@ -574,6 +613,11 @@ export function BillingScreen({
       )
         return;
       if (!current) {
+        const route = checkoutRoute(billing, sdkCapabilities, kind, selected);
+        if (!route) {
+          setError("Продление этой транзакции сейчас недоступно.");
+          return;
+        }
         current = {
           accountId: activeSession.account.id,
           sessionId: activeSession.session.id,
@@ -583,9 +627,7 @@ export function BillingScreen({
           monitorCount: quantity,
           priceVersion: billing.priceVersion,
           createdAt: new Date().toISOString(),
-          checkoutKind: sdkReady(billing, sdkCapabilities)
-            ? "android_sdk"
-            : "redirect",
+          checkoutKind: route,
         };
         if (!currentSession(current.accountId, current.sessionId, epoch))
           return;
@@ -735,7 +777,10 @@ export function BillingScreen({
     current.orderId &&
     openOrder?.id === current.orderId &&
     openOrder.sdk?.state === "awaiting_token";
-  const nativeAvailable = !!billing && sdkReady(billing, sdkCapabilities);
+  const route = billing
+    ? checkoutRoute(billing, sdkCapabilities, kind, selected)
+    : null;
+  const nativeAvailable = (current?.checkoutKind ?? route) === "android_sdk";
   return (
     <Page title="Оплата" refresh={() => void refresh()}>
       <Card>
@@ -765,7 +810,7 @@ export function BillingScreen({
               {item.quota} монитор(а) · до {date(item.activeUntil)} ·{" "}
               {item.active ? "активна" : "истекла"}
             </Label>
-            {item.source === (billing?.test ? "yookassa_test" : "yookassa") ? (
+            {["yookassa", "yookassa_test"].includes(item.source) ? (
               <Button
                 label={
                   selected?.id === item.id
@@ -835,6 +880,9 @@ export function BillingScreen({
         {!billing?.canPay ? (
           <Label muted>Оплата сейчас недоступна для этого аккаунта.</Label>
         ) : null}
+        {kind === "renew" && selected && !current && !route ? (
+          <Label muted>Продление выбранной транзакции сейчас недоступно.</Label>
+        ) : null}
         <Button
           label={
             current
@@ -848,7 +896,8 @@ export function BillingScreen({
           disabled={
             restoring ||
             busy ||
-            !billing?.canPay ||
+            (!billing?.canPay && !current) ||
+            (!current && !route) ||
             (!!current?.orderId && !canResumeSDK) ||
             (!!openOrder && unfinished(openOrder) && !current) ||
             (!current && !validQuote)

@@ -215,6 +215,70 @@ func TestCheckComposeRequiresMatchedScopedDatabaseAndNotificationConfiguration(t
 	}
 }
 
+func TestCheckComposeRequiresDualProfileParityAndWorkerScopedSDKSecrets(t *testing.T) {
+	valid := validComposeFixture()
+	services := valid["services"].(map[string]any)
+	api := services["api"].(map[string]any)["environment"].(map[string]string)
+	worker := services["worker"].(map[string]any)["environment"].(map[string]string)
+	for key, value := range map[string]string{
+		"BILLING_PROVIDER": "yookassa", "YOOKASSA_MODE": "production",
+		"YOOKASSA_PRODUCTION_SHOP_ID": "654321", "YOOKASSA_PRODUCTION_SECRET_KEY": "production_synthetic_secret_123",
+		"BILLING_TEST_ACCOUNT_IDS": "51ec7d19-80c4-4fb6-8edb-79dc7abe3120",
+		"YOOKASSA_TEST_SHOP_ID":    "123456", "YOOKASSA_TEST_SECRET_KEY": "test_synthetic_secret_123",
+		"YOOKASSA_NATIVE_SDK_ENABLED": "true", "YOOKASSA_NATIVE_SDK_MODE": "test",
+		"AUTH_MAIL_ENCRYPTION_KEY": "synthetic-sdk-encryption-key",
+	} {
+		api[key] = value
+		worker[key] = value
+	}
+	if err := CheckCompose(bytes.NewReader(composeBytes(t, valid))); err != nil {
+		t.Fatalf("valid hosted production + native test profile rejected: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{"mode mismatch", func(m map[string]any) {
+			m["services"].(map[string]any)["worker"].(map[string]any)["environment"].(map[string]string)["YOOKASSA_NATIVE_SDK_MODE"] = "production"
+		}},
+		{"hosted mode drift", func(m map[string]any) {
+			m["services"].(map[string]any)["api"].(map[string]any)["environment"].(map[string]string)["YOOKASSA_MODE"] = "test"
+		}},
+		{"wrong owner", func(m map[string]any) {
+			m["services"].(map[string]any)["api"].(map[string]any)["environment"].(map[string]string)["BILLING_TEST_ACCOUNT_IDS"] = "61ec7d19-80c4-4fb6-8edb-79dc7abe3120"
+		}},
+		{"worker encryption key drift", func(m map[string]any) {
+			m["services"].(map[string]any)["worker"].(map[string]any)["environment"].(map[string]string)["AUTH_MAIL_ENCRYPTION_KEY"] = "different-key"
+		}},
+		{"test credential leaked to probe", func(m map[string]any) {
+			m["services"].(map[string]any)["probe"].(map[string]any)["environment"].(map[string]string)["YOOKASSA_TEST_SECRET_KEY"] = "test_synthetic_secret_123"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			copy := validComposeFixture()
+			services := copy["services"].(map[string]any)
+			api := services["api"].(map[string]any)["environment"].(map[string]string)
+			worker := services["worker"].(map[string]any)["environment"].(map[string]string)
+			for key, value := range map[string]string{
+				"BILLING_PROVIDER": "yookassa", "YOOKASSA_MODE": "production",
+				"YOOKASSA_PRODUCTION_SHOP_ID": "654321", "YOOKASSA_PRODUCTION_SECRET_KEY": "production_synthetic_secret_123",
+				"BILLING_TEST_ACCOUNT_IDS": "51ec7d19-80c4-4fb6-8edb-79dc7abe3120",
+				"YOOKASSA_TEST_SHOP_ID":    "123456", "YOOKASSA_TEST_SECRET_KEY": "test_synthetic_secret_123",
+				"YOOKASSA_NATIVE_SDK_ENABLED": "true", "YOOKASSA_NATIVE_SDK_MODE": "test",
+				"AUTH_MAIL_ENCRYPTION_KEY": "synthetic-sdk-encryption-key",
+			} {
+				api[key] = value
+				worker[key] = value
+			}
+			tc.mutate(copy)
+			if err := CheckCompose(bytes.NewReader(composeBytes(t, copy))); err == nil {
+				t.Fatal("invalid dual-profile Compose accepted")
+			}
+		})
+	}
+}
+
 type probeRoundTripper struct {
 	requests     []*http.Request
 	targets      []string

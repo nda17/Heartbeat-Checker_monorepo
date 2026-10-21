@@ -317,6 +317,177 @@ func TestNativeSDKAttachedTokenReachesProviderOnlyForAuthoritativeCreateAndSucce
 	}
 }
 
+func TestNativeSDKTestProfileCoexistsWithHostedProductionAndRoutesPersistedOrders(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := newSDKActor(t, f, "Owner with live hosted package")
+	liveProvider := &fakeYooKassa{mode: "production", shopID: "654321"}
+	testProvider := &fakeYooKassa{mode: "test", shopID: "123456", paymentMethodType: "bank_card"}
+	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	module, err := NewConfigured(f.pool, false, Config{
+		Provider: "yookassa", Mode: "production", ShopID: "654321", SecretKey: "production_synthetic_secret_123",
+		PaymentProvider: liveProvider, TestAccountIDs: []string{owner.id}, TestShopID: "123456",
+		TestSecretKey: "test_synthetic_secret_123", TestProvider: testProvider,
+		NativeSDKEnabled: true, NativeSDKMode: "test", MailEncryptionKey: key, SessionLease: auth.SessionLeaseTx,
+	}, f.accounts)
+	if err != nil {
+		t.Fatalf("configure hosted-live + native-test profiles: %v", err)
+	}
+	mux := http.NewServeMux()
+	module.Register(mux, authProtect(t, f.pool, f.accounts))
+	f.module, f.handler = module, mux
+
+	var livePackageID string
+	var liveUntil time.Time
+	if err := f.pool.QueryRow(context.Background(), `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason)
+		VALUES($1,2,clock_timestamp()+interval '20 days','yookassa','pre-existing hosted live package') RETURNING id,valid_until`, owner.id).Scan(&livePackageID, &liveUntil); err != nil {
+		t.Fatal(err)
+	}
+	pricing, err := f.module.Pricing(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	outsider := newSDKActor(t, f, "Non-allowlisted native SDK account")
+	outsiderQuote := f.sdkRequest(t, outsider, http.MethodPost, "/api/v1/billing/native/orders", map[string]any{
+		"monitorCount": 1, "idempotencyKey": "e0189fae-d65b-4cc6-932e-7cb91933ab86", "priceVersion": pricing.Version,
+		"purchaseKind": "purchase",
+	})
+	if outsiderQuote.Code != http.StatusConflict || !strings.Contains(outsiderQuote.Body.String(), "sdk_unavailable") {
+		t.Fatalf("non-allowlisted native account reached test SDK checkout: status=%d body=%s", outsiderQuote.Code, outsiderQuote.Body.String())
+	}
+	var outsiderTestPackages int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.entitlements WHERE account_id=$1 AND source='yookassa_test'`, outsider.id).Scan(&outsiderTestPackages); err != nil || outsiderTestPackages != 0 {
+		t.Fatalf("test profile was applied to non-allowlisted account: packages=%d err=%v", outsiderTestPackages, err)
+	}
+	quoteResponse := f.sdkRequest(t, owner, http.MethodPost, "/api/v1/billing/native/orders", map[string]any{
+		"monitorCount": 1, "idempotencyKey": "3f49718b-59d1-40fc-a3d1-3a9dbe213149", "priceVersion": pricing.Version,
+		"purchaseKind": "purchase",
+	})
+	if quoteResponse.Code != http.StatusCreated {
+		t.Fatalf("create native test purchase while live package exists: status=%d body=%s", quoteResponse.Code, quoteResponse.Body.String())
+	}
+	var quote nativeOrderResponse
+	if err := json.Unmarshal(quoteResponse.Body.Bytes(), &quote); err != nil {
+		t.Fatal(err)
+	}
+	var orderMode, orderShop string
+	if err := f.pool.QueryRow(context.Background(), `SELECT provider_mode,provider_shop_id FROM billing.orders WHERE id=$1`, quote.Order.ID).Scan(&orderMode, &orderShop); err != nil {
+		t.Fatal(err)
+	}
+	if orderMode != "test" || orderShop != "123456" || quote.SDK.ShopID != "123456" || quote.SDK.Environment != "test" {
+		t.Fatalf("native quote did not persist the test profile independently: order=%+v sdk=%+v", quote.Order, quote.SDK)
+	}
+	if quote.Order.PurchaseKind != "purchase" {
+		t.Fatalf("a test purchase was silently turned into renewal of live package: %+v", quote.Order)
+	}
+	orderID := quote.Order.ID
+	if got := attachNativeToken(t, f, owner, orderID, "dual-profile-one-time-token"); got.Code != http.StatusOK {
+		t.Fatalf("attach native test token status=%d: %s", got.Code, got.Body.String())
+	}
+	wrongNativeRenewal := f.sdkRequest(t, owner, http.MethodPost, "/api/v1/billing/native/orders", map[string]any{
+		"monitorCount": 2, "idempotencyKey": "b15a7ec0-1b44-4f8b-9dc4-ff26c911b0a9", "priceVersion": pricing.Version,
+		"purchaseKind": "renew", "packageId": livePackageID,
+	})
+	if wrongNativeRenewal.Code != http.StatusConflict {
+		t.Fatalf("native test profile accepted renewal of hosted live package: status=%d body=%s", wrongNativeRenewal.Code, wrongNativeRenewal.Body.String())
+	}
+	var seenCreateOrder string
+	testProvider.create = func(_ string, body []byte) (contracts.ProviderPayment, error) {
+		var request struct {
+			Amount   struct{ Value, Currency string } `json:"amount"`
+			Metadata struct {
+				OrderID string `json:"order_id"`
+			} `json:"metadata"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			return contracts.ProviderPayment{}, err
+		}
+		seenCreateOrder = request.Metadata.OrderID
+		isTest := true
+		return contracts.ProviderPayment{ID: testProviderID, Status: "pending", AmountValue: request.Amount.Value, Currency: request.Amount.Currency,
+			OrderID: request.Metadata.OrderID, ShopID: "123456", Test: &isTest, PaymentMethodType: "bank_card"}, nil
+	}
+	testProvider.get = func(id string) (contracts.ProviderPayment, error) {
+		isTest := true
+		return contracts.ProviderPayment{ID: id, Status: "succeeded", Paid: true, AmountValue: "29.00", Currency: "RUB", OrderID: orderID,
+			ShopID: "123456", Test: &isTest, PaymentMethodType: "bank_card"}, nil
+	}
+
+	// Change the active SDK profile after the quote/token are durable. The retry,
+	// encrypted request AAD and worker route must remain attached to the order's
+	// immutable test profile rather than following current configuration.
+	if err := f.module.service.ConfigureNativeProfile("production", "654321"); err != nil {
+		t.Fatalf("switch active SDK profile: %v", err)
+	}
+	replay := createNativeOrder(t, f, owner, "3f49718b-59d1-40fc-a3d1-3a9dbe213149", 1)
+	if replay.Order.ID != orderID || replay.SDK.Environment != "test" || replay.SDK.ShopID != "123456" {
+		t.Fatalf("idempotent replay followed changed configuration: %+v", replay)
+	}
+	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
+		t.Fatalf("persisted test profile CREATE=(%t,%v)", processed, err)
+	}
+	liveCreateKeys, _ := liveProvider.createCalls()
+	if seenCreateOrder != orderID || len(liveCreateKeys) != 0 {
+		t.Fatalf("CREATE routed by mutable config: test order=%q live calls=%v", seenCreateOrder, liveCreateKeys)
+	}
+	var hint contracts.ProviderNotification
+	hint.Type, hint.Event, hint.Object.ID, hint.Object.Metadata.OrderID = "notification", "payment.succeeded", testProviderID, orderID
+	if err := f.module.service.ReceiveNotification(context.Background(), hint); err != nil {
+		t.Fatalf("ingest test-profile webhook hint after configuration switch: %v", err)
+	}
+	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
+		t.Fatalf("webhook-triggered persisted test profile GET=(%t,%v)", processed, err)
+	}
+	if len(testProvider.getCalls()) != 1 || len(liveProvider.getCalls()) != 0 {
+		t.Fatalf("authoritative GET did not use persisted test profile: test=%v live=%v", testProvider.getCalls(), liveProvider.getCalls())
+	}
+
+	var testPackageID, source string
+	if err := f.pool.QueryRow(context.Background(), `SELECT id,source FROM billing.entitlements WHERE origin_order_id=$1`, orderID).Scan(&testPackageID, &source); err != nil {
+		t.Fatal(err)
+	}
+	if source != "yookassa_test" {
+		t.Fatalf("native test purchase wrote source %q", source)
+	}
+	var livePackageStillExact bool
+	if err := f.pool.QueryRow(context.Background(), `SELECT valid_until=$2 FROM billing.entitlements WHERE id=$1`, livePackageID, liveUntil).Scan(&livePackageStillExact); err != nil || !livePackageStillExact {
+		t.Fatalf("native test purchase mutated hosted live package: unchanged=%t err=%v", livePackageStillExact, err)
+	}
+	for _, profile := range []struct{ mode, shop string }{{"test", "123456"}, {"production", "654321"}} {
+		if err := f.module.service.ConfigureNativeProfile(profile.mode, profile.shop); err != nil {
+			t.Fatalf("select native %s profile for entitlement check: %v", profile.mode, err)
+		}
+		tx, err := f.pool.Begin(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		locked, err := f.module.Lock(context.Background(), tx, owner.id)
+		_ = tx.Rollback(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		activeSources := 0
+		for _, part := range locked.Packages {
+			if part.Source == "yookassa_test" && part.Active {
+				t.Fatalf("test package became active beside live entitlement with native mode %s: %+v", profile.mode, part)
+			}
+			if part.Active && part.Source == "yookassa" {
+				activeSources++
+			}
+		}
+		if activeSources != 1 {
+			t.Fatalf("live package not retained as sole active paid source with native mode %s: %+v", profile.mode, locked.Packages)
+		}
+	}
+
+	wrongHostedRenewal := f.request(t, owner.billingActor, http.MethodPost, "/api/v1/billing/orders", map[string]any{
+		"monitorCount": 1, "idempotencyKey": "a1f50295-7ecf-4c40-8d35-bc0fd886eb44", "priceVersion": pricing.Version,
+		"purchaseKind": "renew", "packageId": testPackageID,
+	})
+	if wrongHostedRenewal.Code != http.StatusConflict {
+		t.Fatalf("hosted live profile accepted renewal of SDK test package: status=%d body=%s", wrongHostedRenewal.Code, wrongHostedRenewal.Body.String())
+	}
+}
+
 func TestNativeSDKDraftCancellationAndExpiredDraftCannotAttach(t *testing.T) {
 	f := newBillingFixture(t)
 	owner := newSDKActor(t, f, "Native draft owner")

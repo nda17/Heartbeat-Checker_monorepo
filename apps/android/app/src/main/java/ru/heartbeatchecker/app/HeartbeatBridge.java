@@ -272,7 +272,7 @@ public final class HeartbeatBridge extends ReactContextBaseJavaModule {
 
     @ReactMethod public void pushStatus(Promise promise) {
         work(promise, () -> {
-            if ("test".equals(BuildConfig.BILLING_ENVIRONMENT))
+            if (BuildConfig.ISOLATED_API)
                 return new JSONObject().put("enabled", false).put("optedOut", true).put("provider", "").put("status", "not_connected");
             JSONObject state = new PushStore(context).read();
             JSONObject installation = state.optJSONObject("installation");
@@ -282,7 +282,7 @@ public final class HeartbeatBridge extends ReactContextBaseJavaModule {
         });
     }
     @ReactMethod public void pushToggle(boolean enabled, boolean allowAccountChange, Promise promise) {
-        if ("test".equals(BuildConfig.BILLING_ENVIRONMENT)) {promise.reject("push_unavailable", "Push is unavailable in isolated SDK testing"); return;}
+        if (BuildConfig.ISOLATED_API) {promise.reject("push_unavailable", "Push is unavailable in isolated API app"); return;}
         pushIo.execute(() -> {
             try {PushNative.toggle(context, enabled, allowAccountChange); promise.resolve(null);}
             catch (PushNative.TransferRequired transfer) {promise.reject("push_account_change_required", "Confirm transfer of this installation");}

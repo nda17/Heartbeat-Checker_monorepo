@@ -139,7 +139,25 @@ func CheckCompose(input io.Reader) error {
 	if sdkFlag == "true" && api["BILLING_PROVIDER"] != "yookassa" {
 		return invalid("Native checkout requires YooKassa billing")
 	}
-	yk := []string{"BILLING_TEST_ACCOUNT_IDS", "YOOKASSA_MODE", "YOOKASSA_TEST_SHOP_ID", "YOOKASSA_TEST_SECRET_KEY", "YOOKASSA_PRODUCTION_SHOP_ID", "YOOKASSA_PRODUCTION_SECRET_KEY", "YOOKASSA_NATIVE_SDK_ENABLED"}
+	if sdkFlag == "true" && (api["AUTH_MAIL_ENCRYPTION_KEY"] == "" || api["AUTH_MAIL_ENCRYPTION_KEY"] != worker["AUTH_MAIL_ENCRYPTION_KEY"] || contains(other, []string{"AUTH_MAIL_ENCRYPTION_KEY"})) {
+		return invalid("Native checkout requires the same private mail encryption key in API and worker")
+	}
+	sdkMode := api["YOOKASSA_NATIVE_SDK_MODE"]
+	if sdkMode != worker["YOOKASSA_NATIVE_SDK_MODE"] || (sdkFlag == "true" && sdkMode != "test" && sdkMode != "production") || (sdkMode != "" && sdkMode != "test" && sdkMode != "production") {
+		return invalid("API and worker native checkout mode must match and be explicit when enabled")
+	}
+	if sdkFlag == "true" && api["YOOKASSA_MODE"] != "production" {
+		return invalid("Native checkout requires unchanged hosted production billing")
+	}
+	if sdkFlag == "true" && sdkMode == "test" && (api["BILLING_TEST_ACCOUNT_IDS"] != deploydata.OwnerID || !match(`^[0-9]{1,32}$`, api["YOOKASSA_TEST_SHOP_ID"]) || !strings.HasPrefix(api["YOOKASSA_TEST_SECRET_KEY"], "test_")) {
+		return invalid("Native SDK test mode requires the reviewed owner-only sandbox")
+	}
+	if api["BILLING_TEST_ACCOUNT_IDS"] != "" || api["YOOKASSA_TEST_SHOP_ID"] != "" || api["YOOKASSA_TEST_SECRET_KEY"] != "" {
+		if api["BILLING_TEST_ACCOUNT_IDS"] != deploydata.OwnerID || !match(`^[0-9]{1,32}$`, api["YOOKASSA_TEST_SHOP_ID"]) || !strings.HasPrefix(api["YOOKASSA_TEST_SECRET_KEY"], "test_") {
+			return invalid("Stored test profile must retain complete owner-only credentials")
+		}
+	}
+	yk := []string{"BILLING_TEST_ACCOUNT_IDS", "YOOKASSA_MODE", "YOOKASSA_TEST_SHOP_ID", "YOOKASSA_TEST_SECRET_KEY", "YOOKASSA_PRODUCTION_SHOP_ID", "YOOKASSA_PRODUCTION_SECRET_KEY", "YOOKASSA_NATIVE_SDK_ENABLED", "YOOKASSA_NATIVE_SDK_MODE"}
 	for _, key := range yk {
 		if api[key] != worker[key] {
 			return invalid("API and worker must share the same YooKassa policy")

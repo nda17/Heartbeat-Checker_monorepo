@@ -50,14 +50,14 @@ final class YooCheckout extends BaseActivityEventListener {
 
     JSONObject capabilities() throws Exception {
         return new JSONObject().put("configured", configured()).put("shopId", configured() ? BuildConfig.YOOKASSA_SHOP_ID : "")
-                .put("environment", BuildConfig.BILLING_ENVIRONMENT);
+                .put("environment", BuildConfig.YOOKASSA_SDK_ENVIRONMENT);
     }
 
     private static boolean configured() {
         String key = BuildConfig.YOOKASSA_SDK_CLIENT_KEY, shop = BuildConfig.YOOKASSA_SHOP_ID;
         return !shop.isEmpty() && shop.matches("[0-9]{4,16}")
-                && ("test".equals(BuildConfig.BILLING_ENVIRONMENT) && key.startsWith("test_")
-                    || "live".equals(BuildConfig.BILLING_ENVIRONMENT) && key.startsWith("live_"));
+                && ("test".equals(BuildConfig.YOOKASSA_SDK_ENVIRONMENT) && key.startsWith("test_")
+                    || "live".equals(BuildConfig.YOOKASSA_SDK_ENVIRONMENT) && key.startsWith("live_"));
     }
 
     void tokenize(ReadableMap input, Promise promise) {
@@ -69,6 +69,7 @@ final class YooCheckout extends BaseActivityEventListener {
                 long amountMinor = value.getLong("amountMinor");
                 String orderId = value.getString("orderId"), title = value.getString("title"), subtitle = value.getString("subtitle");
                 if (!configured() || !PushContract.uuid(orderId) || !BuildConfig.YOOKASSA_SHOP_ID.equals(value.getString("shopId"))
+                        || !BuildConfig.YOOKASSA_SDK_ENVIRONMENT.equals(value.getString("environment"))
                         || amountMinor < 100 || amountMinor > 35_000_000 || !"RUB".equals(value.getString("currency"))
                         || !"off".equals(value.getString("savePaymentMethod")) || methods.length() != 1
                         || !"BANK_CARD".equals(methods.getString(0)) || !PushContract.bounded(title, 128)
@@ -91,6 +92,8 @@ final class YooCheckout extends BaseActivityEventListener {
                 JSONObject value = new JSONObject(input.toHashMap());
                 String orderId = value.getString("orderId"), url = value.getString("confirmationUrl");
                 if (!configured() || !PushContract.uuid(orderId) || !"BANK_CARD".equals(value.getString("paymentMethodType"))
+                        || !BuildConfig.YOOKASSA_SHOP_ID.equals(value.getString("shopId"))
+                        || !BuildConfig.YOOKASSA_SDK_ENVIRONMENT.equals(value.getString("environment"))
                         || !confirmationUrl(url)) throw new IllegalArgumentException();
                 launch(value, "confirm", Checkout.createConfirmationIntent(context, url, PaymentMethodType.BANK_CARD,
                         BuildConfig.YOOKASSA_SDK_CLIENT_KEY, BuildConfig.YOOKASSA_SHOP_ID), requestGeneration, promise);

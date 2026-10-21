@@ -53,6 +53,11 @@ on:
         required: false
         default: false
         type: boolean
+      activate_native_sdk_test:
+        description: Enable owner-only native SDK test shop while hosted billing remains production
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -79,6 +84,7 @@ jobs:
       ACTIVATE_OAUTH: ${{ inputs.activate_oauth }}
       ACTIVATE_YOOKASSA_TEST: ${{ inputs.activate_yookassa_test }}
       ACTIVATE_YOOKASSA_PRODUCTION: ${{ inputs.activate_yookassa_production }}
+      ACTIVATE_NATIVE_SDK_TEST: ${{ inputs.activate_native_sdk_test }}
       DEPLOY_HOST: ${{ vars.BACKEND_DEPLOY_HOST }}
       DEPLOY_USER: ${{ vars.BACKEND_DEPLOY_USER }}
     steps:
@@ -109,6 +115,9 @@ jobs:
           [[ "$ACTIVATE_YOOKASSA_PRODUCTION" == true || "$ACTIVATE_YOOKASSA_PRODUCTION" == false ]] || {
             echo 'Invalid YooKassa production activation flag'; exit 1;
           }
+          [[ "$ACTIVATE_NATIVE_SDK_TEST" == true || "$ACTIVATE_NATIVE_SDK_TEST" == false ]] || {
+            echo 'Invalid native SDK test activation flag'; exit 1;
+          }
           [[ "$ACTIVATE_EMAIL_NOTIFICATIONS" == true || "$ACTIVATE_EMAIL_NOTIFICATIONS" == false ]] || {
             echo 'Invalid email notification activation flag'; exit 1;
           }
@@ -133,6 +142,11 @@ jobs:
           if [[ "$ACTIVATE_YOOKASSA_PRODUCTION" == true ]]; then
             [[ "$ACTIVATE_TELEGRAM_RELAY" == false && "$ACTIVATE_MESSENGER_NOTIFICATIONS" == false && "$ACTIVATE_ADMIN_MFA" == false && "$ACTIVATE_OAUTH" == false && "$PROVISION_OWNER" == false && "$ACTIVATE_EMAIL_NOTIFICATIONS" == false && "$ACTIVATE_ANDROID_PUSH" == false && "$ACTIVATE_YOOKASSA_TEST" == false ]] || {
               echo 'YooKassa production activation must be a separate configuration operation'; exit 1;
+            }
+          fi
+          if [[ "$ACTIVATE_NATIVE_SDK_TEST" == true ]]; then
+            [[ "$ACTIVATE_TELEGRAM_RELAY" == false && "$ACTIVATE_MESSENGER_NOTIFICATIONS" == false && "$ACTIVATE_ADMIN_MFA" == false && "$ACTIVATE_OAUTH" == false && "$PROVISION_OWNER" == false && "$ACTIVATE_EMAIL_NOTIFICATIONS" == false && "$ACTIVATE_ANDROID_PUSH" == false && "$ACTIVATE_YOOKASSA_TEST" == false && "$ACTIVATE_YOOKASSA_PRODUCTION" == false ]] || {
+              echo 'Native SDK test activation must be a separate configuration operation'; exit 1;
             }
           fi
           [[ "$DEPLOY_HOST" == 176.12.64.115 && "$DEPLOY_USER" == heartbeat-deploy ]] || {
@@ -322,7 +336,7 @@ jobs:
             scp "${ssh_opts[@]}" deploy/backend/import-owner.sql "$target:/opt/heartbeat-checker/backend/import-owner.sql.incoming"
           fi
           "$RUNNER_TEMP/hc-ops/hc-ops" deploy-json frame | ssh "${ssh_opts[@]}" "$target" \
-            "HC_OPS_SHA256='$ops_sha' bash /opt/heartbeat-checker/backend/deploy.sh.incoming '$SOURCE_SHA' '$API_IMAGE' '$WORKER_IMAGE' '$PROBE_IMAGE' '$MIGRATE_IMAGE' '$GITHUB_ACTOR' '$BACKUP_IMAGE' '$ACTIVATE_TELEGRAM_RELAY' '$ACTIVATE_MESSENGER_NOTIFICATIONS' '$PROVISION_OWNER' '$ACTIVATE_ADMIN_MFA' '$ACTIVATE_OAUTH' '$FIREWALL_IMAGE' '$FIREWALL_POLICY_SHA' '$ACTIVATE_YOOKASSA_TEST' '$ACTIVATE_EMAIL_NOTIFICATIONS' '$ACTIVATE_ANDROID_PUSH' '$ACTIVATE_YOOKASSA_PRODUCTION'"
+            "HC_OPS_SHA256='$ops_sha' bash /opt/heartbeat-checker/backend/deploy.sh.incoming '$SOURCE_SHA' '$API_IMAGE' '$WORKER_IMAGE' '$PROBE_IMAGE' '$MIGRATE_IMAGE' '$GITHUB_ACTOR' '$BACKUP_IMAGE' '$ACTIVATE_TELEGRAM_RELAY' '$ACTIVATE_MESSENGER_NOTIFICATIONS' '$PROVISION_OWNER' '$ACTIVATE_ADMIN_MFA' '$ACTIVATE_OAUTH' '$FIREWALL_IMAGE' '$FIREWALL_POLICY_SHA' '$ACTIVATE_YOOKASSA_TEST' '$ACTIVATE_EMAIL_NOTIFICATIONS' '$ACTIVATE_ANDROID_PUSH' '$ACTIVATE_YOOKASSA_PRODUCTION' '$ACTIVATE_NATIVE_SDK_TEST'"
 
       - name: Verify public backend denies runner traffic
         shell: bash

@@ -16,6 +16,7 @@ type paymentAttempt struct {
 	CreationDeadline            *time.Time
 	LeaseUntil                  time.Time
 	Order                       contracts.Order
+	Profile                     paymentProfile
 	AccountID, Token, PaymentID string
 	Request                     []byte
 	InboxID                     *int64
@@ -27,7 +28,8 @@ type paymentAttempt struct {
 // claimPayment releases every transaction lock before making provider requests.
 func (s *Service) claimPayment(ctx context.Context) (*paymentAttempt, error) {
 	var id, account string
-	err := s.pool.QueryRow(ctx, `SELECT id::text,account_id::text FROM billing.orders WHERE provider='yookassa' AND provider_mode=$2 AND provider_shop_id=$1 AND status='pending' AND reconciliation_status='pending' AND next_reconcile_at<=now() AND (reconcile_lease_until IS NULL OR reconcile_lease_until<=now()) ORDER BY next_reconcile_at,id LIMIT 1`, s.shopID, s.mode).Scan(&id, &account)
+	testShop := s.testShopID()
+	err := s.pool.QueryRow(ctx, `SELECT id::text,account_id::text FROM billing.orders WHERE provider='yookassa' AND ((provider_mode=$2 AND provider_shop_id=$1) OR (provider_mode='test' AND provider_shop_id=$3)) AND status='pending' AND reconciliation_status='pending' AND next_reconcile_at<=now() AND (reconcile_lease_until IS NULL OR reconcile_lease_until<=now()) ORDER BY next_reconcile_at,id LIMIT 1`, s.shopID, s.mode, testShop).Scan(&id, &account)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -46,14 +48,18 @@ func (s *Service) claimPayment(ctx context.Context) (*paymentAttempt, error) {
 	if err != nil {
 		return nil, err
 	}
-	order, err := scanOrder(tx.QueryRow(ctx, `SELECT `+orderColumns+` FROM billing.orders WHERE id=$1 AND provider='yookassa' AND provider_mode=$3 AND provider_shop_id=$2 AND status='pending' AND reconciliation_status='pending' AND next_reconcile_at<=now() AND (reconcile_lease_until IS NULL OR reconcile_lease_until<=now()) FOR UPDATE SKIP LOCKED`, id, s.shopID, s.mode))
+	order, err := scanOrder(tx.QueryRow(ctx, `SELECT `+orderColumns+` FROM billing.orders WHERE id=$1 AND provider='yookassa' AND ((provider_mode=$3 AND provider_shop_id=$2) OR (provider_mode='test' AND provider_shop_id=$4)) AND status='pending' AND reconciliation_status='pending' AND next_reconcile_at<=now() AND (reconcile_lease_until IS NULL OR reconcile_lease_until<=now()) FOR UPDATE SKIP LOCKED`, id, s.shopID, s.mode, testShop))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, tx.Commit(ctx)
 	}
 	if err != nil {
 		return nil, err
 	}
-	a := &paymentAttempt{Order: order, AccountID: account}
+	profile, ok := s.profile(order.ProviderMode, order.ProviderShopID)
+	if !ok {
+		return nil, ErrInvalid
+	}
+	a := &paymentAttempt{Order: order, Profile: profile, AccountID: account}
 	var deadline *time.Time
 	var now time.Time
 	if err = tx.QueryRow(ctx, `SELECT COALESCE(provider_payment_id,''),provider_request,idempotency_deadline,reconcile_attempts,clock_timestamp() FROM billing.orders WHERE id=$1`, id).Scan(&a.PaymentID, &a.Request, &deadline, &a.Attempts, &now); err != nil {
@@ -69,7 +75,7 @@ func (s *Service) claimPayment(ctx context.Context) (*paymentAttempt, error) {
 		}
 		a.RequestClosed = sealed == nil
 		if a.PaymentID == "" && sealed != nil && a.RequestExpiresAt.After(now) {
-			a.Request, err = s.openSDK(account, id, sealed, hash)
+			a.Request, err = s.openSDK(account, id, order.ProviderMode, order.ProviderShopID, sealed, hash)
 			if err != nil {
 				return nil, err
 			}
@@ -84,7 +90,7 @@ func (s *Service) claimPayment(ctx context.Context) (*paymentAttempt, error) {
 			return nil, err
 		}
 	}
-	if a.PaymentID == "" && (!active || !s.canPay(account)) {
+	if a.PaymentID == "" && (!active || !s.canPayOrder(account, order)) {
 		if order.CheckoutKind == "android_sdk" {
 			if _, err = tx.Exec(ctx, `UPDATE billing.sdk_payment_requests SET encrypted_request=NULL WHERE order_id=$1`, id); err != nil {
 				return nil, err
@@ -184,12 +190,12 @@ func (s *Service) ProcessOnePayment(ctx context.Context) (bool, error) {
 			if createCtx.Err() != nil {
 				err = createCtx.Err()
 			} else {
-				payment, err = s.payments.CreatePayment(createCtx, a.Order.ID, a.Request)
+				payment, err = a.Profile.Provider.CreatePayment(createCtx, a.Order.ID, a.Request)
 			}
 			createCancel()
 		}
 	} else {
-		payment, err = s.payments.GetPayment(providerCtx, a.PaymentID)
+		payment, err = a.Profile.Provider.GetPayment(providerCtx, a.PaymentID)
 	}
 	cancel()
 	finishCtx, finishCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -202,7 +208,7 @@ func (s *Service) validPayment(a paymentAttempt, p contracts.ProviderPayment) bo
 	if a.Order.CheckoutKind == "android_sdk" {
 		validURL = p.PaymentMethodType == "bank_card" && (p.ConfirmationURL == "" || yookassa.ValidSDKConfirmationURL(p.ConfirmationURL))
 	}
-	return yookassa.ValidPaymentID(p.ID) && (a.PaymentID == "" || p.ID == a.PaymentID) && p.OrderID == a.Order.ID && p.ShopID == s.shopID && p.Test != nil && *p.Test == (s.mode == "test") && a.Order.Test == (s.mode == "test") && p.AmountValue == moneyValue(a.Order.AmountMinor) && p.Currency == a.Order.Currency && (p.Status == "pending" || p.Status == "waiting_for_capture" || p.Status == "succeeded" || p.Status == "canceled") && (p.Status != "succeeded" || p.Paid) && validURL
+	return yookassa.ValidPaymentID(p.ID) && (a.PaymentID == "" || p.ID == a.PaymentID) && p.OrderID == a.Order.ID && p.ShopID == a.Profile.ShopID && p.Test != nil && *p.Test == (a.Profile.Mode == "test") && a.Order.Test == (a.Profile.Mode == "test") && p.AmountValue == moneyValue(a.Order.AmountMinor) && p.Currency == a.Order.Currency && (p.Status == "pending" || p.Status == "waiting_for_capture" || p.Status == "succeeded" || p.Status == "canceled") && (p.Status != "succeeded" || p.Paid) && validURL
 }
 
 func (s *Service) finishPayment(ctx context.Context, a paymentAttempt, p contracts.ProviderPayment, providerErr error) error {
@@ -225,7 +231,7 @@ func (s *Service) finishPayment(ctx context.Context, a paymentAttempt, p contrac
 	}
 	var fenced bool
 	var storedID string
-	if err = tx.QueryRow(ctx, `SELECT COALESCE(status='pending' AND reconciliation_status='pending' AND reconcile_token=$2 AND reconcile_lease_until>clock_timestamp() AND provider_shop_id=$3 AND provider_mode=$4,false),COALESCE(provider_payment_id,'') FROM billing.orders WHERE id=$1`, order.ID, a.Token, s.shopID, s.mode).Scan(&fenced, &storedID); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(status='pending' AND reconciliation_status='pending' AND reconcile_token=$2 AND reconcile_lease_until>clock_timestamp() AND provider_shop_id=$3 AND provider_mode=$4,false),COALESCE(provider_payment_id,'') FROM billing.orders WHERE id=$1`, order.ID, a.Token, a.Profile.ShopID, a.Profile.Mode).Scan(&fenced, &storedID); err != nil {
 		return err
 	}
 	if !fenced {
@@ -314,9 +320,9 @@ func (s *Service) finishPayment(ctx context.Context, a paymentAttempt, p contrac
 		switch {
 		case reason == "account_deleted":
 			fulfillment = "blocked"
-		case !active || !s.canPay(a.AccountID):
+		case !active || !s.canPayOrder(a.AccountID, order):
 			fulfillment, reason = "blocked", "account_inactive"
-		case order.Test && activeRealPackage(entitlement, now):
+		case order.Test && activeRealPackage(entitlement, now) && !(order.CheckoutKind == "android_sdk" && s.testAllowed[a.AccountID]):
 			fulfillment, reason = "blocked", "paid_entitlement"
 		default:
 			source, entitlementReason := "yookassa", "YooKassa payment"

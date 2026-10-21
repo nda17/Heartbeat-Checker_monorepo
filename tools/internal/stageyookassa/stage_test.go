@@ -119,6 +119,28 @@ func TestStageProductionVerifiesShopAndPreservesTestCredentials(t *testing.T) {
 	}
 }
 
+func TestStageNativeTestPreservesHostedProductionAndStagesOnlyOwnerSDKProfile(t *testing.T) {
+	workdir, _ := yookassaFixture(t)
+	original := []byte("BILLING_PROVIDER=yookassa\nYOOKASSA_MODE=production\nYOOKASSA_PRODUCTION_SHOP_ID=654321\nYOOKASSA_PRODUCTION_SECRET_KEY='production_existing_secret'\nKEEP_EXISTING=byte-exact\n")
+	if err := os.WriteFile(filepath.Join(workdir, ".env"), original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Stage(context.Background(), workdir, "native-test", strings.NewReader(`{"shopId":"123456","secretKey":"test_synthetic_secret_123"}`), nil); err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := os.ReadFile(filepath.Join(workdir, ".env.next"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte("BILLING_TEST_ACCOUNT_IDS=" + deploydata.OwnerID + "\nYOOKASSA_TEST_SHOP_ID=123456\nYOOKASSA_TEST_SECRET_KEY='test_synthetic_secret_123'\nYOOKASSA_NATIVE_SDK_ENABLED=true\nYOOKASSA_NATIVE_SDK_MODE=test\nBILLING_PROVIDER=yookassa\nYOOKASSA_MODE=production\nYOOKASSA_PRODUCTION_SHOP_ID=654321\nYOOKASSA_PRODUCTION_SECRET_KEY='production_existing_secret'\nKEEP_EXISTING=byte-exact\n")
+	if !bytes.Equal(candidate, want) {
+		t.Fatalf("native SDK staging changed hosted or unrelated environment bytes\nwant: %q\ngot:  %q", want, candidate)
+	}
+	if got, err := os.ReadFile(filepath.Join(workdir, ".env")); err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("stage mutated source env: %v", err)
+	}
+}
+
 func TestStageRejectsMalformedOversizedLiveKeysAndInvalidProviderResponse(t *testing.T) {
 	tests := []struct {
 		name, mode, payload, response string

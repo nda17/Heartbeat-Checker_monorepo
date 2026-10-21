@@ -118,6 +118,44 @@ func TestNativeSessionIsBearerOnlyAndRevocableWithoutChangingWebCookieFlow(t *te
 	}
 }
 
+func TestNativeAdminLoginDoesNotExposeMFAOrAdminRoutesToBearer(t *testing.T) {
+	f := newAuthFixture(t)
+	const email = "native-admin-gate@example.test"
+	f.signup(t, email)
+	var accountID string
+	if err := f.pool.QueryRow(context.Background(), `SELECT account_id FROM auth.credentials WHERE email=$1`, email).Scan(&accountID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `UPDATE accounts.accounts SET role='admin' WHERE id=$1`, accountID); err != nil {
+		t.Fatal(err)
+	}
+	login := nativeRequest(t, f, http.MethodPost, "/api/v1/auth/native/login", map[string]string{
+		"email": email, "password": integrationPass, "turnstileToken": integrationToken,
+	}, "", nil)
+	if login.Code != http.StatusOK {
+		t.Fatalf("native admin login should remain available: status=%d body=%s", login.Code, login.Body.String())
+	}
+	var payload struct {
+		Session struct {
+			Token string `json:"token"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(login.Body.Bytes(), &payload); err != nil || payload.Session.Token == "" {
+		t.Fatalf("decode native admin credentials: %v", err)
+	}
+	if got := nativeRequest(t, f, http.MethodGet, "/api/v1/auth/mfa", nil, payload.Session.Token, nil).Code; got != http.StatusUnauthorized {
+		t.Fatalf("native bearer reached MFA status route: status=%d, want 401", got)
+	}
+	adminRoute := f.module.RequireRole("admin", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts", nil)
+	req.Header.Set("Authorization", "Bearer "+payload.Session.Token)
+	rec := httptest.NewRecorder()
+	adminRoute.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("native bearer reached admin route: status=%d, want 401", rec.Code)
+	}
+}
+
 func TestNativeOAuthPKCEAttemptIsOneUseAndStateBound(t *testing.T) {
 	const email = "native-oauth@example.test"
 	f := oauthFixture(t, OAuthIdentityProfile{Subject: "native-oauth-subject", Email: email, Name: "OAuth User"})

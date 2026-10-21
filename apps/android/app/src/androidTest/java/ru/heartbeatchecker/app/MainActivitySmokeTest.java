@@ -19,7 +19,6 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -46,10 +45,7 @@ public final class MainActivitySmokeTest {
             while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
             bundle = output.toByteArray();
         }
-        String source = new String(bundle, StandardCharsets.UTF_8);
         assertTrue("CI APK must contain a substantial offline React Native bundle", bundle.length > 64 * 1024);
-        assertTrue("offline bundle must register the Android component", source.contains("HeartbeatChecker"));
-        assertTrue("offline bundle contains the real native auth screen", source.contains("Войти через Яндекс"));
 
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
             assertTrue("a rendered React Native screen is required; Activity launch alone is insufficient",

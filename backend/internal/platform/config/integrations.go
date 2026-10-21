@@ -24,6 +24,7 @@ type IntegrationConfig struct {
 	YooKassaProductionShopID      string
 	YooKassaProductionSecretKey   string
 	YooKassaNativeSDKEnabled      bool
+	YooKassaNativeSDKMode         string
 	BillingReportsEnabled         bool
 	MessengerNotificationsEnabled bool
 	EmailNotificationsEnabled     bool
@@ -79,6 +80,7 @@ func loadIntegrations(worker bool) (IntegrationConfig, error) {
 			return cfg, err
 		}
 		cfg.YooKassaMode = os.Getenv("YOOKASSA_MODE")
+		cfg.YooKassaNativeSDKMode = strings.TrimSpace(os.Getenv("YOOKASSA_NATIVE_SDK_MODE"))
 		cfg.YooKassaTestShopID = os.Getenv("YOOKASSA_TEST_SHOP_ID")
 		cfg.YooKassaTestSecretKey = os.Getenv("YOOKASSA_TEST_SECRET_KEY")
 		cfg.YooKassaProductionShopID = os.Getenv("YOOKASSA_PRODUCTION_SHOP_ID")
@@ -90,13 +92,27 @@ func loadIntegrations(worker bool) (IntegrationConfig, error) {
 		if (cfg.YooKassaMode != "test" && cfg.YooKassaMode != "production") || shop == "" || len(shop) > 32 || strings.Trim(shop, "0123456789") != "" || len(secret) < 16 || len(secret) > 512 || strings.ContainsAny(secret, " \t\r\n") || (cfg.YooKassaMode == "test" && !strings.HasPrefix(secret, "test_")) || (cfg.YooKassaMode == "production" && strings.HasPrefix(secret, "test_")) {
 			return cfg, errors.New("complete YooKassa configuration for selected mode is required")
 		}
-		if cfg.YooKassaMode == "test" {
-			id := strings.TrimSpace(os.Getenv("BILLING_TEST_ACCOUNT_IDS"))
-			var parsed pgtype.UUID
-			if len(id) != 36 || parsed.Scan(id) != nil || !parsed.Valid {
-				return cfg, errors.New("BILLING_TEST_ACCOUNT_IDS must contain exactly one owner UUID")
+		if cfg.YooKassaNativeSDKEnabled && cfg.YooKassaNativeSDKMode != "test" && cfg.YooKassaNativeSDKMode != "production" {
+			return cfg, errors.New("YOOKASSA_NATIVE_SDK_MODE must be test or production when native SDK is enabled")
+		}
+		if cfg.YooKassaNativeSDKMode != "" && cfg.YooKassaNativeSDKMode != "test" && cfg.YooKassaNativeSDKMode != "production" {
+			return cfg, errors.New("YOOKASSA_NATIVE_SDK_MODE must be test or production")
+		}
+		if cfg.YooKassaNativeSDKEnabled && cfg.YooKassaNativeSDKMode == "production" && cfg.YooKassaMode != "production" {
+			return cfg, errors.New("native production SDK requires the hosted production profile")
+		}
+		if cfg.YooKassaNativeSDKMode == "test" || cfg.YooKassaTestShopID != "" || cfg.YooKassaTestSecretKey != "" || cfg.YooKassaMode == "test" {
+			if cfg.YooKassaTestShopID == "" || len(cfg.YooKassaTestShopID) > 32 || strings.Trim(cfg.YooKassaTestShopID, "0123456789") != "" || len(cfg.YooKassaTestSecretKey) < 16 || len(cfg.YooKassaTestSecretKey) > 512 || !strings.HasPrefix(cfg.YooKassaTestSecretKey, "test_") || strings.ContainsAny(cfg.YooKassaTestSecretKey, " \t\r\n") {
+				return cfg, errors.New("complete YooKassa test profile is required")
 			}
-			cfg.BillingTestAccountIDs = []string{parsed.String()}
+			id := strings.TrimSpace(os.Getenv("BILLING_TEST_ACCOUNT_IDS"))
+			if id != "" || cfg.YooKassaMode == "test" || cfg.YooKassaNativeSDKMode == "test" {
+				var parsed pgtype.UUID
+				if len(id) != 36 || parsed.Scan(id) != nil || !parsed.Valid {
+					return cfg, errors.New("BILLING_TEST_ACCOUNT_IDS must contain exactly one owner UUID")
+				}
+				cfg.BillingTestAccountIDs = []string{parsed.String()}
+			}
 		}
 	}
 	if cfg.SupportEnabled, err = integrationBool("SUPPORT_ENABLED"); err != nil {

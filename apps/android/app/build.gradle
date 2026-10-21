@@ -28,11 +28,21 @@ if (pushProjectId && !(pushProjectId ==~ /[A-Za-z0-9_-]{8,128}/)) {
 }
 def sdkClientKey = (System.getenv('YOOKASSA_SDK_CLIENT_KEY') ?: '').trim()
 def sdkShopId = (System.getenv('YOOKASSA_SHOP_ID') ?: '').trim()
+def sdkEnvironment = (System.getenv('YOOKASSA_SDK_ENVIRONMENT') ?: 'live').trim()
 def sdkTestClientKey = (System.getenv('YOOKASSA_SDK_TEST_CLIENT_KEY') ?: '').trim()
 def sdkTestShopId = (System.getenv('YOOKASSA_SDK_TEST_SHOP_ID') ?: '').trim()
+if (!(sdkEnvironment in ['test', 'live'])) {
+    throw new GradleException('Invalid YOOKASSA_SDK_ENVIRONMENT')
+}
 if ([sdkClientKey, sdkTestClientKey].any { it && !(it ==~ /[A-Za-z0-9_-]{10,512}/) }
         || [sdkShopId, sdkTestShopId].any { it && !(it ==~ /[0-9]{4,16}/) }) {
     throw new GradleException('Invalid public YooKassa SDK client configuration')
+}
+if (sdkClientKey && !sdkClientKey.startsWith(sdkEnvironment + '_')) {
+    throw new GradleException('YooKassa SDK client key does not match its environment')
+}
+if (sdkTestClientKey && !sdkTestClientKey.startsWith('test_')) {
+    throw new GradleException('SDK test client key must use the test environment')
 }
 
 // Public client identifiers only; sending credentials never enter the APK.
@@ -64,7 +74,8 @@ android {
         resValue 'string', 'ym_app_scheme', 'heartbeatchecker'
         buildConfigField 'String', 'YOOKASSA_SDK_CLIENT_KEY', '""'
         buildConfigField 'String', 'YOOKASSA_SHOP_ID', '""'
-        buildConfigField 'String', 'BILLING_ENVIRONMENT', '"live"'
+        buildConfigField 'String', 'YOOKASSA_SDK_ENVIRONMENT', '"live"'
+        buildConfigField 'boolean', 'ISOLATED_API', 'false'
         buildConfigField 'String', 'API_ORIGIN', '"https://heartbeat-checker.ru"'
         buildConfigField 'String', 'CHALLENGE_ORIGIN', '"https://heartbeat-checker.ru"'
         buildConfigField 'String', 'RUSTORE_PUSH_PROJECT_ID', '"' + pushProjectId + '"'
@@ -87,7 +98,7 @@ android {
             minifyEnabled false
             buildConfigField 'String', 'YOOKASSA_SDK_CLIENT_KEY', '"' + sdkClientKey + '"'
             buildConfigField 'String', 'YOOKASSA_SHOP_ID', '"' + sdkShopId + '"'
-            buildConfigField 'String', 'BILLING_ENVIRONMENT', '"live"'
+            buildConfigField 'String', 'YOOKASSA_SDK_ENVIRONMENT', '"' + sdkEnvironment + '"'
         }
         ci {
             initWith release
@@ -106,7 +117,8 @@ android {
             resValue 'string', 'ym_app_scheme', 'heartbeatcheckersdktest'
             buildConfigField 'String', 'YOOKASSA_SDK_CLIENT_KEY', '"' + sdkTestClientKey + '"'
             buildConfigField 'String', 'YOOKASSA_SHOP_ID', '"' + sdkTestShopId + '"'
-            buildConfigField 'String', 'BILLING_ENVIRONMENT', '"test"'
+            buildConfigField 'String', 'YOOKASSA_SDK_ENVIRONMENT', '"test"'
+            buildConfigField 'boolean', 'ISOLATED_API', 'true'
             buildConfigField 'String', 'API_ORIGIN', '"http://127.0.0.1:18080"'
             buildConfigField 'String', 'CHALLENGE_ORIGIN', '"http://127.0.0.1:13119"'
         }
@@ -135,6 +147,9 @@ tasks.register('requireReleaseSigning') {
         }
         if (!pushProjectId) {
             throw new GradleException('Release requires the public RUSTORE_PUSH_PROJECT_ID for the registered package and signing certificate.')
+        }
+        if (sdkEnvironment == 'test' && (!sdkClientKey || !sdkShopId)) {
+            throw new GradleException('Test SDK environment requires its public client key and shop ID in the signed release.')
         }
     }
 }

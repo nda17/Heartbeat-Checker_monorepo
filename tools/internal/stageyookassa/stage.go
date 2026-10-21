@@ -22,7 +22,7 @@ var ErrInvalid = errors.New("YooKassa CI candidate validation failed")
 // Stage's optional client is a test transport seam; production uses verified TLS,
 // no environment proxies and no redirects to another credential recipient.
 func Stage(ctx context.Context, workdir, mode string, input io.Reader, client *http.Client) error {
-	if mode != "test" && mode != "production" {
+	if mode != "test" && mode != "production" && mode != "native-test" {
 		return ErrInvalid
 	}
 	b, err := deploydata.ReadBounded(input, 2048)
@@ -34,16 +34,20 @@ func Stage(ctx context.Context, workdir, mode string, input io.Reader, client *h
 		return ErrInvalid
 	}
 	shop, secret := deploydata.String(m, "shopId"), deploydata.String(m, "secretKey")
-	if !regexp.MustCompile(`^[0-9]{1,32}$`).MatchString(shop) || !deploydata.Printable(secret, 16, 512, "'\\") || (mode == "test" && !strings.HasPrefix(secret, "test_")) || (mode == "production" && strings.HasPrefix(secret, "test_")) {
+	if !regexp.MustCompile(`^[0-9]{1,32}$`).MatchString(shop) || !deploydata.Printable(secret, 16, 512, "'\\") || (mode != "production" && !strings.HasPrefix(secret, "test_")) || (mode == "production" && strings.HasPrefix(secret, "test_")) {
 		return ErrInvalid
 	}
 	if mode == "production" && verify(ctx, shop, secret, client) != nil {
 		return ErrInvalid
 	}
-	changed := [][2]string{{"BILLING_PROVIDER", "yookassa"}, {"YOOKASSA_MODE", mode}}
-	if mode == "test" {
+	changed := [][2]string{}
+	if mode == "native-test" {
+		changed = append(changed, [2]string{"BILLING_TEST_ACCOUNT_IDS", deploydata.OwnerID}, [2]string{"YOOKASSA_TEST_SHOP_ID", shop}, [2]string{"YOOKASSA_TEST_SECRET_KEY", "'" + secret + "'"}, [2]string{"YOOKASSA_NATIVE_SDK_ENABLED", "true"}, [2]string{"YOOKASSA_NATIVE_SDK_MODE", "test"})
+	} else if mode == "test" {
+		changed = append(changed, [2]string{"BILLING_PROVIDER", "yookassa"}, [2]string{"YOOKASSA_MODE", mode})
 		changed = append(changed, [2]string{"BILLING_TEST_ACCOUNT_IDS", deploydata.OwnerID}, [2]string{"YOOKASSA_TEST_SHOP_ID", shop}, [2]string{"YOOKASSA_TEST_SECRET_KEY", "'" + secret + "'"})
 	} else {
+		changed = append(changed, [2]string{"BILLING_PROVIDER", "yookassa"}, [2]string{"YOOKASSA_MODE", mode})
 		changed = append(changed, [2]string{"YOOKASSA_PRODUCTION_SHOP_ID", shop}, [2]string{"YOOKASSA_PRODUCTION_SECRET_KEY", "'" + secret + "'"})
 	}
 	if deploydata.Candidate(workdir, changed) != nil {

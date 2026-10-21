@@ -156,6 +156,28 @@ jobs:
           test -s "$apk"
           unzip -p "$apk" assets/index.android.bundle | wc -c | awk '$1 > 100000 { found = 1 } END { exit !found }'
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | grep -F "package: name='ru.heartbeatchecker.app' versionCode='7' versionName='2.0.0'"
+          size=$(wc -c < "$apk" | tr -d ' ')
+          [[ $size =~ ^[0-9]+$ ]]
+          echo "Bundled CI APK bytes: $size"
+          sha256sum "$apk"
+      - name: Retain exact-source bundled CI APK for size inspection
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: android-ci-apk-${{ github.sha }}
+          path: apps/android/app/build/outputs/apk/ci/app-ci.apk
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
+      - name: Enforce existing public APK size ceiling on CI candidate
+        run: |
+          set -euo pipefail
+          apk=apps/android/app/build/outputs/apk/ci/app-ci.apk
+          size=$(wc -c < "$apk" | tr -d ' ')
+          (( size > 0 && size < 100 * 1024 * 1024 )) || {
+            echo 'Bundled CI APK is outside the existing public size ceiling'
+            exit 1
+          }
       - name: Validate Android delivery scripts
         run: |
           shellcheck deploy/android/publish.sh deploy/android/setup-sdk.sh

@@ -6,6 +6,8 @@ import (
 )
 
 type Order struct {
+	ProviderMode         string     `json:"-"`
+	ProviderShopID       string     `json:"-"`
 	ID                   string     `json:"id"`
 	PurchaseKind         string     `json:"purchaseKind"`
 	PackageID            *string    `json:"packageId,omitempty"`
@@ -32,6 +34,8 @@ type Order struct {
 
 type SDKOrder struct {
 	State             string    `json:"state"`
+	ShopID            string    `json:"shopId"`
+	Environment       string    `json:"environment"`
 	PaymentMethodType string    `json:"paymentMethodType,omitempty"`
 	DraftExpiresAt    time.Time `json:"draftExpiresAt"`
 	RequestExpiresAt  time.Time `json:"requestExpiresAt"`
@@ -40,11 +44,13 @@ type SDKOrder struct {
 type NativeCheckout struct {
 	Enabled        bool     `json:"enabled"`
 	ShopID         string   `json:"shopId"`
+	Environment    string   `json:"environment"`
 	PaymentMethods []string `json:"paymentMethods"`
 }
 
 type SDKQuote struct {
 	ShopID                string    `json:"shopId"`
+	Environment           string    `json:"environment"`
 	AmountMinor           int       `json:"amountMinor"`
 	Currency              string    `json:"currency"`
 	Title                 string    `json:"title"`

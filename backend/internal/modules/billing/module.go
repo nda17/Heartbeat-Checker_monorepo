@@ -28,7 +28,11 @@ type Config struct {
 	ShopID            string
 	SecretKey         string
 	PaymentProvider   contracts.Provider
+	TestShopID        string
+	TestSecretKey     string
+	TestProvider      contracts.Provider
 	NativeSDKEnabled  bool
+	NativeSDKMode     string
 	MailEncryptionKey string
 	SessionLease      func(context.Context, pgx.Tx, string, string) (time.Time, error)
 }
@@ -51,6 +55,29 @@ func NewConfigured(pool *pgxpool.Pool, local bool, cfg Config, guard accounts.Ac
 			}
 		}
 		if err := s.ConfigureYooKassa(provider, cfg.Mode, cfg.ShopID, cfg.TestAccountIDs); err != nil {
+			return nil, err
+		}
+		if cfg.Mode != "test" && len(cfg.TestAccountIDs) == 1 && (cfg.TestShopID != "" || cfg.TestSecretKey != "" || cfg.TestProvider != nil) {
+			testProvider := cfg.TestProvider
+			if testProvider == nil {
+				var err error
+				testProvider, err = yookassa.New("test", cfg.TestShopID, cfg.TestSecretKey)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if err := s.ConfigureTestProfile(testProvider, cfg.TestShopID); err != nil {
+				return nil, err
+			}
+		}
+		if cfg.NativeSDKMode == "" {
+			cfg.NativeSDKMode = cfg.Mode
+		}
+		nativeShop := cfg.ShopID
+		if cfg.NativeSDKMode == "test" && cfg.Mode != "test" {
+			nativeShop = cfg.TestShopID
+		}
+		if err := s.ConfigureNativeProfile(cfg.NativeSDKMode, nativeShop); err != nil && cfg.NativeSDKEnabled {
 			return nil, err
 		}
 		if err := s.ConfigureNativeSDK(cfg.NativeSDKEnabled, cfg.MailEncryptionKey, cfg.SessionLease); err != nil {
