@@ -13,6 +13,7 @@ var ErrSessionRevoked = errors.New("session revoked")
 type Principal struct {
 	AccountID        string     `json:"accountId"`
 	SessionID        string     `json:"sessionId"`
+	ClientKind       string     `json:"-"`
 	Email            string     `json:"email"`
 	Role             string     `json:"role"`
 	MFAEnabled       bool       `json:"-"`

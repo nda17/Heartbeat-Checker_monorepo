@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/cipher"
 	"errors"
 	"strings"
 	"time"
@@ -13,14 +14,17 @@ import (
 )
 
 type Service struct {
-	pool     *pgxpool.Pool
-	local    bool
-	provider string
-	allowed  map[string]bool
-	accounts accounts.ActiveGuard
-	payments contracts.Provider
-	shopID   string
-	mode     string
+	pool         *pgxpool.Pool
+	local        bool
+	provider     string
+	allowed      map[string]bool
+	accounts     accounts.ActiveGuard
+	payments     contracts.Provider
+	shopID       string
+	mode         string
+	sdkEnabled   bool
+	sdkBox       cipher.AEAD
+	sessionLease func(context.Context, pgx.Tx, string, string) (time.Time, error)
 }
 
 var ErrAdminGrant = errors.New("invalid administrative grant")

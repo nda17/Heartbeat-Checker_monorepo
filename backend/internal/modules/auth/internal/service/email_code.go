@@ -327,6 +327,14 @@ func (s *Service) confirmCodeTx(ctx context.Context, tx pgx.Tx, c postgres.Email
 }
 
 func (s *Service) ConfirmRegistration(ctx context.Context, id, capability, code, captchaToken string, cl Client, previousToken string) (LoginResult, error) {
+	return s.confirmRegistration(ctx, id, capability, code, captchaToken, cl, previousToken, "web")
+}
+
+func (s *Service) NativeConfirmRegistration(ctx context.Context, id, capability, code, captchaToken string, cl Client) (LoginResult, error) {
+	return s.confirmRegistration(ctx, id, capability, code, captchaToken, cl, "", "android")
+}
+
+func (s *Service) confirmRegistration(ctx context.Context, id, capability, code, captchaToken string, cl Client, previousToken, clientKind string) (LoginResult, error) {
 	if !security.ValidID(id) || len(code) > 64 {
 		return LoginResult{}, ErrInvalid
 	}
@@ -384,7 +392,17 @@ func (s *Service) ConfirmRegistration(ctx context.Context, id, capability, code,
 	if len(agent) > 500 {
 		agent = agent[:500]
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO auth.sessions(id,account_id,token_hash,credential_version,expires_at,ip,user_agent) VALUES($1,$2,$3,1,$4,NULLIF($5,'')::inet,$6)`, sessionID, a.ID, security.Digest(token), c.DBNow.Add(s.cfg.SessionTTL), cl.IP, string(agent)); err != nil {
+	expires := c.DBNow.Add(s.sessionTTL(clientKind))
+	revokeToken := ""
+	var revokeHash []byte
+	if clientKind == "android" {
+		revokeToken, err = security.Token()
+		if err != nil {
+			return LoginResult{}, ErrUnavailable
+		}
+		revokeHash = security.Digest(revokeToken)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO auth.sessions(id,account_id,token_hash,credential_version,expires_at,ip,user_agent,client_kind,revoke_token_hash) VALUES($1,$2,$3,1,$4,NULLIF($5,'')::inet,$6,$7,$8)`, sessionID, a.ID, security.Digest(token), expires, cl.IP, string(agent), clientKind, revokeHash); err != nil {
 		return LoginResult{}, ErrUnavailable
 	}
 	if _, err = tx.Exec(ctx, `UPDATE auth.email_code_challenges SET consumed_at=now() WHERE id=$1`, c.ID); err != nil {
@@ -399,7 +417,7 @@ func (s *Service) ConfirmRegistration(ctx context.Context, id, capability, code,
 	if err = tx.Commit(ctx); err != nil {
 		return LoginResult{}, ErrUnavailable
 	}
-	return LoginResult{Account: a, Token: token, CSRF: security.CSRF(token)}, nil
+	return LoginResult{Account: a, Token: token, CSRF: security.CSRF(token), SessionID: sessionID, ExpiresAt: expires, RevokeToken: revokeToken}, nil
 }
 
 func (s *Service) notificationBudget(ctx context.Context, accountID, email, ip string) error {

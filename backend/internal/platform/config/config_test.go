@@ -189,6 +189,32 @@ func setRequiredConfigEnv(t *testing.T) {
 	}
 }
 
+func TestWorkerDatabaseAllowlistAcceptsOnlyExactLocalAndSDKDatabases(t *testing.T) {
+	for _, database := range []string{
+		"postgres://fixture:fixture@127.0.0.1:55432/heartbeat_local?sslmode=disable",
+		"postgres://fixture:fixture@127.0.0.1:55432/heartbeat_sdk_local?sslmode=disable",
+	} {
+		if err := localDatabase(database); err != nil {
+			t.Errorf("localDatabase(%q) rejected allowlisted DB: %v", database, err)
+		}
+	}
+	for _, database := range []string{
+		"postgres://fixture:fixture@127.0.0.1:55432/heartbeat_local_test?sslmode=disable",
+		"postgres://fixture:fixture@127.0.0.1:55432/heartbeat_sdk_local_test?sslmode=disable",
+		"postgres://fixture:fixture@127.0.0.1:55432/heartbeat_sdk_local/extra?sslmode=disable",
+		"postgres://fixture:fixture@localhost:55432/heartbeat_sdk_local?sslmode=disable",
+		"postgres://fixture:fixture@192.0.2.10:55432/heartbeat_sdk_local?sslmode=disable",
+		"postgres://fixture:fixture@127.0.0.1:5432/heartbeat_sdk_local?sslmode=disable",
+		"postgres://fixture:fixture@127.0.0.1:55432/heartbeat_sdk_local?sslmode=disable&host=192.0.2.10",
+		"postgres://fixture:fixture@127.0.0.1:55432/heartbeat_sdk_local?sslmode=disable&sslrootcert=/tmp/cert",
+		"postgres://fixture:fixture@127.0.0.1:55432/heartbeat_sdk_local?sslmode=disable#fragment",
+	} {
+		if err := localDatabase(database); err == nil {
+			t.Errorf("localDatabase(%q) accepted non-allowlisted URL", database)
+		}
+	}
+}
+
 func TestLoadLocalModeRequiresLoopbackAPIAndOrigin(t *testing.T) {
 	tests := []struct {
 		name, httpAddr, origin string

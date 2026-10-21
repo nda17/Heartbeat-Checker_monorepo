@@ -18,14 +18,15 @@ import (
 const testProviderID = "payment1234567890123456"
 
 type fakeYooKassa struct {
-	mu           sync.Mutex
-	mode         string
-	shopID       string
-	createKeys   []string
-	createBodies [][]byte
-	getIDs       []string
-	create       func(string, []byte) (contracts.ProviderPayment, error)
-	get          func(string) (contracts.ProviderPayment, error)
+	mu                sync.Mutex
+	mode              string
+	shopID            string
+	paymentMethodType string
+	createKeys        []string
+	createBodies      [][]byte
+	getIDs            []string
+	create            func(string, []byte) (contracts.ProviderPayment, error)
+	get               func(string) (contracts.ProviderPayment, error)
 }
 
 func (p *fakeYooKassa) CreatePayment(_ context.Context, key string, body []byte) (contracts.ProviderPayment, error) {
@@ -55,7 +56,7 @@ func (p *fakeYooKassa) CreatePayment(_ context.Context, key string, body []byte)
 		ID: testProviderID, Status: "pending", AmountValue: request.Amount.Value,
 		Currency: request.Amount.Currency, OrderID: request.Metadata.OrderID,
 		ShopID: shopID, ConfirmationURL: "https://yookassa.ru/checkout/" + testProviderID,
-		Test: &testMode,
+		Test: &testMode, PaymentMethodType: p.paymentMethodType,
 	}, nil
 }
 
@@ -836,14 +837,14 @@ func TestYooKassaPaymentAddsPaidComponentAlongsideAdminGrantAndDoesNotReviveDele
 			t.Fatal(err)
 		}
 		var entitlementCount int
-		var paidUntil, adminUntil time.Time
-		if err := f.pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM billing.entitlements WHERE account_id=$1 AND valid_until>now()) + (SELECT count(*) FROM billing.admin_grants WHERE account_id=$1 AND valid_until>now()),
-			(SELECT valid_until FROM billing.entitlements WHERE account_id=$1), (SELECT valid_until FROM billing.admin_grants WHERE account_id=$1)`, owner.id).
-			Scan(&entitlementCount, &paidUntil, &adminUntil); err != nil {
+		var paidActive, adminActive bool
+		if err := f.pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM billing.entitlements WHERE account_id=$1 AND valid_until>clock_timestamp()) + (SELECT count(*) FROM billing.admin_grants WHERE account_id=$1 AND valid_until>clock_timestamp()),
+			(SELECT valid_until>clock_timestamp() FROM billing.entitlements WHERE account_id=$1), (SELECT valid_until>clock_timestamp() FROM billing.admin_grants WHERE account_id=$1)`, owner.id).
+			Scan(&entitlementCount, &paidActive, &adminActive); err != nil {
 			t.Fatal(err)
 		}
-		if status != "succeeded" || fulfillment != "blocked" || reason != "account_deleted" || entitlementCount != 0 || paidUntil.After(time.Now()) || adminUntil.After(time.Now()) {
-			t.Fatalf("deleted paid/admin account state=%s/%s/%s active=%d paidUntil=%s adminUntil=%s", status, fulfillment, reason, entitlementCount, paidUntil, adminUntil)
+		if status != "succeeded" || fulfillment != "blocked" || reason != "account_deleted" || entitlementCount != 0 || paidActive || adminActive {
+			t.Fatalf("deleted paid/admin account state=%s/%s/%s active=%d paidActive=%t adminActive=%t", status, fulfillment, reason, entitlementCount, paidActive, adminActive)
 		}
 	})
 }

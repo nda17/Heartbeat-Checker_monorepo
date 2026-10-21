@@ -159,6 +159,30 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, s.origin+errorDestination+"?oauthError=oauth_state_invalid", http.StatusSeeOther)
 		return
 	}
+	flowID, native, fresh, nativeErr := s.service.NativeOAuthCallback(r.Context(), r.PathValue("provider"), q.Get("state"))
+	if nativeErr != nil {
+		failService(w, nativeErr)
+		return
+	}
+	if native {
+		query := url.Values{"flowId": {flowID}, "state": {q.Get("state")}}
+		if !fresh {
+			query.Set("error", "oauth_state_invalid")
+		} else if q.Get("error") != "" {
+			code := "oauth_provider_unavailable"
+			if q.Get("error") == "access_denied" {
+				code = "oauth_cancelled"
+			}
+			query.Set("error", code)
+		} else {
+			query.Set("code", q.Get("code"))
+			if deviceID := q.Get("device_id"); deviceID != "" {
+				query.Set("deviceId", deviceID)
+			}
+		}
+		http.Redirect(w, r, s.origin+"/android/auth/complete?"+query.Encode(), http.StatusSeeOther)
+		return
+	}
 	input := service.OAuthCallbackInput{Provider: r.PathValue("provider"), Code: q.Get("code"), State: q.Get("state"), DeviceID: q.Get("device_id"), ProviderError: q.Get("error"), Cookie: s.oauthCookie(r, "attempt"), SessionToken: s.sessionToken(r), Client: client(r)}
 	out, err := s.service.OAuthCallback(r.Context(), input)
 	if out.Consumed {
@@ -231,7 +255,7 @@ func (s *Server) oauthConfirm(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"account": out.Login.Account, "csrfToken": out.Login.CSRF, "returnTo": out.ReturnTo})
 }
 func (s *Server) oauthIdentities(w http.ResponseWriter, r *http.Request) {
-	p, _, ok := s.require(w, r, false)
+	p, _, ok := s.requireAny(w, r, false)
 	if !ok {
 		return
 	}

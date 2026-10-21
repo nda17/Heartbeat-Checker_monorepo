@@ -3,7 +3,6 @@ package ru.heartbeatchecker.app;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Arrays;
@@ -39,7 +38,7 @@ final class PushContract {
                 && value.codePoints().noneMatch(c -> c < 32 || c == 127);
     }
 
-    static boolean provider(String value) { return "rustore".equals(value) || "fcm".equals(value) || "huawei".equals(value); }
+    static boolean provider(String value) { return "rustore".equals(value) || "fcm".equals(value); }
 
     static boolean token(String value) { return value != null && !value.isEmpty() && bounded(value, 4096); }
 
@@ -59,21 +58,6 @@ final class PushContract {
         if (!(value instanceof Integer || value instanceof Long) || ((Number) value).longValue() < 1)
             throw new JSONException("Invalid counter");
         return ((Number) value).longValue();
-    }
-
-    static String setupPair(String value) {
-        try {
-            URI uri = new URI(value);
-            if (!"https".equals(uri.getScheme()) || !"heartbeat-checker.ru".equals(uri.getRawAuthority())
-                    || uri.getRawFragment() != null) return null;
-            if ("/android/push/connect".equals(uri.getRawPath()) && uri.getRawQuery() == null) return "";
-            if ("/android/push/complete".equals(uri.getRawPath()) && uri.getRawQuery() == null) return "complete";
-            return null;
-        } catch (Exception ignored) { return null; }
-    }
-
-    static boolean confirmation(String url, String id) {
-        return uuid(id) && (ORIGIN + "/app/settings?pushPair=" + id).equals(url);
     }
 
     static JSONObject installation(JSONObject value) throws JSONException {

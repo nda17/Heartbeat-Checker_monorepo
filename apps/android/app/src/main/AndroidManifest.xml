@@ -24,8 +24,6 @@
         <service android:name=".FirebasePushService" android:exported="false">
             <intent-filter><action android:name="com.google.firebase.MESSAGING_EVENT" /></intent-filter>
         </service>
-        <meta-data android:name="asset_statements" android:resource="@string/asset_statements" />
-        <meta-data android:name="web_manifest_url" android:value="https://heartbeat-checker.ru/manifest.webmanifest" />
         <meta-data android:name="ru.rustore.sdk.pushclient.default_notification_icon" android:resource="@drawable/ic_notification" />
         <meta-data android:name="ru.rustore.sdk.pushclient.default_notification_channel_id" android:value="incidents" />
         <service android:name=".HeartbeatMessagingService" android:exported="true" tools:ignore="ExportedService">
@@ -33,17 +31,7 @@
                 <action android:name="ru.rustore.sdk.pushclient.MESSAGING_EVENT" />
             </intent-filter>
         </service>
-        <activity android:name=".PushSetupActivity" android:exported="true" android:launchMode="singleTop">
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="https" android:host="heartbeat-checker.ru" />
-                <data android:path="/android/push/connect" />
-                <data android:path="/android/push/complete" />
-            </intent-filter>
-        </activity>
-        <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop">
+        <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -53,13 +41,16 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" />
-                <data android:host="heartbeat-checker.ru" />
+                <data android:host="${appLinkHost}" />
                 <data android:path="/app" />
                 <data android:path="/app/settings" />
                 <data android:path="/app/billing" />
                 <data android:path="/app/admin" />
+                <data android:path="/android/auth/complete" />
+                <data android:path="/android/auth/reset" />
+                <data android:path="/android/auth/verify" />
+                <data android:path="/android/payments/return" />
             </intent-filter>
         </activity>
-        <activity android:name="com.google.androidbrowserhelper.trusted.FocusActivity" android:exported="false" />
     </application>
 </manifest>

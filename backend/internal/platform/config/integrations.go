@@ -23,6 +23,7 @@ type IntegrationConfig struct {
 	YooKassaTestSecretKey         string
 	YooKassaProductionShopID      string
 	YooKassaProductionSecretKey   string
+	YooKassaNativeSDKEnabled      bool
 	BillingReportsEnabled         bool
 	MessengerNotificationsEnabled bool
 	EmailNotificationsEnabled     bool
@@ -73,6 +74,10 @@ func loadIntegrations(worker bool) (IntegrationConfig, error) {
 		}
 	}
 	if cfg.BillingProvider == "yookassa" {
+		cfg.YooKassaNativeSDKEnabled, err = integrationBool("YOOKASSA_NATIVE_SDK_ENABLED")
+		if err != nil {
+			return cfg, err
+		}
 		cfg.YooKassaMode = os.Getenv("YOOKASSA_MODE")
 		cfg.YooKassaTestShopID = os.Getenv("YOOKASSA_TEST_SHOP_ID")
 		cfg.YooKassaTestSecretKey = os.Getenv("YOOKASSA_TEST_SECRET_KEY")

@@ -12,37 +12,9 @@ import static org.junit.Assert.*;
 
 public final class PushContractTest {
     private static final String INSTALLATION = "123e4567-e89b-12d3-a456-426614174000";
-    private static final String PAIRING = "987e6543-e21b-12d3-a456-426614174000";
     private static final String DELIVERY = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     private static final String MONITOR = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     private static final String INCIDENT = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
-
-    @Test
-    public void setupUrlsAcceptOnlyTheTwoExpectedNativeHandoffs() {
-        assertEquals("", PushContract.setupPair("https://heartbeat-checker.ru/android/push/connect"));
-        assertEquals("complete", PushContract.setupPair("https://heartbeat-checker.ru/android/push/complete"));
-        assertNull(PushContract.setupPair("https://heartbeat-checker.ru/android/push/connect?pairingId=" + PAIRING));
-        assertNull(PushContract.setupPair("https://heartbeat-checker.ru/android/push/complete?pairingId=" + PAIRING));
-        assertNull(PushContract.setupPair("https://heartbeat-checker.ru/android/push/complete?pairingId=" + PAIRING + "&token=secret"));
-        assertNull(PushContract.setupPair("https://heartbeat-checker.ru/android/push/complete?pairingId=" + PAIRING.toUpperCase()));
-        assertNull(PushContract.setupPair("https://heartbeat-checker.ru/android/push/complete?pairingId=%" + PAIRING));
-        assertNull(PushContract.setupPair("https://heartbeat-checker.ru.evil.test/android/push/connect"));
-        assertNull(PushContract.setupPair("https://heartbeat-checker.ru@evil.test/android/push/connect"));
-        assertNull(PushContract.setupPair("http://heartbeat-checker.ru/android/push/connect"));
-        assertNull(PushContract.setupPair("https://heartbeat-checker.ru:443/android/push/connect"));
-        assertNull(PushContract.setupPair("https://heartbeat-checker.ru/android/push/connect#fragment"));
-        assertNull(PushContract.setupPair("https://heartbeat-checker.ru/android/push/connect/"));
-        assertNull(PushContract.setupPair(null));
-    }
-
-    @Test
-    public void confirmationIsBoundToTheCanonicalSettingsUrlWithoutSecrets() {
-        assertTrue(PushContract.confirmation(PushContract.ORIGIN + "/app/settings?pushPair=" + PAIRING, PAIRING));
-        assertFalse(PushContract.confirmation(PushContract.ORIGIN + "/app/settings?pushPair=" + PAIRING + "&token=secret", PAIRING));
-        assertFalse(PushContract.confirmation("https://evil.test/app/settings?pushPair=" + PAIRING, PAIRING));
-        assertFalse(PushContract.confirmation(PushContract.ORIGIN + "/app/settings?pushPair=" + PAIRING.toUpperCase(), PAIRING));
-        assertFalse(PushContract.confirmation(PushContract.ORIGIN + "/app/settings?pushPair=" + PAIRING, "not-a-uuid"));
-    }
 
     @Test
     public void installationRequiresExactRawDtoFieldsAndRecognizedStatuses() throws Exception {

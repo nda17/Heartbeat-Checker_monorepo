@@ -304,7 +304,7 @@ func (p *Push) UpdateRegistration(ctx context.Context, bearer string, in PushReg
 	if in.Permission == "granted" && len(sealed) == 0 {
 		return PushInstallationStatus{}, ErrPushInvalid
 	}
-	_, err = tx.Exec(ctx, `UPDATE notifications.push_installations SET permission=$2,encrypted_token=$3,token_fingerprint=COALESCE($4,token_fingerprint),registration_version=registration_version+1,token_valid=CASE WHEN $4::bytea IS NOT NULL THEN true ELSE token_valid END,provider_available=CASE WHEN $4::bytea IS NOT NULL THEN true ELSE provider_available END,provider=$5,updated_at=now() WHERE id=$1`, i.ID, in.Permission, sealed, fingerprint, in.Provider)
+	_, err = tx.Exec(ctx, `UPDATE notifications.push_installations SET permission=$2,encrypted_token=$3,token_fingerprint=COALESCE($4,token_fingerprint),registration_version=registration_version+1,token_valid=CASE WHEN $4::bytea IS NOT NULL THEN true ELSE token_valid END,provider_available=CASE WHEN $4::bytea IS NOT NULL THEN true ELSE provider_available END,provider=$5,native_bind_fingerprint=CASE WHEN $4::bytea IS NOT NULL OR provider<>$5 THEN NULL ELSE native_bind_fingerprint END,updated_at=now() WHERE id=$1`, i.ID, in.Permission, sealed, fingerprint, in.Provider)
 	if err != nil {
 		return PushInstallationStatus{}, pushError(err)
 	}

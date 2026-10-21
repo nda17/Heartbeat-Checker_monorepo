@@ -64,7 +64,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if cfg.YooKassaMode == "production" {
 		shopID, secretKey = cfg.YooKassaProductionShopID, cfg.YooKassaProductionSecretKey
 	}
-	billingModule, err := billing.NewConfigured(pool, cfg.AppEnv == "local", billing.Config{Provider: cfg.BillingProvider, MockAccountIDs: cfg.BillingMockAccountIDs, TestAccountIDs: cfg.BillingTestAccountIDs, Mode: cfg.YooKassaMode, ShopID: shopID, SecretKey: secretKey}, accountModule)
+	billingModule, err := billing.NewConfigured(pool, cfg.AppEnv == "local", billing.Config{Provider: cfg.BillingProvider, MockAccountIDs: cfg.BillingMockAccountIDs, TestAccountIDs: cfg.BillingTestAccountIDs, Mode: cfg.YooKassaMode, ShopID: shopID, SecretKey: secretKey, NativeSDKEnabled: cfg.YooKassaNativeSDKEnabled, MailEncryptionKey: cfg.AuthMailEncryptionKey, SessionLease: auth.SessionLeaseTx}, accountModule)
 	if err != nil {
 		return fmt.Errorf("configure billing: %w", err)
 	}

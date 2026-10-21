@@ -39,14 +39,20 @@ public final class PushStoreTest {
     private static final String INSTALLATION = "123e4567-e89b-12d3-a456-426614174000";
     private static final String MONITOR = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     private static final String INCIDENT = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    private static final String OWNER = "11111111-1111-4111-8111-111111111111";
+    private static final String SESSION = "22222222-2222-4222-8222-222222222222";
     private static final String CREDENTIAL = INSTALLATION + ".abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
     private Context context;
     private PushStore store;
+    private AuthStore authStore;
     private boolean previousLocallyBlocked;
 
     @Before
     public void setUp() throws Exception {
         context = ApplicationProvider.getApplicationContext();
+        authStore = new AuthStore(context);
+        clearAuthStore();
+        authStore.saveSession(authSession(OWNER, SESSION), authStore.epoch());
         previousLocallyBlocked = PushWork.locallyBlocked;
         PushWork.locallyBlocked = false;
         store = new PushStore(context);
@@ -62,6 +68,7 @@ public final class PushStoreTest {
     @org.junit.After
     public void restoreDeliveryState() {
         PushWork.locallyBlocked = previousLocallyBlocked;
+        try { clearAuthStore(); } catch (Exception ignored) { }
     }
 
     @Test
@@ -81,6 +88,62 @@ public final class PushStoreTest {
         JSONObject persisted = new PushStore(context).read();
         assertEquals(id, persisted.getJSONObject("pending").getJSONObject(id).getString("deliveryId"));
         assertTrue("push state must live outside auto-backup", file.getParentFile().equals(context.getNoBackupFilesDir()));
+    }
+
+    @Test
+    public void legacyInstallationWithoutNativeSessionOwnerStaysBehindMigrationGate() throws Exception {
+        String legacyToken = "legacy-provider-token-for-upgrade-test";
+        store.update(state -> state.remove("accountId").remove("sessionId")
+                .put("token", legacyToken).put("registeredToken", legacyToken));
+        clearAuthStore(); // Simulate a TWA installation upgraded before native login.
+        PushWork.locallyBlocked = false;
+        ensureNotificationPermission();
+
+        String id = deliveryId(80);
+        PushWork.delivery(context, envelope(id, 1, System.currentTimeMillis() + 300_000));
+
+        JSONObject state = store.read();
+        assertTrue("existing encrypted installation credentials survive upgrade", state.has("credential"));
+        assertTrue("server installation state survives for user-driven reconnect", state.has("installation"));
+        assertEquals("provider token survives the app update in the old encrypted store", legacyToken, state.getString("token"));
+        byte[] ciphertext = java.nio.file.Files.readAllBytes(
+                new File(context.getNoBackupFilesDir(), "push-state.enc").toPath());
+        assertFalse("provider token remains encrypted after the update", new String(ciphertext,
+                java.nio.charset.StandardCharsets.UTF_8).contains(legacyToken));
+        assertFalse("legacy TWA ownership does not authorize background delivery", state.optJSONObject("pending") != null
+                && state.getJSONObject("pending").has(id));
+        assertNull("upgrade does not infer an Android bearer session", authStore.active());
+        assertFalse("old push data without exact native ownership remains gated", authStore.ownsPush(state));
+
+        String queued = deliveryId(81);
+        assertTrue(store.reserve(envelope(queued, 1, System.currentTimeMillis() + 300_000)));
+        AtomicInteger fetches = new AtomicInteger();
+        AtomicInteger displays = new AtomicInteger();
+        androidx.work.ListenableWorker.Result result = runDelivery(queued, () -> false, fakeDelivery(fetches, displays));
+        assertResult(androidx.work.ListenableWorker.Result.success(), result);
+        assertEquals("legacy pending delivery is blocked before network access", 0, fetches.get());
+        assertEquals("legacy pending delivery never displays without native session ownership", 0, displays.get());
+        assertFalse("rejected legacy delivery is dropped", store.read().getJSONObject("pending").has(queued));
+    }
+
+    @Test
+    public void expiredServerLeaseStopsBackgroundFetchEvenForCurrentOwner() throws Exception {
+        ensureNotificationPermission();
+        String id = deliveryId(82);
+        JSONObject staleLeaseEnvelope = envelope(id, 1, System.currentTimeMillis() + 300_000);
+        store.update(state -> {
+            state.getJSONObject("installation").put("leaseExpiresAt", Instant.ofEpochMilli(System.currentTimeMillis() - 1000).toString());
+            state.put("pending", new JSONObject().put(id, staleLeaseEnvelope));
+        });
+        AtomicInteger fetches = new AtomicInteger();
+        AtomicInteger displays = new AtomicInteger();
+
+        androidx.work.ListenableWorker.Result result = runDelivery(id, () -> false, fakeDelivery(fetches, displays));
+
+        assertResult(androidx.work.ListenableWorker.Result.success(), result);
+        assertEquals("expired lease is rejected before request", 0, fetches.get());
+        assertEquals("expired lease cannot display an incident", 0, displays.get());
+        assertFalse("expired lease clears the stale pending item", store.read().getJSONObject("pending").has(id));
     }
 
     @Test
@@ -154,6 +217,47 @@ public final class PushStoreTest {
         assertFalse(state.has("seen"));
         assertFalse(state.has("sequences"));
         assertEquals(2, state.getJSONObject("installation").getLong("bindingGeneration"));
+    }
+
+    @Test
+    public void ambiguousNativeBindRetainsPendingAndRetriesExactBodyBeforeResumingDelivery() throws Exception {
+        ensureNotificationPermission();
+        String id = deliveryId(83);
+        assertTrue(store.reserve(envelope(id, 1, System.currentTimeMillis() + 300_000)));
+        JSONObject bindBody = new JSONObject().put("installationCredential", CREDENTIAL)
+                .put("provider", "rustore").put("token", "push-token-from-native-sdk").put("permission", "granted")
+                .put("bindingGeneration", 1).put("registrationVersion", 1);
+        store.update(state -> state.put("pendingBind", new JSONObject().put("accountId", OWNER)
+                .put("sessionId", SESSION).put("body", bindBody)));
+        JSONObject durable = store.read().getJSONObject("pendingBind");
+        assertEquals(bindBody.toString(), durable.getJSONObject("body").toString());
+
+        AtomicInteger fetches = new AtomicInteger();
+        AtomicInteger displays = new AtomicInteger();
+        PushSdk.bindingInProgress = true;
+        PushWork.locallyBlocked = true;
+        try {
+            assertResult(androidx.work.ListenableWorker.Result.success(),
+                    runDelivery(id, () -> false, fakeDelivery(fetches, displays)));
+            assertEquals("delivery waits locally while bind result is unknown", 0, fetches.get());
+            assertTrue("bind uncertainty does not discard the queued delivery", store.read().getJSONObject("pending").has(id));
+
+            // A retry for the same owner and generation resolves the original request;
+            // accepting it removes the retry record without dropping queued work.
+            store.acceptInstallation(installation(1, 1), CREDENTIAL, OWNER, SESSION);
+            JSONObject resolved = store.read();
+            assertFalse("successful owner-bound bind clears its exact pending request", resolved.has("pendingBind"));
+            assertTrue("same generation preserves pending delivery", resolved.getJSONObject("pending").has(id));
+            assertEquals(1, resolved.getJSONObject("installation").getLong("bindingGeneration"));
+        } finally {
+            PushSdk.bindingInProgress = false;
+            PushWork.locallyBlocked = false;
+        }
+        assertResult(androidx.work.ListenableWorker.Result.success(),
+                runDelivery(id, () -> false, fakeDelivery(fetches, displays)));
+        assertEquals("delivery resumes after exact bind resolves", 1, fetches.get());
+        assertEquals("only verified delivery is displayed", 1, displays.get());
+        assertFalse(store.read().getJSONObject("pending").has(id));
     }
 
     @Test
@@ -449,12 +553,10 @@ public final class PushStoreTest {
         androidx.work.OneTimeWorkRequest api30 = PushWork.work("delivery", deliveryId(6), PushWork.DELIVERY, 30);
         androidx.work.OneTimeWorkRequest api31 = PushWork.work("delivery", deliveryId(7), PushWork.DELIVERY, 31);
         androidx.work.OneTimeWorkRequest registration = PushWork.work("registration", "", PushWork.REGISTRATION, 31);
-        androidx.work.OneTimeWorkRequest pairing = PushWork.work("pairing", deliveryId(8), PushWork.PAIRING, 31);
         androidx.work.OneTimeWorkRequest revoke = PushWork.work("revoke", "", "heartbeat-push-revoke", 31);
 
         assertFalse(api30.getWorkSpec().expedited);
         assertFalse("registration keeps ordinary scheduling", registration.getWorkSpec().expedited);
-        assertFalse("pairing keeps ordinary scheduling", pairing.getWorkSpec().expedited);
         assertFalse("revocation keeps ordinary scheduling", revoke.getWorkSpec().expedited);
         assertTrue(api31.getWorkSpec().expedited);
         assertEquals(androidx.work.OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST,
@@ -484,8 +586,25 @@ public final class PushStoreTest {
     }
 
     private void install(long generation, long registrationVersion) throws Exception {
-        store.update(state -> state.put("enabled", true).put("credential", CREDENTIAL));
+        store.update(state -> state.put("enabled", true).put("credential", CREDENTIAL)
+                .put("accountId", OWNER).put("sessionId", SESSION));
         store.acceptInstallation(installation(generation, registrationVersion), CREDENTIAL);
+    }
+
+    private void clearAuthStore() throws Exception {
+        JSONObject state = authStore.read();
+        java.util.Iterator<String> keys = state.keys();
+        java.util.List<String> remove = new java.util.ArrayList<>();
+        while (keys.hasNext()) remove.add(keys.next());
+        for (String key : remove) authStore.remove(key);
+    }
+
+    private static JSONObject authSession(String accountId, String sessionId) throws Exception {
+        String token = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
+        String revoke = "BCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghi";
+        return new JSONObject().put("account", new JSONObject().put("id", accountId))
+                .put("session", new JSONObject().put("id", sessionId).put("token", token)
+                        .put("revokeToken", revoke).put("expiresAt", Instant.ofEpochMilli(System.currentTimeMillis() + 3_600_000).toString()));
     }
 
     private String reserveDelivery(int sequence) throws Exception {

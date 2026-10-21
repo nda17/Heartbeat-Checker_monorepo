@@ -10,6 +10,8 @@
                     delete code
                     delete state
                     delete device_id
+                    delete deviceId
+                    delete flowId
                 }
             }
         }

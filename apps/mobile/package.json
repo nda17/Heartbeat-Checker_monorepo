@@ -1,0 +1,30 @@
+{
+  "name": "@heartbeat/mobile",
+  "version": "2.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=24.3.0"
+  },
+  "scripts": {
+    "start": "react-native start",
+    "typecheck": "tsc --noEmit",
+    "bundle:android": "react-native bundle --platform android --dev false --entry-file index.ts --bundle-output ../android/app/src/main/assets/index.android.bundle --assets-dest ../android/app/src/main/res"
+  },
+  "dependencies": {
+    "react": "19.3.0",
+    "react-native": "0.88.0",
+    "react-native-safe-area-context": "5.10.1",
+    "react-native-webview": "13.16.0"
+  },
+  "devDependencies": {
+    "@babel/core": "7.28.4",
+    "@react-native-community/cli": "20.2.0",
+    "@react-native-community/cli-platform-android": "20.2.0",
+    "@react-native/babel-preset": "0.88.0",
+    "@react-native/codegen": "0.88.0",
+    "@react-native/gradle-plugin": "0.88.0",
+    "@react-native/metro-config": "0.88.0",
+    "@types/react": "19.2.14",
+    "typescript": "5.9.3"
+  }
+}

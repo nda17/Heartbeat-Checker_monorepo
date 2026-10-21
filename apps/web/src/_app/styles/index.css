@@ -1967,6 +1967,9 @@ html[data-installed-app="true"] .landing-footer-inner {
 .billing-order-status {
   margin: 24px 0 20px;
 }
+.billing-status-note {
+  margin-bottom: 15px;
+}
 .billing-history td[data-label="Результат"] {
   max-width: 320px;
   white-space: normal;

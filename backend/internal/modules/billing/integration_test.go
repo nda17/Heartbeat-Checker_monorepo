@@ -354,6 +354,43 @@ func TestBillingConcurrentIdempotencySingleExtensionAndReport(t *testing.T) {
 	}
 }
 
+func TestBillingReturnTargetIsIdempotentAndImmutable(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Return Target Owner")
+	module := configureMockBilling(t, f, owner)
+	ctx := context.Background()
+	web, err := module.service.CreateOrder(ctx, owner.id, 1, "bf66cf6c-8867-4a8f-a8e8-050073ca1f0a", 1)
+	if err != nil {
+		t.Fatalf("create default-target order: %v", err)
+	}
+	if web.ReturnTarget != "web" {
+		t.Fatalf("omitted return target = %q, want web", web.ReturnTarget)
+	}
+	androidOwner := f.newActor(t, "Android Return Target Owner")
+	androidModule, err := NewConfigured(f.pool, false, Config{Provider: "mock", MockAccountIDs: []string{androidOwner.id}}, f.accounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const androidKey = "e5d3b609-836c-46f3-92eb-0debedb1ab4a"
+	android, err := androidModule.service.CreateSelectedOrderWithTarget(ctx, androidOwner.id, 2, androidKey, 1, "", "", "android")
+	if err != nil {
+		t.Fatalf("create Android-target order: %v", err)
+	}
+	if android.ReturnTarget != "android" {
+		t.Fatalf("Android order return target = %q", android.ReturnTarget)
+	}
+	retry, err := androidModule.service.CreateSelectedOrderWithTarget(ctx, androidOwner.id, 2, androidKey, 1, "", "", "android")
+	if err != nil || retry.ID != android.ID || retry.ReturnTarget != "android" {
+		t.Fatalf("identical Android retry = (%+v, %v), want same immutable order", retry, err)
+	}
+	if _, err := androidModule.service.CreateSelectedOrderWithTarget(ctx, androidOwner.id, 2, androidKey, 1, "", "", "web"); !errors.Is(err, service.ErrConflict) {
+		t.Fatalf("changing return target under same idempotency key error=%v, want conflict", err)
+	}
+	if _, err := f.pool.Exec(ctx, `UPDATE billing.orders SET return_target='web' WHERE id=$1`, android.ID); err == nil {
+		t.Fatal("database allowed return target to change after order creation")
+	}
+}
+
 func TestBillingActiveAccountExpiredOrderAndLocalTestIsolation(t *testing.T) {
 	f := newBillingFixture(t)
 	owner := f.newActor(t, "Blocked Billing Owner")

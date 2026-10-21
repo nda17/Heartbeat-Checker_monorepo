@@ -1,5 +1,16 @@
 plugins {
     id 'com.android.application'
+    id 'com.facebook.react'
+}
+
+react {
+    root = file('../../mobile')
+    reactNativeDir = file('../../mobile/node_modules/react-native')
+    codegenDir = file('../../mobile/node_modules/@react-native/codegen')
+    cliFile = file('../../mobile/node_modules/react-native/cli.js')
+    entryFile = file('../../mobile/index.ts')
+    debuggableVariants = []
+    autolinkLibrariesWithApp()
 }
 
 def secret = { String name ->
@@ -15,6 +26,14 @@ def pushProjectId = (System.getenv('RUSTORE_PUSH_PROJECT_ID') ?: '').trim()
 if (pushProjectId && !(pushProjectId ==~ /[A-Za-z0-9_-]{8,128}/)) {
     throw new GradleException('Invalid public RUSTORE_PUSH_PROJECT_ID')
 }
+def sdkClientKey = (System.getenv('YOOKASSA_SDK_CLIENT_KEY') ?: '').trim()
+def sdkShopId = (System.getenv('YOOKASSA_SHOP_ID') ?: '').trim()
+def sdkTestClientKey = (System.getenv('YOOKASSA_SDK_TEST_CLIENT_KEY') ?: '').trim()
+def sdkTestShopId = (System.getenv('YOOKASSA_SDK_TEST_SHOP_ID') ?: '').trim()
+if ([sdkClientKey, sdkTestClientKey].any { it && !(it ==~ /[A-Za-z0-9_-]{10,512}/) }
+        || [sdkShopId, sdkTestShopId].any { it && !(it ==~ /[0-9]{4,16}/) }) {
+    throw new GradleException('Invalid public YooKassa SDK client configuration')
+}
 
 // Public client identifiers only; sending credentials never enter the APK.
 def publicOptions = [:]
@@ -27,14 +46,22 @@ def publicOptions = [:]
 android {
     namespace 'ru.heartbeatchecker.app'
     compileSdk 37
+    ndkVersion '27.1.12297006'
     buildToolsVersion '36.0.0'
 
     defaultConfig {
         applicationId 'ru.heartbeatchecker.app'
         minSdk 29
         targetSdk 37
-        versionCode 6
-        versionName '1.2.0'
+        versionCode 7
+        versionName '2.0.0'
+        manifestPlaceholders = [appLinkHost: 'heartbeat-checker.ru']
+        resValue 'string', 'ym_app_scheme', 'heartbeatchecker'
+        buildConfigField 'String', 'YOOKASSA_SDK_CLIENT_KEY', '""'
+        buildConfigField 'String', 'YOOKASSA_SHOP_ID', '""'
+        buildConfigField 'String', 'BILLING_ENVIRONMENT', '"live"'
+        buildConfigField 'String', 'API_ORIGIN', '"https://heartbeat-checker.ru"'
+        buildConfigField 'String', 'CHALLENGE_ORIGIN', '"https://heartbeat-checker.ru"'
         buildConfigField 'String', 'RUSTORE_PUSH_PROJECT_ID', '"' + pushProjectId + '"'
         publicOptions.each { name, value -> buildConfigField 'String', name, '"' + value + '"' }
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
@@ -53,6 +80,30 @@ android {
         release {
             if (signingReady) signingConfig signingConfigs.release
             minifyEnabled false
+            buildConfigField 'String', 'YOOKASSA_SDK_CLIENT_KEY', '"' + sdkClientKey + '"'
+            buildConfigField 'String', 'YOOKASSA_SHOP_ID', '"' + sdkShopId + '"'
+            buildConfigField 'String', 'BILLING_ENVIRONMENT', '"live"'
+        }
+        ci {
+            initWith release
+            signingConfig signingConfigs.debug
+            matchingFallbacks = ['release']
+            debuggable false
+        }
+        sdkTest {
+            initWith release
+            applicationIdSuffix '.sdktest'
+            versionNameSuffix '-sdktest'
+            manifestPlaceholders.appLinkHost = 'sdk-test.heartbeat-checker.invalid'
+            signingConfig signingConfigs.debug
+            matchingFallbacks = ['release']
+            debuggable false
+            resValue 'string', 'ym_app_scheme', 'heartbeatcheckersdktest'
+            buildConfigField 'String', 'YOOKASSA_SDK_CLIENT_KEY', '"' + sdkTestClientKey + '"'
+            buildConfigField 'String', 'YOOKASSA_SHOP_ID', '"' + sdkTestShopId + '"'
+            buildConfigField 'String', 'BILLING_ENVIRONMENT', '"test"'
+            buildConfigField 'String', 'API_ORIGIN', '"http://127.0.0.1:18080"'
+            buildConfigField 'String', 'CHALLENGE_ORIGIN', '"http://127.0.0.1:13119"'
         }
     }
     compileOptions {
@@ -62,6 +113,7 @@ android {
     buildFeatures {
         buildConfig true
     }
+    testBuildType 'ci'
     lint {
         abortOnError true
         checkReleaseBuilds true
@@ -81,14 +133,23 @@ tasks.register('requireReleaseSigning') {
         }
     }
 }
+tasks.register('requireSdkTestConfig') {
+    doLast {
+        if (!sdkTestClientKey || !sdkTestShopId) throw new GradleException('SDK test APK requires YooKassa public test client key and shop ID')
+    }
+}
 tasks.configureEach {
     if (name in ['packageRelease', 'packageReleaseBundle', 'signReleaseBundle', 'assembleRelease', 'bundleRelease']) {
         dependsOn tasks.named('requireReleaseSigning')
     }
+    if (name in ['packageSdkTest', 'assembleSdkTest']) dependsOn tasks.named('requireSdkTestConfig')
 }
 
 dependencies {
-    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.7.3'
+    implementation 'com.facebook.react:react-android'
+    implementation 'com.facebook.react:hermes-android'
+    implementation 'ru.yoomoney.sdk.kassa.payments:yookassa-android-sdk:8.6.0'
+    implementation 'androidx.browser:browser:1.9.0'
     implementation 'androidx.activity:activity:1.13.0'
     implementation 'ru.rustore.sdk:pushclient:7.5.0'
     implementation 'com.google.firebase:firebase-messaging:26.0.0'

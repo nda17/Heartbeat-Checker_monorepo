@@ -1,284 +1,100 @@
 package ru.heartbeatchecker.app;
 
-import android.content.ActivityNotFoundException;
 import android.content.Intent;
-import android.content.res.ColorStateList;
-import android.graphics.Color;
-import android.graphics.Typeface;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
-import android.view.Gravity;
-import android.view.WindowInsets;
-import android.widget.Button;
-import android.widget.ImageView;
-import android.widget.LinearLayout;
-import android.widget.ProgressBar;
-import android.widget.ScrollView;
-import android.widget.TextView;
 
-import androidx.activity.ComponentActivity;
-import androidx.activity.OnBackPressedCallback;
-import androidx.browser.customtabs.CustomTabsCallback;
-import androidx.browser.customtabs.CustomTabsService;
-import androidx.browser.trusted.TrustedWebActivityIntentBuilder;
+import com.facebook.react.ReactActivity;
+import com.facebook.react.ReactActivityDelegate;
+import com.facebook.react.defaults.DefaultReactActivityDelegate;
 
-import com.google.androidbrowserhelper.trusted.TwaLauncher;
+import java.util.HashSet;
+import java.util.Set;
 
-public class MainActivity extends ComponentActivity {
-    interface BrowserLauncher {
-        void launch(String url, Runnable completed, Runnable unavailable);
-        void destroy();
+/** Exact App Links only; browser cookies and arbitrary intents never enter React Native. */
+public class MainActivity extends ReactActivity {
+    private static final String ORIGIN = "https://heartbeat-checker.ru";
+    private static final String SECRET = "[A-Za-z0-9_-]{20,512}";
+
+    @Override protected String getMainComponentName() { return "HeartbeatChecker"; }
+    @Override protected ReactActivityDelegate createReactActivityDelegate() {
+        return new DefaultReactActivityDelegate(this, getMainComponentName());
     }
 
-    private BrowserLauncher launcher;
-    private String targetUrl;
-    private boolean launching;
-    private boolean handedOff;
-    private boolean knownFailed;
-    private boolean destroyed;
-    private int attempt;
-
-    @Override
-    protected void onCreate(Bundle state) {
+    @Override protected void onCreate(Bundle state) {
+        Intent intent = getIntent();
+        if (intent != null && Intent.ACTION_VIEW.equals(intent.getAction())) {
+            String link = normalize(intent);
+            if (link == null) { super.onCreate(state); finish(); return; }
+            intent.setData(Uri.parse(link)); setIntent(intent);
+        }
         super.onCreate(state);
-        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
-            @Override
-            public void handleOnBackPressed() {
-                // Cancel the native launch instead of retaining it in a background task.
-                finish();
-            }
-        });
-        if (state != null && state.getBoolean("handedOff")) {
-            handedOff = true;
-            finish();
-            return;
-        }
-        targetUrl = target(getIntent());
-        if (targetUrl == null) {
-            finish();
-            return;
-        }
-        knownFailed = state != null && state.getBoolean("knownFailed");
-        if (knownFailed) showStatus(true);
-        else launch();
     }
 
-    @Override
-    protected void onResume() {
-        super.onResume();
-        try { PushWork.permissionsChanged(getApplicationContext()); }
-        catch (RuntimeException ignored) { /* Push availability must not block the cabinet. */ }
-    }
-
-    @Override
-    protected void onNewIntent(Intent intent) {
+    @Override public void onNewIntent(Intent intent) {
+        if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) return;
+        String link = normalize(intent);
+        if (link == null) return;
+        intent.setData(Uri.parse(link)); setIntent(intent);
         super.onNewIntent(intent);
-        String next = target(intent);
-        if (next == null) {
-            finish();
-            return;
-        }
-        if (launching || handedOff || destroyed) return;
-        setIntent(intent);
-        targetUrl = next;
-        launch();
     }
 
-    private String target(Intent intent) {
-        if (intent == null) return null;
-        if (Intent.ACTION_MAIN.equals(intent.getAction())) return LinkPolicy.HOME;
-        if (Intent.ACTION_VIEW.equals(intent.getAction())) return LinkPolicy.appLink(intent.getDataString());
-        // Removed share/shortcut intents are rejected without reading their payload.
+    static String normalize(Intent intent) {
+        if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) return null;
+        Uri uri = intent.getData();
+        if (uri == null || !"https".equals(uri.getScheme()) || !"heartbeat-checker.ru".equals(uri.getEncodedAuthority())
+                || uri.getUserInfo() != null || uri.getPort() != -1 || uri.toString().length() > 16 * 1024) return null;
+        String path = uri.getEncodedPath();
+        if (path == null) return null;
+        if (path.equals("/app") || path.equals("/app/settings") || path.equals("/app/billing") || path.equals("/app/admin"))
+            return LinkPolicy.appLink(uri.toString());
+        String token = uri.getFragment();
+        if (token == null || token.isEmpty()) {
+            String extra = intent.getStringExtra("token");
+            if (extra != null) token = "token=" + extra;
+        }
+        if (path.equals("/android/auth/reset") || path.equals("/android/auth/verify")) {
+            if (path.equals("/android/auth/reset") && uri.getQuery() != null) return null;
+            if (path.equals("/android/auth/verify") && (!"oauth=1".equals(uri.getEncodedQuery()))) return null;
+            if (token == null || !token.matches("token=" + SECRET)) return null;
+            return ORIGIN + path + (path.equals("/android/auth/verify") ? "?oauth=1" : "") + "#" + token;
+        }
+        if (uri.getFragment() != null) return null;
+        if (path.equals("/android/payments/return")) {
+            if (!keys(uri, "order")) return null;
+            String order = uri.getQueryParameter("order");
+            return PushContract.uuid(order) ? ORIGIN + path + "?order=" + order : null;
+        }
+        if (path.equals("/android/auth/complete")) {
+            if (keys(uri, "flowId", "state", "error")) {
+                String flow = uri.getQueryParameter("flowId"), state = uri.getQueryParameter("state"), error = uri.getQueryParameter("error");
+                if (!PushContract.uuid(flow) || state == null || !state.matches("[A-Za-z0-9_-]{43}")
+                        || !"oauth_cancelled".equals(error) && !"oauth_provider_unavailable".equals(error)) return null;
+                return Uri.parse(ORIGIN + path).buildUpon().appendQueryParameter("flowId", flow)
+                        .appendQueryParameter("state", state).appendQueryParameter("error", error).build().toString();
+            }
+            if (!keys(uri, "flowId", "state", "code", "deviceId") && !keys(uri, "flowId", "state", "code")) return null;
+            String flow = uri.getQueryParameter("flowId"), state = uri.getQueryParameter("state"), code = uri.getQueryParameter("code");
+            String device = uri.getQueryParameter("deviceId");
+            if (!PushContract.uuid(flow) || state == null || !state.matches("[A-Za-z0-9_-]{43}")
+                    || code == null || code.isEmpty() || !PushContract.bounded(code, 8192)
+                    || device != null && (device.isEmpty() || !PushContract.bounded(device, 4096))) return null;
+            Uri.Builder safe = Uri.parse(ORIGIN + path).buildUpon().appendQueryParameter("flowId", flow)
+                    .appendQueryParameter("state", state).appendQueryParameter("code", code);
+            if (device != null) safe.appendQueryParameter("deviceId", device);
+            return safe.build().toString();
+        }
         return null;
     }
 
-    private void launch() {
-        if (launching || handedOff || destroyed || isFinishing()) return;
-        cleanupLauncher();
-        launching = true;
-        knownFailed = false;
-        int request = ++attempt;
-        showStatus(false);
-        prepareBrowserTarget(targetUrl, url -> {
-            if (current(request)) launchBrowser(request, url);
-        });
-    }
-
-    void prepareBrowserTarget(String url, java.util.function.Consumer<String> ready) {
-        if (!Intent.ACTION_MAIN.equals(getIntent().getAction())) { ready.accept(url); return; }
-        Handler handler = new Handler(Looper.getMainLooper());
-        java.util.concurrent.atomic.AtomicBoolean delivered = new java.util.concurrent.atomic.AtomicBoolean();
-        Runnable fallback = () -> { if (delivered.compareAndSet(false, true)) ready.accept(url); };
-        handler.postDelayed(fallback, 8000);
-        PushWork.IO.execute(() -> {
-            String next = PushPairing.bootstrap(getApplicationContext(), url);
-            handler.post(() -> {
-                if (!delivered.compareAndSet(false, true)) return;
-                handler.removeCallbacks(fallback);
-                ready.accept(next);
-            });
-        });
-    }
-
-    private void launchBrowser(int request, String url) {
-        try {
-            launcher = createBrowserLauncher();
-            launcher.launch(url, () -> {
-                if (!current(request)) return;
-                handedOff = true;
-                launching = false;
-                // Completion confirms browser dispatch, not successful page loading.
-                finish();
-            }, () -> unavailable(request));
-        } catch (ActivityNotFoundException | SecurityException e) {
-            unavailable(request);
-        }
-    }
-
-    private boolean current(int request) {
-        return request == attempt && launching && !handedOff && !destroyed && !isFinishing();
-    }
-
-    private void unavailable(int request) {
-        if (!current(request)) return;
-        launching = false;
-        knownFailed = true;
-        showStatus(true);
-    }
-
-    BrowserLauncher createBrowserLauncher() {
-        return new BrowserLauncher() {
-            private final TwaLauncher twa = new TwaLauncher(MainActivity.this);
-
-            @Override
-            public void launch(String url, Runnable completed, Runnable unavailable) {
-                twa.launch(new TrustedWebActivityIntentBuilder(Uri.parse(url))
-                                .setToolbarColor(Color.rgb(0, 127, 115)),
-                        new CustomTabsCallback(), null, completed,
-                        (context, builder, provider, complete) -> {
-                            if (launcher != this || !launching || isFinishing() || destroyed) return;
-                            if (provider == null) {
-                                unavailable.run();
-                                return;
-                            }
-                            try {
-                                if (getPackageManager().resolveService(
-                                        new Intent(CustomTabsService.ACTION_CUSTOM_TABS_CONNECTION)
-                                                .setPackage(provider), 0) == null) {
-                                    unavailable.run();
-                                    return;
-                                }
-                                TwaLauncher.CCT_FALLBACK_STRATEGY.launch(context, builder, provider, complete);
-                            } catch (ActivityNotFoundException | SecurityException e) {
-                                unavailable.run();
-                            }
-                        });
-            }
-
-            @Override
-            public void destroy() {
-                twa.destroy();
-            }
-        };
-    }
-
-    private void cleanupLauncher() {
-        BrowserLauncher previous = launcher;
-        launcher = null;
-        if (previous == null) return;
-        try {
-            previous.destroy();
-        } catch (IllegalArgumentException ignored) {
-            // ABH may unbind a service whose initial bind was unsuccessful.
-        }
-    }
-
-    private void showStatus(boolean failed) {
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setGravity(Gravity.CENTER);
-        content.setPadding(dp(28), dp(32), dp(28), dp(32));
-        scroll.addView(content);
-        scroll.setOnApplyWindowInsetsListener((view, insets) -> {
-            if (Build.VERSION.SDK_INT >= 30) {
-                android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.ime());
-                view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
-            } else {
-                view.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
-                        insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
-            }
-            return insets;
-        });
-        ImageView logo = new ImageView(this);
-        logo.setImageResource(R.drawable.ic_heartbeat);
-        logo.setImportantForAccessibility(android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        content.addView(logo, new LinearLayout.LayoutParams(dp(64), dp(64)));
-        text(content, getString(R.string.app_name), 24, true);
-        text(content, failed ? "Не удалось открыть кабинет" : "Открываем кабинет…", 18, false);
-        if (failed) {
-            text(content, "Установите или включите браузер с поддержкой Custom Tabs и повторите попытку.", 16, false);
-            Button retry = button(content, "Повторить", this::launch);
-            retry.setBackgroundTintList(ColorStateList.valueOf(Color.rgb(0, 127, 115)));
-            retry.setTextColor(Color.WHITE);
-            button(content, "Закрыть", this::finish);
-        } else {
-            ProgressBar progress = new ProgressBar(this);
-            progress.setIndeterminateTintList(ColorStateList.valueOf(Color.rgb(0, 127, 115)));
-            content.addView(progress, new LinearLayout.LayoutParams(dp(40), dp(40)));
-        }
-        setContentView(scroll);
-        scroll.requestApplyInsets();
-    }
-
-    private void text(LinearLayout parent, String value, int size, boolean heading) {
-        TextView text = new TextView(this);
-        text.setText(value);
-        text.setTextSize(size);
-        text.setGravity(Gravity.CENTER);
-        text.setPadding(0, dp(16), 0, dp(12));
-        if (heading) {
-            text.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-            text.setAccessibilityHeading(true);
-        }
-        parent.addView(text);
-    }
-
-    private Button button(LinearLayout parent, String label, Runnable action) {
-        Button button = new Button(this);
-        button.setText(label);
-        button.setTextSize(16);
-        button.setAllCaps(false);
-        button.setSingleLine(false);
-        button.setMinHeight(dp(48));
-        button.setOnClickListener(view -> action.run());
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        params.setMargins(0, dp(6), 0, dp(6));
-        parent.addView(button, params);
-        return button;
-    }
-
-    private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
-    }
-
-    @Override
-    protected void onSaveInstanceState(Bundle state) {
-        super.onSaveInstanceState(state);
-        state.putBoolean("handedOff", handedOff);
-        state.putBoolean("knownFailed", knownFailed);
-    }
-
-    @Override
-    protected void onDestroy() {
-        destroyed = true;
-        ++attempt;
-        cleanupLauncher();
-        super.onDestroy();
+    private static boolean keys(Uri uri, String... expected) {
+        Set<String> keys = uri.getQueryParameterNames();
+        if (keys.size() != expected.length) return false;
+        Set<String> wanted = new HashSet<>(java.util.Arrays.asList(expected));
+        if (!keys.equals(wanted)) return false;
+        String query = uri.getEncodedQuery();
+        if (query == null || query.isEmpty()) return false;
+        for (String key : expected) if (query.split("(?:^|&)" + key + "=", -1).length != 2) return false;
+        return true;
     }
 }

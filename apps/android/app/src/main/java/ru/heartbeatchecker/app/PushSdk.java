@@ -20,6 +20,7 @@ import ru.rustore.sdk.core.feature.model.FeatureAvailabilityResult;
 final class PushSdk {
     interface TokenResult { void ready(String token); void unavailable(); }
     private static volatile boolean initialized;
+    static volatile boolean bindingInProgress;
     private PushSdk() {}
 
     static void initialize(Application application) {
@@ -81,7 +82,7 @@ final class PushSdk {
         try {
             PushStore store = new PushStore(context);
             JSONObject state = store.read();
-            if (PushWork.locallyBlocked || state.optBoolean("optedOut")) { result.unavailable(); return; }
+            if ((PushWork.locallyBlocked || state.optBoolean("optedOut")) && !bindingInProgress) { result.unavailable(); return; }
             JSONObject capabilities = new PushApi().request("GET", "/api/v1/push/capabilities", "", null);
             if (capabilities.optInt("protocolVersion") != 2) { result.unavailable(); return; }
             store.update(value -> value.put("serverProviders", capabilities.getJSONArray("providers")));
@@ -120,7 +121,7 @@ final class PushSdk {
         try {
             synchronized (PushStore.LOCK) {
                 JSONObject latest = store.read();
-                if (!previous.equals(provider(latest)) || PushWork.locallyBlocked || latest.optBoolean("optedOut")) { result.unavailable(); return; }
+                if (!previous.equals(provider(latest)) || (PushWork.locallyBlocked || latest.optBoolean("optedOut")) && !bindingInProgress) { result.unavailable(); return; }
                 store.update(state -> {
                     state.put("provider", target); state.remove("token");
                     state.remove("providerDiagnostic");
@@ -160,7 +161,7 @@ final class PushSdk {
         try {
             synchronized (PushStore.LOCK) {
                 JSONObject latest = store.read();
-                if (!provider.equals(provider(latest)) || PushWork.locallyBlocked || latest.optBoolean("optedOut")) { result.unavailable(); return; }
+                if (!provider.equals(provider(latest)) || (PushWork.locallyBlocked || latest.optBoolean("optedOut")) && !bindingInProgress) { result.unavailable(); return; }
                 String current = latest.optLong("tokenRevision") != revision ? latest.optString("token") : token;
                 if (!PushContract.token(current)) { result.unavailable(); return; }
                 store.update(state -> {

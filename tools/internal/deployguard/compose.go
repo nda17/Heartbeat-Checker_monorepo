@@ -132,7 +132,14 @@ func CheckCompose(input io.Reader) error {
 	if contains([]string{"worker", "probe"}, oauthKeys) {
 		return invalid("OAuth configuration must be scoped to API only")
 	}
-	yk := []string{"BILLING_TEST_ACCOUNT_IDS", "YOOKASSA_MODE", "YOOKASSA_TEST_SHOP_ID", "YOOKASSA_TEST_SECRET_KEY", "YOOKASSA_PRODUCTION_SHOP_ID", "YOOKASSA_PRODUCTION_SECRET_KEY"}
+	sdkFlag := defaultValue(api, "YOOKASSA_NATIVE_SDK_ENABLED", "false")
+	if !boolFlag(sdkFlag) || sdkFlag != defaultValue(worker, "YOOKASSA_NATIVE_SDK_ENABLED", "false") {
+		return invalid("API and worker native checkout flags must match")
+	}
+	if sdkFlag == "true" && api["BILLING_PROVIDER"] != "yookassa" {
+		return invalid("Native checkout requires YooKassa billing")
+	}
+	yk := []string{"BILLING_TEST_ACCOUNT_IDS", "YOOKASSA_MODE", "YOOKASSA_TEST_SHOP_ID", "YOOKASSA_TEST_SECRET_KEY", "YOOKASSA_PRODUCTION_SHOP_ID", "YOOKASSA_PRODUCTION_SECRET_KEY", "YOOKASSA_NATIVE_SDK_ENABLED"}
 	for _, key := range yk {
 		if api[key] != worker[key] {
 			return invalid("API and worker must share the same YooKassa policy")

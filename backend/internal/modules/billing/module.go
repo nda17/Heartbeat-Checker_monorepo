@@ -21,13 +21,16 @@ var ErrAdminGrantConflict = service.ErrAdminGrantConflict
 func New(pool *pgxpool.Pool, local bool) *Module { return &Module{service: service.New(pool, local)} }
 
 type Config struct {
-	Provider        string
-	MockAccountIDs  []string
-	TestAccountIDs  []string
-	Mode            string
-	ShopID          string
-	SecretKey       string
-	PaymentProvider contracts.Provider
+	Provider          string
+	MockAccountIDs    []string
+	TestAccountIDs    []string
+	Mode              string
+	ShopID            string
+	SecretKey         string
+	PaymentProvider   contracts.Provider
+	NativeSDKEnabled  bool
+	MailEncryptionKey string
+	SessionLease      func(context.Context, pgx.Tx, string, string) (time.Time, error)
 }
 
 func NewConfigured(pool *pgxpool.Pool, local bool, cfg Config, guard accounts.ActiveGuard) (*Module, error) {
@@ -48,6 +51,9 @@ func NewConfigured(pool *pgxpool.Pool, local bool, cfg Config, guard accounts.Ac
 			}
 		}
 		if err := s.ConfigureYooKassa(provider, cfg.Mode, cfg.ShopID, cfg.TestAccountIDs); err != nil {
+			return nil, err
+		}
+		if err := s.ConfigureNativeSDK(cfg.NativeSDKEnabled, cfg.MailEncryptionKey, cfg.SessionLease); err != nil {
 			return nil, err
 		}
 	}

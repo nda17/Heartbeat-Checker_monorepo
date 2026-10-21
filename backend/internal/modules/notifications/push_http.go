@@ -25,6 +25,8 @@ func pushFailure(w http.ResponseWriter, err error) {
 		status, code = 409, "pairing_consumed"
 	case errors.Is(err, ErrPushConflict):
 		status, code = 409, "version_conflict"
+	case errors.Is(err, ErrPushAccountChange):
+		status, code = 409, "push_account_change_required"
 	case errors.Is(err, ErrPushReconnect):
 		status, code = 409, pushSessionStatus(err)
 	case errors.Is(err, ErrPushRateLimited):
@@ -65,6 +67,8 @@ func pushBearer(r *http.Request) string {
 
 func (p *Push) RegisterAPI(mux *http.ServeMux, protect func(http.Handler) http.Handler) {
 	for pattern, handler := range map[string]http.HandlerFunc{
+		"POST /api/v1/push/native/bind":           p.bindNativePush,
+		"GET /api/v1/push/native/installation":    p.getNativePushInstallation,
 		"GET /api/v1/push/installations":          p.listPushInstallations,
 		"DELETE /api/v1/push/installations/{id}":  p.disconnectPushInstallation,
 		"GET /api/v1/push/pairings/{id}":          p.getPushPairing,

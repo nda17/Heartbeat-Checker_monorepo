@@ -42,7 +42,7 @@ func (s *Service) GetOrder(ctx context.Context, account, id string) (contracts.O
 	return order, err
 }
 
-func (s *Service) createYooKassaOrder(ctx context.Context, account string, count int, key string, version int64, kind, packageID string) (contracts.Order, error) {
+func (s *Service) createYooKassaOrder(ctx context.Context, account string, count int, key string, version int64, kind, packageID, returnTarget string) (contracts.Order, error) {
 	if count < 1 || count > 1000 || !validID(key) {
 		return contracts.Order{}, ErrInvalid
 	}
@@ -67,7 +67,7 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	}
 	existing, err := scanOrder(tx.QueryRow(ctx, `SELECT `+orderColumns+` FROM billing.orders WHERE account_id=$1 AND idempotency_key=$2`, account, key))
 	if err == nil {
-		if existing.Provider != "yookassa" || existing.MonitorCount != count || !samePackageSelection(existing, kind, packageID) {
+		if existing.Provider != "yookassa" || existing.MonitorCount != count || existing.ReturnTarget != returnTarget || !samePackageSelection(existing, kind, packageID) {
 			return contracts.Order{}, ErrConflict
 		}
 		return existing, tx.Commit(ctx)
@@ -97,6 +97,9 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	if _, err = tx.Exec(ctx, `UPDATE billing.orders SET status='canceled',completed_at=now(),fulfillment_status='not_required',reconciliation_status='complete' WHERE account_id=$1 AND provider='mock' AND status='pending' AND expires_at<=now()`, account); err != nil {
 		return contracts.Order{}, err
 	}
+	if _, err = tx.Exec(ctx, `UPDATE billing.orders SET status='canceled',completed_at=now(),fulfillment_status='not_required',reconciliation_status='complete' WHERE account_id=$1 AND checkout_kind='android_sdk' AND status='pending' AND reconciliation_status='awaiting_token' AND id IN (SELECT order_id FROM billing.sdk_payment_requests WHERE token_hash IS NULL AND draft_expires_at<=now())`, account); err != nil {
+		return contracts.Order{}, err
+	}
 	var pending bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM billing.orders WHERE account_id=$1 AND status='pending')`, account).Scan(&pending); err != nil {
 		return contracts.Order{}, err
@@ -108,17 +111,21 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	if err != nil {
 		return contracts.Order{}, err
 	}
+	returnURL := "https://heartbeat-checker.ru/app"
+	if returnTarget == "android" {
+		returnURL = "https://heartbeat-checker.ru/android/payments/return?order=" + id
+	}
 	body, err := json.Marshal(map[string]any{
 		"amount":       map[string]string{"value": moneyValue(count * pricing.PricePerMonitorMinor), "currency": "RUB"},
 		"capture":      true,
-		"confirmation": map[string]string{"type": "redirect", "return_url": "https://heartbeat-checker.ru/app"},
+		"confirmation": map[string]string{"type": "redirect", "return_url": returnURL},
 		"description":  "Heartbeat Checker: мониторинг",
 		"metadata":     map[string]string{"order_id": id},
 	})
 	if err != nil {
 		return contracts.Order{}, err
 	}
-	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,provider_mode,provider_shop_id,provider_request,expires_at,purchase_kind,renew_package_id) VALUES($1,$2,$3,'yookassa',$4,$5,$6,$7,$8,NULL,$9,NULLIF($10,'')::uuid) RETURNING `+orderColumns, id, account, key, count, count*pricing.PricePerMonitorMinor, s.mode, s.shopID, body, kind, packageID))
+	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,provider_mode,provider_shop_id,provider_request,expires_at,purchase_kind,renew_package_id,return_target) VALUES($1,$2,$3,'yookassa',$4,$5,$6,$7,$8,NULL,$9,NULLIF($10,'')::uuid,$11) RETURNING `+orderColumns, id, account, key, count, count*pricing.PricePerMonitorMinor, s.mode, s.shopID, body, kind, packageID, returnTarget))
 	if err != nil {
 		return contracts.Order{}, err
 	}
@@ -170,7 +177,7 @@ func (s *Service) ReceiveNotification(ctx context.Context, n contracts.ProviderN
 	if _, err = tx.Exec(ctx, `INSERT INTO billing.webhook_inbox(order_id,payment_id,event,processed_at,result) VALUES($1,$2,$3,CASE WHEN $4 THEN now() ELSE NULL END,$5) ON CONFLICT DO NOTHING`, id, n.Object.ID, n.Event, processed, result); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE billing.orders SET next_reconcile_at=LEAST(next_reconcile_at,now()),reconciliation_status='pending' WHERE id=$1 AND status='pending' AND reconciliation_status IN ('pending','stopped')`, id); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE billing.orders SET next_reconcile_at=LEAST(next_reconcile_at,now()),reconciliation_status='pending' WHERE id=$1 AND status='pending' AND (reconciliation_status IN ('pending','stopped') OR (checkout_kind='android_sdk' AND reconciliation_status='manual_review'))`, id); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

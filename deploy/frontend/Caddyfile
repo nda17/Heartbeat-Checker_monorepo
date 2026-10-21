@@ -18,6 +18,8 @@ heartbeat-checker.ru {
     @early_data tls early_data
     @oauth_callbacks path /api/v1/auth/oauth/yandex/callback /api/v1/auth/oauth/vk/callback
     log_skip @oauth_callbacks
+    @android_bridges path /mobile/challenge /android/auth/complete /android/auth/reset /android/auth/verify /android/payments/return
+    log_skip @android_bridges
     @api path /api/v1/*
     header @api {
         X-Robots-Tag "noindex, nofollow"

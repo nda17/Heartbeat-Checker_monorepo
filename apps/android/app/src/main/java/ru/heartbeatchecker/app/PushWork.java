@@ -23,7 +23,6 @@ import java.util.concurrent.Executors;
 final class PushWork {
     static final String DELIVERY = "heartbeat-push-delivery";
     static final String REGISTRATION = "heartbeat-push-registration";
-    static final String PAIRING = "heartbeat-push-pairing:";
     static final ExecutorService IO = Executors.newSingleThreadExecutor();
     static volatile boolean locallyBlocked;
     static volatile long localRevocation;
@@ -44,7 +43,8 @@ final class PushWork {
 
     static void delivery(Context context, JSONObject envelope) throws IOException, JSONException {
         PushStore store = new PushStore(context);
-        if (locallyBlocked || !PushNotifications.permitted(context)) {
+        boolean owner = new AuthStore(context).ownsPush(store.read());
+        if (locallyBlocked || !owner || !PushNotifications.permitted(context)) {
             store.deliveryStage(locallyBlocked ? PushStore.DeliveryStage.LOCALLY_BLOCKED : PushStore.DeliveryStage.PERMISSION_DENIED);
             permissionsChanged(context); return;
         }
@@ -68,13 +68,6 @@ final class PushWork {
         WorkManager.getInstance(context).enqueueUniqueWork(REGISTRATION, ExistingWorkPolicy.REPLACE, work("registration", "", REGISTRATION));
     }
 
-    static String pairing(Context context, String id) {
-        if (!PushContract.uuid(id)) throw new IllegalArgumentException();
-        String name = PAIRING + id;
-        WorkManager.getInstance(context).enqueueUniqueWork(name, ExistingWorkPolicy.KEEP, work("pairing", id, PAIRING));
-        return name;
-    }
-
     static void permissionsChanged(Context context) {
         if (!PushNotifications.permitted(context)) {
             synchronized (PushStore.LOCK) {
@@ -91,10 +84,7 @@ final class PushWork {
             try {
                 JSONObject state = new PushStore(app).read();
                 if (state.has("retired")) revoke(app);
-                JSONObject pair = state.optJSONObject("pair");
-                if (!state.optBoolean("optedOut") && pair != null && PushContract.secret(pair.optString("completionCode"))
-                        && pair.optInt("workerAttempts") < 3 && PushNotifications.permitted(app)) pairing(app, pair.optString("id"));
-                if (state.optBoolean("enabled")) {
+                if (state.optBoolean("enabled") && new AuthStore(app).ownsPush(state)) {
                     permissionsChanged(app);
                     JSONObject pending = state.optJSONObject("pending");
                     if (pending != null) for (Iterator<String> keys = pending.keys(); keys.hasNext();) enqueueDelivery(app, keys.next());
@@ -142,7 +132,6 @@ final class PushWork {
         try {
             WorkManager.getInstance(context).cancelAllWorkByTag(DELIVERY);
             WorkManager.getInstance(context).cancelAllWorkByTag(REGISTRATION);
-            WorkManager.getInstance(context).cancelAllWorkByTag(PAIRING);
         } catch (RuntimeException ignored) { }
     }
 
@@ -156,13 +145,28 @@ final class PushWork {
                     retired.put(new JSONObject().put("credential", credential).put("attempts", 0));
                 }
                 state.put("retired", retired).put("enabled", false).put("optedOut", true);
-                for (String key : new String[]{"credential", "installation", "pair", "token", "pending", "seen", "sequences",
+                for (String key : new String[]{"credential", "installation", "pair", "token", "pending", "seen", "sequences", "pendingBind",
                         "registeredToken", "registeredPermission", "everExchangeAttempted"}) state.remove(key);
             }); } finally {
                 blockLocally(context);
                 // Server revocation owns account access. Deleting the SDK token asynchronously
                 // could invalidate a token reused by an immediate reconnect.
             }
+        }
+        revoke(context);
+    }
+
+    static void logout(Context context) throws IOException {
+        blockLocally(context);
+        synchronized (PushStore.LOCK) {
+            new PushStore(context).update(state -> {
+                String credential = state.optString("credential");
+                JSONArray retired = state.optJSONArray("retired"); if (retired == null) retired = new JSONArray();
+                if (!credential.isEmpty()) retired.put(new JSONObject().put("credential", credential).put("attempts", 0));
+                state.put("retired", retired).put("enabled", false);
+                for (String key : new String[]{"credential", "installation", "pair", "pending", "seen", "sequences", "pendingBind",
+                        "registeredToken", "registeredPermission", "accountId", "sessionId"}) state.remove(key);
+            });
         }
         revoke(context);
     }

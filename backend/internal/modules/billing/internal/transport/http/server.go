@@ -17,10 +17,13 @@ type Server struct{ service *service.Service }
 func New(s *service.Service) *Server { return &Server{s} }
 func (s *Server) Register(mux *http.ServeMux, protect func(http.Handler) http.Handler) {
 	for route, handler := range map[string]http.HandlerFunc{
-		"GET /api/v1/billing/orders/{id}":           s.get,
-		"GET /api/v1/billing":                       s.overview,
-		"POST /api/v1/billing/orders":               s.create,
-		"POST /api/v1/billing/orders/{id}/simulate": s.simulate,
+		"GET /api/v1/billing/orders/{id}":                s.get,
+		"GET /api/v1/billing":                            s.overview,
+		"POST /api/v1/billing/orders":                    s.create,
+		"POST /api/v1/billing/orders/{id}/simulate":      s.simulate,
+		"POST /api/v1/billing/native/orders":             s.createNative,
+		"POST /api/v1/billing/native/orders/{id}/token":  s.attachNative,
+		"POST /api/v1/billing/native/orders/{id}/cancel": s.cancelNative,
 	} {
 		mux.Handle(route, protect(handler))
 	}
@@ -38,6 +41,16 @@ func fail(w http.ResponseWriter, status int, code string) {
 }
 func failure(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, service.ErrNativeSession):
+		fail(w, 401, "unauthorized")
+	case errors.Is(err, service.ErrSDKUnavailable):
+		fail(w, 409, "sdk_unavailable")
+	case errors.Is(err, service.ErrSDKDraftExpired):
+		fail(w, 410, "sdk_draft_expired")
+	case errors.Is(err, service.ErrSDKTokenConflict):
+		fail(w, 409, "sdk_token_conflict")
+	case errors.Is(err, service.ErrSDKCheckoutStarted):
+		fail(w, 409, "sdk_checkout_started")
 	case errors.Is(err, service.ErrOrderAmount):
 		fail(w, 400, "order_amount_exceeded")
 	case errors.Is(err, service.ErrInvalid):
@@ -64,12 +77,15 @@ func owner(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return p.AccountID, ok
 }
 func decode(w http.ResponseWriter, r *http.Request, out any) bool {
+	return decodeLimit(w, r, out, 2048)
+}
+func decodeLimit(w http.ResponseWriter, r *http.Request, out any, limit int64) bool {
 	media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || media != "application/json" {
 		fail(w, 415, "json_required")
 		return false
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 2048)
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err = decoder.Decode(out); err != nil {
@@ -82,6 +98,75 @@ func decode(w http.ResponseWriter, r *http.Request, out any) bool {
 		return false
 	}
 	return true
+}
+func native(w http.ResponseWriter, r *http.Request) (auth.Principal, bool) {
+	p, ok := auth.FromContext(r.Context())
+	if !ok {
+		fail(w, 401, "unauthorized")
+		return p, false
+	}
+	if p.ClientKind != "android" {
+		fail(w, 403, "sdk_unavailable")
+		return p, false
+	}
+	return p, true
+}
+func (s *Server) createNative(w http.ResponseWriter, r *http.Request) {
+	p, ok := native(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		MonitorCount   int    `json:"monitorCount"`
+		IdempotencyKey string `json:"idempotencyKey"`
+		PriceVersion   int64  `json:"priceVersion"`
+		PurchaseKind   string `json:"purchaseKind"`
+		PackageID      string `json:"packageId"`
+	}
+	if !decode(w, r, &input) {
+		return
+	}
+	order, quote, err := s.service.CreateNativeOrder(r.Context(), p, input.MonitorCount, input.IdempotencyKey, input.PriceVersion, input.PurchaseKind, input.PackageID)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	write(w, 201, map[string]any{"order": order, "sdk": quote})
+}
+func (s *Server) attachNative(w http.ResponseWriter, r *http.Request) {
+	p, ok := native(w, r)
+	if !ok {
+		return
+	}
+	var input struct {
+		PaymentToken      string `json:"paymentToken"`
+		PaymentMethodType string `json:"paymentMethodType"`
+	}
+	if !decodeLimit(w, r, &input, 8192) {
+		return
+	}
+	order, err := s.service.AttachNativeToken(r.Context(), p, r.PathValue("id"), input.PaymentToken, input.PaymentMethodType)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	write(w, 200, map[string]any{"order": order})
+}
+func (s *Server) cancelNative(w http.ResponseWriter, r *http.Request) {
+	p, ok := native(w, r)
+	if !ok {
+		return
+	}
+	var input struct{}
+	if !decode(w, r, &input) {
+		return
+	}
+	order, err := s.service.CancelNativeOrder(r.Context(), p, r.PathValue("id"))
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	write(w, 200, map[string]any{"order": order})
 }
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	account, ok := owner(w, r)
@@ -106,11 +191,16 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		PriceVersion   int64  `json:"priceVersion"`
 		PurchaseKind   string `json:"purchaseKind"`
 		PackageID      string `json:"packageId"`
+		ReturnTarget   string `json:"returnTarget"`
 	}
 	if !decode(w, r, &input) {
 		return
 	}
-	order, err := s.service.CreateSelectedOrder(r.Context(), account, input.MonitorCount, input.IdempotencyKey, input.PriceVersion, input.PurchaseKind, input.PackageID)
+	target := input.ReturnTarget
+	if target == "" {
+		target = "web"
+	}
+	order, err := s.service.CreateSelectedOrderWithTarget(r.Context(), account, input.MonitorCount, input.IdempotencyKey, input.PriceVersion, input.PurchaseKind, input.PackageID, target)
 	if err != nil {
 		failure(w, err)
 		return

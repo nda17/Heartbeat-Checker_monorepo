@@ -633,7 +633,7 @@ function YooKassaCheckout({
       )}
       {statusError && <Notice>{statusError}</Notice>}
       {statusNote && (
-        <p className="small" role="status">
+        <p className="small billing-status-note" role="status">
           {statusNote}
         </p>
       )}
