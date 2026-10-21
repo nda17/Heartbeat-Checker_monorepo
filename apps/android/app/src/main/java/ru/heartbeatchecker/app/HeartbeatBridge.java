@@ -45,6 +45,7 @@ public final class HeartbeatBridge extends ReactContextBaseJavaModule {
         Map<String, Object> constants = new java.util.HashMap<>();
         constants.put("API_ORIGIN", BuildConfig.API_ORIGIN);
         constants.put("CHALLENGE_ORIGIN", BuildConfig.CHALLENGE_ORIGIN);
+        constants.put("DEV_CLIENT", BuildConfig.DEV_CLIENT);
         return constants;
     }
 
@@ -119,6 +120,7 @@ public final class HeartbeatBridge extends ReactContextBaseJavaModule {
     @ReactMethod public void sdkConfirm(ReadableMap input, Promise promise) {checkout.confirm(input, promise);}
 
     @ReactMethod public void beginOAuth(Promise promise) {
+        if (BuildConfig.DEV_CLIENT) {promise.reject("dev_action_unavailable", "OAuth is unavailable in the dev app"); return;}
         work(promise, () -> {
             String state = secret(), verifier = secret();
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(verifier.getBytes(java.nio.charset.StandardCharsets.US_ASCII));
@@ -263,7 +265,8 @@ public final class HeartbeatBridge extends ReactContextBaseJavaModule {
                 boolean payment = "yoomoney.ru".equals(host) || "yookassa.ru".equals(host);
                 boolean bot = "t.me".equals(host) || "max.ru".equals(host);
                 if (activity == null || !"https".equals(uri.getScheme()) || uri.getPort() != -1 || uri.getUserInfo() != null
-                        || uri.getFragment() != null || url.length() > 2048 || !(own || oauth || payment || bot)) throw new IllegalArgumentException();
+                        || uri.getFragment() != null || url.length() > 2048 || !(own || oauth || payment || bot)
+                        || BuildConfig.DEV_CLIENT && (oauth || payment)) throw new IllegalArgumentException();
                 new CustomTabsIntent.Builder().build().launchUrl(activity, uri);
                 promise.resolve(null);
             } catch (Exception failure) {promise.reject("browser_unavailable", "Cannot open the external page");}
@@ -272,7 +275,7 @@ public final class HeartbeatBridge extends ReactContextBaseJavaModule {
 
     @ReactMethod public void pushStatus(Promise promise) {
         work(promise, () -> {
-            if (BuildConfig.ISOLATED_API)
+            if (BuildConfig.ISOLATED_API || BuildConfig.DEV_CLIENT)
                 return new JSONObject().put("enabled", false).put("optedOut", true).put("provider", "").put("status", "not_connected");
             JSONObject state = new PushStore(context).read();
             JSONObject installation = state.optJSONObject("installation");
@@ -282,7 +285,7 @@ public final class HeartbeatBridge extends ReactContextBaseJavaModule {
         });
     }
     @ReactMethod public void pushToggle(boolean enabled, boolean allowAccountChange, Promise promise) {
-        if (BuildConfig.ISOLATED_API) {promise.reject("push_unavailable", "Push is unavailable in isolated API app"); return;}
+        if (BuildConfig.ISOLATED_API || BuildConfig.DEV_CLIENT) {promise.reject("push_unavailable", "Push is unavailable in this app"); return;}
         pushIo.execute(() -> {
             try {PushNative.toggle(context, enabled, allowAccountChange); promise.resolve(null);}
             catch (PushNative.TransferRequired transfer) {promise.reject("push_account_change_required", "Confirm transfer of this installation");}

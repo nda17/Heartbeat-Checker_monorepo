@@ -31,6 +31,11 @@ public final class HeartbeatApplication extends Application implements ReactAppl
         super.onCreate();
         if (!isMainProcess(Application.getProcessName(), getPackageName())) return;
         ReactNativeApplicationEntryPoint.loadReactNative(this);
+        if (BuildConfig.DEV_CLIENT) {
+            PushWork.locallyBlocked = true;
+            AuthRevokeWorker.enqueue(this);
+            return;
+        }
         try { PushNotifications.channel(this); } catch (RuntimeException ignored) { }
         try {
             org.json.JSONObject push = new PushStore(this).read();

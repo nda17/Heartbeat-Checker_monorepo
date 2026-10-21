@@ -95,6 +95,9 @@ services:
       MAX_INFORMER_WEBHOOK_SECRET: ${MAX_INFORMER_WEBHOOK_SECRET:-}
       TELEGRAM_INFORMER_BOT_USERNAME: ${TELEGRAM_INFORMER_BOT_USERNAME:-}
       MAX_INFORMER_BOT_URL: ${MAX_INFORMER_BOT_URL:-}
+      ANDROID_DEV_RELEASE_DIR: /run/android-dev
+    volumes:
+      - ./android-dev-private/payload:/run/android-dev:ro
     networks:
       edge:
         ipv4_address: 172.30.64.3

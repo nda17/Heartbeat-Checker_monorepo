@@ -39,9 +39,12 @@ printf '%s\n' "$sdk_root/cmdline-tools/$tools_version/bin" "$sdk_root/platform-t
   "$sdk_root/emulator" >> "$GITHUB_PATH"
 
 sdkmanager --sdk_root="$sdk_root" --licenses < <(yes) > /dev/null
+sdk_packages=('platforms;android-37.0' 'build-tools;36.0.0' 'platform-tools')
+if [[ $# != 1 || $1 != --verify-only ]]; then
+  sdk_packages+=('ndk;27.1.12297006' 'cmake;3.30.5' "$@")
+fi
 for attempt in 1 2 3; do
-  if sdkmanager --sdk_root="$sdk_root" 'platforms;android-37.0' 'build-tools;36.0.0' \
-    'platform-tools' 'ndk;27.1.12297006' 'cmake;3.30.5' "$@"; then
+  if sdkmanager --sdk_root="$sdk_root" "${sdk_packages[@]}"; then
     break
   fi
   if (( attempt == 3 )); then

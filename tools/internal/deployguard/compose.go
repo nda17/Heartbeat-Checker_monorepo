@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -20,8 +21,28 @@ import (
 type Service struct {
 	Image       string            `json:"image"`
 	Environment map[string]string `json:"environment"`
+	Volumes     []struct {
+		Type     string `json:"type"`
+		Source   string `json:"source"`
+		Target   string `json:"target"`
+		ReadOnly bool   `json:"read_only"`
+	} `json:"volumes"`
 }
 type Compose map[string]Service
+
+func containsDevArtifactVolume(c Compose, role string) int {
+	count := 0
+	for _, volume := range c[role].Volumes {
+		if volume.Target != "/run/android-dev" && !strings.Contains(volume.Source, "android-dev-private") {
+			continue
+		}
+		if role != "api" || volume.Target != "/run/android-dev" || volume.Type != "bind" || !volume.ReadOnly || !filepath.IsAbs(volume.Source) || !strings.HasSuffix(filepath.Clean(volume.Source), "/android-dev-private/payload") {
+			return -1
+		}
+		count++
+	}
+	return count
+}
 
 func ReadCompose(input io.Reader) (Compose, error) {
 	b, err := deploydata.ReadBounded(input, 2<<20)
@@ -47,6 +68,14 @@ func CheckCompose(input io.Reader) error {
 	}
 	api, worker := c["api"].Environment, c["worker"].Environment
 	invalid := func(message string) error { return errors.New(message) }
+	if api["ANDROID_DEV_RELEASE_DIR"] != "/run/android-dev" || containsDevArtifactVolume(c, "api") != 1 {
+		return invalid("API requires one read-only private Android dev artifact mount")
+	}
+	for _, role := range []string{"worker", "probe", "postgres", "caddy", "migrate"} {
+		if c[role].Environment["ANDROID_DEV_RELEASE_DIR"] != "" || containsDevArtifactVolume(c, role) != 0 {
+			return invalid("Private Android dev artifacts must be scoped to API only")
+		}
+	}
 	raw := api["DATABASE_URL"]
 	u, err := url.Parse(raw)
 	if err != nil {

@@ -9,7 +9,7 @@ react {
     codegenDir = file('../../mobile/node_modules/@react-native/codegen')
     cliFile = file('../../mobile/node_modules/react-native/cli.js')
     entryFile = file('../../mobile/index.ts')
-    debuggableVariants = []
+    debuggableVariants = ['dev']
     autolinkLibrariesWithApp()
 }
 
@@ -22,6 +22,11 @@ def releaseStorePassword = secret('ANDROID_KEYSTORE_PASSWORD')
 def releaseKeyAlias = System.getenv('ANDROID_KEY_ALIAS')
 def releaseKeyPassword = secret('ANDROID_KEY_PASSWORD')
 def signingReady = keystore && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
+def devKeystore = System.getenv('ANDROID_DEV_KEYSTORE_FILE')
+def devStorePassword = secret('ANDROID_DEV_KEYSTORE_PASSWORD')
+def devKeyAlias = System.getenv('ANDROID_DEV_KEY_ALIAS')
+def devKeyPassword = secret('ANDROID_DEV_KEY_PASSWORD')
+def devSigningReady = devKeystore && devStorePassword && devKeyAlias && devKeyPassword
 def pushProjectId = (System.getenv('RUSTORE_PUSH_PROJECT_ID') ?: '').trim()
 if (pushProjectId && !(pushProjectId ==~ /[A-Za-z0-9_-]{8,128}/)) {
     throw new GradleException('Invalid public RUSTORE_PUSH_PROJECT_ID')
@@ -81,6 +86,7 @@ android {
         buildConfigField 'String', 'YOOKASSA_SHOP_ID', '""'
         buildConfigField 'String', 'YOOKASSA_SDK_ENVIRONMENT', '"live"'
         buildConfigField 'boolean', 'ISOLATED_API', 'false'
+        buildConfigField 'boolean', 'DEV_CLIENT', 'false'
         buildConfigField 'String', 'API_ORIGIN', '"https://heartbeat-checker.ru"'
         buildConfigField 'String', 'CHALLENGE_ORIGIN', '"https://heartbeat-checker.ru"'
         buildConfigField 'String', 'RUSTORE_PUSH_PROJECT_ID', '"' + pushProjectId + '"'
@@ -96,8 +102,33 @@ android {
                 keyPassword = releaseKeyPassword
             }
         }
+        if (devSigningReady) {
+            dev {
+                storeFile file(devKeystore)
+                storePassword = devStorePassword
+                keyAlias = devKeyAlias
+                keyPassword = devKeyPassword
+            }
+        }
     }
     buildTypes {
+        dev {
+            initWith debug
+            signingConfig = devSigningReady ? signingConfigs.dev : null
+            applicationIdSuffix '.dev'
+            versionNameSuffix '-dev'
+            manifestPlaceholders.appLinkHost = 'android-dev.heartbeat-checker.invalid'
+            matchingFallbacks = ['debug', 'release']
+            debuggable true
+            resValue 'string', 'ym_app_scheme', 'heartbeatcheckerdev'
+            buildConfigField 'boolean', 'DEV_CLIENT', 'true'
+            buildConfigField 'String', 'RUSTORE_PUSH_PROJECT_ID', '""'
+            buildConfigField 'String', 'YOOKASSA_SDK_CLIENT_KEY', '""'
+            buildConfigField 'String', 'YOOKASSA_SHOP_ID', '""'
+            ['FIREBASE_APP_ID', 'FIREBASE_PROJECT_ID', 'FIREBASE_API_KEY', 'FIREBASE_SENDER_ID'].each { name ->
+                buildConfigField 'String', name, '""'
+            }
+        }
         release {
             if (signingReady) signingConfig signingConfigs.release
             minifyEnabled false
@@ -158,6 +189,13 @@ tasks.register('requireReleaseSigning') {
         }
     }
 }
+tasks.register('requireDevSigning') {
+    doLast {
+        if (!devSigningReady || !file(devKeystore).isFile()) {
+            throw new GradleException('Dev APK requires its separate ANDROID_DEV_KEYSTORE_FILE, ANDROID_DEV_KEYSTORE_PASSWORD, ANDROID_DEV_KEY_ALIAS and ANDROID_DEV_KEY_PASSWORD.')
+        }
+    }
+}
 tasks.register('requireSdkTestConfig') {
     doLast {
         if (!sdkTestClientKey || !sdkTestShopId) throw new GradleException('SDK test APK requires YooKassa public test client key and shop ID')
@@ -172,6 +210,7 @@ tasks.configureEach {
     if (name in ['packageRelease', 'packageReleaseBundle', 'signReleaseBundle', 'assembleRelease', 'bundleRelease']) {
         dependsOn tasks.named('requireReleaseSigning')
     }
+    if (name in ['packageDev', 'assembleDev']) dependsOn tasks.named('requireDevSigning')
     if (name in ['packageSdkTest', 'assembleSdkTest']) dependsOn tasks.named('requireSdkTestConfig')
 }
 

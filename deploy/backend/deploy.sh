@@ -50,6 +50,17 @@ mkdir -m 700 "$DOCKER_CONFIG"
 umask 077
 mkdir -p backups receipts
 
+# The host's backend directory remains private to the deploy user. Only the
+# artifact payload is mounted into the unprivileged API container, read-only.
+if [[ ! -e android-dev-private ]]; then mkdir -m 700 android-dev-private; fi
+[[ -d android-dev-private && ! -L android-dev-private && $(stat -c %a android-dev-private) == 700 && $(stat -c %u android-dev-private) == $(id -u) ]] || {
+  echo 'Invalid private Android dev artifact directory' >&2; exit 1;
+}
+if [[ ! -e android-dev-private/payload ]]; then mkdir -m 755 android-dev-private/payload; fi
+[[ -d android-dev-private/payload && ! -L android-dev-private/payload && $(stat -c %a android-dev-private/payload) == 755 && $(stat -c %u android-dev-private/payload) == $(id -u) ]] || {
+  echo 'Invalid Android dev artifact payload directory' >&2; exit 1;
+}
+
 had_previous=false
 if [[ -e .release.env || -e compose.yaml || -e Caddyfile ]]; then
   for file in .release.env compose.yaml Caddyfile; do

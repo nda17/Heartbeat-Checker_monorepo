@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +42,7 @@ type Config struct {
 	AuthMFAEncryptionKey  string
 	TrustedProxyCIDRs     string
 	WebhookEncryptionKey  string
+	AndroidDevReleaseDir  string
 }
 
 func Load() (Config, error) {
@@ -119,6 +121,10 @@ func Load() (Config, error) {
 		}
 	}
 	cfg.AuthMailEncryptionKey = strings.TrimSpace(os.Getenv("AUTH_MAIL_ENCRYPTION_KEY"))
+	cfg.AndroidDevReleaseDir = strings.TrimSpace(os.Getenv("ANDROID_DEV_RELEASE_DIR"))
+	if cfg.AndroidDevReleaseDir != "" && (!filepath.IsAbs(cfg.AndroidDevReleaseDir) || filepath.Clean(cfg.AndroidDevReleaseDir) != cfg.AndroidDevReleaseDir || (cfg.AppEnv == "production" && cfg.AndroidDevReleaseDir != "/run/android-dev")) {
+		return Config{}, fmt.Errorf("ANDROID_DEV_RELEASE_DIR must be the private API artifact mount")
+	}
 	if cfg.AuthMailEncryptionKey != "" {
 		mailKey, err := base64.StdEncoding.Strict().DecodeString(cfg.AuthMailEncryptionKey)
 		if err != nil || len(mailKey) != 32 {

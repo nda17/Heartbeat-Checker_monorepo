@@ -810,7 +810,8 @@ export function BillingScreen({
               {item.quota} монитор(а) · до {date(item.activeUntil)} ·{" "}
               {item.active ? "активна" : "истекла"}
             </Label>
-            {["yookassa", "yookassa_test"].includes(item.source) ? (
+            {!native.DEV_CLIENT &&
+            ["yookassa", "yookassa_test"].includes(item.source) ? (
               <Button
                 label={
                   selected?.id === item.id
@@ -831,88 +832,97 @@ export function BillingScreen({
           <Label muted>Оплаченных транзакций пока нет.</Label>
         ) : null}
       </Card>
-      <Card>
-        <Title>Новый заказ</Title>
-        {current ? (
-          <Label>
-            Сохранён запрос:{" "}
-            {current.purchaseKind === "renew" ? "продление" : "покупка"}{" "}
-            {current.monitorCount} монитор(а). Повтор создаст тот же заказ.
+      {native.DEV_CLIENT ? (
+        <Card>
+          <Title>Новый заказ</Title>
+          <Label muted>
+            Оплата в dev-сборке отключена. Данные и история доступны для просмотра.
           </Label>
-        ) : null}
-        <Button
-          label="Добавить мониторы"
-          secondary={kind !== "add"}
-          disabled={!!current || busy}
-          onPress={() => {
-            setKind("add");
-            setSelected(null);
-          }}
-        />
-        <Button
-          label="Продлить выбранную транзакцию"
-          secondary={kind !== "renew"}
-          disabled={!selected || !!current || busy}
-          onPress={() => setKind("renew")}
-        />
-        {kind === "add" && !current ? (
-          <Field
-            label="Количество мониторов"
-            value={count}
-            onChangeText={setCount}
-            keyboardType="number-pad"
-          />
-        ) : (
-          <Label>
-            {selected
-              ? `${selected.quota} монитор(а) · до ${date(selected.activeUntil)}`
-              : current
-                ? `${current.monitorCount} монитор(а)`
-                : "Выберите транзакцию выше."}
-          </Label>
-        )}
-        <Label>
-          Сумма:{" "}
-          {validQuote && quantity > 0
-            ? money(billing!.pricePerMonitorMinor * quantity)
-            : "—"}
-        </Label>
-        {!billing?.canPay ? (
-          <Label muted>Оплата сейчас недоступна для этого аккаунта.</Label>
-        ) : null}
-        {kind === "renew" && selected && !current && !route ? (
-          <Label muted>Продление выбранной транзакции сейчас недоступно.</Label>
-        ) : null}
-        <Button
-          label={
-            current
-              ? canResumeSDK
-                ? "Продолжить оплату картой"
-                : "Повторить сохранённый запрос"
-              : nativeAvailable
-                ? "Оплатить картой"
-                : "Перейти к оплате ЮKassa"
-          }
-          disabled={
-            restoring ||
-            busy ||
-            (!billing?.canPay && !current) ||
-            (!current && !route) ||
-            (!!current?.orderId && !canResumeSDK) ||
-            (!!openOrder && unfinished(openOrder) && !current) ||
-            (!current && !validQuote)
-          }
-          onPress={() => void submit()}
-        />
-        {rejected && current ? (
+        </Card>
+      ) : (
+        <Card>
+          <Title>Новый заказ</Title>
+          {current ? (
+            <Label>
+              Сохранён запрос:{" "}
+              {current.purchaseKind === "renew" ? "продление" : "покупка"}{" "}
+              {current.monitorCount} монитор(а). Повтор создаст тот же заказ.
+            </Label>
+          ) : null}
           <Button
-            label="Отменить отклонённую попытку"
-            secondary
-            disabled={busy}
-            onPress={cancelRejected}
+            label="Добавить мониторы"
+            secondary={kind !== "add"}
+            disabled={!!current || busy}
+            onPress={() => {
+              setKind("add");
+              setSelected(null);
+            }}
           />
-        ) : null}
-      </Card>
+          <Button
+            label="Продлить выбранную транзакцию"
+            secondary={kind !== "renew"}
+            disabled={!selected || !!current || busy}
+            onPress={() => setKind("renew")}
+          />
+          {kind === "add" && !current ? (
+            <Field
+              label="Количество мониторов"
+              value={count}
+              onChangeText={setCount}
+              keyboardType="number-pad"
+            />
+          ) : (
+            <Label>
+              {selected
+                ? `${selected.quota} монитор(а) · до ${date(selected.activeUntil)}`
+                : current
+                  ? `${current.monitorCount} монитор(а)`
+                  : "Выберите транзакцию выше."}
+            </Label>
+          )}
+          <Label>
+            Сумма:{" "}
+            {validQuote && quantity > 0
+              ? money(billing!.pricePerMonitorMinor * quantity)
+              : "—"}
+          </Label>
+          {!billing?.canPay ? (
+            <Label muted>Оплата сейчас недоступна для этого аккаунта.</Label>
+          ) : null}
+          {kind === "renew" && selected && !current && !route ? (
+            <Label muted>Продление выбранной транзакции сейчас недоступно.</Label>
+          ) : null}
+          <Button
+            label={
+              current
+                ? canResumeSDK
+                  ? "Продолжить оплату картой"
+                  : "Повторить сохранённый запрос"
+                : nativeAvailable
+                  ? "Оплатить картой"
+                  : "Перейти к оплате ЮKassa"
+            }
+            disabled={
+              restoring ||
+              busy ||
+              (!billing?.canPay && !current) ||
+              (!current && !route) ||
+              (!!current?.orderId && !canResumeSDK) ||
+              (!!openOrder && unfinished(openOrder) && !current) ||
+              (!current && !validQuote)
+            }
+            onPress={() => void submit()}
+          />
+          {rejected && current ? (
+            <Button
+              label="Отменить отклонённую попытку"
+              secondary
+              disabled={busy}
+              onPress={cancelRejected}
+            />
+          ) : null}
+        </Card>
+      )}
       {openOrder ? (
         <Card>
           <Title>Заказ</Title>
@@ -925,7 +935,7 @@ export function BillingScreen({
             disabled={busy}
             secondary
           />
-          {openOrder.checkoutKind === "android_sdk" &&
+          {!native.DEV_CLIENT && openOrder.checkoutKind === "android_sdk" &&
           openOrder.sdk?.state === "confirmation_required" ? (
             <Button
               label="Подтвердить в банке"
@@ -934,7 +944,7 @@ export function BillingScreen({
               secondary
             />
           ) : null}
-          {openOrder.checkoutKind === "android_sdk" &&
+          {!native.DEV_CLIENT && openOrder.checkoutKind === "android_sdk" &&
           openOrder.sdk?.state === "awaiting_token" ? (
             <Button
               label="Отменить этот заказ"
@@ -943,7 +953,7 @@ export function BillingScreen({
               secondary
             />
           ) : null}
-          {openOrder.checkoutKind !== "android_sdk" &&
+          {!native.DEV_CLIENT && openOrder.checkoutKind !== "android_sdk" &&
           openOrder.status === "pending" &&
           openOrder.confirmationUrl &&
           validPaymentURL(openOrder.confirmationUrl) ? (

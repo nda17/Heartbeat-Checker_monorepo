@@ -40,6 +40,7 @@ public class MainActivity extends ReactActivity {
     }
 
     static String normalize(Intent intent) {
+        if (BuildConfig.DEV_CLIENT) return null;
         if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) return null;
         Uri uri = intent.getData();
         if (uri == null || !"https".equals(uri.getScheme()) || !"heartbeat-checker.ru".equals(uri.getEncodedAuthority())

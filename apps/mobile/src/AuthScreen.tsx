@@ -366,6 +366,7 @@ export function AuthScreen({
         return;
       }
       if (action === "reset") {
+        if (native.DEV_CLIENT) return;
         await api("/auth/native/password/reset/request", {
           method: "POST",
           auth: false,
@@ -380,6 +381,7 @@ export function AuthScreen({
 
   const oauth = (provider: Provider) =>
     void run(async () => {
+      if (native.DEV_CLIENT) return;
       const proof = await native.beginOAuth();
       const result = await api<{
         flowId: string;
@@ -440,6 +442,12 @@ export function AuthScreen({
             </Text>
           </View>
           <Card style={styles.formCard}>
+            {native.DEV_CLIENT ? (
+              <Label muted>
+                Dev-сборка: вход и регистрация по email. Социальный вход и
+                восстановление пароля доступны в обычном приложении.
+              </Label>
+            ) : null}
             <Title>
               {mode === "login"
                 ? "Вход"
@@ -527,7 +535,7 @@ export function AuthScreen({
                 />
               </>
             ) : null}
-            {mode === "reset" ? (
+            {mode === "reset" && !native.DEV_CLIENT ? (
               <Button
                 label="Отправить ссылку"
                 disabled={busy || !email}
@@ -575,20 +583,22 @@ export function AuthScreen({
                     Регистрация
                   </Text>
                 </Pressable>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => changeMode("reset")}
-                  style={styles.authLink}
-                >
-                  <Text
-                    style={[styles.authLinkText, { color: palette.accent }]}
+                {!native.DEV_CLIENT ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => changeMode("reset")}
+                    style={styles.authLink}
                   >
-                    Забыли пароль?
-                  </Text>
-                </Pressable>
+                    <Text
+                      style={[styles.authLinkText, { color: palette.accent }]}
+                    >
+                      Забыли пароль?
+                    </Text>
+                  </Pressable>
+                ) : null}
               </View>
             ) : null}
-            {mode === "login" ? (
+            {mode === "login" && !native.DEV_CLIENT ? (
               <>
                 <Button
                   label="Войти через Яндекс"

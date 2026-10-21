@@ -24,6 +24,7 @@ final class PushSdk {
     private PushSdk() {}
 
     static void initialize(Application application) {
+        if (BuildConfig.DEV_CLIENT) return;
         try {
             if (!BuildConfig.RUSTORE_PUSH_PROJECT_ID.isEmpty())
                 RuStorePushClient.INSTANCE.init(application, BuildConfig.RUSTORE_PUSH_PROJECT_ID, new QuietLogger());
@@ -78,6 +79,7 @@ final class PushSdk {
     }
 
     static void token(Context context, TokenResult result) {
+        if (BuildConfig.DEV_CLIENT) { result.unavailable(); return; }
         if (!initialized) { result.unavailable(); return; }
         try {
             PushStore store = new PushStore(context);

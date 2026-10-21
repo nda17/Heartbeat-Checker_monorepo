@@ -60,6 +60,18 @@ export async function api<T>(
 ): Promise<T> {
   if (!path.startsWith("/") || path.startsWith("//") || path.includes("://"))
     throw new Error("Invalid API path");
+  const method = (options.method ?? "GET").toUpperCase();
+  if (
+    native.DEV_CLIENT &&
+    (path.startsWith("/auth/native/oauth/") ||
+      path.startsWith("/auth/native/password/reset/") ||
+      (path.startsWith("/billing") && method !== "GET") ||
+      (path.startsWith("/push/") && method !== "GET") ||
+      (path.startsWith("/monitors/") &&
+        path.endsWith("/push") &&
+        method !== "GET"))
+  )
+    throw new ApiError(403, "dev_action_unavailable");
   const capturedEpoch = epoch;
   const nativeEpoch = await native.authEpoch();
   if (capturedEpoch !== epoch) throw new ApiError(409, "session_changed");
@@ -79,7 +91,7 @@ export async function api<T>(
     throw new ApiError(401, "session_expired");
   }
   const response = await fetch(`${API_ORIGIN}/api/v1${path}`, {
-    method: options.method ?? "GET",
+    method,
     headers: {
       Accept: "application/json",
       ...(options.body === undefined
@@ -127,6 +139,8 @@ const messages: Record<string, string> = {
   entitlement_required: "Для включения монитора требуется доступная квота.",
   price_changed: "Цена изменилась. Обновите стоимость перед оплатой.",
   session_changed: "Аккаунт изменился. Обновите экран.",
+  dev_action_unavailable:
+    "В dev-сборке это действие недоступно. Используйте обычное приложение.",
   invalid_request: "Проверьте заполнение полей.",
   temporarily_unavailable: "Сервис временно недоступен. Повторите позже.",
   challenge_failed: "Проверка безопасности не прошла. Повторите её.",

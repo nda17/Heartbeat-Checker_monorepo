@@ -1227,6 +1227,7 @@ test("installation offers are tagged in the home navigation, footer, and Android
     "next/link": link,
     "@/shared/ui": ui,
     "@/features/theme-toggle": { ThemeToggle: () => null },
+    "@/features/android-dev-download": { AndroidDevDownload: () => null },
     "@/shared/seo": {
       publicPageMetadata: () => ({}),
       PublicPageStructuredData: () => null,
@@ -3467,6 +3468,7 @@ function consoleShellFixture(api, routes = {}, suppliedContext = null) {
       this.code = code;
     }
   }
+  let transitionSequence = 0;
   const sessionContext = suppliedContext ?? React.createContext(null);
   const component = compile("../src/widgets/console-shell/index.tsx", {
     "next/link": ({ href, children, onClick, ...props }) =>
@@ -3486,7 +3488,22 @@ function consoleShellFixture(api, routes = {}, suppliedContext = null) {
       usePathname: () => "/app",
       useRouter: () => routes,
     },
-    "@/entities/session": { SessionContext: sessionContext },
+    "@/entities/session": {
+      SessionContext: sessionContext,
+      sessionTransitionEvent: "heartbeat-session-transition",
+      sessionTransitionStorageKey: "heartbeat-session-transition",
+      signalSessionTransition(phase) {
+        const value = `${phase}:${Date.now()}:${++transitionSequence}`;
+        try {
+          window.localStorage.setItem("heartbeat-session-transition", value);
+        } catch {}
+        window.dispatchEvent(
+          new window.CustomEvent("heartbeat-session-transition", {
+            detail: value,
+          }),
+        );
+      },
+    },
     "@/features/theme-toggle": { ThemeToggle: () => null },
     "@/shared/api": {
       api,

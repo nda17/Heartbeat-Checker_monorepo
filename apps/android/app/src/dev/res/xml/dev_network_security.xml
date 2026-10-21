@@ -1,0 +1,4 @@
+<network-security-config>
+    <!-- Only the separate dev APK may connect to a user-selected LAN Metro host. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

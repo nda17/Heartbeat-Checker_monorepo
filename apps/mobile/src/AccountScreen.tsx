@@ -259,7 +259,7 @@ export function AccountScreen({ onLogout }: { onLogout: () => Promise<void> }) {
           <Label>Получать уведомления</Label>
           <Switch
             value={push?.enabled ?? false}
-            disabled={busy || !push}
+            disabled={native.DEV_CLIENT || busy || !push}
             onValueChange={togglePush}
           />
         </View>
@@ -270,8 +270,9 @@ export function AccountScreen({ onLogout }: { onLogout: () => Promise<void> }) {
           · {push?.status ?? "не подключено"}
         </Label>
         <Label>
-          При отключении привязка отзывается. Повторное включение требует
-          подтверждения разрешения Android.
+          {native.DEV_CLIENT
+            ? "Push в dev-сборке отключён."
+            : "При отключении привязка отзывается. Повторное включение требует подтверждения разрешения Android."}
         </Label>
       </Card>
       <Card>
@@ -281,15 +282,25 @@ export function AccountScreen({ onLogout }: { onLogout: () => Promise<void> }) {
             <Label>
               {item.provider.toUpperCase()} {item.label ?? ""}
             </Label>
-            <Button label="Отключить" onPress={() => unlink(item)} secondary />
+            {!native.DEV_CLIENT ? (
+              <Button label="Отключить" onPress={() => unlink(item)} secondary />
+            ) : null}
           </View>
         ))}
-        <Button
-          label="Подключить Яндекс"
-          onPress={() => link("yandex")}
-          secondary
-        />
-        <Button label="Подключить VK" onPress={() => link("vk")} secondary />
+        {native.DEV_CLIENT ? (
+          <Label muted>
+            Управление социальным входом доступно в обычном приложении.
+          </Label>
+        ) : (
+          <>
+            <Button
+              label="Подключить Яндекс"
+              onPress={() => link("yandex")}
+              secondary
+            />
+            <Button label="Подключить VK" onPress={() => link("vk")} secondary />
+          </>
+        )}
       </Card>
       <Card>
         <Title>Пароль</Title>

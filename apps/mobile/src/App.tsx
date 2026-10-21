@@ -137,6 +137,7 @@ function AppContent() {
 
   const handleLink = useCallback(
     async (raw: string) => {
+      if (native.DEV_CLIENT) return;
       if (restoring.current) {
         earlyLinks.current.push(raw);
         return;
@@ -549,6 +550,15 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
+        {native.DEV_CLIENT ? (
+          <View style={{ backgroundColor: "#6a4000", padding: 8 }}>
+            <Text
+              style={{ color: "#ffffff", textAlign: "center", fontWeight: "700" }}
+            >
+              DEV · Metro по Wi-Fi · оплата и push выключены
+            </Text>
+          </View>
+        ) : null}
         <AppContent />
       </SafeAreaView>
     </SafeAreaProvider>
