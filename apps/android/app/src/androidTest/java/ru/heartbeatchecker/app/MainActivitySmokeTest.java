@@ -3,14 +3,15 @@ package ru.heartbeatchecker.app;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.AssetManager;
+import android.graphics.Bitmap;
+import android.graphics.Rect;
 import android.net.Uri;
-import android.view.View;
-import android.view.ViewGroup;
 import android.view.InputDevice;
 import android.view.MotionEvent;
+import android.view.View;
+import android.view.ViewGroup;
 import android.widget.TextView;
 import android.widget.EditText;
-import android.graphics.Bitmap;
 
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.core.app.ApplicationProvider;
@@ -26,6 +27,8 @@ import java.io.InputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.time.Instant;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -57,7 +60,7 @@ public final class MainActivitySmokeTest {
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
             assertTrue("a rendered React Native screen is required; Activity launch alone is insufficient",
                     awaitVisibleText(scenario, "Войти через Яндекс"));
-            scenario.onActivity(activity -> saveScreenshot(activity, "login.png"));
+            saveScreenshot(scenario, "Войти", "Мониторы", "login.png");
         }
     }
 
@@ -69,17 +72,17 @@ public final class MainActivitySmokeTest {
             tapDescription(scenario, "Показать пароль");
             assertTrue("password control must expose its visible state accessibly",
                     awaitVisibleDescription(scenario, "Скрыть пароль"));
-            scenario.onActivity(activity -> saveScreenshot(activity, "password-visible.png"));
+            saveScreenshot(scenario, "Войти", "Мониторы", "password-visible.png");
 
             tapText(scenario, "Регистрация");
             assertTrue("registration screen must render its primary action", awaitVisibleText(scenario, "Создать аккаунт"));
-            scenario.onActivity(activity -> saveScreenshot(activity, "register.png"));
+            saveScreenshot(scenario, "Создать аккаунт", "Мониторы", "register.png");
 
             tapText(scenario, "Ко входу");
             assertTrue(awaitVisibleText(scenario, "Войти через Яндекс"));
             tapText(scenario, "Забыли пароль?");
             assertTrue("reset request mode must render its primary action", awaitVisibleText(scenario, "Отправить ссылку"));
-            scenario.onActivity(activity -> saveScreenshot(activity, "reset-request.png"));
+            saveScreenshot(scenario, "Отправить ссылку", "Мониторы", "reset-request.png");
 
             tapText(scenario, "Ко входу");
             assertTrue(awaitVisibleText(scenario, "Войти через Яндекс"));
@@ -89,7 +92,7 @@ public final class MainActivitySmokeTest {
                     awaitEnabledControl(scenario, "Войти"));
             tapText(scenario, "Войти");
             assertTrue(awaitVisibleText(scenario, "Проверка безопасности"));
-            scenario.onActivity(activity -> saveScreenshot(activity, "captcha-login.png"));
+            saveScreenshot(scenario, "Проверка безопасности", "Мониторы", "captcha-login.png");
         }
     }
 
@@ -142,13 +145,13 @@ public final class MainActivitySmokeTest {
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(reset)) {
             try {
                 assertTrue("cold App Link must be consumed by the rendered React Native reset screen",
-                        awaitVisibleText(scenario, "Новый пароль"));
-                scenario.onActivity(activity -> saveScreenshot(activity, "reset-confirm.png"));
+                        awaitVisibleText(scenario, "Сохранить пароль"));
                 assertNull("native reset flow durably signs out before rendering the reset form", auth.active());
                 assertFalse(auth.read().optBoolean("gate"));
                 assertEquals(SESSION, auth.pendingRevokes().getJSONObject(0).getString("sessionId"));
                 assertTrue("logout advances the local push fence immediately", PushWork.localRevocation > revocationBefore);
                 assertTrue("logout keeps background delivery blocked", PushWork.locallyBlocked);
+                saveScreenshot(scenario, "Сохранить пароль", "Мониторы", "reset-confirm.png");
                 scenario.onActivity(activity -> assertNull(
                         "the consumed reset link must be removed from the Activity intent",
                         activity.getIntent().getData()));
@@ -188,7 +191,7 @@ public final class MainActivitySmokeTest {
     private static boolean awaitVisibleText(ActivityScenario<MainActivity> scenario, String expected) throws InterruptedException {
         for (int attempt = 0; attempt < 100; attempt++) {
             AtomicBoolean found = new AtomicBoolean();
-            scenario.onActivity(activity -> found.set(containsText(activity.getWindow().getDecorView(), expected)));
+            scenario.onActivity(activity -> found.set(containsVisibleText(activity.getWindow().getDecorView(), expected)));
             if (found.get()) return true;
             Thread.sleep(100);
         }
@@ -295,7 +298,25 @@ public final class MainActivitySmokeTest {
         return null;
     }
 
-    private static void saveScreenshot(MainActivity activity, String name) {
+    private static void saveScreenshot(ActivityScenario<MainActivity> scenario, String expected, String forbidden, String name)
+            throws InterruptedException {
+        android.app.Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        instrumentation.waitForIdleSync();
+        assertScreenMarkers(scenario, expected, forbidden);
+
+        CountDownLatch frameCommitted = new CountDownLatch(1);
+        scenario.onActivity(activity -> {
+            View decor = activity.getWindow().getDecorView();
+            decor.postOnAnimation(() -> {
+                decor.getViewTreeObserver().registerFrameCommitCallback(frameCommitted::countDown);
+                decor.invalidate();
+            });
+        });
+        assertTrue("React Native screen frame was not committed before screenshot: " + name,
+                frameCommitted.await(5, TimeUnit.SECONDS));
+        instrumentation.waitForIdleSync();
+        assertScreenMarkers(scenario, expected, forbidden);
+
         String additionalTestOutputDir = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir");
         if (additionalTestOutputDir == null || additionalTestOutputDir.isEmpty()
                 || !new File(additionalTestOutputDir).isAbsolute()) {
@@ -303,25 +324,49 @@ public final class MainActivitySmokeTest {
         }
         File directory = new File(additionalTestOutputDir, "auth-qa");
         if (!directory.isDirectory() && !directory.mkdirs()) throw new AssertionError("could not create auth screenshot directory");
-        Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+        Bitmap screenshot = instrumentation.getUiAutomation().takeScreenshot();
         if (screenshot == null) throw new AssertionError("could not capture React Native screen: " + name);
         File file = new File(directory, name);
-        try (FileOutputStream output = new FileOutputStream(file)) {
-            if (!screenshot.compress(Bitmap.CompressFormat.PNG, 100, output)) throw new AssertionError("could not encode screenshot: " + name);
-        } catch (Exception failure) {
-            throw new AssertionError("could not save auth screenshot: " + name, failure);
+        try {
+            assertScreenMarkers(scenario, expected, forbidden);
+            try (FileOutputStream output = new FileOutputStream(file)) {
+                if (!screenshot.compress(Bitmap.CompressFormat.PNG, 100, output)) {
+                    throw new AssertionError("could not encode screenshot: " + name);
+                }
+            } catch (Exception failure) {
+                throw new AssertionError("could not save auth screenshot: " + name, failure);
+            }
         } finally {
             screenshot.recycle();
         }
     }
 
-    private static boolean containsText(View view, String expected) {
-        if (view instanceof TextView && expected.contentEquals(((TextView) view).getText())) return true;
+    private static void assertScreenMarkers(ActivityScenario<MainActivity> scenario, String expected, String forbidden) {
+        AtomicBoolean expectedVisible = new AtomicBoolean();
+        AtomicBoolean forbiddenVisible = new AtomicBoolean();
+        scenario.onActivity(activity -> {
+            View root = activity.getWindow().getDecorView();
+            expectedVisible.set(containsVisibleText(root, expected));
+            forbiddenVisible.set(containsVisibleText(root, forbidden));
+        });
+        assertTrue("expected visible screen marker missing: " + expected, expectedVisible.get());
+        assertFalse("unexpected screen marker is visible: " + forbidden, forbiddenVisible.get());
+    }
+
+    private static boolean containsVisibleText(View view, String expected) {
+        if (view instanceof TextView && isActuallyVisible(view)
+                && expected.contentEquals(((TextView) view).getText())) return true;
         if (!(view instanceof ViewGroup)) return false;
         ViewGroup group = (ViewGroup) view;
         for (int index = 0; index < group.getChildCount(); index++) {
-            if (containsText(group.getChildAt(index), expected)) return true;
+            if (containsVisibleText(group.getChildAt(index), expected)) return true;
         }
         return false;
+    }
+
+    private static boolean isActuallyVisible(View view) {
+        Rect visible = new Rect();
+        return view.isAttachedToWindow() && view.isShown() && view.getWidth() > 0 && view.getHeight() > 0
+                && view.getGlobalVisibleRect(visible) && !visible.isEmpty();
     }
 }
