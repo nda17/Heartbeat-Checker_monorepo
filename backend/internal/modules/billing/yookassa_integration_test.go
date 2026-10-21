@@ -351,7 +351,7 @@ func TestHistoricalRefundedBlockedOrderIsNeverReprocessed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	grantUntil := time.Now().Add(24 * time.Hour)
+	grantUntil := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Microsecond)
 	grant, err := f.module.GrantAdminTx(context.Background(), tx, owner.id, 0, 3, grantUntil, "existing admin capacity")
 	if err != nil {
 		_ = tx.Rollback(context.Background())
