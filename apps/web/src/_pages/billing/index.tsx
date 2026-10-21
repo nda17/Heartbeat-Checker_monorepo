@@ -114,14 +114,14 @@ function money(amountMinor: number) {
     currency: "RUB",
   }).format(amountMinor / 100);
 }
-function activePart(part: { activeUntil: string | null } | null) {
-  return !!part?.activeUntil && Date.parse(part.activeUntil) > Date.now();
-}
 function paidSourceLabel(source: string) {
-  if (source === "yookassa") return "Оплаченная подписка";
-  if (source === "yookassa_test") return "Тестовый платёж ЮKassa";
-  if (source === "mock_test") return "Демонстрационная квота, без списания";
-  if (source === "local_test") return "Локальная тестовая квота, без оплаты";
+  if (source === "yookassa") return "Оплачено мониторов";
+  if (source === "yookassa_test")
+    return "Тестовая квота ЮKassa, без списания — мониторов";
+  if (source === "mock_test")
+    return "Демонстрационная квота, без списания — мониторов";
+  if (source === "local_test")
+    return "Локальная тестовая квота, без оплаты — мониторов";
   return source;
 }
 function YooKassaCheckout({
@@ -336,7 +336,7 @@ function YooKassaCheckout({
       monitorCount !== renewalQuota
     ) {
       setError(
-        `При продлении сохраняется число мест выбранного пакета: ${renewalQuota}. Для дополнительной ёмкости выберите новую покупку.`,
+        `При продлении сохраняется количество мониторов выбранной транзакции: ${renewalQuota}. Для дополнительных мониторов выберите новую покупку.`,
       );
       return;
     }
@@ -501,8 +501,8 @@ function YooKassaCheckout({
             {unknownIntent
               ? "Проверка исходного заказа"
               : displayedRenewalQuota === null
-                ? "Купить места на месяц"
-                : "Продление выбранного пакета"}
+                ? "Купить мониторы на месяц"
+                : "Продление выбранной транзакции"}
           </h2>
           <p>
             {billing.test
@@ -513,19 +513,19 @@ function YooKassaCheckout({
       </div>
       {!pending && !uncertain && packageId && (
         <p className="small">
-          Выбран пакет с окончанием {dateTime(packageUntil, { year: true })}.
-          Мест: {renewalQuota}.
+          Выбрана транзакция с окончанием{" "}
+          {dateTime(packageUntil, { year: true })}. Мониторов: {renewalQuota}.
         </p>
       )}
       {pending && order?.purchaseKind === "renew" && (
         <p className="small">
-          Заказ продлевает ранее выбранный пакет. Его параметры закреплены при
-          создании заказа.
+          Заказ продлевает ранее выбранную транзакцию. Его параметры закреплены
+          при создании заказа.
         </p>
       )}
       {displayedRenewalQuota !== null && (
         <p className="small">
-          Количество мест при продлении: {displayedRenewalQuota}.
+          Количество мониторов при продлении: {displayedRenewalQuota}.
         </p>
       )}
       {!canPay ? (
@@ -589,8 +589,8 @@ function YooKassaCheckout({
             {unknownIntent
               ? "Параметры исходного заказа уточняются. Повторный запрос сохраняет исходный ключ и не создаёт новый платёж."
               : displayedRenewalQuota === null
-                ? "Новый пакет действует календарный месяц с момента подтверждения оплаты и активации заказа. Точная дата окончания появится после активации."
-                : "Продление добавит календарный месяц после текущего срока выбранного пакета, а если он истёк — с момента подтверждения оплаты и активации. Точная дата будет показана после применения заказа."}
+                ? "Оплаченный период действует календарный месяц с момента подтверждения оплаты и активации заказа. Точная дата окончания появится после активации."
+                : "Продление добавит календарный месяц после текущего срока выбранной транзакции, а если он истёк — с момента подтверждения оплаты и активации. Точная дата будет показана после применения заказа."}
           </p>
           {error && <Notice>{error}</Notice>}
           <button
@@ -606,8 +606,8 @@ function YooKassaCheckout({
               : uncertain
                 ? "Повторить запрос заказа"
                 : displayedRenewalQuota === null
-                  ? "Купить места на месяц"
-                  : "Продлить пакет на месяц"}
+                  ? "Купить мониторы на месяц"
+                  : "Продлить транзакцию на месяц"}
           </button>
         </form>
       )}
@@ -655,6 +655,7 @@ export function BillingPage() {
   const [loadError, setLoadError] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
+  const [entitlementUpdatedAt, setEntitlementUpdatedAt] = useState(0);
   const [selectedPackageId, setSelectedPackageId] = useState("");
   const [selectionLocked, setSelectionLocked] = useState(false);
   const [count, setCount] = useState(1);
@@ -710,6 +711,7 @@ export function BillingPage() {
         const overview = { ...result, ...mergeQuote(result, generation) };
         setBilling(overview);
         setEntitlement(access.entitlement);
+        setEntitlementUpdatedAt(Date.now());
         return overview;
       } catch (cause) {
         if (!signal?.aborted) {
@@ -1000,32 +1002,29 @@ export function BillingPage() {
             <section className="panel settings-panel" aria-label="Состав квоты">
               <div className="panel-heading">
                 <div>
-                  <h2>Доступно мест: {entitlement.quota}</h2>
-                  <p>
-                    {entitlement.quota > 0
-                      ? `Общий лимит действует до ближайшего изменения — ${dateTime(entitlement.activeUntil, { year: true })}.`
-                      : "Сейчас действующей квоты нет."}
-                  </p>
+                  <h2>Доступно мониторов: {entitlement.quota}</h2>
+                  <p>Активно мониторов: {entitlement.activeMonitorCount}</p>
                 </div>
               </div>
               <div className="form-stack">
-                <p>
-                  Мест от администратора:{" "}
-                  {entitlement.admin
-                    ? `${entitlement.admin.quota} · до ${dateTime(entitlement.admin.activeUntil, { year: true })}${activePart(entitlement.admin) ? "" : " · срок истёк"}`
-                    : "нет"}
-                  .
-                </p>
                 {(entitlement.packages ?? []).length === 0 && (
-                  <p>Оплаченных пакетов пока нет.</p>
+                  <p>Транзакций пока нет.</p>
                 )}
                 {(entitlement.packages ?? []).map((part, index) => (
                   <div key={part.id} className="form-stack">
                     <p>
-                      Пакет {index + 1} · {paidSourceLabel(part.source)} · мест:{" "}
-                      {part.quota} · до{" "}
+                      Транзакция {index + 1} — {paidSourceLabel(part.source)}:{" "}
+                      {part.quota} до{" "}
                       {dateTime(part.activeUntil, { year: true })}
-                      {!part.active ? " · сейчас не действует" : ""}.
+                      {!part.active
+                        ? part.activeUntil &&
+                          Date.parse(part.activeUntil) <= entitlementUpdatedAt
+                          ? part.source === "yookassa"
+                            ? " · Срок оплаты истёк"
+                            : " · Срок квоты истёк"
+                          : " · Сейчас не действует"
+                        : ""}
+                      .
                     </p>
                     {part.source === checkoutSource &&
                       (billing.canPay || billing.canSimulate) && (
@@ -1035,7 +1034,7 @@ export function BillingPage() {
                           disabled={
                             selectionLocked || !!pending || uncertain || busy
                           }
-                          aria-label={`Продлить пакет ${index + 1} на месяц`}
+                          aria-label={`Продлить транзакцию ${index + 1} на месяц`}
                           onClick={() => setSelectedPackageId(part.id)}
                         >
                           Продлить на месяц
@@ -1050,13 +1049,18 @@ export function BillingPage() {
                     disabled={selectionLocked || !!pending || uncertain || busy}
                     onClick={() => setSelectedPackageId("")}
                   >
-                    Купить ещё места на месяц
+                    Купить ещё мониторы на месяц
                   </button>
                 )}
                 <p className="small muted">
-                  Каждая новая покупка — отдельный пакет на календарный месяц с
-                  момента активации. Продление меняет срок только выбранного
-                  пакета; административная квота действует отдельно.
+                  Каждая новая покупка — отдельная транзакция. Перед переходом к
+                  оплате вы выбираете количество мониторов, которые активируются
+                  на один календарный месяц со дня оплаты. Все мониторы,
+                  активированные в рамках этой транзакции, имеют одинаковую дату
+                  окончания оплаченного периода.
+                </p>
+                <p className="small muted">
+                  Продление меняет срок только выбранной транзакции.
                 </p>
               </div>
             </section>
@@ -1125,7 +1129,8 @@ export function BillingPage() {
                   <span className="field-hint">
                     Максимальная сумма заказа — 350 000 рублей. Пока действует
                     оплаченная часть, продление доступно с тем же количеством
-                    мониторов. Для дополнительных мест оформите новый пакет.
+                    мониторов. Для дополнительных мониторов оформите новую
+                    транзакцию.
                   </span>
                 </label>
                 <p>

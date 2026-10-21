@@ -2015,8 +2015,16 @@ test("billing keeps new purchases editable and renews only the selected package"
       return {
         entitlement: {
           quota: 5,
-          activeUntil: "2026-11-01T00:00:00Z",
+          activeUntil: "2026-10-25T00:00:00Z",
           source: "yookassa",
+          monitorCount: 9,
+          enabledMonitorCount: 7,
+          activeMonitorCount: 5,
+          admin: {
+            quota: 2,
+            activeUntil: "2027-01-01T00:00:00Z",
+            version: 1,
+          },
           packages,
         },
       };
@@ -2089,25 +2097,44 @@ test("billing keeps new purchases editable and renews only the selected package"
   );
   await harness.render(React.createElement(page.BillingPage));
   await settle();
-  assert.match(harness.host.textContent, /2026-11-01/);
-  assert.match(harness.host.textContent, /2026-12-01/);
+  const transactions = [...harness.host.querySelectorAll("p")].filter((item) =>
+    item.textContent.includes("Транзакция"),
+  );
+  assert.equal(
+    transactions.length,
+    2,
+    "each purchase has its own transaction row",
+  );
+  assert.match(transactions[0].textContent, /2.*2026-11-01/);
+  assert.match(transactions[1].textContent, /3.*2026-12-01/);
+  assert.match(harness.host.textContent, /Доступно мониторов: 5/);
+  assert.match(harness.host.textContent, /Активно мониторов: 5/);
+  assert.doesNotMatch(harness.host.textContent, /Активно мониторов: 7/);
+  assert.doesNotMatch(harness.host.textContent, /2026-10-25|2027-01-01/);
+  assert.doesNotMatch(
+    harness.host.textContent,
+    /Мест от администратора|Пакет \d+/,
+  );
   const count = harness.host.querySelector('input[name="monitorCount"]');
   assert.ok(count);
   assert.equal(count.readOnly, false, "a new purchase starts editable");
   await setReactInputValue(count, "4");
-  const renew = [...harness.host.querySelectorAll("button")].find(
-    (button) =>
-      button.getAttribute("aria-label") === "Продлить пакет 1 на месяц",
+  const renewButtons = [...harness.host.querySelectorAll("button")].filter(
+    (button) => button.textContent.trim().startsWith("Продлить"),
   );
+  assert.equal(renewButtons.length, 2);
+  const renew = renewButtons[1];
   assert.ok(
     renew,
     `renew button missing; buttons=${[...harness.host.querySelectorAll("button")].map((button) => `${button.textContent}/${button.getAttribute("aria-label")}`).join(" | ")}`,
   );
   await act(async () => renew.click());
   assert.equal(count.readOnly, true, "renewal fixes the selected package size");
-  assert.equal(count.value, "2");
-  const buyMore = [...harness.host.querySelectorAll("button")].find((button) =>
-    button.textContent.includes("Купить ещё места на месяц"),
+  assert.equal(count.value, "3");
+  const buyMore = [...harness.host.querySelectorAll("button")].find(
+    (button) =>
+      button.type === "button" &&
+      button.textContent.trim().startsWith("Купить"),
   );
   await act(async () => buyMore.click());
   assert.equal(count.readOnly, false, "switching to purchase unlocks quantity");
@@ -2118,7 +2145,7 @@ test("billing keeps new purchases editable and renews only the selected package"
   );
   await act(async () => renew.click());
   assert.equal(count.readOnly, true);
-  assert.equal(count.value, "2");
+  assert.equal(count.value, "3");
   const form = harness.host.querySelector(".billing-checkout form");
   await act(async () => {
     form.dispatchEvent(
@@ -2133,8 +2160,8 @@ test("billing keeps new purchases editable and renews only the selected package"
     (call) => call.path === "/billing/orders" && call.options.method === "POST",
   );
   assert.equal(post?.options.body.purchaseKind, "renew");
-  assert.equal(post?.options.body.packageId, packages[0].id);
-  assert.equal(post?.options.body.monitorCount, 2);
+  assert.equal(post?.options.body.packageId, packages[1].id);
+  assert.equal(post?.options.body.monitorCount, 3);
   assert.ok(
     [...harness.host.querySelectorAll("button")]
       .filter((button) => button.textContent.includes("Продлить"))
@@ -2950,7 +2977,9 @@ test("definitive YooKassa create rejections clear retry intent and refresh the c
       );
     } else {
       const retryButton = [...harness.host.querySelectorAll("button")].find(
-        (button) => button.textContent.includes("Купить ещё"),
+        (button) =>
+          button.classList.contains("primary") &&
+          button.textContent.includes("Купить"),
       );
       assert.ok(
         retryButton,

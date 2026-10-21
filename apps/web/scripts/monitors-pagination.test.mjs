@@ -343,7 +343,8 @@ test("a paused saved monitor can use a free enabled slot when saved count exceed
     harness.host.textContent,
     /Сохранено мониторов: 10\. Включено: 4\./,
   );
-  assert.match(harness.host.textContent, /4\s*\/\s*5/);
+  assert.match(harness.host.textContent, /Доступно мониторов\s*5/);
+  assert.match(harness.host.textContent, /Активно мониторов:\s*4/);
   const enable = harness.host.querySelector(
     `button[aria-label="Включить ${paused.name}"]`,
   );

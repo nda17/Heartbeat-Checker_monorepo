@@ -426,46 +426,36 @@ export function MonitorsPage() {
           <small>Неуспешная последняя проверка</small>
         </div>
         <div className="stat quota-stat">
-          <span>Ваша квота</span>
-          <strong>
-            {entitlement ? (
-              <>
-                {entitlement.activeMonitorCount}
-                <em> / {entitlement.quota}</em>
-              </>
-            ) : (
-              "—"
-            )}
-          </strong>
+          <span>Доступно мониторов</span>
+          <strong>{entitlement ? <>{entitlement.quota}</> : "—"}</strong>
           <small>
-            {quotaActive
-              ? `Текущий лимит до ${dateTime(entitlement?.activeUntil, { year: true })}`
-              : "Нет действующей квоты"}
+            Активно мониторов: {entitlement?.activeMonitorCount ?? "—"}
           </small>
         </div>
       </div>
       {entitlement && (
         <div className="local-banner">
           <span className="badge">Состав квоты</span>
-          <p>
-            Мест от администратора:{" "}
-            {entitlement.admin
-              ? `${entitlement.admin.quota} · до ${dateTime(entitlement.admin.activeUntil, { year: true })}${entitlement.admin.activeUntil && Date.parse(entitlement.admin.activeUntil) > (updatedAt?.getTime() ?? 0) ? "" : " (срок истёк)"}`
-              : "нет"}
-            .
-          </p>
           {(entitlement.packages ?? []).map((part, index) => (
             <p key={part.id}>
-              Пакет {index + 1} ·{" "}
+              Транзакция {index + 1} —{" "}
               {part.source === "yookassa"
-                ? "оплаченные места"
+                ? "Оплачено мониторов"
                 : part.source === "local_test"
-                  ? "локальная тестовая квота, без оплаты"
+                  ? "Локальная тестовая квота, без оплаты — мониторов"
                   : part.source === "mock_test"
-                    ? "демонстрационная квота, без списания"
-                    : "тестовый платёж ЮKassa, без списания"}
-              : {part.quota} · до {dateTime(part.activeUntil, { year: true })}
-              {!part.active ? " (сейчас не действует)" : ""}.
+                    ? "Демонстрационная квота, без списания — мониторов"
+                    : "Тестовая квота ЮKassa, без списания — мониторов"}
+              : {part.quota} до {dateTime(part.activeUntil, { year: true })}
+              {!part.active
+                ? part.activeUntil &&
+                  Date.parse(part.activeUntil) <= (updatedAt?.getTime() ?? 0)
+                  ? part.source === "yookassa"
+                    ? " · Срок оплаты истёк"
+                    : " · Срок квоты истёк"
+                  : " · Сейчас не действует"
+                : ""}
+              .
             </p>
           ))}
 
@@ -495,8 +485,9 @@ export function MonitorsPage() {
       {quotaActive && !canCreate && (
         <div className="local-banner">
           <p>
-            Все места заняты. Чтобы выбрать другие мониторы, поставьте ненужные
-            на паузу и включите нужные. Настройки и история сохраняются.
+            Лимит включённых мониторов достигнут. Чтобы выбрать другие мониторы,
+            поставьте ненужные на паузу и включите нужные. Настройки и история
+            сохраняются.
           </p>
         </div>
       )}
