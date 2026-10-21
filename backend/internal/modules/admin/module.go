@@ -323,6 +323,16 @@ type GrantInput struct {
 	Reason     string    `json:"reason"`
 }
 
+func adminGrantAuditState(entitlement billingcontracts.Entitlement) map[string]any {
+	grant := entitlement.Admin
+	if grant == nil {
+		return map[string]any{"quota": 0, "activeUntil": nil, "source": "admin_grant", "version": 0,
+			"totalQuota": entitlement.Quota, "totalActiveUntil": entitlement.ActiveUntil, "totalSource": entitlement.Source, "totalVersion": entitlement.Version}
+	}
+	return map[string]any{"quota": grant.Quota, "activeUntil": grant.ActiveUntil, "source": "admin_grant", "version": grant.Version,
+		"totalQuota": entitlement.Quota, "totalActiveUntil": entitlement.ActiveUntil, "totalSource": entitlement.Source, "totalVersion": entitlement.Version}
+}
+
 func (m *Module) Grant(ctx context.Context, p authcontracts.Principal, id string, in GrantInput) (billingcontracts.Entitlement, error) {
 	if !validReason(in.Reason) || in.Version < 0 {
 		return billingcontracts.Entitlement{}, ErrInvalid
@@ -332,7 +342,7 @@ func (m *Module) Grant(ctx context.Context, p authcontracts.Principal, id string
 		return billingcontracts.Entitlement{}, err
 	}
 	defer mut.tx.Rollback(ctx)
-	before := map[string]any{"quota": mut.entitlement.Quota, "activeUntil": mut.entitlement.ActiveUntil, "source": mut.entitlement.Source, "version": mut.entitlement.Version}
+	before := adminGrantAuditState(mut.entitlement)
 	e, err := m.billing.GrantAdminTx(ctx, mut.tx, id, in.Version, in.Quota, in.ValidUntil, in.Reason)
 	if errors.Is(err, billing.ErrAdminGrantConflict) {
 		return e, ErrConflict
@@ -343,7 +353,7 @@ func (m *Module) Grant(ctx context.Context, p authcontracts.Principal, id string
 	if err != nil {
 		return e, err
 	}
-	if err := m.audit(ctx, mut.tx, p, id, id, "entitlement.granted", in.Reason, before, map[string]any{"quota": e.Quota, "activeUntil": e.ActiveUntil, "source": e.Source, "version": e.Version}); err != nil {
+	if err := m.audit(ctx, mut.tx, p, id, id, "entitlement.granted", in.Reason, before, adminGrantAuditState(e)); err != nil {
 		return e, err
 	}
 	return e, mut.tx.Commit(ctx)
@@ -358,7 +368,7 @@ func (m *Module) RevokeGrant(ctx context.Context, p authcontracts.Principal, id 
 		return err
 	}
 	defer mut.tx.Rollback(ctx)
-	before := map[string]any{"quota": mut.entitlement.Quota, "activeUntil": mut.entitlement.ActiveUntil, "source": mut.entitlement.Source, "version": mut.entitlement.Version}
+	before := adminGrantAuditState(mut.entitlement)
 	if err := m.billing.ExpireAdminTx(ctx, mut.tx, id, version, reason); err != nil {
 		if errors.Is(err, billing.ErrAdminGrantConflict) {
 			return ErrConflict
@@ -368,7 +378,11 @@ func (m *Module) RevokeGrant(ctx context.Context, p authcontracts.Principal, id 
 		}
 		return err
 	}
-	if err := m.audit(ctx, mut.tx, p, id, id, "entitlement.revoked", reason, before, map[string]any{"quota": 0, "source": "admin_grant", "version": version + 1}); err != nil {
+	after, err := m.billing.Lock(ctx, mut.tx, id)
+	if err != nil {
+		return err
+	}
+	if err := m.audit(ctx, mut.tx, p, id, id, "entitlement.revoked", reason, before, adminGrantAuditState(after)); err != nil {
 		return err
 	}
 	return mut.tx.Commit(ctx)

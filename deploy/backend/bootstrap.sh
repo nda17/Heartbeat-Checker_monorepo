@@ -51,7 +51,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt_options=(-y -o Dpkg::Use-Pty=0)
 
 missing_packages=()
-for package in ca-certificates curl gnupg openssh-client iptables jq python3; do
+for package in ca-certificates curl gnupg openssh-client iptables jq; do
   if [[ $(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true) != 'install ok installed' ]]; then
     missing_packages+=("$package")
   fi

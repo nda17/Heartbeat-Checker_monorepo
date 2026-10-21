@@ -50,11 +50,34 @@ export type MonitorPage = {
   pagination: MonitorPagination;
   summary: MonitorSummary;
 };
+export type Subscription = {
+  id: string;
+  quota: number;
+  activeUntil: string | null;
+  active: boolean;
+  source: string;
+  version: number;
+};
 export type Entitlement = {
   quota: number;
   activeUntil: string | null;
   source: string;
   monitorCount: number;
+  enabledMonitorCount: number;
+  activeMonitorCount: number;
+  version: number;
+  admin: {
+    quota: number;
+    activeUntil: string | null;
+    version: number;
+  } | null;
+  packages: Subscription[];
+  paid: {
+    quota: number;
+    activeUntil: string | null;
+    source: string;
+    version: number;
+  } | null;
 };
 export type CheckResult = {
   id: string;

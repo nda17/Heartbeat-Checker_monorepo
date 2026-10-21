@@ -51,7 +51,7 @@ for file in nginx-http.conf nginx-https.conf deploy.sh; do
     echo "Missing staged $file" >&2; exit 1;
   }
 done
-for command in nginx certbot curl python3 openssl ufw flock timeout; do
+for command in nginx certbot curl openssl ufw flock timeout; do
   command -v "$command" >/dev/null || { echo "Missing $command" >&2; exit 1; }
 done
 verify_aero
@@ -72,6 +72,14 @@ flock -n 9 || { echo 'Another relay deployment is in progress' >&2; exit 1; }
 umask 077
 workdir=$(mktemp -d /run/heartbeat-relay.XXXXXXXX)
 trap 'rm -rf "$workdir"' EXIT
+[[ ${HC_OPS_SHA256:-} =~ ^[0-9a-f]{64}$ && -f $deploy_dir/hc-ops.incoming && ! -L $deploy_dir/hc-ops.incoming ]] || {
+  echo 'Missing source-pinned relay helper' >&2; exit 1;
+}
+[[ $(sha256sum "$deploy_dir/hc-ops.incoming" | awk '{print $1}') == "$HC_OPS_SHA256" ]] || { echo 'Relay helper checksum mismatch' >&2; exit 1; }
+cp -p "$deploy_dir/hc-ops.incoming" "$workdir/hc-ops"
+chmod 700 "$workdir/hc-ops"
+ops="$workdir/hc-ops"
+[[ $(sha256sum "$ops" | awk '{print $1}') == "$HC_OPS_SHA256" && $("$ops" version) == "$source_sha" ]] || { echo 'Relay helper source mismatch' >&2; exit 1; }
 managed=("$http_site" "$https_site" "$http_link" "$https_link" "$old_site" "$old_link" "$old_backup" "$old_stream")
 for path in "${managed[@]}"; do
   if [[ -e $path || -L $path ]]; then
@@ -181,15 +189,7 @@ postflight() {
     -w '%{http_code}' -X POST -H 'Content-Type: application/json' --data '{}' \
     "https://$domain/telegram-api/bot000000:invalid/getMe")
   [[ $status == 401 || $status == 404 ]] || { echo 'Telegram relay did not reach upstream' >&2; return 1; }
-  python3 - "$workdir/telegram-response" "$status" <<'PY' || {
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as response:
-    data = json.load(response)
-if data.get("ok") is not False or data.get("error_code") != int(sys.argv[2]):
-    raise SystemExit(1)
-PY
+  "$ops" relay-response "$workdir/telegram-response" "$status" || {
     echo 'Telegram relay response is not the upstream API contract' >&2; return 1;
   }
   status=$(curl -sS --max-time 15 "${resolved[@]}" -o "$workdir/webhook-response" \

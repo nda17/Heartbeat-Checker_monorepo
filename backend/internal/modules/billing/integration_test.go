@@ -200,6 +200,43 @@ func (f *billingFixture) request(t *testing.T, actor billingActor, method, path 
 
 func bytesReader(b []byte) *strings.Reader { return strings.NewReader(string(b)) }
 
+func configureMockBilling(t *testing.T, f *billingFixture, owner billingActor) *Module {
+	t.Helper()
+	module, err := NewConfigured(f.pool, false, Config{Provider: "mock", MockAccountIDs: []string{owner.id}}, f.accounts)
+	if err != nil {
+		t.Fatalf("configure mock billing for account: %v", err)
+	}
+	mux := http.NewServeMux()
+	module.Register(mux, authProtect(t, f.pool, f.accounts))
+	f.module, f.handler = module, mux
+	return module
+}
+
+func currentBillingEntitlement(t *testing.T, f *billingFixture, owner billingActor) contracts.Entitlement {
+	t.Helper()
+	tx, err := f.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+	entitlement, err := f.module.service.Lock(context.Background(), tx, owner.id)
+	if err != nil {
+		t.Fatalf("read current entitlement: %v", err)
+	}
+	return entitlement
+}
+
+func billingPackage(t *testing.T, entitlement contracts.Entitlement, id string) contracts.Subscription {
+	t.Helper()
+	for _, part := range entitlement.Packages {
+		if part.ID == id {
+			return part
+		}
+	}
+	t.Fatalf("package %q missing from entitlement %+v", id, entitlement.Packages)
+	return contracts.Subscription{}
+}
+
 func TestBillingMockOrderOwnershipAllowlistAndAuth(t *testing.T) {
 	f := newBillingFixture(t)
 	owner := f.newActor(t, "Billing Owner")
@@ -391,31 +428,29 @@ func TestAdminGrantVersionAndPendingMockOrderCannotReplaceGrant(t *testing.T) {
 		t.Fatalf("grant=%+v, want active admin_grant quota 7 version 1", grant)
 	}
 
-	// A delayed mock completion must not replace an administrative decision
-	// that was made after the order was created.
+	// Mock billing stays blocked for admin-grant accounts. A delayed test
+	// payment cannot replace or alter the administrative decision.
 	if _, err := module.service.Simulate(context.Background(), owner.id, order.ID, "succeeded"); !errors.Is(err, service.ErrForbidden) {
-		t.Fatalf("stale pending mock payment error=%v, want forbidden", err)
+		t.Fatalf("pending mock payment with admin grant error=%v, want forbidden", err)
 	}
 	var orderStatus, source string
 	var quota, reportCount int
 	if err := f.pool.QueryRow(context.Background(), `SELECT status FROM billing.orders WHERE id=$1`, order.ID).Scan(&orderStatus); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.pool.QueryRow(context.Background(), `SELECT source,monitor_limit FROM billing.entitlements WHERE account_id=$1`, owner.id).Scan(&source, &quota); err != nil {
+	if err := f.pool.QueryRow(context.Background(), `SELECT monitor_limit FROM billing.admin_grants WHERE account_id=$1`, owner.id).Scan(&quota); err != nil {
 		t.Fatal(err)
 	}
+	source = "admin_grant"
 	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.payment_reports WHERE order_id=$1`, order.ID).Scan(&reportCount); err != nil {
 		t.Fatal(err)
 	}
 	if orderStatus != "pending" || source != "admin_grant" || quota != 7 || reportCount != 0 {
-		t.Fatalf("stale payment changed state: order=%s source=%s quota=%d report rows=%d", orderStatus, source, quota, reportCount)
+		t.Fatalf("blocked mock payment changed state: order=%s source=%s quota=%d reports=%d", orderStatus, source, quota, reportCount)
 	}
 	if _, err := module.service.CreateOrder(context.Background(), owner.id, 7, "09f96250-84ca-447a-9a67-27db06fb6750", 1); !errors.Is(err, service.ErrForbidden) {
 		t.Fatalf("mock order while admin grant active error=%v, want forbidden", err)
 	}
-
-	// Optimistic versions prevent a stale admin form from replacing/revoking a
-	// newer grant. The valid current version remains revocable.
 	tx, err = f.pool.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -446,8 +481,78 @@ func TestAdminGrantVersionAndPendingMockOrderCannotReplaceGrant(t *testing.T) {
 		t.Fatalf("stale revoke version error=%v, want conflict", err)
 	}
 	var expired bool
-	if err := f.pool.QueryRow(context.Background(), `SELECT valid_until<=now() FROM billing.entitlements WHERE account_id=$1`, owner.id).Scan(&expired); err != nil || !expired {
+	if err := f.pool.QueryRow(context.Background(), `SELECT valid_until<=now() FROM billing.admin_grants WHERE account_id=$1`, owner.id).Scan(&expired); err != nil || !expired {
 		t.Fatalf("admin grant expiry state=%t err=%v", expired, err)
+	}
+}
+
+func TestConcurrentAdminGrantReplacementUsesAggregateVersionCAS(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Concurrent Administrative Grant Owner")
+	until := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Second)
+	tx, err := f.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := f.module.GrantAdminTx(context.Background(), tx, owner.id, 0, 3, until, "initial grant")
+	if err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatal(err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	type result struct {
+		quota int
+		err   error
+	}
+	results := make(chan result, 2)
+	for _, quota := range []int{5, 7} {
+		go func(quota int) {
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			tx, err := f.pool.Begin(ctx)
+			if err != nil {
+				results <- result{quota: quota, err: err}
+				return
+			}
+			defer tx.Rollback(ctx)
+			_, err = f.module.GrantAdminTx(ctx, tx, owner.id, initial.Version, quota, until.Add(time.Duration(quota)*time.Hour), "concurrent replacement")
+			if err == nil {
+				err = tx.Commit(ctx)
+			}
+			results <- result{quota: quota, err: err}
+		}(quota)
+	}
+	close(start)
+
+	var succeeded, conflicted int
+	winnerQuota := 0
+	for range 2 {
+		result := <-results
+		switch {
+		case result.err == nil:
+			succeeded++
+			winnerQuota = result.quota
+		case errors.Is(result.err, service.ErrAdminGrantConflict):
+			conflicted++
+		default:
+			t.Fatalf("unexpected concurrent admin grant result for quota %d: %v", result.quota, result.err)
+		}
+	}
+	if succeeded != 1 || conflicted != 1 {
+		t.Fatalf("CAS winners=%d conflicts=%d, want 1/1", succeeded, conflicted)
+	}
+	var quota int
+	var version int64
+	if err := f.pool.QueryRow(context.Background(), `SELECT monitor_limit,version FROM billing.admin_grants WHERE account_id=$1`, owner.id).Scan(&quota, &version); err != nil {
+		t.Fatal(err)
+	}
+	if quota != winnerQuota || version != initial.Version+1 {
+		t.Fatalf("stored grant quota/version=%d/%d, winner=%d initial=%+v", quota, version, winnerQuota, initial)
 	}
 }
 
@@ -898,5 +1003,330 @@ func TestBillingReportRecordsBoundedFailureAndTerminatesAfterEighthAttempt(t *te
 	}
 	if status != "failed" || attempts != 8 || code != "provider_rejected" || httpStatus != http.StatusBadRequest || !finished {
 		t.Fatalf("terminal report state status=%s attempts=%d code=%s http=%d finished=%v", status, attempts, code, httpStatus, finished)
+	}
+}
+
+func TestIndependentMockPackagesAccumulateAndExpireSeparately(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Independent Packages Billing Owner")
+	module := configureMockBilling(t, f, owner)
+
+	empty := currentBillingEntitlement(t, f, owner)
+	if empty.Packages == nil || len(empty.Packages) != 0 {
+		t.Fatalf("empty package collection=%+v, want non-nil empty slice", empty.Packages)
+	}
+
+	createAndComplete := func(key string, count int) contracts.Order {
+		t.Helper()
+		order, err := module.service.CreateSelectedOrder(context.Background(), owner.id, count, key, 1, "purchase", "")
+		if err != nil {
+			t.Fatalf("create independent purchase: %v", err)
+		}
+		if order.PurchaseKind != "purchase" || order.PackageID != nil || order.FulfilledPackageID != nil {
+			t.Fatalf("new purchase order selection=%+v", order)
+		}
+		completed, err := module.service.Simulate(context.Background(), owner.id, order.ID, "succeeded")
+		if err != nil {
+			t.Fatalf("complete independent purchase: %v", err)
+		}
+		if completed.FulfilledPackageID == nil || *completed.FulfilledPackageID != order.ID {
+			t.Fatalf("purchase result package=%v, want package id %s", completed.FulfilledPackageID, order.ID)
+		}
+		return completed
+	}
+
+	first := createAndComplete("1e943c3a-976d-4b2b-b463-50bc2a900001", 2)
+	firstUntil := time.Now().AddDate(0, 0, 7).UTC().Truncate(time.Microsecond)
+	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.entitlements SET valid_until=$2 WHERE id=$1`, first.ID, firstUntil); err != nil {
+		t.Fatalf("set first package expiry fixture: %v", err)
+	}
+	second := createAndComplete("1e943c3a-976d-4b2b-b463-50bc2a900002", 2)
+	if first.ID == second.ID {
+		t.Fatal("separate purchases reused one package id")
+	}
+
+	combined := currentBillingEntitlement(t, f, owner)
+	if len(combined.Packages) != 2 || combined.Quota != 4 || combined.Version != 2 || combined.Paid == nil || combined.Paid.Quota != 4 || combined.Paid.Version != 2 || !combined.Paid.Active {
+		t.Fatalf("two packages did not add into paid entitlement: %+v", combined)
+	}
+	firstPackage := billingPackage(t, combined, first.ID)
+	secondPackage := billingPackage(t, combined, second.ID)
+	if !firstPackage.Active || !secondPackage.Active || firstPackage.Quota != 2 || secondPackage.Quota != 2 || firstPackage.ActiveUntil.Equal(*secondPackage.ActiveUntil) {
+		t.Fatalf("package dates or activity were collapsed: first=%+v second=%+v", firstPackage, secondPackage)
+	}
+	if combined.ActiveUntil == nil || !combined.ActiveUntil.Equal(*firstPackage.ActiveUntil) {
+		t.Fatalf("combined activeUntil=%v, want earliest package expiry %v", combined.ActiveUntil, firstPackage.ActiveUntil)
+	}
+
+	if _, err := module.service.Simulate(context.Background(), owner.id, first.ID, "succeeded"); err != nil {
+		t.Fatalf("duplicate mock completion: %v", err)
+	}
+	var packages, reports int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.entitlements WHERE account_id=$1`, owner.id).Scan(&packages); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.payment_reports WHERE order_id IN ($1,$2)`, first.ID, second.ID).Scan(&reports); err != nil {
+		t.Fatal(err)
+	}
+	if packages != 2 || reports != 2 {
+		t.Fatalf("duplicate completion produced packages=%d reports=%d, want exactly 2/2", packages, reports)
+	}
+
+	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.entitlements SET valid_until=clock_timestamp()-interval '1 minute' WHERE id=$1`, first.ID); err != nil {
+		t.Fatalf("expire first package fixture: %v", err)
+	}
+	afterExpiry := currentBillingEntitlement(t, f, owner)
+	expired := billingPackage(t, afterExpiry, first.ID)
+	remaining := billingPackage(t, afterExpiry, second.ID)
+	if expired.Active || !remaining.Active || afterExpiry.Quota != 2 || afterExpiry.Paid == nil || afterExpiry.Paid.Quota != 2 || afterExpiry.Version != 2 {
+		t.Fatalf("one package expiry changed the other component: entitlement=%+v expired=%+v remaining=%+v", afterExpiry, expired, remaining)
+	}
+}
+
+func TestRenewingAnExpiredPackageExtendsOnlyItsSelectedPackage(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Selected Package Renewal Owner")
+	module := configureMockBilling(t, f, owner)
+
+	createAndComplete := func(key string, count int) contracts.Order {
+		t.Helper()
+		order, err := module.service.CreateSelectedOrder(context.Background(), owner.id, count, key, 1, "purchase", "")
+		if err != nil {
+			t.Fatalf("create purchase: %v", err)
+		}
+		completed, err := module.service.Simulate(context.Background(), owner.id, order.ID, "succeeded")
+		if err != nil {
+			t.Fatalf("complete purchase: %v", err)
+		}
+		return completed
+	}
+	selected := createAndComplete("2e943c3a-976d-4b2b-b463-50bc2a900001", 2)
+	other := createAndComplete("2e943c3a-976d-4b2b-b463-50bc2a900002", 3)
+	selectedUntil := time.Now().AddDate(0, 0, -45).UTC().Truncate(time.Microsecond)
+	otherUntil := time.Now().AddDate(0, 0, 55).UTC().Truncate(time.Microsecond)
+	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.entitlements SET valid_until=$2 WHERE id=$1`, selected.ID, selectedUntil); err != nil {
+		t.Fatalf("expire selected package fixture: %v", err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.entitlements SET valid_until=$2 WHERE id=$1`, other.ID, otherUntil); err != nil {
+		t.Fatalf("set other package expiry fixture: %v", err)
+	}
+	before := currentBillingEntitlement(t, f, owner)
+	selectedBefore := billingPackage(t, before, selected.ID)
+	otherBefore := billingPackage(t, before, other.ID)
+
+	renewal, err := module.service.CreateSelectedOrder(context.Background(), owner.id, 2, "2e943c3a-976d-4b2b-b463-50bc2a900003", 1, "renew", selected.ID)
+	if err != nil {
+		t.Fatalf("create selected renewal for expired package: %v", err)
+	}
+	if renewal.PurchaseKind != "renew" || renewal.PackageID == nil || *renewal.PackageID != selected.ID || renewal.FulfilledPackageID != nil {
+		t.Fatalf("selected renewal order=%+v", renewal)
+	}
+	completed, err := module.service.Simulate(context.Background(), owner.id, renewal.ID, "succeeded")
+	if err != nil {
+		t.Fatalf("fulfill selected renewal: %v", err)
+	}
+	if completed.FulfilledPackageID == nil || *completed.FulfilledPackageID != selected.ID {
+		t.Fatalf("renewal fulfilled package=%v, want selected %s", completed.FulfilledPackageID, selected.ID)
+	}
+
+	after := currentBillingEntitlement(t, f, owner)
+	renewed := billingPackage(t, after, selected.ID)
+	unchanged := billingPackage(t, after, other.ID)
+	if !renewed.Active || renewed.Quota != selectedBefore.Quota || renewed.Version != selectedBefore.Version+1 || renewed.ActiveUntil == nil || renewed.ActiveUntil.Before(time.Now().AddDate(0, 0, 27)) {
+		t.Fatalf("expired selected package did not receive a fresh full month: before=%+v after=%+v", selectedBefore, renewed)
+	}
+	if unchanged.ActiveUntil == nil || !unchanged.ActiveUntil.Equal(*otherBefore.ActiveUntil) || unchanged.Version != otherBefore.Version || after.Quota != 5 || after.Version != 3 {
+		t.Fatalf("renewal changed other package or aggregate: entitlement=%+v other-before=%+v other-after=%+v", after, otherBefore, unchanged)
+	}
+}
+
+func TestLegacyOrderRequestRequiresExplicitSelectionWhenMultiplePackagesAreActive(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Legacy Checkout Intent Owner")
+	module := configureMockBilling(t, f, owner)
+	order, err := module.service.CreateSelectedOrder(context.Background(), owner.id, 2, "3e943c3a-976d-4b2b-b463-50bc2a900001", 1, "purchase", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.service.Simulate(context.Background(), owner.id, order.ID, "succeeded"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := module.service.CreateSelectedOrder(context.Background(), owner.id, 2, "3e943c3a-976d-4b2b-b463-50bc2a900003", 1, "purchase", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.service.Simulate(context.Background(), owner.id, second.ID, "succeeded"); err != nil {
+		t.Fatal(err)
+	}
+	legacy := f.request(t, owner, http.MethodPost, "/api/v1/billing/orders", map[string]any{
+		"monitorCount": 2, "idempotencyKey": "3e943c3a-976d-4b2b-b463-50bc2a900002", "priceVersion": 1,
+	})
+	var response struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(legacy.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode legacy order response: %v", err)
+	}
+	if legacy.Code != http.StatusConflict || response.Error != "billing_selection_required" {
+		t.Fatalf("legacy request status=%d body=%s, want 409 billing_selection_required", legacy.Code, legacy.Body.String())
+	}
+	var orders int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.orders WHERE account_id=$1`, owner.id).Scan(&orders); err != nil {
+		t.Fatal(err)
+	}
+	if orders != 2 {
+		t.Fatalf("ambiguous legacy request created an order; count=%d", orders)
+	}
+}
+
+func TestLegacyOrderRequestRenewsUnambiguousPackageWithoutAddingCapacity(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Legacy Single Package Owner")
+	module := configureMockBilling(t, f, owner)
+	initial, err := module.service.CreateSelectedOrder(context.Background(), owner.id, 2, "4e943c3a-976d-4b2b-b463-50bc2a900001", 1, "purchase", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.service.Simulate(context.Background(), owner.id, initial.ID, "succeeded"); err != nil {
+		t.Fatal(err)
+	}
+	legacy := f.request(t, owner, http.MethodPost, "/api/v1/billing/orders", map[string]any{
+		"monitorCount": 2, "idempotencyKey": "4e943c3a-976d-4b2b-b463-50bc2a900002", "priceVersion": 1,
+	})
+	if legacy.Code != http.StatusCreated {
+		t.Fatalf("unambiguous legacy renewal status=%d body=%s", legacy.Code, legacy.Body.String())
+	}
+	var response struct {
+		Order contracts.Order `json:"order"`
+	}
+	if err := json.Unmarshal(legacy.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode legacy renewal order: %v", err)
+	}
+	if response.Order.PurchaseKind != "renew" || response.Order.PackageID == nil || *response.Order.PackageID != initial.ID || response.Order.FulfilledPackageID != nil {
+		t.Fatalf("legacy request did not select the matching existing package: %+v", response.Order)
+	}
+	if _, err := module.service.Simulate(context.Background(), owner.id, response.Order.ID, "succeeded"); err != nil {
+		t.Fatalf("complete legacy renewal: %v", err)
+	}
+	entitlement := currentBillingEntitlement(t, f, owner)
+	if len(entitlement.Packages) != 1 || entitlement.Quota != 2 || entitlement.Packages[0].Version != 2 || entitlement.Packages[0].ID != initial.ID {
+		t.Fatalf("legacy renewal created extra package/capacity: %+v", entitlement)
+	}
+}
+
+func TestIndependentPackageTotalMayExceedPerOrderLimit(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Independent Package Aggregate Limit Owner")
+	module := configureMockBilling(t, f, owner)
+	for _, purchase := range []struct {
+		key   string
+		count int
+	}{
+		{key: "5e943c3a-976d-4b2b-b463-50bc2a900001", count: 1000},
+		{key: "5e943c3a-976d-4b2b-b463-50bc2a900002", count: 1},
+	} {
+		order, err := module.service.CreateSelectedOrder(context.Background(), owner.id, purchase.count, purchase.key, 1, "purchase", "")
+		if err != nil {
+			t.Fatalf("create %d-place package: %v", purchase.count, err)
+		}
+		if _, err := module.service.Simulate(context.Background(), owner.id, order.ID, "succeeded"); err != nil {
+			t.Fatalf("complete %d-place package: %v", purchase.count, err)
+		}
+	}
+	entitlement := currentBillingEntitlement(t, f, owner)
+	if len(entitlement.Packages) != 2 || entitlement.Quota != 1001 {
+		t.Fatalf("independent package total=%d across %d packages, want 1001 across two: %+v", entitlement.Quota, len(entitlement.Packages), entitlement)
+	}
+}
+
+func TestRenewalRejectsForeignPackageAndIdempotencyIntentChange(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Package Target Owner")
+	stranger := f.newActor(t, "Package Target Stranger")
+	module := configureMockBilling(t, f, owner)
+	strangerModule := configureMockBilling(t, f, stranger)
+	foreignPurchase, err := strangerModule.service.CreateSelectedOrder(context.Background(), stranger.id, 2, "6e943c3a-976d-4b2b-b463-50bc2a900001", 1, "purchase", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := strangerModule.service.Simulate(context.Background(), stranger.id, foreignPurchase.ID, "succeeded"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.service.CreateSelectedOrder(context.Background(), owner.id, 2, "6e943c3a-976d-4b2b-b463-50bc2a900002", 1, "renew", foreignPurchase.ID); !errors.Is(err, service.ErrNotFound) {
+		t.Fatalf("renewal of another account's package error=%v, want owner-scoped not found", err)
+	}
+
+	ownedPurchase, err := module.service.CreateSelectedOrder(context.Background(), owner.id, 2, "6e943c3a-976d-4b2b-b463-50bc2a900003", 1, "purchase", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.service.Simulate(context.Background(), owner.id, ownedPurchase.ID, "succeeded"); err != nil {
+		t.Fatal(err)
+	}
+	key := "6e943c3a-976d-4b2b-b463-50bc2a900004"
+	original, err := module.service.CreateSelectedOrder(context.Background(), owner.id, 2, key, 1, "purchase", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := module.service.CreateSelectedOrder(context.Background(), owner.id, 2, key, 1, "renew", ownedPurchase.ID); !errors.Is(err, service.ErrConflict) {
+		t.Fatalf("same-key intent change error=%v, want conflict", err)
+	}
+	replay, err := module.service.CreateSelectedOrder(context.Background(), owner.id, 2, key, 1, "purchase", "")
+	if err != nil || replay.ID != original.ID || replay.PurchaseKind != "purchase" {
+		t.Fatalf("same-intent replay=(%+v,%v), want original purchase %s", replay, err, original.ID)
+	}
+}
+
+func TestAccountDeletionExpiresLinkedPackagesAndRetainsBillingHistory(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Linked Packages Deletion Owner")
+	module := configureMockBilling(t, f, owner)
+	var packageOrders []contracts.Order
+	for i, count := range []int{2, 3} {
+		key := fmt.Sprintf("7e943c3a-976d-4b2b-b463-50bc2a90000%d", i+1)
+		order, err := module.service.CreateSelectedOrder(context.Background(), owner.id, count, key, 1, "purchase", "")
+		if err != nil {
+			t.Fatalf("create package %d: %v", i+1, err)
+		}
+		completed, err := module.service.Simulate(context.Background(), owner.id, order.ID, "succeeded")
+		if err != nil {
+			t.Fatalf("complete package %d: %v", i+1, err)
+		}
+		packageOrders = append(packageOrders, completed)
+	}
+	tx, err := f.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(context.Background(), `UPDATE accounts.accounts SET status='deleted',deleted_at=clock_timestamp(),version=version+1 WHERE id=$1`, owner.id); err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatal(err)
+	}
+	if err := module.DeleteAccountTx(context.Background(), tx, owner.id); err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatal(err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var packages int
+	var active int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*),count(*) FILTER (WHERE valid_until>clock_timestamp()) FROM billing.entitlements WHERE account_id=$1`, owner.id).Scan(&packages, &active); err != nil {
+		t.Fatal(err)
+	}
+	if packages != 2 || active != 0 {
+		t.Fatalf("deleted account packages retained=%d active=%d, want two expired rows", packages, active)
+	}
+	for _, order := range packageOrders {
+		var status, fulfillment string
+		var originOrder, linkedPackage, fulfilledPackage string
+		if err := f.pool.QueryRow(context.Background(), `SELECT e.origin_order_id::text,e.id::text,o.status,o.fulfillment_status,o.fulfilled_package_id::text
+			FROM billing.entitlements e JOIN billing.orders o ON o.id=e.origin_order_id WHERE e.id=$1`, *order.FulfilledPackageID).
+			Scan(&originOrder, &linkedPackage, &status, &fulfillment, &fulfilledPackage); err != nil {
+			t.Fatal(err)
+		}
+		if originOrder != order.ID || linkedPackage != order.ID || fulfilledPackage != order.ID || status != "succeeded" || fulfillment != "fulfilled" {
+			t.Fatalf("package/order history changed after soft delete: package=%s origin=%s result=%s status=%s fulfillment=%s", linkedPackage, originOrder, fulfilledPackage, status, fulfillment)
+		}
 	}
 }

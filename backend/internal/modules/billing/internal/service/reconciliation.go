@@ -208,31 +208,23 @@ func (s *Service) finishPayment(ctx context.Context, a paymentAttempt, p contrac
 			fulfillment = "blocked"
 		case !active || !s.canPay(a.AccountID):
 			fulfillment, reason = "blocked", "account_inactive"
-		case order.Test && entitlement.Source == "yookassa" && entitlement.ActiveUntil != nil && entitlement.ActiveUntil.After(now):
+		case order.Test && activeRealPackage(entitlement, now):
 			fulfillment, reason = "blocked", "paid_entitlement"
-		case entitlement.Source == "admin_grant" && entitlement.ActiveUntil != nil && entitlement.ActiveUntil.After(now):
-			fulfillment, reason = "blocked", "admin_grant"
-		case entitlement.Quota > 0 && entitlement.Quota != order.MonitorCount:
-			fulfillment, reason = "blocked", "capacity_changed"
 		default:
-			start, anchor := now, now.In(moscow).Day()
-			source := "yookassa"
-			entitlementReason := "YooKassa payment"
+			source, entitlementReason := "yookassa", "YooKassa payment"
 			if order.Test {
 				source, entitlementReason = "yookassa_test", "YooKassa test payment: no money charged"
 			}
-			if entitlement.Source == source && entitlement.Quota > 0 && entitlement.ActiveUntil != nil && entitlement.ActiveUntil.After(start) {
-				start = *entitlement.ActiveUntil
-				if entitlement.RenewalAnchorDay > 0 {
-					anchor = entitlement.RenewalAnchorDay
-				}
+			packageID, expiry, applyErr := s.applyPackage(ctx, tx, a.AccountID, entitlement, order, now, source, entitlementReason)
+			if errors.Is(applyErr, ErrConflict) {
+				fulfillment, reason = "blocked", "capacity_changed"
+			} else if applyErr != nil {
+				return applyErr
+			} else {
+				until, fulfilled, fulfillment, reason = &expiry, &now, "fulfilled", ""
+				order.FulfilledPackageID = &packageID
 			}
-			expiry := nextMockMonth(start, anchor)
-			until, fulfilled, fulfillment, reason = &expiry, &now, "fulfilled", ""
-			_, err = tx.Exec(ctx, `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason,renewal_anchor_day) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(account_id) DO UPDATE SET monitor_limit=excluded.monitor_limit,valid_until=excluded.valid_until,source=excluded.source,renewal_anchor_day=excluded.renewal_anchor_day,version=billing.entitlements.version+1,granted_at=now(),reason=excluded.reason`, a.AccountID, order.MonitorCount, until, source, entitlementReason, anchor)
-			if err != nil {
-				return err
-			}
+
 		}
 		if reason != "account_deleted" {
 			if _, err = tx.Exec(ctx, `INSERT INTO billing.payment_reports(order_id) VALUES($1) ON CONFLICT DO NOTHING`, order.ID); err != nil {
@@ -240,7 +232,7 @@ func (s *Service) finishPayment(ctx context.Context, a paymentAttempt, p contrac
 			}
 		}
 	}
-	_, err = tx.Exec(ctx, `UPDATE billing.orders SET provider_payment_id=$2,confirmation_url=CASE WHEN $3='' THEN confirmation_url ELSE $3 END,status=$4,completed_at=$5,active_until=$6,fulfillment_status=$7,fulfillment_reason=$8,fulfilled_at=$9,reconciliation_status=CASE WHEN $4='pending' THEN 'pending' ELSE 'complete' END,last_error_code='',reconcile_token=NULL,reconcile_lease_until=NULL,next_reconcile_at=now()+interval '1 minute' WHERE id=$1`, order.ID, p.ID, p.ConfirmationURL, status, completed, until, fulfillment, reason, fulfilled)
+	_, err = tx.Exec(ctx, `UPDATE billing.orders SET provider_payment_id=$2,confirmation_url=CASE WHEN $3='' THEN confirmation_url ELSE $3 END,status=$4,completed_at=$5,active_until=$6,fulfillment_status=$7,fulfillment_reason=$8,fulfilled_at=$9,fulfilled_package_id=$10,reconciliation_status=CASE WHEN $4='pending' THEN 'pending' ELSE 'complete' END,last_error_code='',reconcile_token=NULL,reconcile_lease_until=NULL,next_reconcile_at=now()+interval '1 minute' WHERE id=$1`, order.ID, p.ID, p.ConfirmationURL, status, completed, until, fulfillment, reason, fulfilled, order.FulfilledPackageID)
 	if err != nil {
 		return err
 	}

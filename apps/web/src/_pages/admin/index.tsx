@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useSession } from "@/entities/session";
 import {
   Monitor,
+  Entitlement,
   Status,
   checkTypeLabel,
   monitorTarget,
@@ -26,16 +27,9 @@ type AdminAccount = {
   version: number;
   createdAt: string;
 };
-type AdminEntitlement = {
-  quota: number;
-  activeUntil: string | null;
-  source: string;
-  monitorCount: number;
-  version: number;
-};
 type AccountDetail = {
   account: AdminAccount;
-  entitlement: AdminEntitlement | null;
+  entitlement: Entitlement | null;
   sessionsCount: number;
 };
 type AuditEvent = {
@@ -417,14 +411,14 @@ export function AdminPage() {
             reason: String(data.get("reason") ?? "").trim(),
           },
         }),
-      "Квота обновлена.",
+      "Административная квота обновлена.",
     );
   }
   async function deleteEntitlement(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (
-      !detail?.entitlement ||
-      !window.confirm("Отозвать действующую квоту этого аккаунта?")
+      !detail?.entitlement?.admin ||
+      !window.confirm("Отозвать административную квоту этого аккаунта?")
     )
       return;
     const data = new FormData(event.currentTarget);
@@ -439,7 +433,7 @@ export function AdminPage() {
             reason: String(data.get("reason") ?? "").trim(),
           },
         }),
-      "Квота отозвана.",
+      "Административная квота отозвана.",
     );
   }
   async function revokeSessions(event: FormEvent<HTMLFormElement>) {
@@ -669,6 +663,17 @@ export function AdminPage() {
                       ? "активен"
                       : "заблокирован"}
                   </p>
+                  {(detail.entitlement?.packages ?? []).map((part, index) => (
+                    <p className="small muted" key={part.id}>
+                      Пакет {index + 1} ·{" "}
+                      {part.source === "yookassa"
+                        ? "оплаченные места"
+                        : "тестовая или демонстрационная квота"}
+                      : {part.quota} · до{" "}
+                      {dateTime(part.activeUntil, { year: true })}
+                      {!part.active ? " · сейчас не действует" : ""}.
+                    </p>
+                  ))}
                   {canWrite && (
                     <>
                       <form
@@ -761,27 +766,29 @@ export function AdminPage() {
                   <div className="panel-heading">
                     <div>
                       <h2>Квота</h2>
-                      <p>Доступ к проверкам для этого аккаунта.</p>
+                      <p>
+                        Административная и оплаченная части действуют
+                        независимо.
+                      </p>
                     </div>
                   </div>
                   <p>
                     {detail.entitlement
-                      ? `${detail.entitlement.monitorCount} из ${detail.entitlement.quota} мониторов · до ${dateTime(detail.entitlement.activeUntil, { year: true })}`
+                      ? `${detail.entitlement.monitorCount} мониторов сохранено · сейчас доступно ${detail.entitlement.quota} мест до ${dateTime(detail.entitlement.activeUntil, { year: true })}`
                       : "Действующей квоты нет."}
                   </p>
-                  {detail.entitlement && (
-                    <p className="small muted">
-                      Источник:{" "}
-                      {detail.entitlement.source === "admin_grant"
-                        ? "Выдано администратором"
-                        : detail.entitlement.source}
-                    </p>
-                  )}
+                  <p className="small muted">
+                    Административная:{" "}
+                    {detail.entitlement?.admin
+                      ? `${detail.entitlement.admin.quota} мест · до ${dateTime(detail.entitlement.admin.activeUntil, { year: true })}`
+                      : "нет"}
+                    .{" "}
+                  </p>
                   {canWrite && (
                     <>
                       <form
                         className="form-stack"
-                        key={`entitlement-${detail.account.id}-${detail.entitlement?.version ?? 0}`}
+                        key={`entitlement-${detail.account.id}-${detail.entitlement?.admin?.version ?? 0}`}
                         onSubmit={saveEntitlement}
                       >
                         <div className="form-row">
@@ -792,7 +799,9 @@ export function AdminPage() {
                               name="quota"
                               min={1}
                               max={1000}
-                              defaultValue={detail.entitlement?.quota ?? 1}
+                              defaultValue={
+                                detail.entitlement?.admin?.quota ?? 1
+                              }
                               required
                             />
                           </label>
@@ -802,7 +811,7 @@ export function AdminPage() {
                               type="datetime-local"
                               name="validUntil"
                               defaultValue={localDateTime(
-                                detail.entitlement?.activeUntil ?? null,
+                                detail.entitlement?.admin?.activeUntil ?? null,
                               )}
                               required
                             />
@@ -821,10 +830,10 @@ export function AdminPage() {
                           className="secondary"
                           disabled={!!busy || pricingBusy || mfaBusy}
                         >
-                          Сохранить квоту
+                          Сохранить административную квоту
                         </button>
                       </form>
-                      {detail.entitlement && (
+                      {detail.entitlement?.admin && (
                         <form
                           className="form-stack admin-separated"
                           onSubmit={deleteEntitlement}
@@ -842,7 +851,7 @@ export function AdminPage() {
                             className="quiet danger-text"
                             disabled={!!busy || pricingBusy || mfaBusy}
                           >
-                            Отозвать квоту
+                            Отозвать административную квоту
                           </button>
                         </form>
                       )}

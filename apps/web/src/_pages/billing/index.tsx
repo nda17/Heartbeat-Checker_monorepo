@@ -13,6 +13,9 @@ import { useSession } from "@/entities/session";
 import { dateTime, Loading, Notice } from "@/shared/ui";
 type Order = {
   id: string;
+  purchaseKind?: "legacy" | "purchase" | "renew";
+  packageId?: string;
+  fulfilledPackageId?: string;
   provider: "mock" | "yookassa";
   status: string;
   reconciliationStatus?: "pending" | "complete" | "manual_review" | "stopped";
@@ -45,6 +48,8 @@ type Billing = {
   orders: Order[];
 };
 type OrderIntent = {
+  purchaseKind?: "purchase" | "renew";
+  packageId?: string;
   count: number;
   key: string;
   priceVersion?: number;
@@ -78,7 +83,7 @@ function fulfillmentMessage(order: Order) {
   if (order.fulfillmentStatus === "blocked") {
     switch (order.fulfillmentReason) {
       case "admin_grant":
-        return "Квота и её срок не изменены: действует административная квота.";
+        return "На момент обработки заказа применение было заблокировано административной квотой. Этот заказ не выдал новую квоту.";
       case "account_deleted":
         return "Аккаунт удалён. Квота по заказу не применяется.";
       case "account_inactive":
@@ -109,18 +114,36 @@ function money(amountMinor: number) {
     currency: "RUB",
   }).format(amountMinor / 100);
 }
+function paidSourceLabel(source: string) {
+  if (source === "yookassa") return "Оплачено мониторов";
+  if (source === "yookassa_test")
+    return "Тестовая квота ЮKassa, без списания — мониторов";
+  if (source === "mock_test")
+    return "Демонстрационная квота, без списания — мониторов";
+  if (source === "local_test")
+    return "Локальная тестовая квота, без оплаты — мониторов";
+  return source;
+}
 function YooKassaCheckout({
   billing,
+  renewalQuota,
+  packageId,
+  packageUntil,
+  onSelectionLockedChange,
   onOrder,
   onRefresh,
 }: {
   billing: Billing;
+  renewalQuota: number | null;
+  packageId: string | null;
+  packageUntil: string | null;
+  onSelectionLockedChange: (locked: boolean) => void;
   onOrder: (order: Order) => void;
   onRefresh: (signal?: AbortSignal) => Promise<Billing | undefined>;
 }) {
   const { profile } = useSession();
   const storageKey = `heartbeat-billing-request:${profile.account.id}`;
-  const [count, setCount] = useState(1);
+  const [count, setCount] = useState(renewalQuota ?? 1);
   const [order, setOrder] = useState<Order | null>(null);
   const [orderId, setOrderId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -132,6 +155,7 @@ function YooKassaCheckout({
   const [uncertain, setUncertain] = useState(false);
   const [intentAmount, setIntentAmount] = useState<number | null>(null);
   const request = useRef<OrderIntent | null>(null);
+  const [savedIntent, setSavedIntent] = useState<OrderIntent | null>(null);
   const creating = useRef<AbortController | null>(null);
   const creationTimeout = useRef<number | undefined>(undefined);
   useEffect(() => {
@@ -147,6 +171,11 @@ function YooKassaCheckout({
         Number.isInteger(saved.count) &&
         saved.count >= 1 &&
         saved.count <= 1000 &&
+        ((saved.purchaseKind === undefined && saved.packageId === undefined) ||
+          (saved.purchaseKind === "purchase" &&
+            saved.packageId === undefined) ||
+          (saved.purchaseKind === "renew" &&
+            uuid.test(saved.packageId ?? ""))) &&
         (saved.priceVersion === undefined ||
           (Number.isSafeInteger(saved.priceVersion) &&
             saved.priceVersion > 0)) &&
@@ -156,7 +185,8 @@ function YooKassaCheckout({
             saved.pricePerMonitorMinor <= 1_000_000))
       ) {
         request.current = saved;
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- Restore the account-bound immutable quote from tab storage.
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- Restore the account-bound immutable intent from tab storage.
+        setSavedIntent(saved);
         setIntentAmount(
           saved.pricePerMonitorMinor === undefined
             ? null
@@ -278,6 +308,7 @@ function YooKassaCheckout({
       return;
     const monitorCount =
       request.current?.count ??
+      renewalQuota ??
       Number(new FormData(event.currentTarget).get("monitorCount"));
     if (
       !Number.isInteger(monitorCount) ||
@@ -299,8 +330,20 @@ function YooKassaCheckout({
       );
       return;
     }
+    if (
+      !request.current &&
+      renewalQuota !== null &&
+      monitorCount !== renewalQuota
+    ) {
+      setError(
+        `При продлении сохраняется количество мониторов выбранной транзакции: ${renewalQuota}. Для дополнительных мониторов выберите новую покупку.`,
+      );
+      return;
+    }
     request.current ??= {
       count: monitorCount,
+      purchaseKind: packageId ? "renew" : "purchase",
+      ...(packageId ? { packageId } : {}),
       key: crypto.randomUUID(),
       priceVersion: billing.priceVersion,
       pricePerMonitorMinor: billing.pricePerMonitorMinor,
@@ -316,6 +359,7 @@ function YooKassaCheckout({
     const controller = new AbortController();
     creating.current = controller;
     setCount(monitorCount);
+    setSavedIntent(request.current);
     setBusy(true);
     setIntentAmount(
       request.current?.pricePerMonitorMinor === undefined
@@ -351,6 +395,8 @@ function YooKassaCheckout({
           monitorCount: request.current.count,
           idempotencyKey: request.current.key,
           priceVersion: request.current.priceVersion,
+          purchaseKind: request.current.purchaseKind,
+          packageId: request.current.packageId,
         },
       });
       if (creating.current !== controller || controller.signal.aborted) return;
@@ -419,9 +465,20 @@ function YooKassaCheckout({
       : uncertain
         ? intentAmount
         : validQuote(billing)
-          ? count * billing.pricePerMonitorMinor
+          ? (renewalQuota ?? count) * billing.pricePerMonitorMinor
           : null;
   const awaitingOrder = !!orderId && order?.id !== orderId;
+  const displayedRenewalQuota = uncertain
+    ? savedIntent?.purchaseKind === "renew"
+      ? savedIntent.count
+      : null
+    : pending && order
+      ? order.purchaseKind === "renew"
+        ? order.monitorCount
+        : null
+      : renewalQuota;
+  const unknownIntent = uncertain && !savedIntent?.purchaseKind;
+
   const halted =
     order?.reconciliationStatus === "manual_review" ||
     order?.reconciliationStatus === "stopped";
@@ -429,6 +486,10 @@ function YooKassaCheckout({
     order?.provider === "yookassa" && order.status === "pending" && !halted
       ? paymentConfirmationUrl(order.confirmationUrl)
       : null;
+  useEffect(() => {
+    onSelectionLockedChange(uncertain || !!pending || busy || awaitingOrder);
+    return () => onSelectionLockedChange(false);
+  }, [uncertain, pending, busy, awaitingOrder, onSelectionLockedChange]);
   return (
     <section
       className="panel settings-panel billing-checkout"
@@ -436,7 +497,13 @@ function YooKassaCheckout({
     >
       <div className="panel-heading">
         <div>
-          <h2 id="checkout-title">Оформление заказа</h2>
+          <h2 id="checkout-title">
+            {unknownIntent
+              ? "Проверка исходного заказа"
+              : displayedRenewalQuota === null
+                ? "Купить мониторы на месяц"
+                : "Продление выбранной транзакции"}
+          </h2>
           <p>
             {billing.test
               ? "Тестовый платёж на странице ЮKassa. Деньги не списываются."
@@ -444,10 +511,21 @@ function YooKassaCheckout({
           </p>
         </div>
       </div>
-      {billing.accessUnchanged && (
+      {!pending && !uncertain && packageId && (
         <p className="small">
-          У вас действует административная квота. Этот заказ не изменит её
-          размер и срок.
+          Выбрана транзакция с окончанием{" "}
+          {dateTime(packageUntil, { year: true })}. Мониторов: {renewalQuota}.
+        </p>
+      )}
+      {pending && order?.purchaseKind === "renew" && (
+        <p className="small">
+          Заказ продлевает ранее выбранную транзакцию. Его параметры закреплены
+          при создании заказа.
+        </p>
+      )}
+      {displayedRenewalQuota !== null && (
+        <p className="small">
+          Количество мониторов при продлении: {displayedRenewalQuota}.
         </p>
       )}
       {!canPay ? (
@@ -463,9 +541,16 @@ function YooKassaCheckout({
               max={uncertain ? 1000 : maxOrderCount(billing)}
               step={1}
               required
-              value={count}
+              value={
+                pending && order
+                  ? order.monitorCount
+                  : !uncertain && displayedRenewalQuota !== null
+                    ? displayedRenewalQuota
+                    : count
+              }
               onChange={(event) => setCount(Number(event.target.value))}
               disabled={busy || !!pending || uncertain || awaitingOrder}
+              readOnly={displayedRenewalQuota !== null}
             />
           </label>
           <p>
@@ -500,6 +585,13 @@ function YooKassaCheckout({
             параметры заказа рассчитываются сервером. Автопродление не
             подключается.
           </p>
+          <p className="field-hint">
+            {unknownIntent
+              ? "Параметры исходного заказа уточняются. Повторный запрос сохраняет исходный ключ и не создаёт новый платёж."
+              : displayedRenewalQuota === null
+                ? "Оплаченный период действует календарный месяц с момента подтверждения оплаты и активации заказа. Точная дата окончания появится после активации."
+                : "Продление добавит календарный месяц после текущего срока выбранной транзакции, а если он истёк — с момента подтверждения оплаты и активации. Точная дата будет показана после применения заказа."}
+          </p>
           {error && <Notice>{error}</Notice>}
           <button
             className="primary"
@@ -513,7 +605,9 @@ function YooKassaCheckout({
               ? "Создаём заказ…"
               : uncertain
                 ? "Повторить запрос заказа"
-                : "Оформить заказ"}
+                : displayedRenewalQuota === null
+                  ? "Купить мониторы на месяц"
+                  : "Продлить транзакцию на месяц"}
           </button>
         </form>
       )}
@@ -561,6 +655,9 @@ export function BillingPage() {
   const [loadError, setLoadError] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
+  const [entitlementUpdatedAt, setEntitlementUpdatedAt] = useState(0);
+  const [selectedPackageId, setSelectedPackageId] = useState("");
+  const [selectionLocked, setSelectionLocked] = useState(false);
   const [count, setCount] = useState(1);
   const [busy, setBusy] = useState(false);
   const [uncertain, setUncertain] = useState(false);
@@ -614,6 +711,7 @@ export function BillingPage() {
         const overview = { ...result, ...mergeQuote(result, generation) };
         setBilling(overview);
         setEntitlement(access.entitlement);
+        setEntitlementUpdatedAt(Date.now());
         return overview;
       } catch (cause) {
         if (!signal?.aborted) {
@@ -735,7 +833,10 @@ export function BillingPage() {
       setError("Цена недоступна. Обновите условия оплаты.");
       return;
     }
-    if (!request.current && count > maxOrderCount(billing)) {
+    if (
+      !request.current &&
+      (paidRenewalQuota ?? count) > maxOrderCount(billing)
+    ) {
       setBusy(false);
       setError(
         "Сумма заказа не должна превышать 350 000 рублей. Уменьшите количество мониторов.",
@@ -743,7 +844,9 @@ export function BillingPage() {
       return;
     }
     request.current ??= {
-      count,
+      count: paidRenewalQuota ?? count,
+      purchaseKind: selectedPackage ? "renew" : "purchase",
+      ...(selectedPackage ? { packageId: selectedPackage.id } : {}),
       key: crypto.randomUUID(),
       priceVersion: billing.priceVersion,
       pricePerMonitorMinor: billing.pricePerMonitorMinor,
@@ -762,6 +865,8 @@ export function BillingPage() {
           monitorCount: request.current.count,
           idempotencyKey: request.current.key,
           priceVersion: request.current.priceVersion,
+          purchaseKind: request.current.purchaseKind,
+          packageId: request.current.packageId,
         },
       });
       request.current = null;
@@ -850,10 +955,17 @@ export function BillingPage() {
     }
   }
   const pending = billing?.orders.find((order) => order.status === "pending");
-  const adminGrant =
-    entitlement?.source === "admin_grant" &&
-    !!entitlement.activeUntil &&
-    new Date(entitlement.activeUntil) > new Date();
+  const selectedPackage =
+    entitlement?.packages?.find((part) => part.id === selectedPackageId) ??
+    null;
+  const paidRenewalQuota = selectedPackage?.quota ?? null;
+  const checkoutSource =
+    billing?.provider === "mock"
+      ? "mock_test"
+      : billing?.test
+        ? "yookassa_test"
+        : "yookassa";
+
   return (
     <>
       <div className="page-heading">
@@ -885,17 +997,75 @@ export function BillingPage() {
       ) : !billing ? (
         <Loading text="Загружаем заказы…" />
       ) : (
-        <>
-          {adminGrant ? (
-            <div className="local-banner">
-              <span className="badge">Квота</span>
-              <p>
-                Доступ к {entitlement.quota} мониторам выдан администратором до{" "}
-                {dateTime(entitlement.activeUntil, { year: true })}. Платежей по
-                этой квоте нет.
-              </p>
-            </div>
-          ) : billing.provider !== "yookassa" ? (
+        <div className="form-stack">
+          {entitlement && (
+            <section className="panel settings-panel" aria-label="Состав квоты">
+              <div className="panel-heading">
+                <div>
+                  <h2>Доступно мониторов: {entitlement.quota}</h2>
+                  <p>Активно мониторов: {entitlement.activeMonitorCount}</p>
+                </div>
+              </div>
+              <div className="form-stack">
+                {(entitlement.packages ?? []).length === 0 && (
+                  <p>Транзакций пока нет.</p>
+                )}
+                {(entitlement.packages ?? []).map((part, index) => (
+                  <div key={part.id} className="form-stack">
+                    <p>
+                      Транзакция {index + 1} — {paidSourceLabel(part.source)}:{" "}
+                      {part.quota} до{" "}
+                      {dateTime(part.activeUntil, { year: true })}
+                      {!part.active
+                        ? part.activeUntil &&
+                          Date.parse(part.activeUntil) <= entitlementUpdatedAt
+                          ? part.source === "yookassa"
+                            ? " · Срок оплаты истёк"
+                            : " · Срок квоты истёк"
+                          : " · Сейчас не действует"
+                        : ""}
+                      .
+                    </p>
+                    {part.source === checkoutSource &&
+                      (billing.canPay || billing.canSimulate) && (
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={
+                            selectionLocked || !!pending || uncertain || busy
+                          }
+                          aria-label={`Продлить транзакцию ${index + 1} на месяц`}
+                          onClick={() => setSelectedPackageId(part.id)}
+                        >
+                          Продлить на месяц
+                        </button>
+                      )}
+                  </div>
+                ))}
+                {(billing.canPay || billing.canSimulate) && (
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={selectionLocked || !!pending || uncertain || busy}
+                    onClick={() => setSelectedPackageId("")}
+                  >
+                    Купить ещё мониторы на месяц
+                  </button>
+                )}
+                <p className="small muted">
+                  Каждая новая покупка — отдельная транзакция. Перед переходом к
+                  оплате вы выбираете количество мониторов, которые активируются
+                  на один календарный месяц со дня оплаты. Все мониторы,
+                  активированные в рамках этой транзакции, имеют одинаковую дату
+                  окончания оплаченного периода.
+                </p>
+                <p className="small muted">
+                  Продление меняет срок только выбранной транзакции.
+                </p>
+              </div>
+            </section>
+          )}
+          {billing.provider !== "yookassa" ? (
             <div className="local-banner">
               <span className="badge">Оплата</span>
               <p>
@@ -908,19 +1078,21 @@ export function BillingPage() {
           {billing.provider === "yookassa" && (
             <YooKassaCheckout
               billing={billing}
+              renewalQuota={paidRenewalQuota}
+              packageId={selectedPackage?.id ?? null}
+              packageUntil={selectedPackage?.activeUntil ?? null}
+              onSelectionLockedChange={setSelectionLocked}
               onOrder={rememberOrder}
               onRefresh={load}
             />
           )}
-          {billing.provider === "mock" &&
-            !billing.canSimulate &&
-            !adminGrant && (
-              <Notice>
-                Для вашего аккаунта применение квоты через демонстрацию
-                недоступно.
-              </Notice>
-            )}
-          {billing.provider === "mock" && !adminGrant && (
+          {billing.provider === "mock" && !billing.canSimulate && (
+            <Notice>
+              Для вашего аккаунта применение квоты через демонстрацию
+              недоступно.
+            </Notice>
+          )}
+          {billing.provider === "mock" && (
             <section className="panel settings-panel">
               <div className="panel-heading">
                 <span className="panel-index">01</span>
@@ -945,14 +1117,20 @@ export function BillingPage() {
                     min={1}
                     max={uncertain ? 1000 : maxOrderCount(billing)}
                     required
-                    value={uncertain ? count : (pending?.monitorCount ?? count)}
+                    value={
+                      uncertain
+                        ? count
+                        : (pending?.monitorCount ?? paidRenewalQuota ?? count)
+                    }
                     onChange={(event) => setCount(Number(event.target.value))}
                     disabled={busy || !!pending || uncertain}
+                    readOnly={paidRenewalQuota !== null}
                   />
                   <span className="field-hint">
                     Максимальная сумма заказа — 350 000 рублей. Пока действует
-                    квота, продление доступно с тем же количеством мониторов.
-                    Изменение количества — после её окончания.
+                    оплаченная часть, продление доступно с тем же количеством
+                    мониторов. Для дополнительных мониторов оформите новую
+                    транзакцию.
                   </span>
                 </label>
                 <p>
@@ -965,7 +1143,10 @@ export function BillingPage() {
                       : pending
                         ? money(pending.amountMinor)
                         : validQuote(billing)
-                          ? money(count * billing.pricePerMonitorMinor)
+                          ? money(
+                              (paidRenewalQuota ?? count) *
+                                billing.pricePerMonitorMinor,
+                            )
                           : "Цена недоступна"}
                   </strong>
                 </p>
@@ -1111,7 +1292,7 @@ export function BillingPage() {
               </div>
             )}
           </section>
-        </>
+        </div>
       )}
     </>
   );

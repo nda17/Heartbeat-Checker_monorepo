@@ -381,7 +381,8 @@ export function MonitorsPage() {
     new Date(entitlement.activeUntil) > new Date();
   const canCreate =
     !!quotaActive &&
-    (entitlement?.monitorCount ?? 0) < (entitlement?.quota ?? 0);
+    (entitlement?.enabledMonitorCount ?? 0) < (entitlement?.quota ?? 0);
+  const canEnable = canCreate;
   return (
     <>
       <div className="page-heading">
@@ -425,49 +426,42 @@ export function MonitorsPage() {
           <small>Неуспешная последняя проверка</small>
         </div>
         <div className="stat quota-stat">
-          <span>Ваша квота</span>
-          <strong>
-            {entitlement ? (
-              <>
-                {entitlement.monitorCount}
-                <em> / {entitlement.quota}</em>
-              </>
-            ) : (
-              "—"
-            )}
-          </strong>
+          <span>Доступно мониторов</span>
+          <strong>{entitlement ? <>{entitlement.quota}</> : "—"}</strong>
           <small>
-            {quotaActive
-              ? `До ${dateTime(entitlement?.activeUntil, { year: true })}`
-              : "Нет действующей квоты"}
+            Активно мониторов: {entitlement?.activeMonitorCount ?? "—"}
           </small>
         </div>
       </div>
-      {entitlement?.source === "local_test" && (
+      {entitlement && (
         <div className="local-banner">
-          <span className="badge">Локальный тест</span>
+          <span className="badge">Состав квоты</span>
+          {(entitlement.packages ?? []).map((part, index) => (
+            <p key={part.id}>
+              Транзакция {index + 1} —{" "}
+              {part.source === "yookassa"
+                ? "Оплачено мониторов"
+                : part.source === "local_test"
+                  ? "Локальная тестовая квота, без оплаты — мониторов"
+                  : part.source === "mock_test"
+                    ? "Демонстрационная квота, без списания — мониторов"
+                    : "Тестовая квота ЮKassa, без списания — мониторов"}
+              : {part.quota} до {dateTime(part.activeUntil, { year: true })}
+              {!part.active
+                ? part.activeUntil &&
+                  Date.parse(part.activeUntil) <= (updatedAt?.getTime() ?? 0)
+                  ? part.source === "yookassa"
+                    ? " · Срок оплаты истёк"
+                    : " · Срок квоты истёк"
+                  : " · Сейчас не действует"
+                : ""}
+              .
+            </p>
+          ))}
+
           <p>
-            Вам выдана тестовая квота для локальной проверки. Это не оплаченная
-            подписка.
-          </p>
-        </div>
-      )}
-      {entitlement?.source === "mock_test" && (
-        <div className="local-banner">
-          <span className="badge">Квота</span>
-          <p>
-            Квота после демонстрации оплаты. Деньги не списывались. Срок
-            действия: {dateTime(entitlement.activeUntil, { year: true })}.
-          </p>
-        </div>
-      )}
-      {entitlement?.source === "admin_grant" && (
-        <div className="local-banner">
-          <span className="badge">Квота</span>
-          <p>
-            Доступ к проверкам выдан администратором. Лимит: {entitlement.quota}
-            , срок действия: {dateTime(entitlement.activeUntil, { year: true })}
-            .
+            Сохранено мониторов: {entitlement.monitorCount}. Включено:{" "}
+            {entitlement.enabledMonitorCount}.
           </p>
         </div>
       )}
@@ -491,9 +485,9 @@ export function MonitorsPage() {
       {quotaActive && !canCreate && (
         <div className="local-banner">
           <p>
-            Квота заполнена. Чтобы добавить новый адрес, измените существующий
-            монитор или удалите ненужный. Мониторы на паузе также занимают
-            квоту.
+            Лимит включённых мониторов достигнут. Чтобы выбрать другие мониторы,
+            поставьте ненужные на паузу и включите нужные. Настройки и история
+            сохраняются.
           </p>
         </div>
       )}
@@ -698,7 +692,7 @@ export function MonitorsPage() {
                           className="icon-button"
                           title={m.enabled ? "Приостановить" : "Включить"}
                           aria-label={`${m.enabled ? "Приостановить" : "Включить"} ${m.name}`}
-                          disabled={!!busy}
+                          disabled={!!busy || (!m.enabled && !canEnable)}
                           onClick={() => void toggle(m)}
                         >
                           {busy === m.id ? (
@@ -803,6 +797,7 @@ export function MonitorsPage() {
       {editor && (
         <MonitorForm
           monitor={editor === "new" ? undefined : editor}
+          canEnable={canEnable}
           onClose={() => {
             setEditor(null);
           }}

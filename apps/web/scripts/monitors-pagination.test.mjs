@@ -89,10 +89,7 @@ test("monitor timestamps fall back to finite UTC when Intl lacks longOffset", ()
     {},
     { Intl: limitedIntl },
   );
-  const formatted = monitorDateTime(
-    "2026-01-15T12:34:00Z",
-    "Europe/Berlin",
-  );
+  const formatted = monitorDateTime("2026-01-15T12:34:00Z", "Europe/Berlin");
   assert.equal(
     formatted,
     "15.01.2026 12:34 UTC (пояс Europe/Berlin недоступен)",
@@ -292,11 +289,80 @@ function entitlement() {
     entitlement: {
       quota: 25,
       monitorCount: 2,
+      enabledMonitorCount: 2,
+      activeMonitorCount: 2,
       source: "admin_grant",
       activeUntil: "2099-01-01T00:00:00Z",
     },
   };
 }
+
+test("a paused saved monitor can use a free enabled slot when saved count exceeds quota", async (t) => {
+  const harness = createHarness();
+  t.after(() => harness.unmount());
+  const paused = {
+    ...monitor("paused-later", "Paused later"),
+    enabled: false,
+    state: "PAUSED",
+  };
+  const calls = [];
+  const api = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path.startsWith("/monitors?"))
+      return {
+        ...page([paused.name], { total: 10, totalPages: 1 }),
+        monitors: [paused],
+        summary: { ...page([]).summary, total: 10 },
+      };
+    if (path === "/entitlement")
+      return {
+        entitlement: {
+          quota: 5,
+          monitorCount: 10,
+          enabledMonitorCount: 4,
+          activeMonitorCount: 4,
+          source: "combined",
+          activeUntil: "2099-01-01T00:00:00Z",
+          admin: { quota: 3, activeUntil: "2099-02-01T00:00:00Z", version: 1 },
+          paid: {
+            quota: 2,
+            activeUntil: "2099-03-01T00:00:00Z",
+            source: "yookassa",
+            version: 1,
+          },
+        },
+      };
+    if (path === `/monitors/${paused.id}` && options.method === "PATCH")
+      return { monitor: { ...paused, enabled: true, version: 2 } };
+    throw new Error(`unexpected API call ${path}`);
+  };
+  const { MonitorsPage } = loadPage(api);
+  await harness.render(React.createElement(MonitorsPage));
+
+  assert.match(
+    harness.host.textContent,
+    /Сохранено мониторов: 10\. Включено: 4\./,
+  );
+  assert.match(harness.host.textContent, /Доступно мониторов\s*5/);
+  assert.match(harness.host.textContent, /Активно мониторов:\s*4/);
+  const enable = harness.host.querySelector(
+    `button[aria-label="Включить ${paused.name}"]`,
+  );
+  assert.ok(enable, "paused monitor action should be visible");
+  assert.equal(
+    enable.disabled,
+    false,
+    "a free slot is independent of saved count",
+  );
+  await act(async () => enable.click());
+  await flush();
+  const update = calls.find(
+    ({ path, options }) =>
+      path === `/monitors/${paused.id}` && options.method === "PATCH",
+  );
+  assert.equal(update?.options.body.enabled, true);
+  assert.equal(update?.options.body.version, 1);
+});
 
 test("monitor list sends remote search, sort and page controls and renders active channel badges", async (t) => {
   const harness = createHarness();

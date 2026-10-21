@@ -48,6 +48,8 @@ func failure(w http.ResponseWriter, err error) {
 		fail(w, 404, "not_found")
 	case errors.Is(err, service.ErrPriceChanged):
 		fail(w, 409, "price_changed")
+	case errors.Is(err, service.ErrSelectionRequired):
+		fail(w, 409, "billing_selection_required")
 	case errors.Is(err, service.ErrConflict):
 		fail(w, 409, "billing_conflict")
 	default:
@@ -102,11 +104,13 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		MonitorCount   int    `json:"monitorCount"`
 		IdempotencyKey string `json:"idempotencyKey"`
 		PriceVersion   int64  `json:"priceVersion"`
+		PurchaseKind   string `json:"purchaseKind"`
+		PackageID      string `json:"packageId"`
 	}
 	if !decode(w, r, &input) {
 		return
 	}
-	order, err := s.service.CreateOrder(r.Context(), account, input.MonitorCount, input.IdempotencyKey, input.PriceVersion)
+	order, err := s.service.CreateSelectedOrder(r.Context(), account, input.MonitorCount, input.IdempotencyKey, input.PriceVersion, input.PurchaseKind, input.PackageID)
 	if err != nil {
 		failure(w, err)
 		return

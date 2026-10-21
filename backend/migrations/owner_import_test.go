@@ -97,8 +97,8 @@ func TestOwnerImportCreatesAtomicallyAndExactReplayDoesNotOverwriteChanges(t *te
 	}
 	var name, role, status, email, passwordHash, source, reason string
 	var quota int
-	if err := pool.QueryRow(ctx, `SELECT a.name,a.role,a.status,c.email,c.password_hash,e.source,e.reason,e.monitor_limit
-		FROM accounts.accounts a JOIN auth.credentials c ON c.account_id=a.id JOIN billing.entitlements e ON e.account_id=a.id WHERE a.id=$1`, syntheticOwnerID).
+	if err := pool.QueryRow(ctx, `SELECT a.name,a.role,a.status,c.email,c.password_hash,'admin_grant',e.reason,e.monitor_limit
+		FROM accounts.accounts a JOIN auth.credentials c ON c.account_id=a.id JOIN billing.admin_grants e ON e.account_id=a.id WHERE a.id=$1`, syntheticOwnerID).
 		Scan(&name, &role, &status, &email, &passwordHash, &source, &reason, &quota); err != nil {
 		t.Fatalf("read imported owner records: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestOwnerImportCreatesAtomicallyAndExactReplayDoesNotOverwriteChanges(t *te
 	if _, err := pool.Exec(ctx, `UPDATE auth.credentials SET password_hash='later-password-hash' WHERE account_id=$1`, syntheticOwnerID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE billing.entitlements SET monitor_limit=12,reason='later grant adjustment' WHERE account_id=$1`, syntheticOwnerID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE billing.admin_grants SET monitor_limit=12,reason='later grant adjustment' WHERE account_id=$1`, syntheticOwnerID); err != nil {
 		t.Fatal(err)
 	}
 	noop, err := runOwnerImport(ctx, t, pool, payload, digest, strings.Repeat("b", 40))
@@ -130,7 +130,7 @@ func TestOwnerImportCreatesAtomicallyAndExactReplayDoesNotOverwriteChanges(t *te
 		t.Fatalf("exact replay result=%q err=%v", noop, err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT a.name,a.role,c.password_hash,e.monitor_limit,e.reason
-		FROM accounts.accounts a JOIN auth.credentials c ON c.account_id=a.id JOIN billing.entitlements e ON e.account_id=a.id WHERE a.id=$1`, syntheticOwnerID).
+		FROM accounts.accounts a JOIN auth.credentials c ON c.account_id=a.id JOIN billing.admin_grants e ON e.account_id=a.id WHERE a.id=$1`, syntheticOwnerID).
 		Scan(&name, &role, &passwordHash, &quota, &reason); err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestOwnerImportIdentityAndAuditFailuresRollBackWholeTransaction(t *testing.
 	if err := pool.QueryRow(ctx, `SELECT
 		(SELECT count(*) FROM accounts.accounts WHERE id=$1),
 		(SELECT count(*) FROM auth.credentials WHERE account_id=$1),
-		(SELECT count(*) FROM billing.entitlements WHERE account_id=$1),
+		(SELECT count(*) FROM billing.admin_grants WHERE account_id=$1),
 		(SELECT count(*) FROM admin.audit_events WHERE operation_id=$2)`, syntheticOwnerID, syntheticOwnerOperation).
 		Scan(&ownerRows, &credentialRows, &entitlementRows, &auditRows); err != nil {
 		t.Fatal(err)

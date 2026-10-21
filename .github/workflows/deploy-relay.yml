@@ -62,6 +62,25 @@ jobs:
               '.workflow_runs | any(.[]; .event == "push" and .head_sha == $sha and .conclusion == "success")' >/dev/null \
             || { echo 'No successful push CI run for the exact SHA'; exit 1; }
 
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.2'
+          cache-dependency-path: tools/go.sum
+      - name: Build exact-source static operations binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          make build-ops OPS_OUTPUT="$RUNNER_TEMP/hc-ops/hc-ops" OPS_SOURCE_SHA="$SOURCE_SHA"
+          [[ "$("$RUNNER_TEMP/hc-ops/hc-ops" version)" == "$SOURCE_SHA" ]]
+      - name: Retain exact-source operations binary and transport checksum
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hc-ops-relay-${{ inputs.source_sha }}
+          path: |
+            ${{ runner.temp }}/hc-ops/hc-ops
+            ${{ runner.temp }}/hc-ops/hc-ops.sha256
+          if-no-files-found: error
+          retention-days: 90
       - name: Deploy and verify relay VPS
         shell: bash
         env:
@@ -78,9 +97,12 @@ jobs:
           ssh_opts=(-i "$ssh_dir/key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o "UserKnownHostsFile=$ssh_dir/known_hosts" -o BatchMode=yes)
           target=root@185.184.122.62
+          ops_sha=$(sha256sum "$RUNNER_TEMP/hc-ops/hc-ops" | awk '{print $1}')
+          [[ $ops_sha =~ ^[0-9a-f]{64}$ ]]
           ssh "${ssh_opts[@]}" "$target" 'install -d -m 700 /opt/heartbeat-checker/relay'
           scp "${ssh_opts[@]}" deploy/relay/nginx-http.conf "$target:/opt/heartbeat-checker/relay/nginx-http.conf.incoming"
           scp "${ssh_opts[@]}" deploy/relay/nginx-https.conf "$target:/opt/heartbeat-checker/relay/nginx-https.conf.incoming"
           scp "${ssh_opts[@]}" deploy/relay/deploy.sh "$target:/opt/heartbeat-checker/relay/deploy.sh.incoming"
+          scp "${ssh_opts[@]}" "$RUNNER_TEMP/hc-ops/hc-ops" "$target:/opt/heartbeat-checker/relay/hc-ops.incoming"
           ssh "${ssh_opts[@]}" "$target" \
-            "bash /opt/heartbeat-checker/relay/deploy.sh.incoming '$SOURCE_SHA' '$BACKUP_SHA256' '$CERT_EMAIL'"
+            "HC_OPS_SHA256='$ops_sha' bash /opt/heartbeat-checker/relay/deploy.sh.incoming '$SOURCE_SHA' '$BACKUP_SHA256' '$CERT_EMAIL'"

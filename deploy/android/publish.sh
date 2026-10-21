@@ -12,36 +12,38 @@ flock -w 1800 9 || { echo 'Backend deployment lock timeout'; exit 1; }
 [[ ! -e pending ]] || { echo 'Resolve pending backend deployment first'; exit 1; }
 stage="$PWD/android-releases/$source_sha-$run_id"
 [[ -d $stage && ! -L $stage ]]
+# Use the current Android source binary, never a publisher from the installed
+# backup image. The CI transport binds these bytes before the first execution.
+incoming_ops="$stage/hc-ops"
+[[ ${HC_OPS_SHA256:-} =~ ^[0-9a-f]{64}$ && -f $incoming_ops && ! -L $incoming_ops ]] || { echo 'Missing Android publication helper'; exit 1; }
+[[ $(sha256sum "$incoming_ops" | awk '{print $1}') == "$HC_OPS_SHA256" ]] || { echo 'Android helper checksum mismatch'; exit 1; }
+publish_workdir=$(mktemp -d)
+trap 'rm -rf -- "$publish_workdir"' EXIT
+ops="$publish_workdir/hc-ops"
+cp -p "$incoming_ops" "$ops"
+# The parent is private; the separately pinned bind-mounted executable must also
+# be executable by the existing non-root container UID. Never run as root.
+chmod 555 "$ops"
+[[ $(sha256sum "$ops" | awk '{print $1}') == "$HC_OPS_SHA256" ]] || { echo 'Android helper copy checksum mismatch'; exit 1; }
+[[ $("$ops" version) == "$source_sha" ]] || { echo 'Android helper source mismatch'; exit 1; }
 for file in .backup.env .env .release.env compose.backup.yaml; do
   [[ -f $file && ! -L $file ]]
 done
 [[ $(stat -c %a .backup.env) == 600 ]]
 compose=(docker compose --env-file .env --env-file .backup.env --env-file .release.env -f compose.backup.yaml)
-image=$("${compose[@]}" config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["backup"]["image"])')
-installed_sha=$("${compose[@]}" config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["backup"]["environment"]["BACKUP_SOURCE_SHA"])')
+image=$("${compose[@]}" config --format json | "$ops" compose-field backup.image)
+installed_sha=$("${compose[@]}" config --format json | "$ops" compose-field backup.source)
 [[ $image =~ ^ghcr\.io/[a-z0-9_-]+/[a-z0-9_.-]+/backup@sha256:[0-9a-f]{64}$ && $installed_sha =~ ^[0-9a-f]{40}$ ]]
 [[ $(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image") == "$installed_sha" ]]
 # Export only S3 values to the existing isolated backup runtime. Never app keys.
-env_file=$(mktemp)
-chmod 600 "$env_file"
-trap 'rm -f "$env_file"' EXIT
-"${compose[@]}" config --format json | python3 -c '
-from pathlib import Path
-import json, sys
-allowed = {"BACKUP_S3_ENDPOINT", "BACKUP_S3_BUCKET", "BACKUP_S3_REGION", "BACKUP_S3_ACCESS_KEY_ID", "BACKUP_S3_SECRET_ACCESS_KEY"}
-environment = json.load(sys.stdin)["services"]["backup"]["environment"]
-values = {key: environment.get(key) for key in allowed}
-assert all(isinstance(value, str) and value and not any(char in value for char in "\r\n\0")
-           for value in values.values()), "Missing or invalid S3 configuration"
-# Compose config serializes each literal dollar twice, including in JSON.
-assert all("$" not in value.replace("$$", "") for value in values.values()), "Invalid Compose dollar escaping"
-values = {key: value.replace("$$", "$") for key, value in values.items()}
-Path(sys.argv[1]).write_text("".join(key + "=" + values[key] + "\n" for key in sorted(values)), encoding="utf-8")
-' "$env_file"
+env_file="$publish_workdir/s3.env"
+(umask 077; : > "$env_file")
+"${compose[@]}" config --format json | "$ops" compose-s3-env "$env_file"
 docker run --rm --pull never --user "$(id -u):$(id -g)" --read-only --cap-drop ALL --security-opt no-new-privileges:true \
   --pids-limit 64 --memory 256m --cpus 1 --env-file "$env_file" \
   --mount "type=bind,src=$stage,dst=/release,readonly" \
-  --entrypoint /opt/backup-venv/bin/python "$image" /release/publish.py "$source_sha" "$fingerprint" "$recovery_sha" > "$stage/publication-receipt.json.incoming"
-python3 -m json.tool "$stage/publication-receipt.json.incoming" > /dev/null
+  --mount "type=bind,src=$ops,dst=/opt/hc-ops,readonly" \
+  --entrypoint /opt/hc-ops "$image" android-publish "$source_sha" "$fingerprint" "$recovery_sha" > "$stage/publication-receipt.json.incoming"
+"$ops" deploy-json json-check "$stage/publication-receipt.json.incoming"
 mv "$stage/publication-receipt.json.incoming" "$stage/publication-receipt.json"
 cat "$stage/publication-receipt.json"

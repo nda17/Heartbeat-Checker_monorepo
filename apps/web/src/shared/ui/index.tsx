@@ -230,14 +230,14 @@ export function PublicFooter({
       <div className="landing-footer-inner">
         <nav
           className="landing-footer-install"
-          aria-label="Установка приложения"
+          aria-label="Приложения"
           data-install-promotion
         >
-          <h2>Установка приложения</h2>
+          <h2>Приложения</h2>
           {androidAvailable ? (
             <a href="/apps/android/download">
               <AndroidIcon />
-              <span>Скачать .APK по прямой ссылке</span>
+              <span>Скачать с сайта</span>
             </a>
           ) : (
             <span className="footer-download-pending" aria-disabled="true">
@@ -286,7 +286,7 @@ export function PublicFooter({
             <MessengerIcon brand="telegram" />
             <span>Техподдержка в Telegram</span>
           </a>
-          <Link href="/contacts">Контакты</Link>
+          <Link href="/contacts">Вопросы и предложения</Link>
           <a href="mailto:info@heartbeat-checker.ru">
             <Icon name="mail" size={24} className="footer-link-icon" />
             <span>

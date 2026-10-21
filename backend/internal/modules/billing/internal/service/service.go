@@ -34,21 +34,114 @@ func (s *Service) Lock(ctx context.Context, tx pgx.Tx, accountID string) (contra
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 61729))`, accountID); err != nil {
 		return contracts.Entitlement{}, err
 	}
-	var e contracts.Entitlement
-	var until time.Time
-	err := tx.QueryRow(ctx, `SELECT monitor_limit,valid_until,source,COALESCE(renewal_anchor_day,0),version FROM billing.entitlements WHERE account_id=$1 FOR UPDATE`, accountID).Scan(&e.Quota, &until, &e.Source, &e.RenewalAnchorDay, &e.Version)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return e, nil
-	}
+	e := contracts.Entitlement{Packages: []contracts.Subscription{}}
+	rows, err := tx.Query(ctx, `SELECT id::text,monitor_limit,valid_until,source,COALESCE(renewal_anchor_day,0),version FROM billing.entitlements WHERE account_id=$1 ORDER BY id FOR UPDATE`, accountID)
 	if err != nil {
 		return e, err
 	}
-	e.ActiveUntil = &until
-	validSource := e.Source == "admin_grant" || e.Source == "yookassa" || (s.local && e.Source == "local_test") || (s.provider == "mock" && s.allowed[accountID] && e.Source == "mock_test") || (s.provider == "yookassa" && s.mode == "test" && s.allowed[accountID] && e.Source == "yookassa_test")
-	if !validSource || !until.After(time.Now()) {
-		e.Quota = 0
+	for rows.Next() {
+		var part contracts.Subscription
+		var until time.Time
+		if err = rows.Scan(&part.ID, &part.Quota, &until, &part.Source, &part.RenewalAnchorDay, &part.Version); err != nil {
+			rows.Close()
+			return e, err
+		}
+		part.ActiveUntil = &until
+		e.Packages = append(e.Packages, part)
+		e.Version += part.Version
+		e.Source = part.Source
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return e, err
+	}
+	var admin contracts.AdminGrant
+	var adminUntil time.Time
+	err = tx.QueryRow(ctx, `SELECT monitor_limit,valid_until,version FROM billing.admin_grants WHERE account_id=$1 FOR UPDATE`, accountID).Scan(&admin.Quota, &adminUntil, &admin.Version)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return e, err
+	}
+	if err == nil {
+		admin.ActiveUntil = &adminUntil
+		e.Admin = &admin
+		e.Version += admin.Version
+		if len(e.Packages) == 0 {
+			e.Source = "admin_grant"
+		}
+	}
+	var now time.Time
+	if err = tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+		return e, err
+	}
+	var paid contracts.Subscription
+	hasReal := false
+	for _, part := range e.Packages {
+		hasReal = hasReal || (part.Source == "yookassa" && part.ActiveUntil.After(now))
+	}
+	for i := range e.Packages {
+		part := &e.Packages[i]
+		part.Active = s.activeSubscription(accountID, part, now) && (!hasReal || part.Source == "yookassa")
+		paid.Version += part.Version
+		if !part.Active {
+			continue
+		}
+		paid.Quota += part.Quota
+		if paid.Source == "" {
+			paid.Source = part.Source
+		} else if paid.Source != part.Source {
+			paid.Source = "combined"
+		}
+		if paid.ActiveUntil == nil || part.ActiveUntil.Before(*paid.ActiveUntil) {
+			paid.ActiveUntil = part.ActiveUntil
+		}
+	}
+	switch len(e.Packages) {
+	case 0:
+	case 1:
+		e.Paid = &e.Packages[0]
+		e.RenewalAnchorDay = e.Paid.RenewalAnchorDay
+	default:
+		paid.Active = paid.Quota > 0
+		e.Paid = &paid
+	}
+	activeSource := ""
+	for _, part := range e.Packages {
+		if !part.Active {
+			continue
+		}
+		e.Quota += part.Quota
+		if activeSource == "" {
+			activeSource = part.Source
+		} else if activeSource != part.Source {
+			activeSource = "combined"
+		}
+		if e.ActiveUntil == nil || part.ActiveUntil.Before(*e.ActiveUntil) {
+			e.ActiveUntil = part.ActiveUntil
+		}
+	}
+	if e.Admin != nil && adminUntil.After(now) {
+		e.Quota += admin.Quota
+		if activeSource == "" {
+			activeSource = "admin_grant"
+		} else if activeSource != "admin_grant" {
+			activeSource = "combined"
+		}
+		if e.ActiveUntil == nil || adminUntil.Before(*e.ActiveUntil) {
+			e.ActiveUntil = &adminUntil
+		}
+	}
+	if activeSource != "" {
+		e.Source = activeSource
 	}
 	return e, nil
+}
+
+func (s *Service) activeSubscription(accountID string, paid *contracts.Subscription, now time.Time) bool {
+	return paid != nil && paid.ActiveUntil != nil && paid.ActiveUntil.After(now) &&
+		(paid.Source == "yookassa" || (s.local && paid.Source == "local_test") ||
+			(s.provider == "mock" && s.allowed[accountID] && paid.Source == "mock_test") ||
+			(s.provider == "yookassa" && s.mode == "test" && s.allowed[accountID] && paid.Source == "yookassa_test"))
 }
 
 // GrantLocal is available only to the local command, never an HTTP endpoint.
@@ -76,7 +169,7 @@ func (s *Service) GrantLocalTx(ctx context.Context, tx pgx.Tx, accountID string,
 		return err
 	}
 	_, err := tx.Exec(ctx, `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason)
- VALUES($1,$2,$3,'local_test',$4) ON CONFLICT(account_id) DO UPDATE SET monitor_limit=excluded.monitor_limit,
+ VALUES($1,$2,$3,'local_test',$4) ON CONFLICT(account_id) WHERE source='local_test' DO UPDATE SET monitor_limit=excluded.monitor_limit,
  valid_until=excluded.valid_until,source='local_test',renewal_anchor_day=NULL,version=billing.entitlements.version+1,granted_at=now(),reason=excluded.reason`, accountID, quota, until, reason)
 	return err
 }
@@ -101,15 +194,14 @@ func (s *Service) GrantAdminTx(ctx context.Context, tx pgx.Tx, accountID string,
 	if e.Version != version {
 		return e, ErrAdminGrantConflict
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason,renewal_anchor_day)
-		VALUES($1,$2,$3,'admin_grant',$4,NULL)
+	_, err = tx.Exec(ctx, `INSERT INTO billing.admin_grants(account_id,monitor_limit,valid_until,reason)
+		VALUES($1,$2,$3,$4)
 		ON CONFLICT(account_id) DO UPDATE SET monitor_limit=excluded.monitor_limit,valid_until=excluded.valid_until,
-			source='admin_grant',reason=excluded.reason,renewal_anchor_day=NULL,version=billing.entitlements.version+1,granted_at=now()`, accountID, quota, until, reason)
+			reason=excluded.reason,version=billing.admin_grants.version+1,granted_at=now()`, accountID, quota, until, reason)
 	if err != nil {
 		return e, err
 	}
-	e.Quota, e.ActiveUntil, e.Source, e.Version, e.RenewalAnchorDay = quota, &until, "admin_grant", version+1, 0
-	return e, nil
+	return s.Lock(ctx, tx, accountID)
 }
 
 // ExpireAdminTx revokes only an administrative grant; paid history is untouched.
@@ -121,10 +213,10 @@ func (s *Service) ExpireAdminTx(ctx context.Context, tx pgx.Tx, accountID string
 	if err != nil {
 		return err
 	}
-	if e.Version != version || e.Source != "admin_grant" {
+	if e.Admin == nil || e.Version != version {
 		return ErrAdminGrantConflict
 	}
-	_, err = tx.Exec(ctx, `UPDATE billing.entitlements SET valid_until=now(),version=version+1,
+	_, err = tx.Exec(ctx, `UPDATE billing.admin_grants SET valid_until=now(),version=version+1,
 		granted_at=now(),reason=$2 WHERE account_id=$1`, accountID, reason)
 	return err
 }

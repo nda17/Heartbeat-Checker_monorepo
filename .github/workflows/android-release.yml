@@ -53,6 +53,25 @@ jobs:
           curl -fsS --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
             "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SOURCE_SHA&status=completed&per_page=100" \
             | jq -e --arg sha "$SOURCE_SHA" '.workflow_runs | any(.[]; .event == "push" and .head_sha == $sha and .conclusion == "success")' >/dev/null
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.2'
+          cache-dependency-path: tools/go.sum
+      - name: Build exact-source static operations binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          make build-ops OPS_OUTPUT="$RUNNER_TEMP/hc-ops/hc-ops" OPS_SOURCE_SHA="$SOURCE_SHA"
+          [[ "$("$RUNNER_TEMP/hc-ops/hc-ops" version)" == "$SOURCE_SHA" ]]
+      - name: Retain exact-source operations binary and transport checksum
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hc-ops-android-${{ inputs.source_sha }}
+          path: |
+            ${{ runner.temp }}/hc-ops/hc-ops
+            ${{ runner.temp }}/hc-ops/hc-ops.sha256
+          if-no-files-found: error
+          retention-days: 90
       - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
           distribution: temurin
@@ -85,27 +104,11 @@ jobs:
           apk="$PWD/android-release/Heartbeat-Checker.apk"
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/android-signature.txt"
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > "$RUNNER_TEMP/android-badging.txt"
-          python3 - <<'PY'
-          from datetime import datetime, timezone
-          import hashlib, json, os, re
-          from pathlib import Path
-          signature = Path(os.environ['RUNNER_TEMP'], 'android-signature.txt').read_text()
-          certificates = re.findall(r'^Signer #\d+ certificate SHA-256 digest: ([a-fA-F0-9]{64})$', signature, re.M)
-          assert len(certificates) == 1, 'Expected exactly one APK signer'
-          fingerprint = ':'.join(re.findall('..', certificates[0].upper()))
-          assert fingerprint == os.environ['SIGNING_FINGERPRINT'], 'Release signing certificate mismatch'
-          badging = Path(os.environ['RUNNER_TEMP'], 'android-badging.txt').read_text()
-          match = re.search(r"^package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'", badging, re.M)
-          assert match and match.groups() == ('ru.heartbeatchecker.app', '6', '1.2.0'), 'Unexpected application/version'
-          assert 'application-debuggable' not in badging, 'Release APK must not be debuggable'
-          apk = Path('android-release/Heartbeat-Checker.apk')
-          value = dict(schemaVersion=1, packageName=match[1], versionCode=int(match[2]), versionName=match[3], sourceSha=os.environ['SOURCE_SHA'],
-                       releasedAt=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), sizeBytes=apk.stat().st_size,
-                       sha256=hashlib.sha256(apk.read_bytes()).hexdigest(), signingCertificateSha256=fingerprint,
-                       downloadUrl='https://s3.twcstorage.ru/heartbeat-data-1/heartbeat-checker/android/' + match[3] + '/Heartbeat-Checker.apk')
-          Path('android-release/release.json').write_text(json.dumps(value, indent=2) + '\n')
-          PY
-          python3 deploy/android/release.py android-release/release.json --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" --apk "$apk"
+          "$RUNNER_TEMP/hc-ops/hc-ops" android-manifest --apk "$apk" \
+            --signature "$RUNNER_TEMP/android-signature.txt" --badging "$RUNNER_TEMP/android-badging.txt" \
+            --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" \
+            --version-name 1.2.0 --version-code 6 --output android-release/release.json
+          "$RUNNER_TEMP/hc-ops/hc-ops" android-release android-release/release.json --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" --apk "$apk"
       - name: Retain immutable signed build before publication
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -133,8 +136,21 @@ jobs:
         with:
           name: android-build-${{ inputs.source_sha }}
           path: android-release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: hc-ops-android-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/hc-ops
+      - name: Verify exact-source operations artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          ops_sha=$(cut -d' ' -f1 "$RUNNER_TEMP/hc-ops/hc-ops.sha256")
+          [[ $ops_sha =~ ^[0-9a-f]{64}$ && "$(sha256sum "$RUNNER_TEMP/hc-ops/hc-ops" | awk '{print $1}')" == "$ops_sha" ]]
+          chmod 700 "$RUNNER_TEMP/hc-ops/hc-ops"
+          [[ "$("$RUNNER_TEMP/hc-ops/hc-ops" version)" == "$SOURCE_SHA" ]]
       - name: Recheck immutable signed artifact
-        run: python3 deploy/android/release.py android-release/release.json --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" --apk android-release/Heartbeat-Checker.apk
+        run: |
+          "$RUNNER_TEMP/hc-ops/hc-ops" android-release android-release/release.json --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" --apk android-release/Heartbeat-Checker.apk
       - name: Publish exact APK through protected backup runner
         shell: bash
         env:
@@ -162,9 +178,11 @@ jobs:
           stage="/opt/heartbeat-checker/backend/android-releases/$SOURCE_SHA-$GITHUB_RUN_ID"
           # shellcheck disable=SC2029 # Validated public release values expand locally.
           ssh "${ssh_opts[@]}" "$target" "umask 022; mkdir -p '$stage'; test ! -L '$stage'"
-          scp "${ssh_opts[@]}" android-release/Heartbeat-Checker.apk android-release/release.json "$publish_dir/recovery.tar.age" deploy/android/publish.py deploy/android/release.py deploy/android/publish.sh "$target:$stage/"
+          ops_sha=$(sha256sum "$RUNNER_TEMP/hc-ops/hc-ops" | awk '{print $1}')
+          [[ $ops_sha =~ ^[0-9a-f]{64}$ ]]
+          scp "${ssh_opts[@]}" android-release/Heartbeat-Checker.apk android-release/release.json "$publish_dir/recovery.tar.age" deploy/android/publish.sh "$RUNNER_TEMP/hc-ops/hc-ops" "$target:$stage/"
           # shellcheck disable=SC2029 # Validated public release values expand locally.
-          ssh "${ssh_opts[@]}" "$target" "bash '$stage/publish.sh' '$SOURCE_SHA' '$SIGNING_FINGERPRINT' '$GITHUB_RUN_ID' '$SIGNING_RECOVERY_SHA256'" > android-release/publication-receipt.json
+          ssh "${ssh_opts[@]}" "$target" "HC_OPS_SHA256='$ops_sha' bash '$stage/publish.sh' '$SOURCE_SHA' '$SIGNING_FINGERPRINT' '$GITHUB_RUN_ID' '$SIGNING_RECOVERY_SHA256'" > android-release/publication-receipt.json
           jq -e --arg sha "$SOURCE_SHA" --arg recovery "$SIGNING_RECOVERY_SHA256" '.signingRecoverySha256 == $recovery and .status == "published" and .release.sourceSha == $sha and .anonymousListing == "403" and .anonymousBackupPrefixListing == "403" and .anonymousBackupObject == "403" and .anonymousSigningRecovery == "403"' android-release/publication-receipt.json >/dev/null
       - name: Retain verified publication receipt
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
