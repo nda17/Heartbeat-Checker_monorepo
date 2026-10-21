@@ -48,6 +48,11 @@ android {
     compileSdk 37
     ndkVersion '27.1.12297006'
     buildToolsVersion '36.0.0'
+    externalNativeBuild {
+        cmake {
+            version '3.30.5'
+        }
+    }
 
     defaultConfig {
         applicationId 'ru.heartbeatchecker.app'
