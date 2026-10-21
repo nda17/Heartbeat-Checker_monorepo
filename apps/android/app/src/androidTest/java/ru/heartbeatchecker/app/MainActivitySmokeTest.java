@@ -296,10 +296,15 @@ public final class MainActivitySmokeTest {
     }
 
     private static void saveScreenshot(MainActivity activity, String name) {
+        String additionalTestOutputDir = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir");
+        if (additionalTestOutputDir == null || additionalTestOutputDir.isEmpty()
+                || !new File(additionalTestOutputDir).isAbsolute()) {
+            throw new AssertionError("Android Gradle Plugin did not provide additionalTestOutputDir");
+        }
+        File directory = new File(additionalTestOutputDir, "auth-qa");
+        if (!directory.isDirectory() && !directory.mkdirs()) throw new AssertionError("could not create auth screenshot directory");
         Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
         if (screenshot == null) throw new AssertionError("could not capture React Native screen: " + name);
-        File directory = new File(activity.getExternalFilesDir(null), "auth-qa");
-        if (!directory.isDirectory() && !directory.mkdirs()) throw new AssertionError("could not create auth screenshot directory");
         File file = new File(directory, name);
         try (FileOutputStream output = new FileOutputStream(file)) {
             if (!screenshot.compress(Bitmap.CompressFormat.PNG, 100, output)) throw new AssertionError("could not encode screenshot: " + name);
