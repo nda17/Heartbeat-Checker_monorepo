@@ -284,7 +284,8 @@ public final class MainActivitySmokeTest {
     }
 
     private static View findDescription(View view, String description) {
-        if (description.contentEquals(view.getContentDescription())) return view;
+        CharSequence contentDescription = view.getContentDescription();
+        if (contentDescription != null && description.contentEquals(contentDescription)) return view;
         if (!(view instanceof ViewGroup)) return null;
         ViewGroup group = (ViewGroup) view;
         for (int index = 0; index < group.getChildCount(); index++) {
