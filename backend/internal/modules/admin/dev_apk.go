@@ -15,6 +15,7 @@ import (
 )
 
 const devAPKName = "Heartbeat-Checker-dev.apk"
+const devAPKDownloadName = "devHeartbeat Checker.apk"
 const devAPKPath = "/api/v1/admin/android-dev/apk"
 const maxDevAPKBytes = 150 << 20
 
@@ -172,7 +173,7 @@ func (h *devAPKHandler) download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/vnd.android.package-archive")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+devAPKName+`"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+devAPKDownloadName+`"`)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("ETag", `"`+m.SHA256+`"`)
 	http.ServeContent(w, r, devAPKName, time.Time{}, f)
