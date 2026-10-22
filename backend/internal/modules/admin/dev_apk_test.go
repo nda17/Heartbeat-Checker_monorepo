@@ -112,6 +112,7 @@ func TestDevAPKAuthGateRunsBeforeMethodRangeOrArtifactLookup(t *testing.T) {
 func TestDevAPKDownloadServesVerifiedBytesAndSupportsAuthorizedRange(t *testing.T) {
 	root := t.TempDir()
 	apk := []byte{0x50, 0x4b, 0x03, 0x04, 0x10, 0x20, 0x30}
+	wantDisposition := `attachment; filename="devHeartbeat Checker.apk"`
 	writeDevArtifact(t, root, apk, nil)
 	server, _ := devAPKTestServer(root)
 	defer server.Close()
@@ -129,6 +130,9 @@ func TestDevAPKDownloadServesVerifiedBytesAndSupportsAuthorizedRange(t *testing.
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("GET status = %d", res.StatusCode)
+	}
+	if got := res.Header.Get("Content-Disposition"); got != wantDisposition {
+		t.Fatalf("GET Content-Disposition = %q, want %q", got, wantDisposition)
 	}
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
@@ -157,6 +161,9 @@ func TestDevAPKDownloadServesVerifiedBytesAndSupportsAuthorizedRange(t *testing.
 	if headRes.StatusCode != http.StatusOK || headRes.ContentLength != int64(len(apk)) {
 		t.Fatalf("HEAD status/content length = %d/%d, want 200/%d", headRes.StatusCode, headRes.ContentLength, len(apk))
 	}
+	if got := headRes.Header.Get("Content-Disposition"); got != wantDisposition {
+		t.Fatalf("HEAD Content-Disposition = %q, want %q", got, wantDisposition)
+	}
 	headBody, err := io.ReadAll(headRes.Body)
 	if err != nil || len(headBody) != 0 {
 		t.Fatalf("HEAD body = %v, err = %v", headBody, err)
@@ -175,6 +182,9 @@ func TestDevAPKDownloadServesVerifiedBytesAndSupportsAuthorizedRange(t *testing.
 	defer rangeRes.Body.Close()
 	if rangeRes.StatusCode != http.StatusPartialContent {
 		t.Fatalf("authorized Range status = %d, want 206", rangeRes.StatusCode)
+	}
+	if got := rangeRes.Header.Get("Content-Disposition"); got != wantDisposition {
+		t.Fatalf("authorized Range Content-Disposition = %q, want %q", got, wantDisposition)
 	}
 	ranged, err := io.ReadAll(rangeRes.Body)
 	if err != nil || !bytes.Equal(ranged, apk[:4]) {
