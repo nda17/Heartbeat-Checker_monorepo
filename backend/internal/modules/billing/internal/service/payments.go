@@ -136,6 +136,48 @@ func (s *Service) Overview(ctx context.Context, accountID string) (contracts.Bil
 	return result, rows.Err()
 }
 
+// ListOrders reads the count and page from one snapshot so concurrent orders
+// cannot make pagination disagree with the returned rows.
+func (s *Service) ListOrders(ctx context.Context, accountID string, page, pageSize int) (contracts.OrderPage, error) {
+	maxInt := int(^uint(0) >> 1)
+	if page < 1 || pageSize < 1 || pageSize > 100 || page-1 > maxInt/pageSize {
+		return contracts.OrderPage{}, ErrInvalid
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return contracts.OrderPage{}, err
+	}
+	defer tx.Rollback(ctx)
+	var total int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM billing.orders WHERE account_id=$1`, accountID).Scan(&total); err != nil {
+		return contracts.OrderPage{}, err
+	}
+	totalPages := 1
+	if total > 0 {
+		totalPages = (total-1)/pageSize + 1
+	}
+	page = min(page, totalPages)
+	rows, err := tx.Query(ctx, `SELECT `+orderColumns+` FROM billing.orders WHERE account_id=$1 ORDER BY created_at DESC,id DESC LIMIT $2 OFFSET $3`, accountID, pageSize, (page-1)*pageSize)
+	if err != nil {
+		return contracts.OrderPage{}, err
+	}
+	result := contracts.OrderPage{Orders: []contracts.Order{}, Pagination: contracts.Pagination{Page: page, PageSize: pageSize, Total: total, TotalPages: totalPages}}
+	for rows.Next() {
+		order, err := scanOrder(rows)
+		if err != nil {
+			rows.Close()
+			return contracts.OrderPage{}, err
+		}
+		result.Orders = append(result.Orders, order)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return contracts.OrderPage{}, err
+	}
+	return result, tx.Commit(ctx)
+}
+
 // beginMock uses the same account lock as monitor mutations, before any order lock.
 func (s *Service) beginMock(ctx context.Context, accountID string) (pgx.Tx, contracts.Entitlement, error) {
 	if s.provider != "mock" || !s.allowed[accountID] {

@@ -32,6 +32,18 @@ type Order struct {
 	ActiveUntil          *time.Time `json:"activeUntil"`
 }
 
+type OrderPage struct {
+	Orders     []Order    `json:"orders"`
+	Pagination Pagination `json:"pagination"`
+}
+
+type Pagination struct {
+	Page       int `json:"page"`
+	PageSize   int `json:"pageSize"`
+	Total      int `json:"total"`
+	TotalPages int `json:"totalPages"`
+}
+
 type SDKOrder struct {
 	State             string    `json:"state"`
 	ShopID            string    `json:"shopId"`

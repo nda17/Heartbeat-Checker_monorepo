@@ -78,8 +78,8 @@ android {
         applicationId 'ru.heartbeatchecker.app'
         minSdk 29
         targetSdk 37
-        versionCode 8
-        versionName '2.0.1'
+        versionCode 9
+        versionName '2.0.2'
         manifestPlaceholders = [appLinkHost: 'heartbeat-checker.ru']
         resValue 'string', 'ym_app_scheme', 'heartbeatchecker'
         buildConfigField 'String', 'YOOKASSA_SDK_CLIENT_KEY', '""'

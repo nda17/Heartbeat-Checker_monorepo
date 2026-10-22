@@ -25,7 +25,17 @@ import { AccountScreen } from "./AccountScreen";
 import { AuthScreen } from "./AuthScreen";
 import { BillingScreen } from "./BillingScreen";
 import { MonitorsScreen } from "./MonitorsScreen";
-import { Button, Card, ErrorNotice, Label, Page, usePalette } from "./ui";
+import {
+  Button,
+  Card,
+  ErrorNotice,
+  GlassPreferences,
+  Icon,
+  Label,
+  Page,
+  useGlassEnabled,
+  usePalette,
+} from "./ui";
 
 type Tab = "monitors" | "billing" | "account";
 type Navigation =
@@ -88,6 +98,7 @@ function AppContent() {
   const queuedNavigation = useRef<Navigation | null>(null);
   const lastLink = useRef({ raw: "", at: 0 });
   const palette = usePalette();
+  const glassEnabled = useGlassEnabled();
 
   const navigate = useCallback((target: Navigation) => {
     if (!session()) {
@@ -124,15 +135,20 @@ function AppContent() {
   );
 
   const logout = useCallback(async () => {
-    await closeSession();
-    setAuthed(null);
-    setMonitorLink(null);
-    setReturnOrder(null);
-    setTab("monitors");
-    setRegistration(null);
-    setVerifyToken(null);
-    setResetToken(null);
-    queuedNavigation.current = null;
+    try {
+      await closeSession();
+    } finally {
+      if (!session()) {
+        setAuthed(null);
+        setMonitorLink(null);
+        setReturnOrder(null);
+        setTab("monitors");
+        setRegistration(null);
+        setVerifyToken(null);
+        setResetToken(null);
+        queuedNavigation.current = null;
+      }
+    }
   }, []);
 
   const handleLink = useCallback(
@@ -511,28 +527,40 @@ function AppContent() {
         style={{
           flexDirection: "row",
           borderTopWidth: 1,
-          borderTopColor: palette.border,
-          backgroundColor: palette.card,
+          borderTopColor: glassEnabled ? palette.glassBorder : palette.border,
+          backgroundColor: glassEnabled ? palette.glass : palette.card,
+          elevation: 5,
         }}
       >
         {(
           [
-            ["monitors", "Мониторы"],
-            ["billing", "Оплата"],
-            ["account", "Аккаунт"],
+            ["monitors", "Мониторы", "activity"],
+            ["billing", "Оплата", "payment"],
+            ["account", "Аккаунт", "user"],
           ] as const
-        ).map(([key, label]) => (
+        ).map(([key, label, icon]) => (
           <Pressable
             key={key}
             accessibilityRole="tab"
             accessibilityState={{ selected: tab === key }}
             onPress={() => setTab(key)}
-            style={{ flex: 1, padding: 14, alignItems: "center" }}
+            style={{
+              flex: 1,
+              minHeight: 64,
+              paddingVertical: 8,
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 3,
+            }}
           >
+            <Icon
+              name={icon}
+              color={tab === key ? palette.accentText : palette.subtle}
+            />
             <Text
               style={{
                 fontSize: 14,
-                color: tab === key ? palette.accent : palette.subtle,
+                color: tab === key ? palette.accentText : palette.subtle,
                 fontWeight: tab === key ? "700" : "500",
               }}
             >
@@ -550,16 +578,22 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
-        {native.DEV_CLIENT ? (
-          <View style={{ backgroundColor: "#6a4000", padding: 8 }}>
-            <Text
-              style={{ color: "#ffffff", textAlign: "center", fontWeight: "700" }}
-            >
-              DEV · Metro по Wi-Fi · оплата и push выключены
-            </Text>
-          </View>
-        ) : null}
-        <AppContent />
+        <GlassPreferences>
+          {native.DEV_CLIENT ? (
+            <View style={{ backgroundColor: "#6a4000", padding: 8 }}>
+              <Text
+                style={{
+                  color: "#ffffff",
+                  textAlign: "center",
+                  fontWeight: "700",
+                }}
+              >
+                DEV · Metro по Wi-Fi · оплата и push выключены
+              </Text>
+            </View>
+          ) : null}
+          <AppContent />
+        </GlassPreferences>
       </SafeAreaView>
     </SafeAreaProvider>
   );

@@ -3,7 +3,17 @@ import { Alert, Switch, View } from "react-native";
 import { api, errorText } from "./api";
 import { native } from "./native";
 import type { Monitor } from "./types";
-import { Button, Card, ErrorNotice, Field, Label, Page, Title } from "./ui";
+import {
+  Button,
+  Card,
+  ErrorNotice,
+  Field,
+  Icon,
+  Label,
+  Page,
+  Title,
+  type IconName,
+} from "./ui";
 
 type Destination = {
   id: string;
@@ -36,6 +46,10 @@ type RouteDraft = {
   reminderMinutes: number;
 };
 const providers: Provider[] = ["email", "telegram", "max"];
+const providerIcon = (provider: Provider): IconName =>
+  provider === "email" ? "mail" : provider === "max" ? "max" : "telegram";
+const providerLabel = (provider: Provider) =>
+  provider === "email" ? "Email" : provider === "max" ? "MAX" : "Telegram";
 const reminderOptions = [0, 15, 30, 60, 180, 360, 1440];
 
 export function NotificationsScreen({
@@ -106,7 +120,7 @@ export function NotificationsScreen({
   }, [path]);
   useEffect(() => {
     void refresh();
-  }, []);
+  }, [refresh]);
   const run = async (task: () => Promise<void>) => {
     if (busy) return;
     setBusy(true);
@@ -240,13 +254,18 @@ export function NotificationsScreen({
       await refresh();
     });
   return (
-    <Page
-      title={`Уведомления · ${monitor.name}`}
-      refresh={() => void refresh()}
-    >
-      <Button label="К монитору" onPress={onBack} secondary />
+    <Page title={`Уведомления · ${monitor.name}`}>
+      <Button
+        label="К монитору"
+        iconName="arrow-left"
+        onPress={onBack}
+        secondary
+      />
       <Card>
-        <Title>Push на телефоны</Title>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Icon name="bell" size={24} />
+          <Title>Push на телефоны</Title>
+        </View>
         <Label>
           Настройка монитора действует для всех подключённых телефонов.
         </Label>
@@ -274,12 +293,18 @@ export function NotificationsScreen({
           const draft = routeDrafts[provider];
           return (
             <View key={provider} style={{ gap: 7 }}>
-              <Label>{provider.toUpperCase()}</Label>
+              <View
+                style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
+              >
+                <Icon name={providerIcon(provider)} size={24} />
+                <Label>{providerLabel(provider)}</Label>
+              </View>
               {options.length ? (
                 options.map((destination) => (
                   <Button
                     key={destination.id}
                     label={`${draft?.destinationId === destination.id ? "✓ " : ""}${destination.label}`}
+                    iconName={providerIcon(provider)}
                     secondary={draft?.destinationId !== destination.id}
                     disabled={busy}
                     onPress={() =>
@@ -325,7 +350,8 @@ export function NotificationsScreen({
                 ))}
               </View>
               <Button
-                label={`Сохранить ${provider.toUpperCase()}`}
+                label={`Сохранить ${providerLabel(provider)}`}
+                iconName="check"
                 disabled={busy || !draft?.destinationId || !options.length}
                 onPress={() => saveRoute(provider)}
               />
@@ -334,7 +360,10 @@ export function NotificationsScreen({
         })}
       </Card>
       <Card>
-        <Title>Подключить email</Title>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Icon name="mail" size={24} />
+          <Title>Подключить email</Title>
+        </View>
         <Label>Оставьте поле пустым для подтверждённого email аккаунта.</Label>
         <Field
           label="Адрес email"
@@ -342,7 +371,12 @@ export function NotificationsScreen({
           onChangeText={setEmail}
           keyboardType="email-address"
         />
-        <Button label="Подключить" disabled={busy} onPress={connectEmail} />
+        <Button
+          label="Подключить"
+          iconName="plus"
+          disabled={busy}
+          onPress={connectEmail}
+        />
         {emailChallenge ? (
           <>
             <Label>Подтверждение для {emailChallenge.email}</Label>
@@ -356,6 +390,7 @@ export function NotificationsScreen({
             />
             <Button
               label="Подтвердить email"
+              iconName="check"
               disabled={busy || emailCode.length !== 6}
               onPress={confirmEmail}
             />
@@ -366,21 +401,25 @@ export function NotificationsScreen({
         <Title>Подключить мессенджер</Title>
         <Button
           label="Telegram · личный чат"
+          iconName="telegram"
           onPress={() => createLink("telegram", "private")}
           secondary
         />
         <Button
           label="Telegram · группа"
+          iconName="telegram"
           onPress={() => createLink("telegram", "group")}
           secondary
         />
         <Button
           label="Telegram · топик"
+          iconName="telegram"
           onPress={() => createLink("telegram", "topic")}
           secondary
         />
         <Button
           label="MAX · личный чат"
+          iconName="max"
           onPress={() => createLink("max", "private")}
           secondary
         />
@@ -394,16 +433,24 @@ export function NotificationsScreen({
             {linkURL ? (
               <Button
                 label="Открыть бота"
-                onPress={() => void native.openCustomTab(linkURL)}
+                iconName="globe"
+                onPress={() => void run(() => native.openCustomTab(linkURL))}
                 secondary
               />
             ) : null}
-            <Button label="Проверить подключение" onPress={checkLink} />
+            <Button
+              label="Проверить подключение"
+              iconName="refresh"
+              onPress={checkLink}
+            />
           </>
         ) : null}
       </Card>
       <Card>
-        <Title>Webhook</Title>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Icon name="globe" size={24} />
+          <Title>Webhook</Title>
+        </View>
         <Field
           label="HTTPS URL"
           value={webhookURL}
@@ -412,6 +459,7 @@ export function NotificationsScreen({
         />
         <Button
           label="Сохранить webhook"
+          iconName="check"
           disabled={busy || !webhookURL.startsWith("https://")}
           onPress={() => saveWebhook(webhook?.enabled ?? true)}
         />
@@ -431,6 +479,7 @@ export function NotificationsScreen({
             />
             <Button
               label="Обновить секрет"
+              iconName="refresh"
               disabled={busy}
               onPress={() =>
                 Alert.alert(
@@ -449,6 +498,7 @@ export function NotificationsScreen({
             />
             <Button
               label="Удалить webhook"
+              iconName="trash"
               danger
               onPress={() =>
                 Alert.alert("Удалить webhook?", "", [

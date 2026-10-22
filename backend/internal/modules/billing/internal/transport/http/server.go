@@ -6,6 +6,9 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 
 	auth "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing/contracts"
@@ -17,6 +20,7 @@ type Server struct{ service *service.Service }
 func New(s *service.Service) *Server { return &Server{s} }
 func (s *Server) Register(mux *http.ServeMux, protect func(http.Handler) http.Handler) {
 	for route, handler := range map[string]http.HandlerFunc{
+		"GET /api/v1/billing/orders":                     s.listOrders,
 		"GET /api/v1/billing/orders/{id}":                s.get,
 		"GET /api/v1/billing":                            s.overview,
 		"POST /api/v1/billing/orders":                    s.create,
@@ -29,6 +33,55 @@ func (s *Server) Register(mux *http.ServeMux, protect func(http.Handler) http.Ha
 	}
 	mux.HandleFunc("GET /api/v1/billing/pricing", s.pricing)
 	mux.HandleFunc("POST /webhooks/billing/yookassa", s.webhook)
+}
+
+func orderPageOptions(raw string) (int, int, error) {
+	page, pageSize := 1, 10
+	values, err := url.ParseQuery(raw)
+	if err != nil {
+		return 0, 0, service.ErrInvalid
+	}
+	for key, items := range values {
+		if len(items) != 1 || (key != "page" && key != "pageSize") {
+			return 0, 0, service.ErrInvalid
+		}
+		value := items[0]
+		if value == "" || strings.IndexFunc(value, func(r rune) bool { return r < '0' || r > '9' }) != -1 {
+			return 0, 0, service.ErrInvalid
+		}
+		number, err := strconv.Atoi(value)
+		if err != nil || number < 1 || (key == "pageSize" && number > 100) {
+			return 0, 0, service.ErrInvalid
+		}
+		if key == "page" {
+			page = number
+		} else {
+			pageSize = number
+		}
+	}
+	maxInt := int(^uint(0) >> 1)
+	if page-1 > maxInt/pageSize {
+		return 0, 0, service.ErrInvalid
+	}
+	return page, pageSize, nil
+}
+
+func (s *Server) listOrders(w http.ResponseWriter, r *http.Request) {
+	account, ok := owner(w, r)
+	if !ok {
+		return
+	}
+	page, pageSize, err := orderPageOptions(r.URL.RawQuery)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	result, err := s.service.ListOrders(r.Context(), account, page, pageSize)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	write(w, 200, result)
 }
 func write(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

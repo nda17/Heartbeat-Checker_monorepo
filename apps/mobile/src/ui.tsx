@@ -1,7 +1,20 @@
-import React, { useMemo, useState } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
+  AccessibilityInfo,
+  Animated,
+  AppState,
+  Image,
   KeyboardAvoidingView,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleProp,
   StyleSheet,
@@ -12,6 +25,137 @@ import {
   ViewStyle,
 } from "react-native";
 
+const iconSources = {
+  activity: require("../assets/icon-activity.png"),
+  payment: require("../assets/icon-payment.png"),
+  settings: require("../assets/icon-settings.png"),
+  shield: require("../assets/icon-shield.png"),
+  logout: require("../assets/icon-logout.png"),
+  pause: require("../assets/icon-pause.png"),
+  bell: require("../assets/icon-bell.png"),
+  trash: require("../assets/icon-trash.png"),
+  plus: require("../assets/icon-plus.png"),
+  refresh: require("../assets/icon-refresh.png"),
+  close: require("../assets/icon-close.png"),
+  info: require("../assets/icon-info.png"),
+  check: require("../assets/icon-check.png"),
+  alert: require("../assets/icon-alert.png"),
+  mail: require("../assets/icon-mail.png"),
+  "arrow-up-right": require("../assets/icon-arrow-up-right.png"),
+  "arrow-right": require("../assets/icon-arrow-right.png"),
+  "arrow-left": require("../assets/icon-arrow-left.png"),
+  "arrow-down": require("../assets/icon-arrow-down.png"),
+  globe: require("../assets/icon-globe.png"),
+  user: require("../assets/icon-user.png"),
+  yandex: require("../assets/yandex.png"),
+  vk: require("../assets/vk.png"),
+  max: require("../assets/max.png"),
+  telegram: require("../assets/telegram.png"),
+} as const;
+
+export type IconName = keyof typeof iconSources;
+
+export function Icon({
+  name,
+  size = 24,
+  color,
+}: {
+  name: IconName;
+  size?: number;
+  color?: string;
+}) {
+  const c = usePalette();
+  const brand =
+    name === "yandex" || name === "vk" || name === "max" || name === "telegram";
+  return (
+    <Image
+      accessible={false}
+      source={iconSources[name]}
+      style={{
+        width: size,
+        height: size,
+        resizeMode: "contain",
+        ...(brand ? {} : { tintColor: color ?? c.accentText }),
+      }}
+    />
+  );
+}
+
+export function BrandHeader({ centered = false }: { centered?: boolean }) {
+  const c = usePalette();
+  const offset = useRef(new Animated.Value(0)).current;
+  const [reducedMotion, setReducedMotion] = useState<boolean | null>(null);
+  const [active, setActive] = useState(AppState.currentState === "active");
+  useEffect(() => {
+    let mounted = true;
+    void AccessibilityInfo.isReduceMotionEnabled()
+      .then((value) => {
+        if (mounted) setReducedMotion(value);
+      })
+      .catch(() => {
+        if (mounted) setReducedMotion(true);
+      });
+    const motion = AccessibilityInfo.addEventListener(
+      "reduceMotionChanged",
+      setReducedMotion,
+    );
+    const app = AppState.addEventListener("change", (state) => {
+      setActive(state === "active");
+    });
+    return () => {
+      mounted = false;
+      motion.remove();
+      app.remove();
+    };
+  }, []);
+  useEffect(() => {
+    if (reducedMotion !== false || !active) return;
+    const timer = setInterval(() => {
+      Animated.sequence([
+        Animated.timing(offset, {
+          toValue: -1,
+          duration: 70,
+          useNativeDriver: true,
+        }),
+        Animated.timing(offset, {
+          toValue: 1,
+          duration: 70,
+          useNativeDriver: true,
+        }),
+        Animated.timing(offset, {
+          toValue: 0,
+          duration: 70,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    }, 6000);
+    return () => {
+      clearInterval(timer);
+      offset.stopAnimation();
+      offset.setValue(0);
+    };
+  }, [active, offset, reducedMotion]);
+  return (
+    <View style={[styles.brand, centered ? styles.brandCentered : null]}>
+      <Image
+        accessible={false}
+        source={require("../assets/logo.png")}
+        style={styles.brandLogo}
+      />
+      <Animated.Text
+        accessibilityLabel="Heartbeat Checker"
+        style={[
+          styles.brandText,
+          { color: c.text, transform: [{ translateX: offset }] },
+        ]}
+      >
+        <Text style={styles.brandStrong}>Heartbeat</Text>
+        <Text style={styles.brandLight}> Checker</Text>
+      </Animated.Text>
+    </View>
+  );
+}
+
 export function usePalette() {
   const dark = useColorScheme() === "dark";
   return useMemo(
@@ -19,13 +163,70 @@ export function usePalette() {
       dark,
       bg: dark ? "#101d20" : "#f5f9f8",
       card: dark ? "#18292c" : "#ffffff",
+      glass: dark ? "rgba(25,42,50,0.88)" : "rgba(255,255,255,0.86)",
+      glassBorder: dark ? "rgba(154,214,209,0.24)" : "rgba(255,255,255,0.94)",
+      glassHighlight: dark
+        ? "rgba(210,250,246,0.045)"
+        : "rgba(255,255,255,0.32)",
+      ambientOne: dark ? "rgba(32,126,117,0.17)" : "rgba(118,210,195,0.15)",
+      ambientTwo: dark ? "rgba(43,82,138,0.15)" : "rgba(155,187,228,0.13)",
       text: dark ? "#e8f5f2" : "#153239",
       subtle: dark ? "#a6c5c0" : "#5b7476",
       border: dark ? "#315258" : "#d6e5e2",
       accent: "#00816f",
+      accentText: dark ? "#6cddca" : "#006e60",
       danger: "#c54848",
+      dangerText: dark ? "#ff8b84" : "#b63838",
     }),
     [dark],
+  );
+}
+
+function useReducedTransparency() {
+  const [reduced, setReduced] = useState(true);
+  useEffect(() => {
+    let mounted = true;
+    void AccessibilityInfo.isReduceTransparencyEnabled()
+      .then((value) => {
+        if (mounted) setReduced(value);
+      })
+      .catch(() => undefined);
+    const subscription = AccessibilityInfo.addEventListener(
+      "reduceTransparencyChanged",
+      setReduced,
+    );
+    return () => {
+      mounted = false;
+      subscription.remove();
+    };
+  }, []);
+  return reduced;
+}
+
+const ReducedTransparency = createContext(true);
+
+export function useGlassEnabled() {
+  return !useContext(ReducedTransparency);
+}
+
+export function GlassPreferences({ children }: { children: React.ReactNode }) {
+  const reduced = useReducedTransparency();
+  return (
+    <ReducedTransparency.Provider value={reduced}>
+      {children}
+    </ReducedTransparency.Provider>
+  );
+}
+
+export function GlassBackdrop() {
+  const c = usePalette();
+  const reduced = useContext(ReducedTransparency);
+  if (reduced) return null;
+  return (
+    <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+      <View style={[styles.ambientOne, { backgroundColor: c.ambientOne }]} />
+      <View style={[styles.ambientTwo, { backgroundColor: c.ambientTwo }]} />
+    </View>
   );
 }
 
@@ -36,19 +237,45 @@ export function Page({
 }: {
   children: React.ReactNode;
   title?: string;
-  refresh?: () => void;
+  refresh?: () => Promise<unknown> | void;
 }) {
   const c = usePalette();
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshPending = useRef(false);
+  const onRefresh = useCallback(() => {
+    if (!refresh || refreshPending.current) return;
+    refreshPending.current = true;
+    setRefreshing(true);
+    void Promise.resolve()
+      .then(refresh)
+      .catch(() => undefined)
+      .finally(() => {
+        refreshPending.current = false;
+        setRefreshing(false);
+      });
+  }, [refresh]);
   return (
     <KeyboardAvoidingView
       behavior="height"
       style={{ flex: 1, backgroundColor: c.bg }}
     >
+      <GlassBackdrop />
       <ScrollView
         keyboardShouldPersistTaps="handled"
         style={{ flex: 1 }}
         contentContainerStyle={styles.page}
+        refreshControl={
+          refresh ? (
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={c.accentText}
+              colors={[c.accentText]}
+            />
+          ) : undefined
+        }
       >
+        <BrandHeader />
         {title ? (
           <View style={styles.header}>
             <Text
@@ -57,9 +284,6 @@ export function Page({
             >
               {title}
             </Text>
-            {refresh ? (
-              <Button label="Обновить" onPress={refresh} secondary />
-            ) : null}
           </View>
         ) : null}
         {children}
@@ -75,14 +299,25 @@ export function Card({
   style?: StyleProp<ViewStyle>;
 }) {
   const c = usePalette();
+  const reduced = useContext(ReducedTransparency);
   return (
     <View
       style={[
         styles.card,
-        { backgroundColor: c.card, borderColor: c.border },
+        {
+          backgroundColor: reduced ? c.card : c.glass,
+          borderColor: reduced ? c.border : c.glassBorder,
+          shadowColor: c.dark ? "#000000" : "#30565d",
+        },
         style,
       ]}
     >
+      {!reduced ? (
+        <View
+          pointerEvents="none"
+          style={[styles.cardHighlight, { backgroundColor: c.glassHighlight }]}
+        />
+      ) : null}
       {children}
     </View>
   );
@@ -181,6 +416,7 @@ export function Button({
   secondary,
   danger,
   icon,
+  iconName,
 }: {
   label: string;
   onPress: () => void;
@@ -188,8 +424,10 @@ export function Button({
   secondary?: boolean;
   danger?: boolean;
   icon?: React.ReactNode;
+  iconName?: IconName;
 }) {
   const c = usePalette();
+  const reduced = useContext(ReducedTransparency);
   return (
     <Pressable
       accessibilityRole="button"
@@ -199,16 +437,34 @@ export function Button({
       style={[
         styles.button,
         {
-          backgroundColor: danger ? c.danger : secondary ? c.card : c.accent,
-          borderColor: danger ? c.danger : c.accent,
+          backgroundColor: danger
+            ? c.danger
+            : secondary
+              ? reduced
+                ? c.card
+                : c.glass
+              : c.accent,
+          borderColor: danger
+            ? c.danger
+            : secondary
+              ? reduced
+                ? c.border
+                : c.glassBorder
+              : c.accent,
           opacity: disabled ? 0.5 : 1,
         },
       ]}
     >
       <View style={styles.buttonContent}>
-        {icon}
+        {icon ??
+          (iconName ? (
+            <Icon name={iconName} color={secondary ? c.accentText : "#fff"} />
+          ) : null)}
         <Text
-          style={[styles.buttonText, { color: secondary ? c.accent : "#fff" }]}
+          style={[
+            styles.buttonText,
+            { color: secondary ? c.accentText : "#fff" },
+          ]}
         >
           {label}
         </Text>
@@ -221,7 +477,7 @@ export function ErrorNotice({ message }: { message: string }) {
   return message ? (
     <Text
       accessibilityRole="alert"
-      style={[styles.notice, { color: c.danger }]}
+      style={[styles.notice, { color: c.dangerText }]}
     >
       {message}
     </Text>
@@ -232,15 +488,50 @@ export function Spacer() {
 }
 export const styles = StyleSheet.create({
   page: { padding: 18, paddingBottom: 42, gap: 14 },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  title: { fontSize: 27, fontWeight: "700", flex: 1 },
+  brand: { flexDirection: "row", alignItems: "center", gap: 9, minHeight: 34 },
+  brandCentered: { justifyContent: "center" },
+  brandLogo: { width: 32, height: 32, borderRadius: 9 },
+  brandText: { fontSize: 18, letterSpacing: -0.5, flexShrink: 1 },
+  brandStrong: { fontWeight: "800" },
+  brandLight: { fontWeight: "500" },
+  header: { width: "100%" },
+  title: { fontSize: 24, lineHeight: 31, fontWeight: "700", flexShrink: 1 },
   subtitle: { fontSize: 19, fontWeight: "600", marginBottom: 8 },
-  card: { borderWidth: 1, borderRadius: 16, padding: 16, gap: 10 },
+  card: {
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 16,
+    gap: 10,
+    elevation: 2,
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.1,
+    shadowRadius: 13,
+  },
+  cardHighlight: {
+    position: "absolute",
+    top: 1,
+    left: 1,
+    right: 1,
+    height: 34,
+    borderTopLeftRadius: 15,
+    borderTopRightRadius: 15,
+  },
+  ambientOne: {
+    position: "absolute",
+    width: 300,
+    height: 300,
+    borderRadius: 150,
+    top: -115,
+    left: -120,
+  },
+  ambientTwo: {
+    position: "absolute",
+    width: 360,
+    height: 360,
+    borderRadius: 180,
+    top: 165,
+    right: -155,
+  },
   label: { fontSize: 15, lineHeight: 22 },
   field: { gap: 5 },
   inputWrap: { position: "relative" },

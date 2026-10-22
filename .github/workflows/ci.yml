@@ -155,7 +155,7 @@ jobs:
           apk=apps/android/app/build/outputs/apk/ci/app-ci.apk
           test -s "$apk"
           unzip -p "$apk" assets/index.android.bundle | wc -c | awk '$1 > 100000 { found = 1 } END { exit !found }'
-          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | grep -F "package: name='ru.heartbeatchecker.app' versionCode='8' versionName='2.0.1'"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | grep -F "package: name='ru.heartbeatchecker.app' versionCode='9' versionName='2.0.2'"
           size=$(wc -c < "$apk" | tr -d ' ')
           [[ $size =~ ^[0-9]+$ ]]
           echo "Bundled CI APK bytes: $size"

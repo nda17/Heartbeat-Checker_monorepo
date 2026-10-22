@@ -1,5 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, BackHandler, Switch, View } from "react-native";
+import {
+  ActivityIndicator,
+  Alert,
+  BackHandler,
+  Switch,
+  View,
+} from "react-native";
 import { api, errorText, session } from "./api";
 import type { Incident, Monitor, Result } from "./types";
 import {
@@ -7,6 +13,8 @@ import {
   Card,
   ErrorNotice,
   Field,
+  Icon,
+  type IconName,
   Label,
   Page,
   Title,
@@ -66,6 +74,13 @@ const resultNames: Record<string, string> = {
   DOWN: "Недоступен",
   UNKNOWN: "Нет результата",
 };
+function statusIcon(state: string): IconName {
+  if (state === "UP") return "check";
+  if (state === "DOWN") return "alert";
+  if (state === "PAUSED") return "pause";
+  if (state === "SUBSCRIPTION_REQUIRED") return "payment";
+  return "info";
+}
 function date(value: string | null | undefined, timeZone: string) {
   if (!value) return "Нет данных";
   try {
@@ -101,6 +116,7 @@ export function MonitorsScreen({
   const [results, setResults] = useState<Result[]>([]);
   const [moreResults, setMoreResults] = useState(false);
   const [paginationBusy, setPaginationBusy] = useState(false);
+  const [detailRefreshing, setDetailRefreshing] = useState(false);
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [selectedIncident, setSelectedIncident] = useState<Incident | null>(
     null,
@@ -109,8 +125,13 @@ export function MonitorsScreen({
   const [busy, setBusy] = useState(false);
   const c = usePalette();
   const listRequest = useRef(0);
+  const listAbort = useRef<AbortController | null>(null);
   const detailRequest = useRef(0);
+  const detailPending = useRef(false);
   const paginationRequest = useRef(0);
+  const firstResults = useRef<Result[]>([]);
+  const editorBaseline = useRef<{ id: string; version: number } | null>(null);
+  const filterTouched = useRef(false);
   const mutation = useRef(false);
   const selectedRef = useRef<Monitor | null>(null);
   const resultsRef = useRef<Result[]>([]);
@@ -120,6 +141,9 @@ export function MonitorsScreen({
   resultsRef.current = results;
 
   const loadList = useCallback(async () => {
+    listAbort.current?.abort();
+    const controller = new AbortController();
+    listAbort.current = controller;
     const request = ++listRequest.current;
     const current = selection.current;
     setListLoading(true);
@@ -131,7 +155,9 @@ export function MonitorsScreen({
         sort: current.sort,
         q: current.query,
       });
-      const data = await api<MonitorPage>(`/monitors?${params.toString()}`);
+      const data = await api<MonitorPage>(`/monitors?${params.toString()}`, {
+        signal: controller.signal,
+      });
       if (
         request !== listRequest.current ||
         selection.current.page !== current.page ||
@@ -142,24 +168,32 @@ export function MonitorsScreen({
       setList(data);
       if (data.pagination.page !== current.page) setPage(data.pagination.page);
     } catch (cause) {
-      if (request === listRequest.current) setError(errorText(cause));
+      if (!controller.signal.aborted && request === listRequest.current)
+        setError(errorText(cause));
     } finally {
       if (request === listRequest.current) setListLoading(false);
+      if (listAbort.current === controller) listAbort.current = null;
     }
   }, []);
   useEffect(() => {
     void loadList();
     return () => {
       listRequest.current++;
+      listAbort.current?.abort();
+      listAbort.current = null;
     };
   }, [page, sort, query, loadList]);
   useEffect(() => {
+    if (!filterTouched.current) return;
     const timer = setTimeout(() => {
+      const nextQuery = filter.trim().slice(0, 200);
       setPage(1);
-      setQuery(filter.trim().slice(0, 200));
+      if (nextQuery === selection.current.query && selection.current.page === 1)
+        void loadList();
+      else setQuery(nextQuery);
     }, 300);
     return () => clearTimeout(timer);
-  }, [filter]);
+  }, [filter, loadList]);
   useEffect(() => {
     let active = true;
     void api<{ timeZones: Zone[] }>("/monitor-time-zones")
@@ -178,28 +212,56 @@ export function MonitorsScreen({
   }, []);
 
   const detail = useCallback(async (monitor: Monitor) => {
+    editorBaseline.current = null;
     const request = ++detailRequest.current;
     paginationRequest.current++;
     setPaginationBusy(false);
-    setSelected(monitor);
+    detailPending.current = true;
+    setDetailRefreshing(true);
+    const switching = selectedRef.current?.id !== monitor.id;
+    if (switching) {
+      selectedRef.current = monitor;
+      setSelected(monitor);
+      setSelectedIncident(null);
+      setResults([]);
+      resultsRef.current = [];
+      firstResults.current = [];
+      setIncidents([]);
+      setMoreResults(false);
+    }
     setEditing(false);
     setNotifications(false);
-    setSelectedIncident(null);
     setError("");
-    setResults([]);
-    setIncidents([]);
-    setMoreResults(false);
     try {
-      const [r, i] = await Promise.all([
+      const [m, r, i] = await Promise.all([
+        api<{ monitor: Monitor }>(`/monitors/${monitor.id}`),
         api<{ results: Result[] }>(`/monitors/${monitor.id}/results?limit=50`),
         api<{ incidents: Incident[] }>(`/monitors/${monitor.id}/incidents`),
       ]);
-      if (request !== detailRequest.current) return;
+      if (
+        request !== detailRequest.current ||
+        selectedRef.current?.id !== monitor.id
+      )
+        return;
+      selectedRef.current = m.monitor;
+      setSelected(m.monitor);
+      firstResults.current = r.results;
+      resultsRef.current = r.results;
       setResults(r.results);
       setMoreResults(r.results.length >= 50);
       setIncidents(i.incidents);
+      setSelectedIncident((current) =>
+        current
+          ? (i.incidents.find((item) => item.id === current.id) ?? current)
+          : null,
+      );
     } catch (cause) {
       if (request === detailRequest.current) setError(errorText(cause));
+    } finally {
+      if (request === detailRequest.current) {
+        detailPending.current = false;
+        setDetailRefreshing(false);
+      }
     }
   }, []);
   useEffect(() => {
@@ -208,6 +270,8 @@ export function MonitorsScreen({
     const request = ++detailRequest.current;
     paginationRequest.current++;
     setPaginationBusy(false);
+    detailPending.current = false;
+    setDetailRefreshing(false);
     setError("");
     setSelected(null);
     setSelectedIncident(null);
@@ -248,8 +312,9 @@ export function MonitorsScreen({
   const olderResults = async () => {
     const monitor = selectedRef.current;
     const previous = resultsRef.current;
-    if (!monitor || !previous.length || paginationBusy) return;
-    const request = ++detailRequest.current;
+    if (!monitor || !previous.length || paginationBusy || detailPending.current)
+      return;
+    const request = detailRequest.current;
     const pagination = ++paginationRequest.current;
     setPaginationBusy(true);
     setError("");
@@ -260,24 +325,55 @@ export function MonitorsScreen({
       );
       if (
         request !== detailRequest.current ||
+        pagination !== paginationRequest.current ||
         selectedRef.current?.id !== monitor.id
       )
         return;
       const seen = new Set(previous.map((item) => item.id));
-      setResults([
+      const next = [
         ...previous,
         ...data.results.filter((item) => !seen.has(item.id)),
-      ]);
+      ];
+      resultsRef.current = next;
+      setResults(next);
       setMoreResults(data.results.length >= 50);
       if (!data.results.length) setError("Более ранних результатов нет.");
     } catch (cause) {
-      if (request === detailRequest.current) setError(errorText(cause));
+      if (
+        request === detailRequest.current &&
+        pagination === paginationRequest.current
+      )
+        setError(errorText(cause));
     } finally {
       if (pagination === paginationRequest.current) setPaginationBusy(false);
     }
   };
+  const collapseResults = () => {
+    paginationRequest.current++;
+    setPaginationBusy(false);
+    resultsRef.current = firstResults.current;
+    setResults(firstResults.current);
+    setMoreResults(firstResults.current.length >= 50);
+    setError("");
+  };
+  const changeFilter = (value: string) => {
+    filterTouched.current = true;
+    listRequest.current++;
+    listAbort.current?.abort();
+    listAbort.current = null;
+    setListLoading(false);
+    setFilter(value);
+  };
 
   const edit = (monitor?: Monitor) => {
+    detailRequest.current++;
+    paginationRequest.current++;
+    detailPending.current = false;
+    setDetailRefreshing(false);
+    setPaginationBusy(false);
+    editorBaseline.current = monitor
+      ? { id: monitor.id, version: monitor.version }
+      : null;
     setDraft(
       monitor
         ? {
@@ -331,20 +427,22 @@ export function MonitorsScreen({
         (zones.length > 0 && !zones.some((zone) => zone.id === body.timeZone))
       )
         throw new Error("invalid");
-      const current = selectedRef.current;
-      if (!creating && !current) throw new Error("missing monitor");
+      const target = editorBaseline.current;
+      if (!creating && !target) throw new Error("missing monitor");
       const response = creating
         ? await api<{ monitor: Monitor }>("/monitors", {
             method: "POST",
             body: { ...body, expectedAccountId: session()?.account.id },
           })
-        : await api<{ monitor: Monitor }>(`/monitors/${current!.id}`, {
+        : await api<{ monitor: Monitor }>(`/monitors/${target!.id}`, {
             method: "PATCH",
-            body: { ...body, version: current!.version },
+            body: { ...body, version: target!.version },
           });
       // The write is committed. Subsequent read failures must never invite a second POST.
       setEditing(false);
       setCreating(false);
+      editorBaseline.current = null;
+      selectedRef.current = response.monitor;
       setSelected(response.monitor);
       void loadList();
       void detail(response.monitor);
@@ -373,6 +471,8 @@ export function MonitorsScreen({
               detailRequest.current++;
               paginationRequest.current++;
               setPaginationBusy(false);
+              detailPending.current = false;
+              setDetailRefreshing(false);
               setSelected(null);
               setSelectedIncident(null);
               void loadList();
@@ -397,6 +497,7 @@ export function MonitorsScreen({
         return true;
       }
       if (editing) {
+        editorBaseline.current = null;
         setEditing(false);
         setCreating(false);
         return true;
@@ -405,6 +506,8 @@ export function MonitorsScreen({
         detailRequest.current++;
         paginationRequest.current++;
         setPaginationBusy(false);
+        detailPending.current = false;
+        setDetailRefreshing(false);
         setSelected(null);
         return true;
       }
@@ -575,6 +678,7 @@ export function MonitorsScreen({
             label="Отмена"
             secondary
             onPress={() => {
+              editorBaseline.current = null;
               setEditing(false);
               setCreating(false);
             }}
@@ -585,20 +689,29 @@ export function MonitorsScreen({
   }
   if (selected)
     return (
-      <Page title={selected.name} refresh={() => void detail(selected)}>
+      <Page title={selected.name} refresh={() => detail(selected)}>
         <Button
           label="К списку"
+          iconName="arrow-left"
           onPress={() => {
             detailRequest.current++;
             paginationRequest.current++;
             setPaginationBusy(false);
+            detailPending.current = false;
+            setDetailRefreshing(false);
             setSelected(null);
             setSelectedIncident(null);
           }}
           secondary
         />
         <Card>
-          <Title>{statusNames[selected.state] ?? selected.state}</Title>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Icon
+              name={statusIcon(selected.state)}
+              color={selected.state === "DOWN" ? c.dangerText : c.accentText}
+            />
+            <Title>{statusNames[selected.state] ?? selected.state}</Title>
+          </View>
           <Label>
             {selected.checkType === "http"
               ? selected.url
@@ -618,13 +731,25 @@ export function MonitorsScreen({
             Провайдер / CDN:{" "}
             {selected.provider.names.join(", ") || "Неизвестно"}
           </Label>
-          <Button label="Изменить" onPress={() => edit(selected)} secondary />
+          <Button
+            label="Изменить"
+            iconName="settings"
+            onPress={() => edit(selected)}
+            secondary
+          />
           <Button
             label="Уведомления"
+            iconName="bell"
             onPress={() => setNotifications(true)}
             secondary
           />
-          <Button label="Удалить" danger disabled={busy} onPress={remove} />
+          <Button
+            label="Удалить"
+            iconName="trash"
+            danger
+            disabled={busy}
+            onPress={remove}
+          />
         </Card>
         {selectedIncident ? (
           <Card>
@@ -641,6 +766,7 @@ export function MonitorsScreen({
             </Label>
             <Button
               label="Закрыть"
+              iconName="close"
               onPress={() => setSelectedIncident(null)}
               secondary
             />
@@ -659,6 +785,7 @@ export function MonitorsScreen({
             </Label>
             <Button
               label="Подробнее"
+              iconName="arrow-right"
               onPress={() => setSelectedIncident(item)}
               secondary
             />
@@ -668,10 +795,18 @@ export function MonitorsScreen({
         <Title>История проверок</Title>
         {results.map((item) => (
           <Card key={item.id}>
-            <Label>
-              {resultNames[item.outcome] ?? item.outcome} ·{" "}
-              {date(item.checkedAt, selected.timeZone)}
-            </Label>
+            <View
+              style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
+            >
+              <Icon
+                name={statusIcon(item.outcome)}
+                color={item.outcome === "DOWN" ? c.dangerText : c.accentText}
+              />
+              <Label>
+                {resultNames[item.outcome] ?? item.outcome} ·{" "}
+                {date(item.checkedAt, selected.timeZone)}
+              </Label>
+            </View>
             <Label>
               {item.errorCode ||
                 (item.httpStatus ? `HTTP ${item.httpStatus}` : "Ответ")}{" "}
@@ -682,9 +817,18 @@ export function MonitorsScreen({
         {moreResults ? (
           <Button
             label="Более ранние результаты"
+            iconName="arrow-down"
             secondary
-            disabled={paginationBusy}
+            disabled={paginationBusy || detailRefreshing}
             onPress={() => void olderResults()}
+          />
+        ) : null}
+        {results.length > firstResults.current.length ? (
+          <Button
+            label="Свернуть историю"
+            iconName="close"
+            secondary
+            onPress={collapseResults}
           />
         ) : null}
         {!results.length ? (
@@ -696,15 +840,22 @@ export function MonitorsScreen({
       </Page>
     );
   return (
-    <Page title="Мониторы" refresh={() => void loadList()}>
-      <Button label="Добавить монитор" onPress={() => edit()} />
+    <Page title="Мониторы" refresh={loadList}>
+      <Button label="Добавить монитор" iconName="plus" onPress={() => edit()} />
       <Field
         label="Поиск мониторов"
         value={filter}
-        onChangeText={setFilter}
+        onChangeText={changeFilter}
         placeholder="Название или адрес"
       />
-      <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+      <View
+        style={{
+          flexDirection: "row",
+          justifyContent: "center",
+          gap: 8,
+          flexWrap: "wrap",
+        }}
+      >
         <Button
           label={
             sort.startsWith("name")
@@ -742,15 +893,34 @@ export function MonitorsScreen({
           }}
         />
       </View>
-      <Label muted>
-        {listLoading
-          ? "Обновляем список…"
-          : `Найдено: ${list?.pagination.total ?? "—"} · страница ${list?.pagination.page ?? page} из ${list?.pagination.totalPages ?? 1}`}
-      </Label>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 8,
+          minHeight: 24,
+        }}
+      >
+        <Label muted>
+          Найдено: {list?.pagination.total ?? "—"} · страница{" "}
+          {list?.pagination.page ?? page} из {list?.pagination.totalPages ?? 1}
+        </Label>
+        <View style={{ width: 20, alignItems: "center" }}>
+          {listLoading ? (
+            <ActivityIndicator size="small" color={c.accent} />
+          ) : null}
+        </View>
+      </View>
       {list?.monitors.map((monitor) => (
         <Card key={monitor.id}>
           <Title>{monitor.name}</Title>
-          <Label>{statusNames[monitor.state] ?? monitor.state}</Label>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Icon
+              name={statusIcon(monitor.state)}
+              color={monitor.state === "DOWN" ? c.dangerText : c.accentText}
+            />
+            <Label>{statusNames[monitor.state] ?? monitor.state}</Label>
+          </View>
           <Label>
             {monitor.checkType === "http"
               ? monitor.url
@@ -760,6 +930,7 @@ export function MonitorsScreen({
           </Label>
           <Button
             label="Открыть"
+            iconName="arrow-right"
             onPress={() => void detail(monitor)}
             secondary
           />
@@ -768,15 +939,24 @@ export function MonitorsScreen({
       {list && !list.monitors.length ? (
         <Label muted>По этому запросу мониторов нет.</Label>
       ) : null}
-      <View style={{ flexDirection: "row", gap: 8 }}>
+      <View
+        style={{
+          flexDirection: "row",
+          justifyContent: "center",
+          gap: 8,
+          flexWrap: "wrap",
+        }}
+      >
         <Button
           label="Назад"
+          iconName="arrow-left"
           secondary
           disabled={page <= 1 || listLoading}
           onPress={() => setPage(page - 1)}
         />
         <Button
           label="Далее"
+          iconName="arrow-right"
           secondary
           disabled={!list || page >= list.pagination.totalPages || listLoading}
           onPress={() => setPage(page + 1)}
