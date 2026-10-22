@@ -242,7 +242,7 @@ func seedBillingHistory(t *testing.T, f *billingFixture, accountID string, count
 			(id,account_id,idempotency_key,provider,status,monitor_count,amount_minor,currency,
 			 created_at,expires_at,completed_at,provider_mode,reconciliation_status,
 			 fulfillment_status,purchase_kind,return_target,checkout_kind)
-		SELECT md5($1::text || ':order:' || n)::uuid, $1,
+		SELECT md5($1::text || ':order:' || n)::uuid, $1::uuid,
 			md5($1::text || ':key:' || n)::uuid, 'mock', 'canceled', 1, 2400, 'RUB',
 			$2::timestamptz - ((n - 1) / 25) * interval '1 second',
 			$2::timestamptz + interval '30 minutes',
