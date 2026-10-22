@@ -349,6 +349,8 @@ public final class PushStoreTest {
         JSONObject before = store.read();
         WorkManager work = WorkManager.getInstance(context);
         String workName = PushWork.DELIVERY + ":stale-credential-sentinel";
+        String notificationTag = "push:stale-credential-sentinel-" + java.util.UUID.randomUUID();
+        String barrierTag = "push:stale-credential-barrier-" + java.util.UUID.randomUUID();
         work.cancelUniqueWork(workName).getResult().get();
         OneTimeWorkRequest sentinel = new OneTimeWorkRequest.Builder(PushWorker.class)
                 .setConstraints(new Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED)
@@ -364,21 +366,32 @@ public final class PushStoreTest {
             InstrumentationRegistry.getInstrumentation().getUiAutomation()
                     .grantRuntimePermission(context.getPackageName(), android.Manifest.permission.POST_NOTIFICATIONS);
         }
-        notifications.notify("push:stale-credential-sentinel", 0,
-                new Notification.Builder(context, PushNotifications.CHANNEL)
-                        .setSmallIcon(R.drawable.ic_notification).setContentTitle("Sentinel").build());
         try {
+            notifications.notify(notificationTag, 0,
+                    new Notification.Builder(context, PushNotifications.CHANNEL)
+                            .setSmallIcon(R.drawable.ic_notification).setContentTitle("Sentinel").build());
+            awaitActiveNotification(notifications, notificationTag,
+                    "NotificationManager did not publish the sentinel before the stale-credential check");
             PushWork.accept(context, installation(3, 4), retiredCredential);
 
             assertEquals("a retired credential response must leave all current local state intact",
                     before.toString(), store.read().toString());
+
+            // NotificationManager posts and cancels on its handler. Wait for this later post
+            // before reading active notifications so any earlier cancelAll has been processed.
+            notifications.notify(barrierTag, 0,
+                    new Notification.Builder(context, PushNotifications.CHANNEL)
+                            .setSmallIcon(R.drawable.ic_notification).setContentTitle("Barrier").build());
+            awaitActiveNotification(notifications, barrierTag,
+                    "NotificationManager did not publish the post-check barrier");
             assertTrue("a stale response must not clear the current push notification",
-                    hasNotification(notifications, "push:stale-credential-sentinel"));
+                    hasNotification(notifications, notificationTag));
             assertEquals("a stale response must not cancel current delivery work", WorkInfo.State.ENQUEUED,
                     work.getWorkInfosForUniqueWork(workName).get().get(0).getState());
         } finally {
             work.cancelUniqueWork(workName).getResult().get();
-            notifications.cancel("push:stale-credential-sentinel", 0);
+            notifications.cancel(notificationTag, 0);
+            notifications.cancel(barrierTag, 0);
         }
     }
 
@@ -697,6 +710,14 @@ public final class PushStoreTest {
             if (tag.equals(notification.getTag())) return true;
         }
         return false;
+    }
+
+    private static void awaitActiveNotification(NotificationManager manager, String tag, String failureMessage) {
+        long deadline = android.os.SystemClock.elapsedRealtime() + 5000;
+        while (!hasNotification(manager, tag) && android.os.SystemClock.elapsedRealtime() < deadline) {
+            android.os.SystemClock.sleep(50);
+        }
+        assertTrue(failureMessage, hasNotification(manager, tag));
     }
 
     private static String repeat(String value, int count) {
