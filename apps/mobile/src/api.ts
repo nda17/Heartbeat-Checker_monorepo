@@ -12,6 +12,11 @@ export class ApiError extends Error {
   }
 }
 class NetworkError extends Error {}
+function abortError() {
+  const error = new Error("Aborted");
+  error.name = "AbortError";
+  return error;
+}
 
 let current: AuthResult | null = null;
 let epoch = 0;
@@ -56,6 +61,7 @@ export async function api<T>(
     body?: unknown;
     auth?: boolean;
     headers?: Record<string, string>;
+    signal?: AbortSignal;
   } = {},
 ): Promise<T> {
   if (!path.startsWith("/") || path.startsWith("//") || path.includes("://"))
@@ -74,6 +80,7 @@ export async function api<T>(
     throw new ApiError(403, "dev_action_unavailable");
   const capturedEpoch = epoch;
   const nativeEpoch = await native.authEpoch();
+  if (options.signal?.aborted) throw abortError();
   if (capturedEpoch !== epoch) throw new ApiError(409, "session_changed");
   const auth = options.auth !== false;
   const token = auth ? current?.session.token : undefined;
@@ -102,19 +109,34 @@ export async function api<T>(
     },
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     credentials: "omit",
-  }).catch(() => {
+    signal: options.signal,
+  }).catch((cause) => {
+    if (options.signal?.aborted) throw abortError();
+    if ((cause as { name?: string })?.name === "AbortError") throw cause;
     throw new NetworkError();
   });
   // An earlier account's response must not be rendered after logout or account switch.
   if (capturedEpoch !== epoch) throw new ApiError(409, "session_changed");
-  const payload =
-    response.status === 204 ||
-    (response.status === 202 &&
-      !response.headers.get("content-type")?.includes("json"))
-      ? null
-      : await response.json().catch(() => null);
+  let payload = null;
+  if (
+    response.status !== 204 &&
+    (response.status !== 202 ||
+      response.headers.get("content-type")?.includes("json"))
+  ) {
+    try {
+      payload = await response.json();
+    } catch (cause) {
+      if (options.signal?.aborted) throw abortError();
+      if ((cause as { name?: string })?.name === "AbortError") throw cause;
+    }
+  }
+  if (options.signal?.aborted) throw abortError();
   if (capturedEpoch !== epoch) throw new ApiError(409, "session_changed");
-  if (auth && response.status === 401) {
+  if (
+    auth &&
+    response.status === 401 &&
+    payload?.error !== "invalid_credentials"
+  ) {
     await closeSession();
     sessionExpiredHandler?.();
     throw new ApiError(401, "session_expired");
@@ -132,6 +154,23 @@ export async function api<T>(
 
 const messages: Record<string, string> = {
   invalid_credentials: "Неверный email или пароль.",
+  mfa_required: "Подтвердите вход в кабинете на сайте.",
+  admin_transfer_required:
+    "Сначала передайте права администратора в кабинете на сайте.",
+  password_setup_required: "Сначала задайте пароль в кабинете на сайте.",
+  oauth_identity_conflict: "Этот способ входа уже связан с другим аккаунтом.",
+  oauth_identity_not_found: "Этот способ входа уже отключён. Обновите экран.",
+  oauth_identity_already_linked: "Этот способ входа уже подключён.",
+  oauth_email_conflict:
+    "Этот email уже используется. Войдите существующим способом и подключите его в настройках.",
+  oauth_provider_unavailable:
+    "Этот способ входа временно недоступен. Повторите позже.",
+  oauth_state_invalid: "Подключение не подтверждено. Начните его заново.",
+  mfa_enrollment_required:
+    "Настройте приложение-аутентификатор в кабинете на сайте.",
+  mfa_step_up_required: "Повторно подтвердите вход в кабинете на сайте.",
+  conflict: "Данные изменились. Обновите экран и повторите.",
+  not_found: "Данные не найдены. Обновите экран.",
   unauthorized: "Войдите снова.",
   session_expired: "Сессия истекла. Войдите снова.",
   version_conflict: "Данные изменились. Обновите экран и повторите.",

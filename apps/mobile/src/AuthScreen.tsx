@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   BackHandler,
-  Image,
   KeyboardAvoidingView,
   Pressable,
   ScrollView,
@@ -18,10 +17,12 @@ import { api, errorText } from "./api";
 import { native } from "./native";
 import type { AuthResult, Provider, Registration } from "./types";
 import {
+  BrandHeader,
   Button,
   Card,
   ErrorNotice,
   Field,
+  GlassBackdrop,
   Label,
   Title,
   usePalette,
@@ -426,21 +427,13 @@ export function AuthScreen({
       style={[styles.screen, { backgroundColor: palette.bg }]}
       behavior="height"
     >
+      <GlassBackdrop />
       <ScrollView
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={styles.screenContent}
       >
         <View style={styles.group}>
-          <View style={styles.brand}>
-            <Image
-              source={require("../assets/logo.png")}
-              style={styles.logo}
-              accessibilityLabel="Логотип Heartbeat Checker"
-            />
-            <Text style={[styles.brandText, { color: palette.text }]}>
-              Heartbeat Checker
-            </Text>
-          </View>
+          <BrandHeader centered />
           <Card style={styles.formCard}>
             {native.DEV_CLIENT ? (
               <Label muted>
@@ -578,7 +571,7 @@ export function AuthScreen({
                   style={styles.authLink}
                 >
                   <Text
-                    style={[styles.authLinkText, { color: palette.accent }]}
+                    style={[styles.authLinkText, { color: palette.accentText }]}
                   >
                     Регистрация
                   </Text>
@@ -590,7 +583,10 @@ export function AuthScreen({
                     style={styles.authLink}
                   >
                     <Text
-                      style={[styles.authLinkText, { color: palette.accent }]}
+                      style={[
+                        styles.authLinkText,
+                        { color: palette.accentText },
+                      ]}
                     >
                       Забыли пароль?
                     </Text>
@@ -605,24 +601,14 @@ export function AuthScreen({
                   onPress={() => oauth("yandex")}
                   disabled={busy}
                   secondary
-                  icon={
-                    <Image
-                      source={require("../assets/yandex.png")}
-                      style={styles.providerIcon}
-                    />
-                  }
+                  iconName="yandex"
                 />
                 <Button
                   label="Войти через VK"
                   onPress={() => oauth("vk")}
                   disabled={busy}
                   secondary
-                  icon={
-                    <Image
-                      source={require("../assets/vk.png")}
-                      style={styles.providerIcon}
-                    />
-                  }
+                  iconName="vk"
                 />
               </>
             ) : null}
@@ -642,9 +628,6 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
   },
   group: { width: "100%", maxWidth: 420, alignSelf: "center", gap: 14 },
-  brand: { alignItems: "center", gap: 10, marginBottom: 4 },
-  logo: { width: 68, height: 68, borderRadius: 18 },
-  brandText: { fontSize: 23, fontWeight: "700", textAlign: "center" },
   formCard: { minHeight: 520, justifyContent: "center" },
   authLinks: { flexDirection: "row", gap: 8 },
   authLink: {
@@ -654,7 +637,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   authLinkText: { fontSize: 14, fontWeight: "600", textAlign: "center" },
-  providerIcon: { width: 24, height: 24, borderRadius: 5 },
   challengeTitle: { fontSize: 23, fontWeight: "700", textAlign: "center" },
   challengeFrame: { height: 340, overflow: "hidden", borderRadius: 16 },
 });

@@ -198,6 +198,228 @@ func (f *billingFixture) request(t *testing.T, actor billingActor, method, path 
 	return rec
 }
 
+func (f *billingFixture) requestNative(t *testing.T, token, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	f.handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func nativeBillingToken(t *testing.T, f *billingFixture, accountID string) string {
+	t.Helper()
+	var tokenBytes [32]byte
+	var revokeBytes [32]byte
+	if _, err := rand.Read(tokenBytes[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rand.Read(revokeBytes[:]); err != nil {
+		t.Fatal(err)
+	}
+	token := base64.RawURLEncoding.EncodeToString(tokenBytes[:])
+	tokenHash := sha256.Sum256([]byte(token))
+	revokeToken := base64.RawURLEncoding.EncodeToString(revokeBytes[:])
+	revokeHash := sha256.Sum256([]byte(revokeToken))
+	sessionID, err := outbox.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(context.Background(), `INSERT INTO auth.sessions
+		(id,account_id,token_hash,credential_version,expires_at,user_agent,client_kind,revoke_token_hash)
+		VALUES($1,$2,$3,1,now()+interval '1 hour','billing native history test','android',$4)`,
+		sessionID, accountID, tokenHash[:], revokeHash[:]); err != nil {
+		t.Fatalf("insert native billing history session: %v", err)
+	}
+	return token
+}
+
+func seedBillingHistory(t *testing.T, f *billingFixture, accountID string, count int) {
+	t.Helper()
+	base := time.Date(2026, time.October, 21, 12, 0, 0, 0, time.UTC)
+	_, err := f.pool.Exec(context.Background(), `
+		INSERT INTO billing.orders
+			(id,account_id,idempotency_key,provider,status,monitor_count,amount_minor,currency,
+			 created_at,expires_at,completed_at,provider_mode,reconciliation_status,
+			 fulfillment_status,purchase_kind,return_target,checkout_kind)
+		SELECT md5($1::text || ':order:' || n)::uuid, $1,
+			md5($1::text || ':key:' || n)::uuid, 'mock', 'canceled', 1, 2400, 'RUB',
+			$2::timestamptz - ((n - 1) / 25) * interval '1 second',
+			$2::timestamptz + interval '30 minutes',
+			$2::timestamptz - ((n - 1) / 25) * interval '1 second',
+			'test', 'complete', 'not_required', 'legacy', 'web', 'redirect'
+		FROM generate_series(1, $3::integer) AS n`, accountID, base, count)
+	if err != nil {
+		t.Fatalf("seed synthetic billing history for %s: %v", accountID, err)
+	}
+}
+
+func billingOrderIDs(page contracts.OrderPage) []string {
+	ids := make([]string, len(page.Orders))
+	for i, order := range page.Orders {
+		ids[i] = order.ID
+	}
+	return ids
+}
+
+func decodeBillingOrderPage(t *testing.T, response *httptest.ResponseRecorder) contracts.OrderPage {
+	t.Helper()
+	var result contracts.OrderPage
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode billing order page: %v (%s)", err, response.Body.String())
+	}
+	return result
+}
+
+func TestBillingOrderHistoryPaginationIsOrderedBoundedAndAccountScoped(t *testing.T) {
+	f := newBillingFixture(t)
+	owner := f.newActor(t, "Billing history owner")
+	other := f.newActor(t, "Billing history other")
+	empty := f.newActor(t, "Billing history empty")
+	seedBillingHistory(t, f, owner.id, 1003)
+	seedBillingHistory(t, f, other.id, 3)
+	nativeToken := nativeBillingToken(t, f, owner.id)
+
+	firstResponse := f.request(t, owner, http.MethodGet, "/api/v1/billing/orders?page=1&pageSize=10", nil)
+	if firstResponse.Code != http.StatusOK {
+		t.Fatalf("first order page: %d %s", firstResponse.Code, firstResponse.Body.String())
+	}
+	first := decodeBillingOrderPage(t, firstResponse)
+	if first.Pagination != (contracts.Pagination{Page: 1, PageSize: 10, Total: 1003, TotalPages: 101}) {
+		t.Fatalf("unexpected first page metadata: %+v", first.Pagination)
+	}
+	if len(first.Orders) != 10 {
+		t.Fatalf("first page has %d orders, want 10", len(first.Orders))
+	}
+
+	seen := make(map[string]bool, 1003)
+	all := make([]contracts.Order, 0, 1003)
+	crossPageTie := false
+	var previous contracts.Order
+	for pageNumber := 1; pageNumber <= first.Pagination.TotalPages; pageNumber++ {
+		response := firstResponse
+		if pageNumber > 1 {
+			response = f.request(t, owner, http.MethodGet,
+				fmt.Sprintf("/api/v1/billing/orders?page=%d&pageSize=10", pageNumber), nil)
+		}
+		if response.Code != http.StatusOK {
+			t.Fatalf("order page %d: %d %s", pageNumber, response.Code, response.Body.String())
+		}
+		current := decodeBillingOrderPage(t, response)
+		if current.Pagination.Page != pageNumber || current.Pagination.PageSize != 10 || current.Pagination.Total != 1003 {
+			t.Fatalf("page %d has inconsistent metadata: %+v", pageNumber, current.Pagination)
+		}
+		if pageNumber < current.Pagination.TotalPages && len(current.Orders) != 10 {
+			t.Fatalf("non-final page %d has %d rows", pageNumber, len(current.Orders))
+		}
+		for _, order := range current.Orders {
+			if seen[order.ID] {
+				t.Fatalf("order %s appeared on multiple pages", order.ID)
+			}
+			seen[order.ID] = true
+			if len(all) > 0 {
+				if previous.CreatedAt.Before(order.CreatedAt) {
+					t.Fatalf("createdAt order increased at boundary: %s then %s", previous.CreatedAt, order.CreatedAt)
+				}
+				if previous.CreatedAt.Equal(order.CreatedAt) {
+					crossPageTie = crossPageTie || len(all)%10 == 0
+					if previous.ID <= order.ID {
+						t.Fatalf("tied createdAt rows are not ID-descending: %s then %s", previous.ID, order.ID)
+					}
+				}
+			}
+			previous = order
+			all = append(all, order)
+		}
+	}
+	if len(all) != 1003 || len(seen) != 1003 {
+		t.Fatalf("collected %d unique orders, want 1003", len(seen))
+	}
+	if !crossPageTie {
+		t.Fatal("fixture did not exercise equal timestamps across a page boundary")
+	}
+
+	// Both web-cookie and Android-bearer sessions must see the same owner-bound page.
+	nativeResponse := f.requestNative(t, nativeToken, "/api/v1/billing/orders?page=1&pageSize=10")
+	if nativeResponse.Code != http.StatusOK {
+		t.Fatalf("native order page: %d %s", nativeResponse.Code, nativeResponse.Body.String())
+	}
+	if native := decodeBillingOrderPage(t, nativeResponse); strings.Join(billingOrderIDs(native), ",") != strings.Join(billingOrderIDs(first), ",") {
+		t.Fatalf("native page differs from the web owner's page: native=%v web=%v", billingOrderIDs(native), billingOrderIDs(first))
+	}
+
+	otherResponse := f.request(t, other, http.MethodGet, "/api/v1/billing/orders?page=1&pageSize=10", nil)
+	if otherResponse.Code != http.StatusOK {
+		t.Fatalf("other account order page: %d %s", otherResponse.Code, otherResponse.Body.String())
+	}
+	otherPage := decodeBillingOrderPage(t, otherResponse)
+	if otherPage.Pagination.Total != 3 || len(otherPage.Orders) != 3 {
+		t.Fatalf("other account sees total=%d rows=%d, want 3", otherPage.Pagination.Total, len(otherPage.Orders))
+	}
+	for _, order := range otherPage.Orders {
+		if seen[order.ID] {
+			t.Fatalf("other account received owner order %s", order.ID)
+		}
+	}
+
+	maxResponse := f.request(t, owner, http.MethodGet, "/api/v1/billing/orders?page=1&pageSize=100", nil)
+	if maxResponse.Code != http.StatusOK {
+		t.Fatalf("maximum page size: %d %s", maxResponse.Code, maxResponse.Body.String())
+	}
+	maxPage := decodeBillingOrderPage(t, maxResponse)
+	if len(maxPage.Orders) != 100 || maxPage.Pagination.PageSize != 100 || maxPage.Pagination.TotalPages != 11 {
+		t.Fatalf("unexpected maximum page size response: rows=%d pagination=%+v", len(maxPage.Orders), maxPage.Pagination)
+	}
+	clampedResponse := f.request(t, owner, http.MethodGet, "/api/v1/billing/orders?page=9999&pageSize=10", nil)
+	if clampedResponse.Code != http.StatusOK {
+		t.Fatalf("out-of-range page is clamped: %d %s", clampedResponse.Code, clampedResponse.Body.String())
+	}
+	clamped := decodeBillingOrderPage(t, clampedResponse)
+	if clamped.Pagination.Page != 101 || len(clamped.Orders) != 3 {
+		t.Fatalf("unexpected clamped page: pagination=%+v rows=%d", clamped.Pagination, len(clamped.Orders))
+	}
+
+	emptyResponse := f.request(t, empty, http.MethodGet, "/api/v1/billing/orders?page=50&pageSize=10", nil)
+	if emptyResponse.Code != http.StatusOK {
+		t.Fatalf("empty history page: %d %s", emptyResponse.Code, emptyResponse.Body.String())
+	}
+	emptyPage := decodeBillingOrderPage(t, emptyResponse)
+	if emptyPage.Pagination != (contracts.Pagination{Page: 1, PageSize: 10, Total: 0, TotalPages: 1}) || len(emptyPage.Orders) != 0 {
+		t.Fatalf("unexpected empty page: %+v rows=%d", emptyPage.Pagination, len(emptyPage.Orders))
+	}
+
+	for _, query := range []string{
+		"page=0", "page=-1", "page=nope", "page=1&page=2", "pageSize=0",
+		"pageSize=101", "pageSize=999999999999999999999", "unused=1",
+		"page=9223372036854775807&pageSize=100",
+	} {
+		response := f.request(t, owner, http.MethodGet, "/api/v1/billing/orders?"+query, nil)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("query %q returned %d, want 400: %s", query, response.Code, response.Body.String())
+		}
+	}
+
+	unauthenticated := httptest.NewRecorder()
+	f.handler.ServeHTTP(unauthenticated, httptest.NewRequest(http.MethodGet, "/api/v1/billing/orders", nil))
+	if unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated history read returned %d, want 401", unauthenticated.Code)
+	}
+
+	legacyResponse := f.request(t, owner, http.MethodGet, "/api/v1/billing", nil)
+	if legacyResponse.Code != http.StatusOK {
+		t.Fatalf("legacy billing overview: %d %s", legacyResponse.Code, legacyResponse.Body.String())
+	}
+	var legacy struct {
+		Orders []contracts.Order `json:"orders"`
+	}
+	if err := json.Unmarshal(legacyResponse.Body.Bytes(), &legacy); err != nil {
+		t.Fatalf("decode legacy overview: %v", err)
+	}
+	if len(legacy.Orders) != 100 || legacy.Orders[0].ID != first.Orders[0].ID {
+		t.Fatalf("legacy overview shape/order changed: %d orders, first=%q", len(legacy.Orders), legacy.Orders[0].ID)
+	}
+}
+
 func bytesReader(b []byte) *strings.Reader { return strings.NewReader(string(b)) }
 
 func configureMockBilling(t *testing.T, f *billingFixture, owner billingActor) *Module {
