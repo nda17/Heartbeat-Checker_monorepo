@@ -108,15 +108,23 @@ export function AndroidDevDownload() {
 
   if (!release) return null;
   return (
-    <div className="android-dev-download">
-      <a className="button android-apk-button" href={downloadPath}>
+    <section
+      className="panel settings-panel android-dev-download"
+      aria-labelledby="admin-android-dev-title"
+    >
+      <div className="panel-heading">
+        <div>
+          <h2 id="admin-android-dev-title">Разработка Android</h2>
+          <p>Отдельная сборка для разработки через Metro по Wi-Fi.</p>
+        </div>
+      </div>
+      <a className="button" href={downloadPath}>
         Скачать dev APK
       </a>
-      <p>Отдельная сборка для разработки через Metro по Wi-Fi.</p>
       <p>
         Версия {release.versionName} · Размер{" "}
         {(release.sizeBytes / 1024 / 1024).toFixed(1)} МБ
       </p>
-    </div>
+    </section>
   );
 }

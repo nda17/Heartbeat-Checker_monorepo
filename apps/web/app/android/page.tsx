@@ -4,7 +4,6 @@ import { AppStoreSoon, Brand, PublicFooter, Icon } from "@/shared/ui";
 import { ThemeToggle } from "@/features/theme-toggle";
 import { publicPageMetadata, PublicPageStructuredData } from "@/shared/seo";
 import { androidRelease } from "@/shared/android";
-import { AndroidDevDownload } from "@/features/android-dev-download";
 
 export const metadata = publicPageMetadata("/android");
 
@@ -66,7 +65,6 @@ export default function AndroidPage() {
                 >
                   Скачать APK
                 </a>
-                <AndroidDevDownload />
                 <dl className="android-release-facts">
                   <div>
                     <dt>Версия</dt>
