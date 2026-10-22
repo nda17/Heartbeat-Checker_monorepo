@@ -209,6 +209,142 @@ func TestMessengerLinkExpiredStatusUsesTTLAndLegacyFailureStaysUnknown(t *testin
 	}
 }
 
+func TestMessengerLinkCancellationIsIdempotentOwnerScopedAndProtectsConfirmedLinks(t *testing.T) {
+	f := newMessengerAPIFixture(t, true, "cancel link owner", "cancel link foreign")
+	owner := f.actors["cancel link owner"]
+	foreign := f.actors["cancel link foreign"]
+	create := func() MessengerLink {
+		t.Helper()
+		link, _, _, _, err := f.module.CreateLink(context.Background(), owner.accountID, "telegram", "private")
+		if err != nil {
+			t.Fatalf("create isolated cancellation link: %v", err)
+		}
+		return link
+	}
+
+	link := create()
+	path := "/api/v1/messenger-links/" + link.ID
+	if got := f.request(t, &foreign, http.MethodDelete, path, nil, foreign.csrf, messengerTestOrigin); got.Code != http.StatusNotFound {
+		t.Fatalf("foreign cancellation status=%d body=%s, want 404", got.Code, got.Body.String())
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		got := f.request(t, &owner, http.MethodDelete, path, nil, owner.csrf, messengerTestOrigin)
+		if got.Code != http.StatusNoContent || got.Body.Len() != 0 {
+			t.Fatalf("owner cancellation attempt %d status=%d body=%s, want empty 204", attempt, got.Code, got.Body.String())
+		}
+	}
+	status, code, attempts, _, token, lease := linkState(t, f.webhookFixture, link.ID)
+	var observation, candidate []byte
+	if err := f.webhookFixture.pool.QueryRow(context.Background(), `SELECT encrypted_observation,encrypted_candidate FROM notifications.messenger_links WHERE id=$1`, link.ID).Scan(&observation, &candidate); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" || code != "link_cancelled" || attempts != 0 || token != nil || lease != nil || observation != nil || candidate != nil {
+		t.Fatalf("cancelled link state=%s/%s attempts=%d token=%v lease=%v observation=%v candidate=%v", status, code, attempts, token, lease, observation, candidate)
+	}
+
+	expired := create()
+	if _, err := f.webhookFixture.pool.Exec(context.Background(), `UPDATE notifications.messenger_links SET status='expired',error_code='link_expired',expires_at=now()-interval '1 second' WHERE id=$1`, expired.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.request(t, &owner, http.MethodDelete, "/api/v1/messenger-links/"+expired.ID, nil, owner.csrf, messengerTestOrigin); got.Code != http.StatusNoContent {
+		t.Fatalf("repeated cancellation of expired attempt status=%d body=%s, want 204", got.Code, got.Body.String())
+	}
+	candidateLink := create()
+	if _, err := f.webhookFixture.pool.Exec(context.Background(), `UPDATE notifications.messenger_links SET status='candidate',encrypted_candidate=decode('00','hex') WHERE id=$1`, candidateLink.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.request(t, &owner, http.MethodDelete, "/api/v1/messenger-links/"+candidateLink.ID, nil, owner.csrf, messengerTestOrigin); got.Code != http.StatusNoContent {
+		t.Fatalf("candidate cancellation status=%d body=%s, want 204", got.Code, got.Body.String())
+	}
+	candidateStatus, candidateCode, _, _, _, _ := linkState(t, f.webhookFixture, candidateLink.ID)
+	var candidateCipher []byte
+	if err := f.webhookFixture.pool.QueryRow(context.Background(), `SELECT encrypted_candidate FROM notifications.messenger_links WHERE id=$1`, candidateLink.ID).Scan(&candidateCipher); err != nil {
+		t.Fatal(err)
+	}
+	if candidateStatus != "failed" || candidateCode != "link_cancelled" || candidateCipher != nil {
+		t.Fatalf("cancelled candidate status=%s/%s still retains ciphertext: %v", candidateStatus, candidateCode, candidateCipher)
+	}
+
+	destination := confirmPrivateTelegramTarget(t, f.webhookFixture, f.module, owner.accountID, 654)
+	confirmed := create()
+	if _, err := f.webhookFixture.pool.Exec(context.Background(), `UPDATE notifications.messenger_links SET status='confirmed',destination_id=$2 WHERE id=$1`, confirmed.ID, destination.ID); err != nil {
+		t.Fatal(err)
+	}
+	var beforeDestinations int
+	if err := f.webhookFixture.pool.QueryRow(context.Background(), `SELECT count(*) FROM notifications.messenger_destinations WHERE account_id=$1`, owner.accountID).Scan(&beforeDestinations); err != nil {
+		t.Fatal(err)
+	}
+	denied := f.request(t, &owner, http.MethodDelete, "/api/v1/messenger-links/"+confirmed.ID, nil, owner.csrf, messengerTestOrigin)
+	if denied.Code != http.StatusConflict || !strings.Contains(denied.Body.String(), "link_already_confirmed") {
+		t.Fatalf("confirmed link cancellation status=%d body=%s, want 409 link_already_confirmed", denied.Code, denied.Body.String())
+	}
+	var afterDestinations int
+	if err := f.webhookFixture.pool.QueryRow(context.Background(), `SELECT count(*) FROM notifications.messenger_destinations WHERE account_id=$1`, owner.accountID).Scan(&afterDestinations); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.module.GetLink(context.Background(), owner.accountID, confirmed.ID)
+	if err != nil || got.Status != "confirmed" || got.DestinationID == nil || *got.DestinationID != destination.ID || afterDestinations != beforeDestinations {
+		t.Fatalf("confirmed link/destination changed after rejected cancellation: link=%+v destinationCount=%d->%d err=%v", got, beforeDestinations, afterDestinations, err)
+	}
+}
+
+func TestMessengerLinkCancellationWinsAgainstInFlightVerificationFinish(t *testing.T) {
+	f := newWebhookFixture(t)
+	accountID, _ := f.addMonitor(t, "cancel link during verification")
+	m := testMessenger(t, f, true)
+	link := observedTelegramLink(t, f, m, accountID, "private", 321, 321, 801)
+	entered, release := make(chan struct{}), make(chan struct{})
+	m.client = &http.Client{Transport: messengerRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if !strings.HasSuffix(req.URL.Path, "/getMe") {
+			return nil, fmt.Errorf("unexpected Telegram verification request %s", req.URL)
+		}
+		close(entered)
+		<-release
+		return messengerJSONResponse(200, `{"ok":true,"result":{"id":700,"username":"heartbeat_test_bot","is_bot":true}}`), nil
+	})}
+	type result struct {
+		processed bool
+		err       error
+	}
+	done := make(chan result, 1)
+	go func() {
+		processed, err := m.ProcessLink(context.Background())
+		done <- result{processed: processed, err: err}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		close(release)
+		t.Fatal("verification worker did not reach the synthetic provider")
+	}
+	status, code, attempts, _, attemptToken, lease := linkState(t, f, link.ID)
+	if status != "observed" || attempts != 1 || attemptToken == nil || lease == nil {
+		close(release)
+		t.Fatalf("expected claimed observed link before cancellation, state=%s/%s attempts=%d token=%v lease=%v", status, code, attempts, attemptToken, lease)
+	}
+	if err := m.CancelLink(context.Background(), accountID, link.ID); err != nil {
+		close(release)
+		t.Fatalf("cancel while verifier is in flight: %v", err)
+	}
+	close(release)
+	select {
+	case result := <-done:
+		if result.err != nil || !result.processed {
+			t.Fatalf("in-flight verifier result=(processed=%t, err=%v)", result.processed, result.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("in-flight verifier did not finish after release")
+	}
+	status, code, attempts, _, attemptToken, lease = linkState(t, f, link.ID)
+	var observation, candidate []byte
+	if err := f.pool.QueryRow(context.Background(), `SELECT encrypted_observation,encrypted_candidate FROM notifications.messenger_links WHERE id=$1`, link.ID).Scan(&observation, &candidate); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" || code != "link_cancelled" || attempts != 1 || attemptToken != nil || lease != nil || observation != nil || candidate != nil {
+		t.Fatalf("late finish resurrected cancelled link: state=%s/%s attempts=%d token=%v lease=%v observation=%v candidate=%v", status, code, attempts, attemptToken, lease, observation, candidate)
+	}
+}
+
 func TestMessengerGroupLinkCreationRequiresOwnersReadyPrivateChat(t *testing.T) {
 	f := newMessengerAPIFixture(t, true, "group owner without private", "another account with private")
 	owner := f.actors["group owner without private"]

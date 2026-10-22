@@ -161,6 +161,25 @@ func TestMonitorPagedListSearchOrderingQuotaSummaryAndClamp(t *testing.T) {
 	if outOfQuota.Code != http.StatusOK || len(outOfQuotaPage.Monitors) != 1 || outOfQuotaPage.Monitors[0].Name != "Omega" || outOfQuotaPage.Monitors[0].State != "SUBSCRIPTION_REQUIRED" {
 		t.Fatalf("search match outside global quota rank: status=%d page=%+v", outOfQuota.Code, outOfQuotaPage)
 	}
+	// Filtering happens after the global quota rank is assigned. Omega has a
+	// successful last result, but the four enabled rows before it already use
+	// the account's quota, so its visible state is subscription-required.
+	if _, err := f.pool.Exec(context.Background(), `UPDATE monitors.monitors SET outcome='UP',last_checked_at=now() WHERE id=$1`, monitors[5].ID); err != nil {
+		t.Fatal(err)
+	}
+	required := f.request(t, owner, http.MethodGet, "/api/v1/monitors?page=1&pageSize=25&status=SUBSCRIPTION_REQUIRED", nil, "", "")
+	requiredPage := readMonitorPage(t, required.Body.Bytes())
+	if required.Code != http.StatusOK || len(requiredPage.Monitors) != 1 || requiredPage.Monitors[0].Name != "Omega" || requiredPage.Monitors[0].State != "SUBSCRIPTION_REQUIRED" {
+		t.Fatalf("global quota rank must precede status filter: status=%d monitors=%+v", required.Code, requiredPage.Monitors)
+	}
+	if requiredPage.Summary.Total != len(names) || requiredPage.Summary.Up != 2 || requiredPage.Summary.SubscriptionRequired != 1 {
+		t.Fatalf("filtered page must retain global summary: %+v", requiredPage.Summary)
+	}
+	upOnly := f.request(t, owner, http.MethodGet, "/api/v1/monitors?page=1&pageSize=25&status=UP", nil, "", "")
+	upPage := readMonitorPage(t, upOnly.Body.Bytes())
+	if upOnly.Code != http.StatusOK || len(upPage.Monitors) != 2 || upPage.Pagination.Total != 2 || upPage.Summary.Total != len(names) {
+		t.Fatalf("UP filter result=%+v pagination=%+v summary=%+v", upPage.Monitors, upPage.Pagination, upPage.Summary)
+	}
 
 	for _, query := range []string{"%25_", "%E6%9D%B1%E4%BA%AC", "%20%E6%9D%B1%E4%BA%AC%20"} {
 		response := f.request(t, owner, http.MethodGet, "/api/v1/monitors?q="+query, nil, "", "")

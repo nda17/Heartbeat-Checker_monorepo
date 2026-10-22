@@ -28,6 +28,7 @@ var (
 	ErrMessengerNotFound       = errors.New("messenger resource not found")
 	ErrMessengerConflict       = errors.New("messenger version conflict")
 	ErrMessengerNotReady       = errors.New("messenger link not ready")
+	ErrMessengerLinkConfirmed  = errors.New("messenger link already confirmed")
 	ErrMessengerUnavailable    = errors.New("messenger notifications unavailable")
 )
 

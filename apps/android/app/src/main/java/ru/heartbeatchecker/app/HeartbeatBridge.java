@@ -114,6 +114,15 @@ public final class HeartbeatBridge extends ReactContextBaseJavaModule {
         });
     }
     @ReactMethod public void randomUUID(Promise promise) { work(promise, () -> UUID.randomUUID().toString()); }
+    @ReactMethod public void saveMonitorDraft(ReadableMap value, String accountId, String sessionId, Promise promise) {
+        work(promise, () -> new AuthStore(context).monitorDraft(accountId, sessionId, json(value), false));
+    }
+    @ReactMethod public void restoreMonitorDraft(String accountId, String sessionId, Promise promise) {
+        work(promise, () -> new AuthStore(context).monitorDraft(accountId, sessionId, null, false));
+    }
+    @ReactMethod public void clearMonitorDraft(String accountId, String sessionId, Promise promise) {
+        work(promise, () -> new AuthStore(context).monitorDraft(accountId, sessionId, null, true));
+    }
     @ReactMethod public void randomToken(Promise promise) { work(promise, this::secret); }
     @ReactMethod public void sdkCapabilities(Promise promise) {work(promise, checkout::capabilities);}
     @ReactMethod public void sdkTokenize(ReadableMap input, Promise promise) {checkout.tokenize(input, promise);}
@@ -199,6 +208,15 @@ public final class HeartbeatBridge extends ReactContextBaseJavaModule {
         });
     }
     @ReactMethod public void clearRegistration(Promise promise) {work(promise, () -> {new AuthStore(context).remove("registration"); return null;});}
+    @ReactMethod public void saveEmailVerification(String token, Promise promise) {
+        work(promise, () -> new AuthStore(context).emailVerification(token, false));
+    }
+    @ReactMethod public void restoreEmailVerification(Promise promise) {
+        work(promise, () -> new AuthStore(context).emailVerification(null, false));
+    }
+    @ReactMethod public void clearEmailVerification(String token, Promise promise) {
+        work(promise, () -> new AuthStore(context).emailVerification(token, true));
+    }
 
     @ReactMethod public void savePaymentIntent(ReadableMap value, Promise promise) {
         work(promise, () -> {
@@ -248,7 +266,8 @@ public final class HeartbeatBridge extends ReactContextBaseJavaModule {
         UiThreadUtil.runOnUiThread(() -> {
             Activity activity = getCurrentActivity();
             Intent intent = activity == null ? null : activity.getIntent();
-            String link = MainActivity.normalize(intent);
+            String saved = activity instanceof MainActivity ? ((MainActivity) activity).takeEmailVerificationLink() : null;
+            String link = saved == null ? MainActivity.normalize(intent) : saved;
             if (intent != null && link != null) intent.setData(null);
             promise.resolve(link);
         });
@@ -275,13 +294,33 @@ public final class HeartbeatBridge extends ReactContextBaseJavaModule {
 
     @ReactMethod public void pushStatus(Promise promise) {
         work(promise, () -> {
+            JSONObject readiness = PushNotifications.readiness(context);
             if (BuildConfig.ISOLATED_API || BuildConfig.DEV_CLIENT)
-                return new JSONObject().put("enabled", false).put("optedOut", true).put("provider", "").put("status", "not_connected");
+                return readiness.put("enabled", false).put("optedOut", true).put("provider", "").put("status", "not_connected")
+                        .put("bound", false).put("leaseValid", false).put("ready", false);
             JSONObject state = new PushStore(context).read();
             JSONObject installation = state.optJSONObject("installation");
-            return new JSONObject().put("enabled", state.optBoolean("enabled") && !PushWork.locallyBlocked)
+            boolean bound = new AuthStore(context).ownsPush(state), lease = false;
+            if (installation != null && !installation.isNull("leaseExpiresAt"))
+                try {lease = PushContract.instant(installation.getString("leaseExpiresAt")) > System.currentTimeMillis();}
+                catch (RuntimeException invalid) { /* Readiness fails closed. */ }
+            return readiness.put("enabled", state.optBoolean("enabled") && !PushWork.locallyBlocked && bound)
                     .put("optedOut", state.optBoolean("optedOut"))
-                    .put("provider", PushSdk.provider(state)).put("status", installation == null ? "not_connected" : installation.optString("status"));
+                    .put("provider", PushSdk.provider(state)).put("status", installation == null || !bound ? "not_connected" : installation.optString("status"))
+                    .put("bound", bound).put("leaseValid", bound && lease)
+                    .put("ready", bound && !PushWork.locallyBlocked && PushStore.ready(state, System.currentTimeMillis()) && PushNotifications.permitted(context));
+        });
+    }
+    @ReactMethod public void restorePushTest(Promise promise) {work(promise, () -> PushNative.restoreTest(context));}
+    @ReactMethod public void requestPushTest(String requestId, Promise promise) {pushTest(requestId, null, promise);}
+    @ReactMethod public void pushTestStatus(String id, Promise promise) {pushTest(null, id, promise);}
+    private void pushTest(String requestId, String id, Promise promise) {
+        pushIo.execute(() -> {
+            try {promise.resolve(map(PushNative.test(context, requestId, id)));}
+            catch (PushNative.Failure failure) {
+                WritableMap details = Arguments.createMap(); details.putInt("retryAfterSeconds", failure.retryAfterSeconds);
+                promise.reject(failure.status == 429 ? "rate_limited" : "push_test_unavailable", "Push test could not complete", details);
+            } catch (Exception failure) {promise.reject("push_test_unavailable", "Push test could not complete");}
         });
     }
     @ReactMethod public void pushToggle(boolean enabled, boolean allowAccountChange, Promise promise) {

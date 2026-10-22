@@ -104,13 +104,104 @@ final class PushNative {
         } finally {PushSdk.bindingInProgress = false;}
     }
 
-    private static final class Failure extends IOException {
-        final int status; final String code;
-        Failure(int status, String code) {super("Push binding failed"); this.status = status; this.code = code;}
+    static final class Failure extends IOException {
+        final int status; final String code; final int retryAfterSeconds;
+        Failure(int status, String code) {this(status, code, 0);}
+        Failure(int status, String code, int retryAfterSeconds) {super("Push request failed"); this.status = status; this.code = code; this.retryAfterSeconds = retryAfterSeconds;}
+    }
+
+    static JSONObject test(Context context, String requestId, String id) throws Exception {
+        if (BuildConfig.ISOLATED_API || BuildConfig.DEV_CLIENT || (requestId == null) == (id == null) || requestId != null && !PushContract.uuid(requestId)
+                || id != null && !PushContract.uuid(id)) throw new IOException("Test unavailable");
+        AuthStore auth = new AuthStore(context); PushStore store = new PushStore(context);
+        JSONObject active = auth.active(); long epoch = auth.epoch(); JSONObject before = store.read();
+        JSONObject installation = before.optJSONObject("installation");
+        if (active == null || PushWork.locallyBlocked || !auth.ownsPush(before) || installation == null
+                || !PushContract.credential(before.optString("credential"), installation.optString("id"))
+                || requestId != null && (!PushStore.ready(before, System.currentTimeMillis()) || !PushNotifications.permitted(context)))
+            throw new IOException("Push not ready");
+        String account = active.getJSONObject("account").getString("id"), session = active.getJSONObject("session").getString("id");
+        String credential = before.getString("credential"); JSONObject install = before.getJSONObject("installation");
+        if (requestId != null) reserveTest(context, requestId, epoch, account, session, credential, install);
+        String path = "/api/v1/push/native/tests" + (id == null ? "" : "/" + id);
+        JSONObject result;
+        try {result = PushContract.nativeTest(request(id == null ? "POST" : "GET", path,
+                active.getJSONObject("session").getString("token"), credential,
+                id == null ? new JSONObject().put("requestId", requestId) : null));}
+        catch (Failure failure) {
+            if (requestId != null && failure.status >= 400 && failure.status < 500 && failure.status != 408)
+                synchronized (PushStore.LOCK) {
+                    JSONObject state = store.read();
+                    if (testOwner(auth, state, epoch, account, session, credential, install))
+                        store.update(value -> {JSONObject pending = value.optJSONObject("pendingTest");
+                            if (testScope(pending, account, session, install) && requestId.equals(pending.optString("requestId"))) value.remove("pendingTest");});
+                }
+            throw failure;
+        }
+        synchronized (PushStore.LOCK) {
+            JSONObject state = store.read();
+            if (!testOwner(auth, state, epoch, account, session, credential, install)) throw new IOException("Binding changed");
+            if (id != null && !id.equals(result.getJSONObject("test").getString("id"))) throw new IOException("Test mismatch");
+            store.update(value -> {JSONObject pending = value.optJSONObject("pendingTest");
+                JSONObject previousTest = pending == null ? null : pending.optJSONObject("test");
+                if (testScope(pending, account, session, install) && (requestId != null && requestId.equals(pending.optString("requestId"))
+                        || id != null && previousTest != null && id.equals(previousTest.optString("id"))))
+                    pending.put("test", result.getJSONObject("test"));});
+        }
+        return result;
+    }
+
+    static boolean testScope(JSONObject pending, String account, String session, JSONObject install) {
+        return pending != null && account.equals(pending.optString("accountId")) && session.equals(pending.optString("sessionId"))
+                && install.optString("id").equals(pending.optString("installationId"))
+                && install.optLong("bindingGeneration") == pending.optLong("bindingGeneration");
+    }
+
+    private static boolean testOwner(AuthStore auth, JSONObject state, long epoch, String account, String session,
+                                     String credential, JSONObject install) throws Exception {
+        JSONObject active = auth.active(), current = state.optJSONObject("installation");
+        return active != null && auth.epoch() == epoch && !PushWork.locallyBlocked && auth.ownsPush(state) && current != null
+                && account.equals(active.getJSONObject("account").getString("id")) && session.equals(active.getJSONObject("session").getString("id"))
+                && credential.equals(state.optString("credential")) && install.getString("id").equals(current.optString("id"))
+                && install.getLong("bindingGeneration") == current.optLong("bindingGeneration");
+    }
+
+    static void reserveTest(Context context, String requestId, long epoch, String account, String session,
+                            String credential, JSONObject install) throws Exception {
+        synchronized (PushStore.LOCK) {
+            PushStore store = new PushStore(context); AuthStore auth = new AuthStore(context);
+            if (!testOwner(auth, store.read(), epoch, account, session, credential, install)) throw new IOException("Binding changed");
+            store.update(state -> {
+                JSONObject pending = state.optJSONObject("pendingTest");
+                if (!testScope(pending, account, session, install)) pending = null;
+                JSONObject previousTest = pending == null ? null : pending.optJSONObject("test");
+                boolean unresolved = previousTest == null || PushContract.instant(previousTest.getString("nextAllowedAt")) > System.currentTimeMillis();
+                if (pending != null && unresolved && System.currentTimeMillis() - pending.optLong("createdAt") < 10 * 60_000
+                        && !requestId.equals(pending.optString("requestId"))) throw new org.json.JSONException("Resolve previous test first");
+                if (pending == null || !requestId.equals(pending.optString("requestId")))
+                    state.put("pendingTest", new JSONObject().put("requestId", requestId).put("createdAt", System.currentTimeMillis())
+                            .put("accountId", account).put("sessionId", session).put("installationId", install.getString("id"))
+                            .put("bindingGeneration", install.getLong("bindingGeneration")));
+            });
+        }
+    }
+
+    static JSONObject restoreTest(Context context) throws Exception {
+        if (BuildConfig.ISOLATED_API || BuildConfig.DEV_CLIENT) return null;
+        JSONObject state = new PushStore(context).read(), pending = state.optJSONObject("pendingTest"), install = state.optJSONObject("installation");
+        if (pending == null || install == null || !new AuthStore(context).ownsPush(state) || PushWork.locallyBlocked
+                || !pending.optString("accountId").equals(state.optString("accountId")) || !pending.optString("sessionId").equals(state.optString("sessionId"))
+                || !pending.optString("installationId").equals(install.optString("id"))
+                || pending.optLong("bindingGeneration") != install.optLong("bindingGeneration")
+                || !PushContract.uuid(pending.optString("requestId")) || System.currentTimeMillis() - pending.optLong("createdAt") >= 10 * 60_000) return null;
+        JSONObject result = new JSONObject().put("requestId", pending.getString("requestId"));
+        if (pending.optJSONObject("test") != null) result.put("test", pending.getJSONObject("test"));
+        return result;
     }
 
     private static JSONObject request(String method, String path, String bearer, String installationCredential, JSONObject body) throws Exception {
-        if (!path.equals("/api/v1/push/native/bind") && !path.equals("/api/v1/push/native/installation")) throw new IOException();
+        if (!path.equals("/api/v1/push/native/bind") && !path.equals("/api/v1/push/native/installation")
+                && !path.matches("/api/v1/push/native/tests(?:/[0-9a-f-]{36})?")) throw new IOException();
         HttpURLConnection connection = (HttpURLConnection) new URL(ORIGIN + path).openConnection();
         try {
             connection.setInstanceFollowRedirects(false); connection.setConnectTimeout(5000); connection.setReadTimeout(5000);
@@ -134,7 +225,12 @@ final class PushNative {
                     output.write(buffer, 0, count);
                 }
                 JSONObject value = new JSONObject(output.toString(StandardCharsets.UTF_8.name()));
-                if (status < 200 || status >= 300) throw new Failure(status, value.optString("error"));
+                if (status < 200 || status >= 300) {
+                    int retry = 0;
+                    try {retry = Math.max(0, Math.min(3600, Integer.parseInt(connection.getHeaderField("Retry-After"))));}
+                    catch (RuntimeException ignored) { }
+                    throw new Failure(status, value.optString("error"), retry);
+                }
                 return value;
             }
         } finally {connection.disconnect();}

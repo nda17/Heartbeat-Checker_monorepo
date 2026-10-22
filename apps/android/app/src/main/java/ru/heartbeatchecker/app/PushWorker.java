@@ -24,6 +24,7 @@ public final class PushWorker extends Worker {
             if ("delivery".equals(kind)) return delivery();
             if ("registration".equals(kind)) return registration();
             if ("revoke".equals(kind)) return revoke();
+            if ("test_receipts".equals(kind)) return PushTests.receipts(getApplicationContext(), this::isStopped);
         } catch (Exception ignored) {
             // Do not attach exceptions, payloads or credentials to WorkManager output/logs.
         }
@@ -60,6 +61,9 @@ public final class PushWorker extends Worker {
     static Result runDelivery(Context context, String id, BooleanSupplier stopped, DeliveryServices services) throws Exception {
         PushStore store = new PushStore(context);
         if (!PushContract.uuid(id)) return Result.failure();
+        JSONObject queued = store.read().optJSONObject("pending");
+        if (queued != null && queued.optJSONObject(id) != null && "2".equals(queued.getJSONObject(id).optString("v")))
+            return PushTests.delivery(context, id, stopped);
         JSONObject envelope; String credential; long revocation;
         synchronized (PushStore.LOCK) {
             JSONObject state = store.read(); JSONObject pending = state.optJSONObject("pending");

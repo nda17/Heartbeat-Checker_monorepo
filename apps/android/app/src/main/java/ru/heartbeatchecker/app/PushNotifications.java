@@ -34,6 +34,15 @@ final class PushNotifications {
                 && manager.areNotificationsEnabled() && channel != null && channel.getImportance() != NotificationManager.IMPORTANCE_NONE;
     }
 
+    static JSONObject readiness(Context context) throws JSONException {
+        channel(context); NotificationManager manager = context.getSystemService(NotificationManager.class);
+        NotificationChannel channel = manager.getNotificationChannel(CHANNEL);
+        return new JSONObject().put("permissionGranted", Build.VERSION.SDK_INT < 33
+                || context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED)
+                .put("notificationsEnabled", manager.areNotificationsEnabled())
+                .put("channelEnabled", channel != null && channel.getImportance() != NotificationManager.IMPORTANCE_NONE);
+    }
+
     static void clear(Context context) { context.getSystemService(NotificationManager.class).cancelAll(); }
 
     static void display(Context context, JSONObject delivery) throws JSONException {
@@ -59,5 +68,24 @@ final class PushNotifications {
                 .setContentIntent(click).setAutoCancel(true).build();
         context.getSystemService(NotificationManager.class).notify("push:" + delivery.getString("monitorId"), 0, notification);
         new PushStore(context).deliveryStage(PushStore.DeliveryStage.DISPLAY_SUBMITTED);
+    }
+
+    static boolean displayTest(Context context, JSONObject delivery) throws Exception {
+        if (PushWork.locallyBlocked || !new AuthStore(context).ownsPush(new PushStore(context).read()) || !permitted(context)) return false;
+        String id = delivery.getString("deliveryId");
+        Intent intent = new Intent(context, MainActivity.class).setAction(Intent.ACTION_VIEW)
+                .setData(Uri.parse(PushContract.ORIGIN + "/app/settings"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent click = PendingIntent.getActivity(context, id.hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Notification publicVersion = new Notification.Builder(context, CHANNEL).setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle("Heartbeat Checker").setContentText("Проверка уведомлений").build();
+        Notification notification = new Notification.Builder(context, CHANNEL).setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(delivery.getString("title")).setContentText(delivery.getString("body"))
+                .setStyle(new Notification.BigTextStyle().bigText(delivery.getString("body")))
+                .setCategory(Notification.CATEGORY_STATUS).setColor(Color.rgb(0, 127, 115))
+                .setVisibility(Notification.VISIBILITY_PRIVATE).setPublicVersion(publicVersion)
+                .setContentIntent(click).setAutoCancel(true).build();
+        context.getSystemService(NotificationManager.class).notify("test:" + id, 0, notification);
+        return true;
     }
 }

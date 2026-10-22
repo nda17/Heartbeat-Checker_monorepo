@@ -30,6 +30,8 @@ func (s *Server) Register(mux *http.ServeMux, protect func(http.Handler) http.Ha
 		"GET /api/v1/monitors/{id}": s.get, "PATCH /api/v1/monitors/{id}": s.patch, "DELETE /api/v1/monitors/{id}": s.remove,
 		"GET /api/v1/monitors/{id}/results": s.results, "GET /api/v1/monitors/{id}/incidents": s.incidents,
 		"GET /api/v1/monitors/{id}/incidents/{incidentId}": s.incident,
+		"GET /api/v1/monitors/{id}/statistics":             s.statistics,
+		"GET /api/v1/incidents":                            s.incidentFeed,
 		"GET /api/v1/entitlement":                          s.entitlement,
 	}
 	for pattern, handler := range routes {
@@ -117,7 +119,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 
 // No list parameters preserves the legacy response and oldest-first order.
 func listOptions(raw string) (contracts.ListOptions, bool, error) {
-	options := contracts.ListOptions{Page: 1, PageSize: 25, Sort: "created_desc"}
+	options := contracts.ListOptions{Page: 1, PageSize: 25, Sort: "created_desc", Status: "all"}
 	values, err := url.ParseQuery(raw)
 	if err != nil {
 		return options, false, service.ErrInvalid
@@ -146,8 +148,15 @@ func listOptions(raw string) (contracts.ListOptions, bool, error) {
 			}
 		case "sort":
 			switch items[0] {
-			case "created_desc", "created_asc", "name_asc", "name_desc":
+			case "created_desc", "created_asc", "name_asc", "name_desc", "problems_first":
 				options.Sort = items[0]
+			default:
+				return options, true, service.ErrInvalid
+			}
+		case "status":
+			switch items[0] {
+			case "all", "UP", "DOWN", "UNKNOWN", "PAUSED", "SUBSCRIPTION_REQUIRED", "problems":
+				options.Status = items[0]
 			default:
 				return options, true, service.ErrInvalid
 			}
@@ -301,4 +310,88 @@ func (s *Server) entitlement(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) timeZones(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, map[string]any{"timeZones": timezones.Catalog()})
+}
+
+func (s *Server) statistics(w http.ResponseWriter, r *http.Request) {
+	accountID, ok := owner(w, r)
+	if !ok {
+		return
+	}
+	days := 7
+	values, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		failure(w, service.ErrInvalid)
+		return
+	}
+	for key, values := range values {
+		if key != "days" || len(values) != 1 {
+			failure(w, service.ErrInvalid)
+			return
+		}
+		switch values[0] {
+		case "7":
+			days = 7
+		case "30":
+			days = 30
+		case "90":
+			days = 90
+		default:
+			failure(w, service.ErrInvalid)
+			return
+		}
+	}
+	result, err := s.service.Statistics(r.Context(), accountID, r.PathValue("id"), days)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	write(w, 200, map[string]any{"statistics": result})
+}
+
+func (s *Server) incidentFeed(w http.ResponseWriter, r *http.Request) {
+	accountID, ok := owner(w, r)
+	if !ok {
+		return
+	}
+	state, limit, cursor := "all", 25, ""
+	values, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		failure(w, service.ErrInvalid)
+		return
+	}
+	for key, items := range values {
+		if len(items) != 1 {
+			failure(w, service.ErrInvalid)
+			return
+		}
+		switch key {
+		case "state":
+			state = items[0]
+		case "cursor":
+			if items[0] == "" {
+				failure(w, service.ErrInvalid)
+				return
+			}
+			cursor = items[0]
+		case "limit":
+			if items[0] == "" || strings.IndexFunc(items[0], func(r rune) bool { return r < '0' || r > '9' }) != -1 {
+				failure(w, service.ErrInvalid)
+				return
+			}
+			limit, err = strconv.Atoi(items[0])
+			if err != nil {
+				failure(w, service.ErrInvalid)
+				return
+			}
+		default:
+			failure(w, service.ErrInvalid)
+			return
+		}
+	}
+	result, err := s.service.IncidentFeed(r.Context(), accountID, state, limit, cursor)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	write(w, 200, result)
 }

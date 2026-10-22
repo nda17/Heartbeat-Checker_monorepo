@@ -105,6 +105,47 @@ func (m *Messenger) GetLink(ctx context.Context, accountID, id string) (Messenge
 	return link, nil
 }
 
+// CancelLink shares confirmation's account -> link lock order. Once cancelled,
+// ingress and verifier status/attempt guards cannot resurrect this attempt.
+func (m *Messenger) CancelLink(ctx context.Context, accountID, id string) error {
+	if !m.cfg.Enabled {
+		return ErrMessengerUnavailable
+	}
+	if !messengerValidID(id) {
+		return ErrMessengerNotFound
+	}
+	tx, err := m.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	active, err := m.accountActive(ctx, tx, accountID)
+	if err != nil {
+		return err
+	}
+	if !active {
+		return ErrMessengerNotFound
+	}
+	var status string
+	err = tx.QueryRow(ctx, `SELECT status FROM notifications.messenger_links WHERE account_id=$1 AND id=$2 FOR UPDATE`, accountID, id).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrMessengerNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if status == "confirmed" {
+		return ErrMessengerLinkConfirmed
+	}
+	if status == "pending" || status == "observed" || status == "candidate" {
+		_, err = tx.Exec(ctx, `UPDATE notifications.messenger_links SET status='failed',error_code='link_cancelled',encrypted_observation=NULL,encrypted_candidate=NULL,attempt_token=NULL,lease_until=NULL WHERE id=$1 AND account_id=$2`, id, accountID)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 func (m *Messenger) ListDestinations(ctx context.Context, accountID string) ([]MessengerDestination, error) {
 	if err := m.enabled(); err != nil {
 		return nil, err

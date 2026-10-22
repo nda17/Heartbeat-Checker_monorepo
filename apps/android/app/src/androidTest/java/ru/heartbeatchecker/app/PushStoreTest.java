@@ -111,6 +111,65 @@ public final class PushStoreTest {
     }
 
     @Test
+    public void testPushUsesSeparateSeenAndReceiptStateAcrossStoreRestartAndLogoutFence() throws Exception {
+        String id = deliveryId(91);
+        JSONObject testEnvelope = envelope(id, 1, System.currentTimeMillis() + 300_000).put("v", "2");
+        JSONObject content = new JSONObject().put("deliveryId", id).put("kind", "test")
+                .put("occurredAt", Instant.now().toString())
+                .put("expiresAt", Instant.ofEpochMilli(System.currentTimeMillis() + 300_000).toString())
+                .put("title", "Проверка уведомлений")
+                .put("body", "Уведомления работают на этом телефоне.")
+                .put("receiptToken", "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG");
+
+        assertTrue("the opaque test envelope enters the installation-bound local queue", store.reserve(testEnvelope));
+        assertFalse("an exact duplicate is deduplicated", store.reserve(testEnvelope));
+        assertTrue("phone receipt state is persisted separately from incident sequence watermarks",
+                store.read().has("pending"));
+        store.testReceipt(testEnvelope, content, "received");
+
+        AtomicInteger notifications = new AtomicInteger();
+        assertTrue(store.commitTestDelivery(id, notifications::incrementAndGet));
+        assertFalse("a repeated callback cannot submit a second test notification",
+                store.commitTestDelivery(id, notifications::incrementAndGet));
+        assertEquals(1, notifications.get());
+
+        JSONObject afterProcessRestart = new PushStore(context).read();
+        assertFalse("test callback removes only its own pending item", afterProcessRestart.getJSONObject("pending").has(id));
+        assertTrue("test delivery dedupe has its own bounded identifier list", contains(afterProcessRestart.getJSONArray("testSeen"), id));
+        assertFalse("test identifiers never enter incident dedupe state", contains(afterProcessRestart.optJSONArray("seen"), id));
+        JSONObject receipt = afterProcessRestart.getJSONObject("testReceipts").getJSONObject(id);
+        assertTrue("phone receipt survives process restart", receipt.getJSONObject("stages").has("received"));
+        assertFalse("receipt capability remains encrypted at rest", new String(java.nio.file.Files.readAllBytes(
+                new File(context.getNoBackupFilesDir(), "push-state.enc").toPath()), java.nio.charset.StandardCharsets.UTF_8)
+                .contains(content.getString("receiptToken")));
+
+        authStore.logout();
+        assertFalse("logout immediately fences any persisted receipt retry", authStore.ownsPush(afterProcessRestart));
+    }
+
+    @Test
+    public void testNotificationPermissionDenialNeverSubmitsAnAndroidNotification() throws Exception {
+        if (Build.VERSION.SDK_INT < 33) return;
+        boolean wasGranted = context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        if (wasGranted) InstrumentationRegistry.getInstrumentation().getUiAutomation()
+                .revokeRuntimePermission(context.getPackageName(), android.Manifest.permission.POST_NOTIFICATIONS);
+        try {
+            String id = deliveryId(92);
+            JSONObject content = new JSONObject().put("deliveryId", id)
+                    .put("title", "Проверка уведомлений")
+                    .put("body", "Синтетическая проверка без запроса к провайдеру.");
+            assertFalse("a denied Android permission prevents NotificationManager submission",
+                    PushNotifications.displayTest(context, content));
+            assertFalse("permission denial cannot leave a test banner", hasNotification(
+                    context.getSystemService(NotificationManager.class), "test:" + id));
+        } finally {
+            if (wasGranted) InstrumentationRegistry.getInstrumentation().getUiAutomation()
+                    .grantRuntimePermission(context.getPackageName(), android.Manifest.permission.POST_NOTIFICATIONS);
+        }
+    }
+
+    @Test
     public void legacyInstallationWithoutNativeSessionOwnerStaysBehindMigrationGate() throws Exception {
         String legacyToken = "legacy-provider-token-for-upgrade-test";
         store.update(state -> {

@@ -18,7 +18,7 @@ final class PushApi {
     }
 
     JSONObject request(String method, String path, String credential, JSONObject body) throws IOException, JSONException {
-        if (!path.matches("/api/v1/push/(capabilities|pairings(?:/[0-9a-f-]{36}/exchange)?|installation(?:/deliveries/[0-9a-f-]{36})?)"))
+        if (!path.matches("/api/v1/push/(capabilities|pairings(?:/[0-9a-f-]{36}/exchange)?|installation(?:/deliveries/[0-9a-f-]{36}|/test-deliveries/[0-9a-f-]{36}(?:/receipt)?)?)"))
             throw new IOException("Invalid push endpoint");
         HttpsURLConnection connection = (HttpsURLConnection) new URL(PushContract.ORIGIN + path).openConnection();
         connection.setInstanceFollowRedirects(false);

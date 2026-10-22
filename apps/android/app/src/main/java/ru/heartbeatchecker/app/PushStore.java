@@ -149,6 +149,7 @@ final class PushStore {
                 throw new JSONException("Stale installation response");
             if (previous == null || previous.optLong("bindingGeneration") != installation.getLong("bindingGeneration")) {
                 state.remove("pending"); state.remove("seen"); state.remove("sequences");
+                state.remove("testSeen"); state.remove("testReceipts"); state.remove("pendingTest");
             }
             state.put("installation", installation);
             if (accountId != null && sessionId != null) {
@@ -171,27 +172,71 @@ final class PushStore {
                     String key = it.next();
                     if (PushContract.instant(pending.getJSONObject(key).getString("expiresAt")) <= now) it.remove();
                 }
-                if (seen(state, id) || pending.has(id) || pending.length() >= 16) return false;
+                if (seen(state, id, "2".equals(envelope.optString("v")) ? "testSeen" : "seen") || pending.has(id) || pending.length() >= 16) return false;
                 pending.put(id, envelope); state.put("pending", pending); write(state); return true;
             } catch (JSONException error) { throw new IOException("Invalid pending push"); }
         }
     }
 
     private static boolean seen(JSONObject state, String id) {
-        JSONArray seen = state.optJSONArray("seen");
+        return seen(state, id, "seen");
+    }
+
+    private static boolean seen(JSONObject state, String id, String key) {
+        JSONArray seen = state.optJSONArray(key);
         if (seen != null) for (int i = 0; i < seen.length(); i++) if (id.equals(seen.optString(i))) return true;
         return false;
     }
 
     private static void remember(JSONObject state, String id) throws JSONException {
-        JSONArray seen = state.optJSONArray("seen"); if (seen == null) seen = new JSONArray();
-        if (!seen(state, id)) seen.put(id);
+        remember(state, id, "seen");
+    }
+
+    private static void remember(JSONObject state, String id, String key) throws JSONException {
+        JSONArray seen = state.optJSONArray(key); if (seen == null) seen = new JSONArray();
+        if (!seen(state, id, key)) seen.put(id);
         while (seen.length() > 256) seen.remove(0);
-        state.put("seen", seen);
+        state.put(key, seen);
         JSONObject pending = state.optJSONObject("pending"); if (pending != null) pending.remove(id);
     }
 
-    void drop(String id) throws IOException { update(state -> remember(state, id)); }
+    void drop(String id) throws IOException { update(state -> {
+        JSONObject pending = state.optJSONObject("pending"), envelope = pending == null ? null : pending.optJSONObject(id);
+        remember(state, id, envelope != null && "2".equals(envelope.optString("v")) ? "testSeen" : "seen");
+    }); }
+
+    void testReceipt(JSONObject envelope, JSONObject content, String stage) throws IOException {
+        update(state -> {
+            if (!matches(state, envelope, System.currentTimeMillis())) throw new JSONException("Binding changed");
+            JSONObject queue = state.optJSONObject("testReceipts"); if (queue == null) queue = new JSONObject();
+            for (Iterator<String> ids = queue.keys(); ids.hasNext();) {
+                String key = ids.next();
+                if (!matches(state, queue.getJSONObject(key).getJSONObject("envelope"), System.currentTimeMillis())) ids.remove();
+            }
+            String id = envelope.getString("deliveryId"); JSONObject item = queue.optJSONObject(id);
+            if (item == null) {
+                if (queue.length() >= 16) throw new JSONException("Receipt queue full");
+                item = new JSONObject().put("envelope", envelope).put("receiptToken", content.getString("receiptToken"))
+                        .put("stages", new JSONObject()); queue.put(id, item);
+            }
+            JSONObject stages = item.getJSONObject("stages");
+            if (!stages.has(stage)) stages.put(stage, 0);
+            state.put("testReceipts", queue);
+        });
+    }
+
+    boolean commitTestDelivery(String id, Runnable display) throws IOException {
+        synchronized (LOCK) {
+            JSONObject state = read();
+            try {
+                JSONObject pending = state.optJSONObject("pending"), envelope = pending == null ? null : pending.optJSONObject(id);
+                if (envelope == null || !"2".equals(envelope.optString("v")) || !matches(state, envelope, System.currentTimeMillis())
+                        || seen(state, id, "testSeen")) return false;
+                // Durable dedupe precedes notify. A crash cannot produce a second test banner.
+                remember(state, id, "testSeen"); write(state); display.run(); return true;
+            } catch (JSONException invalid) {throw new IOException("Invalid test delivery");}
+        }
+    }
 
     boolean commitDelivery(String id, JSONObject delivery, Runnable display) throws IOException {
         synchronized (LOCK) {

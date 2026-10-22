@@ -45,7 +45,7 @@ public final class MainActivitySmokeTest {
     private static final String SESSION = "22222222-2222-4222-8222-222222222222";
 
     @Test
-    public void bundledOfflineJavascriptRegistersAndRendersNativeAuthScreen() throws Exception {
+    public void bundledOfflineJavascriptRendersNativePublicLandingBeforeLogin() throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         AssetManager assets = context.getAssets();
         byte[] bundle;
@@ -59,7 +59,17 @@ public final class MainActivitySmokeTest {
 
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
             assertTrue("a rendered React Native screen is required; Activity launch alone is insufficient",
-                    awaitVisibleText(scenario, "Войти через Яндекс"));
+                    awaitVisibleText(scenario, "Круглосуточный мониторинг ваших сайтов и сервисов."));
+            assertTrue("the full public landing must offer registration", awaitVisibleText(scenario, "Создать аккаунт"));
+            saveScreenshot(scenario, "Круглосуточный мониторинг ваших сайтов и сервисов.", "Войти через Яндекс", "public-landing.png");
+
+            tapText(scenario, "Возможности");
+            assertTrue("the landing navigation must reach the native features section", awaitVisibleText(scenario, "Три типа проверки"));
+            saveScreenshot(scenario, "Три типа проверки", "Войти через Яндекс", "public-features.png");
+
+            scrollToTop(scenario);
+            tapText(scenario, "Войти");
+            assertTrue("public login action must open the native authentication screen", awaitVisibleText(scenario, "Войти через Яндекс"));
             saveScreenshot(scenario, "Войти", "Мониторы", "login.png");
         }
     }
@@ -67,6 +77,8 @@ public final class MainActivitySmokeTest {
     @Test
     public void authModesAndPasswordVisibilityRenderInTheBundledReactNativeScreen() throws Exception {
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+            assertTrue(awaitVisibleText(scenario, "Круглосуточный мониторинг ваших сайтов и сервисов."));
+            tapText(scenario, "Войти");
             assertTrue(awaitVisibleText(scenario, "Войти через Яндекс"));
 
             tapDescription(scenario, "Показать пароль");
@@ -166,6 +178,54 @@ public final class MainActivitySmokeTest {
     }
 
     @Test
+    public void emailVerificationColdStartStoresPendingLinkAndScrubsActivityIntent() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        AuthStore auth = new AuthStore(context);
+        clearAuthStore(auth);
+        String token = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
+        Intent verification = new Intent(Intent.ACTION_VIEW).setClass(context, MainActivity.class)
+                .setData(Uri.parse("https://heartbeat-checker.ru/app/settings#verify-email=" + token));
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(verification)) {
+            JSONObject pending = auth.emailVerification(null, false);
+            assertNotNull("cold email link is durably retained before login", pending);
+            assertEquals(token, pending.getString("token"));
+            assertNull("verification link never creates an authenticated session", auth.active());
+            assertTrue("initially unauthenticated token remains unbound", pending.isNull("accountId") && pending.isNull("sessionId"));
+            scenario.onActivity(activity -> assertNull("consumed email token is scrubbed from Activity intent",
+                    activity.getIntent().getData()));
+        } finally {
+            clearAuthStore(auth);
+        }
+    }
+
+    @Test
+    public void warmEmailLinkReplacesUnconsumedColdHandoffForTheNewToken() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        AuthStore auth = new AuthStore(context);
+        clearAuthStore(auth);
+        String coldToken = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
+        String warmToken = "BCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghi";
+        Intent cold = new Intent(Intent.ACTION_VIEW).setClass(context, MainActivity.class)
+                .setData(Uri.parse("https://heartbeat-checker.ru/app/settings#verify-email=" + coldToken));
+        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(cold)) {
+            Intent warm = new Intent(Intent.ACTION_VIEW, Uri.parse(
+                    "https://heartbeat-checker.ru/app/settings#verify-email=" + warmToken));
+            scenario.onActivity(activity -> activity.onNewIntent(warm));
+            JSONObject pending = auth.emailVerification(null, false);
+            assertNotNull(pending);
+            assertEquals("new warm link owns durable storage", warmToken, pending.getString("token"));
+            scenario.onActivity(activity -> {
+                assertNull("stale cold handoff is cleared before the warm link is forwarded",
+                        activity.takeEmailVerificationLink());
+                assertEquals("Activity intent retains only the reviewed settings route",
+                        "https://heartbeat-checker.ru/app/settings", activity.getIntent().getDataString());
+            });
+        } finally {
+            clearAuthStore(auth);
+        }
+    }
+
+    @Test
     public void packageKeepsStableUpgradeIdentityAndDoesNotExposeShareTarget() throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         assertEquals("ru.heartbeatchecker.app", context.getPackageName());
@@ -232,6 +292,29 @@ public final class MainActivitySmokeTest {
 
     private static void tapText(ActivityScenario<MainActivity> scenario, String text) throws InterruptedException {
         tapMatchingView(scenario, text, false);
+    }
+
+    private static void scrollToTop(ActivityScenario<MainActivity> scenario) throws InterruptedException {
+        scenario.onActivity(activity -> {
+            View scroll = findScrollView(activity.getWindow().getDecorView());
+            assertNotNull("public landing must expose its scrolling content", scroll);
+            scroll.scrollTo(0, 0);
+        });
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        Thread.sleep(100);
+    }
+
+    private static View findScrollView(View view) {
+        for (Class<?> type = view.getClass(); type != null; type = type.getSuperclass()) {
+            if (type.getSimpleName().contains("ScrollView")) return view;
+        }
+        if (!(view instanceof ViewGroup)) return null;
+        ViewGroup group = (ViewGroup) view;
+        for (int index = 0; index < group.getChildCount(); index++) {
+            View found = findScrollView(group.getChildAt(index));
+            if (found != null) return found;
+        }
+        return null;
     }
 
     private static void tapDescription(ActivityScenario<MainActivity> scenario, String description) throws InterruptedException {

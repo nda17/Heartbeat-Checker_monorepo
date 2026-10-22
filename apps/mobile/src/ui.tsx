@@ -9,6 +9,7 @@ import React, {
 } from "react";
 import {
   AccessibilityInfo,
+  ActivityIndicator,
   Animated,
   AppState,
   Image,
@@ -20,6 +21,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  TextInputProps,
   useColorScheme,
   View,
   ViewStyle,
@@ -355,6 +357,14 @@ export function Field({
   keyboardType,
   placeholder,
   multiline,
+  hint,
+  error,
+  autoComplete,
+  textContentType,
+  returnKeyType,
+  onSubmitEditing,
+  maxLength,
+  editable = true,
 }: {
   label: string;
   value: string;
@@ -363,19 +373,38 @@ export function Field({
   keyboardType?: "email-address" | "numeric" | "number-pad" | "url";
   placeholder?: string;
   multiline?: boolean;
+  hint?: string;
+  error?: string;
+  autoComplete?: TextInputProps["autoComplete"];
+  textContentType?: TextInputProps["textContentType"];
+  returnKeyType?: TextInputProps["returnKeyType"];
+  onSubmitEditing?: () => void;
+  maxLength?: number;
+  editable?: boolean;
 }) {
   const c = usePalette();
   const [passwordVisible, setPasswordVisible] = useState(false);
+  const [focused, setFocused] = useState(false);
   return (
     <View style={styles.field}>
       <Label>{label}</Label>
       <View style={styles.inputWrap}>
         <TextInput
           accessibilityLabel={label}
+          accessibilityHint={error || hint}
           style={[
             styles.input,
             secure ? styles.passwordInput : null,
-            { color: c.text, backgroundColor: c.card, borderColor: c.border },
+            {
+              color: c.text,
+              backgroundColor: c.card,
+              borderColor: error
+                ? c.dangerText
+                : focused
+                  ? c.accentText
+                  : c.border,
+              opacity: editable ? 1 : 0.6,
+            },
           ]}
           value={value}
           onChangeText={onChangeText}
@@ -386,6 +415,14 @@ export function Field({
           placeholder={placeholder}
           placeholderTextColor={c.subtle}
           multiline={multiline}
+          autoComplete={autoComplete}
+          textContentType={textContentType}
+          returnKeyType={returnKeyType}
+          onSubmitEditing={onSubmitEditing}
+          maxLength={maxLength}
+          editable={editable}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
         />
         {secure ? (
           <Pressable
@@ -394,6 +431,7 @@ export function Field({
               passwordVisible ? "Скрыть пароль" : "Показать пароль"
             }
             accessibilityState={{ selected: passwordVisible }}
+            disabled={!editable}
             onPress={() => setPasswordVisible((visible) => !visible)}
             style={styles.passwordToggle}
           >
@@ -406,6 +444,14 @@ export function Field({
           </Pressable>
         ) : null}
       </View>
+      {error || hint ? (
+        <Text
+          accessibilityLiveRegion={error ? "polite" : undefined}
+          style={[styles.fieldHint, { color: error ? c.dangerText : c.subtle }]}
+        >
+          {error || hint}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -417,6 +463,8 @@ export function Button({
   danger,
   icon,
   iconName,
+  loading = false,
+  loadingLabel,
 }: {
   label: string;
   onPress: () => void;
@@ -425,16 +473,21 @@ export function Button({
   danger?: boolean;
   icon?: React.ReactNode;
   iconName?: IconName;
+  loading?: boolean;
+  loadingLabel?: string;
 }) {
   const c = usePalette();
   const reduced = useContext(ReducedTransparency);
+  const [focused, setFocused] = useState(false);
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ disabled: !!disabled }}
-      disabled={disabled}
+      accessibilityState={{ disabled: !!disabled || loading, busy: loading }}
+      disabled={disabled || loading}
       onPress={onPress}
-      style={[
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      style={({ pressed }) => [
         styles.button,
         {
           backgroundColor: danger
@@ -444,50 +497,140 @@ export function Button({
                 ? c.card
                 : c.glass
               : c.accent,
-          borderColor: danger
-            ? c.danger
-            : secondary
-              ? reduced
-                ? c.border
-                : c.glassBorder
-              : c.accent,
-          opacity: disabled ? 0.5 : 1,
+          borderColor: focused
+            ? c.text
+            : danger
+              ? c.danger
+              : secondary
+                ? reduced
+                  ? c.border
+                  : c.glassBorder
+                : c.accent,
+          opacity: disabled && !loading ? 0.5 : pressed ? 0.76 : 1,
+          transform: [{ scale: pressed ? 0.99 : 1 }],
         },
       ]}
     >
       <View style={styles.buttonContent}>
-        {icon ??
+        {loading ? (
+          <ActivityIndicator color={secondary ? c.accentText : "#fff"} />
+        ) : (
+          (icon ??
           (iconName ? (
             <Icon name={iconName} color={secondary ? c.accentText : "#fff"} />
-          ) : null)}
+          ) : null))
+        )}
         <Text
           style={[
             styles.buttonText,
             { color: secondary ? c.accentText : "#fff" },
           ]}
         >
-          {label}
+          {loading ? (loadingLabel ?? label) : label}
         </Text>
       </View>
     </Pressable>
   );
 }
 export function ErrorNotice({ message }: { message: string }) {
+  return message ? <Notice message={message} tone="danger" /> : null;
+}
+export function Notice({
+  message,
+  tone = "info",
+}: {
+  message: string;
+  tone?: "info" | "danger" | "success";
+}) {
   const c = usePalette();
-  return message ? (
-    <Text
-      accessibilityRole="alert"
-      style={[styles.notice, { color: c.dangerText }]}
+  const color = tone === "danger" ? c.dangerText : c.accentText;
+  return (
+    <View
+      style={[
+        styles.noticeBox,
+        {
+          backgroundColor: c.card,
+          borderColor: c.border,
+          borderLeftColor: color,
+        },
+      ]}
     >
-      {message}
-    </Text>
-  ) : null;
+      <Icon
+        name={
+          tone === "danger" ? "alert" : tone === "success" ? "check" : "info"
+        }
+        color={color}
+        size={20}
+      />
+      <Text
+        accessibilityRole={tone === "danger" ? "alert" : undefined}
+        accessibilityLiveRegion="polite"
+        style={[styles.notice, { color: tone === "danger" ? color : c.text }]}
+      >
+        {message}
+      </Text>
+    </View>
+  );
+}
+export function DetailRow({ label, value }: { label: string; value: string }) {
+  const c = usePalette();
+  return (
+    <View style={[styles.detailRow, { borderBottomColor: c.border }]}>
+      <Text style={[styles.detailLabel, { color: c.subtle }]}>{label}</Text>
+      <Text selectable style={[styles.detailValue, { color: c.text }]}>
+        {value}
+      </Text>
+    </View>
+  );
+}
+export function TextAction({
+  label,
+  onPress,
+  disabled = false,
+  iconName,
+}: {
+  label: string;
+  onPress: () => void;
+  disabled?: boolean;
+  iconName?: IconName;
+}) {
+  const c = usePalette();
+  const [focused, setFocused] = useState(false);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      style={({ pressed }) => [
+        styles.textAction,
+        {
+          opacity: disabled ? 0.5 : pressed ? 0.65 : 1,
+          borderColor: focused ? c.accentText : "transparent",
+        },
+      ]}
+    >
+      {iconName ? <Icon name={iconName} size={20} /> : null}
+      <Text style={[styles.textActionLabel, { color: c.accentText }]}>
+        {label}
+      </Text>
+    </Pressable>
+  );
 }
 export function Spacer() {
   return <View style={{ height: 12 }} />;
 }
 export const styles = StyleSheet.create({
-  page: { padding: 18, paddingBottom: 42, gap: 14 },
+  page: {
+    padding: 18,
+    paddingBottom: 42,
+    gap: 14,
+    width: "100%",
+    maxWidth: 760,
+    alignSelf: "center",
+  },
   brand: { flexDirection: "row", alignItems: "center", gap: 9, minHeight: 34 },
   brandCentered: { justifyContent: "center" },
   brandLogo: { width: 32, height: 32, borderRadius: 9 },
@@ -496,7 +639,12 @@ export const styles = StyleSheet.create({
   brandLight: { fontWeight: "500" },
   header: { width: "100%" },
   title: { fontSize: 24, lineHeight: 31, fontWeight: "700", flexShrink: 1 },
-  subtitle: { fontSize: 19, fontWeight: "600", marginBottom: 8 },
+  subtitle: {
+    fontSize: 19,
+    lineHeight: 26,
+    fontWeight: "700",
+    marginBottom: 2,
+  },
   card: {
     borderWidth: 1,
     borderRadius: 16,
@@ -536,7 +684,7 @@ export const styles = StyleSheet.create({
   field: { gap: 5 },
   inputWrap: { position: "relative" },
   input: {
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 11,
@@ -585,5 +733,49 @@ export const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 9,
   },
-  notice: { fontSize: 14, lineHeight: 20 },
+  notice: { fontSize: 14, lineHeight: 21, flex: 1 },
+  noticeBox: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 9,
+    padding: 12,
+    borderWidth: 1,
+    borderLeftWidth: 3,
+    borderRadius: 10,
+  },
+  fieldHint: { fontSize: 13, lineHeight: 19 },
+  detailRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    gap: 7,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  detailLabel: { fontSize: 14, lineHeight: 21, flexGrow: 1 },
+  detailValue: {
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: "600",
+    flexShrink: 1,
+  },
+  textAction: {
+    minWidth: 48,
+    minHeight: 48,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 8,
+  },
+  textActionLabel: {
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: "600",
+    textAlign: "center",
+    flexShrink: 1,
+  },
 });

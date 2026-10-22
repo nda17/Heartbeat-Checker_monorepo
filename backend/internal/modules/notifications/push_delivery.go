@@ -221,7 +221,7 @@ func (p *Push) ClaimPush(ctx context.Context) (*PushAttempt, error) {
 			return nil, e
 		}
 		var active int
-		if e = tx.QueryRow(ctx, `SELECT count(*) FROM notifications.push_deliveries WHERE status='leased' AND lease_until>now()`).Scan(&active); e != nil {
+		if e = tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM notifications.push_deliveries WHERE status='leased' AND lease_until>now())+(SELECT count(*) FROM notifications.push_test_deliveries WHERE status='leased' AND lease_until>now())`).Scan(&active); e != nil {
 			tx.Rollback(ctx)
 			return nil, e
 		}
@@ -367,8 +367,11 @@ func (p *Push) CompletePush(ctx context.Context, a PushAttempt, sendErr error) e
 
 func (p *Push) ProcessDelivery(ctx context.Context) (bool, error) {
 	a, err := p.ClaimPush(ctx)
-	if err != nil || a == nil {
+	if err != nil {
 		return false, err
+	}
+	if a == nil {
+		return p.processTestDelivery(ctx)
 	}
 	valid, err := p.beforePush(ctx, *a)
 	if err != nil || !valid {
@@ -460,6 +463,8 @@ func (p *Push) Cleanup(ctx context.Context, tx pgx.Tx) error {
 		}
 	}
 	for _, query := range []string{
+		`UPDATE notifications.push_test_deliveries SET status='failed',attempt_token=NULL,lease_until=NULL,completed_at=now(),error_code='deadline_exceeded' WHERE id IN (SELECT id FROM notifications.push_test_deliveries WHERE status IN ('pending','leased') AND deadline_at<=now() ORDER BY deadline_at,id LIMIT 500 FOR UPDATE SKIP LOCKED)`,
+		`DELETE FROM notifications.push_test_deliveries WHERE id IN (SELECT id FROM notifications.push_test_deliveries WHERE created_at<now()-interval '24 hours' ORDER BY created_at,id LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`UPDATE notifications.push_deliveries SET status='failed',attempt_token=NULL,lease_until=NULL,completed_at=now(),error_code='deadline_exceeded' WHERE id IN (SELECT id FROM notifications.push_deliveries WHERE status IN ('pending','leased') AND deadline_at<=now() ORDER BY deadline_at,id LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 		`DELETE FROM notifications.push_deliveries WHERE id IN (SELECT id FROM notifications.push_deliveries WHERE completed_at<now()-interval '30 days' ORDER BY completed_at,id LIMIT 500 FOR UPDATE SKIP LOCKED)`,
 	} {

@@ -15,6 +15,7 @@ import java.util.Set;
 public class MainActivity extends ReactActivity {
     private static final String ORIGIN = "https://heartbeat-checker.ru";
     private static final String SECRET = "[A-Za-z0-9_-]{20,512}";
+    private String initialEmailVerificationLink;
 
     @Override protected String getMainComponentName() { return "HeartbeatChecker"; }
     @Override protected ReactActivityDelegate createReactActivityDelegate() {
@@ -26,6 +27,15 @@ public class MainActivity extends ReactActivity {
         if (intent != null && Intent.ACTION_VIEW.equals(intent.getAction())) {
             String link = normalize(intent);
             if (link == null) { super.onCreate(state); finish(); return; }
+            String verification = emailVerificationToken(link);
+            if (verification != null) {
+                try {new AuthStore(this).emailVerification(verification, false);}
+                catch (Exception failure) {intent.setData(null); super.onCreate(state); finish(); return;}
+                initialEmailVerificationLink = link;
+                // The encrypted handoff is durable before the sensitive intent is scrubbed.
+                intent.setData(Uri.parse(ORIGIN + "/app/settings")); setIntent(intent);
+                super.onCreate(state); return;
+            }
             intent.setData(Uri.parse(link)); setIntent(intent);
         }
         super.onCreate(state);
@@ -35,6 +45,18 @@ public class MainActivity extends ReactActivity {
         if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) return;
         String link = normalize(intent);
         if (link == null) return;
+        String verification = emailVerificationToken(link);
+        if (verification != null) {
+            try {new AuthStore(this).emailVerification(verification, false);}
+            catch (Exception failure) {intent.setData(null); return;}
+            // The newer durable warm link supersedes an unconsumed cold link.
+            initialEmailVerificationLink = null;
+            Intent event = new Intent(intent).setData(Uri.parse(link));
+            intent.setData(Uri.parse(ORIGIN + "/app/settings")); setIntent(intent);
+            super.onNewIntent(event);
+            // React receives the reviewed link; the Activity does not retain its token.
+            setIntent(intent); return;
+        }
         intent.setData(Uri.parse(link)); setIntent(intent);
         super.onNewIntent(intent);
     }
@@ -47,6 +69,9 @@ public class MainActivity extends ReactActivity {
                 || uri.getUserInfo() != null || uri.getPort() != -1 || uri.toString().length() > 16 * 1024) return null;
         String path = uri.getEncodedPath();
         if (path == null) return null;
+        if (path.equals("/app/settings") && uri.getEncodedQuery() == null
+                && uri.getEncodedFragment() != null && uri.getEncodedFragment().matches("verify-email=[A-Za-z0-9_-]{43}"))
+            return ORIGIN + "/app/settings#" + uri.getEncodedFragment();
         if (path.equals("/app") || path.equals("/app/settings") || path.equals("/app/billing"))
             return LinkPolicy.appLink(uri.toString());
         String token = uri.getFragment();
@@ -86,6 +111,17 @@ public class MainActivity extends ReactActivity {
             return safe.build().toString();
         }
         return null;
+    }
+
+    static String emailVerificationToken(String link) {
+        String prefix = ORIGIN + "/app/settings#verify-email=";
+        if (link == null || !link.startsWith(prefix)) return null;
+        String token = link.substring(prefix.length());
+        return PushContract.secret(token) ? token : null;
+    }
+
+    String takeEmailVerificationLink() {
+        String link = initialEmailVerificationLink; initialEmailVerificationLink = null; return link;
     }
 
     private static boolean keys(Uri uri, String... expected) {

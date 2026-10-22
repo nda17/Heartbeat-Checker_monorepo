@@ -23,6 +23,7 @@ import java.util.concurrent.Executors;
 final class PushWork {
     static final String DELIVERY = "heartbeat-push-delivery";
     static final String REGISTRATION = "heartbeat-push-registration";
+    static final String RECEIPTS = "heartbeat-push-test-receipts";
     static final ExecutorService IO = Executors.newSingleThreadExecutor();
     static volatile boolean locallyBlocked;
     static volatile long localRevocation;
@@ -68,6 +69,10 @@ final class PushWork {
         WorkManager.getInstance(context).enqueueUniqueWork(REGISTRATION, ExistingWorkPolicy.REPLACE, work("registration", "", REGISTRATION));
     }
 
+    static void receipts(Context context) {
+        WorkManager.getInstance(context).enqueueUniqueWork(RECEIPTS, ExistingWorkPolicy.APPEND_OR_REPLACE, work("test_receipts", "", RECEIPTS));
+    }
+
     static void permissionsChanged(Context context) {
         if (!PushNotifications.permitted(context)) {
             synchronized (PushStore.LOCK) {
@@ -84,6 +89,7 @@ final class PushWork {
             try {
                 JSONObject state = new PushStore(app).read();
                 if (state.has("retired")) revoke(app);
+                if (state.has("testReceipts")) receipts(app);
                 if (state.optBoolean("enabled") && new AuthStore(app).ownsPush(state)) {
                     permissionsChanged(app);
                     JSONObject pending = state.optJSONObject("pending");
@@ -117,7 +123,7 @@ final class PushWork {
             store.update(state -> {
                 JSONObject installation = state.optJSONObject("installation");
                 if (installation != null) installation.put("status", "session_revoked");
-                state.remove("pending");
+                state.remove("pending"); state.remove("testReceipts"); state.remove("pendingTest");
             });
             PushNotifications.clear(context);
         }
@@ -132,6 +138,7 @@ final class PushWork {
         try {
             WorkManager.getInstance(context).cancelAllWorkByTag(DELIVERY);
             WorkManager.getInstance(context).cancelAllWorkByTag(REGISTRATION);
+            WorkManager.getInstance(context).cancelAllWorkByTag(RECEIPTS);
         } catch (RuntimeException ignored) { }
     }
 
@@ -146,7 +153,7 @@ final class PushWork {
                 }
                 state.put("retired", retired).put("enabled", false).put("optedOut", true);
                 for (String key : new String[]{"credential", "installation", "pair", "token", "pending", "seen", "sequences", "pendingBind",
-                        "registeredToken", "registeredPermission", "everExchangeAttempted"}) state.remove(key);
+                        "registeredToken", "registeredPermission", "everExchangeAttempted", "testSeen", "testReceipts", "pendingTest"}) state.remove(key);
             }); } finally {
                 blockLocally(context);
                 // Server revocation owns account access. Deleting the SDK token asynchronously
@@ -165,7 +172,7 @@ final class PushWork {
                 if (!credential.isEmpty()) retired.put(new JSONObject().put("credential", credential).put("attempts", 0));
                 state.put("retired", retired).put("enabled", false);
                 for (String key : new String[]{"credential", "installation", "pair", "pending", "seen", "sequences", "pendingBind",
-                        "registeredToken", "registeredPermission", "accountId", "sessionId"}) state.remove(key);
+                        "registeredToken", "registeredPermission", "accountId", "sessionId", "testSeen", "testReceipts", "pendingTest"}) state.remove(key);
             });
         }
         revoke(context);

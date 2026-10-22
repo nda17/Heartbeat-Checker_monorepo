@@ -13,7 +13,7 @@ import {
   WebViewMessageEvent,
   WebViewNavigation,
 } from "react-native-webview";
-import { api, errorText } from "./api";
+import { api, errorText, ORIGIN } from "./api";
 import { native } from "./native";
 import type { AuthResult, Provider, Registration } from "./types";
 import {
@@ -24,11 +24,14 @@ import {
   Field,
   GlassBackdrop,
   Label,
+  Notice,
+  TextAction,
   Title,
   usePalette,
 } from "./ui";
 
 type Mode = "login" | "register" | "confirm" | "reset" | "reset-confirm";
+type SavedRegistration = Registration & { receivedAt?: number };
 type CaptchaAction =
   | "login"
   | "register"
@@ -245,32 +248,85 @@ function Captcha({
 export function AuthScreen({
   onAuthed,
   resetToken,
+  initialMode = "login",
+  initialEmail = "",
+  resumeRegistration = true,
+  onBack,
+  onHelp,
 }: {
   onAuthed: (value: AuthResult) => Promise<void>;
   resetToken?: string | null;
+  initialMode?: "login" | "register" | "reset";
+  initialEmail?: string;
+  resumeRegistration?: boolean;
+  onBack?: () => void;
+  onHelp?: () => void;
 }) {
   const [mode, setMode] = useState<Mode>(
-    resetToken ? "reset-confirm" : "login",
+    resetToken ? "reset-confirm" : initialMode,
   );
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(initialEmail);
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [code, setCode] = useState("");
-  const [registration, setRegistration] = useState<Registration | null>(null);
+  const [registration, setRegistration] = useState<SavedRegistration | null>(
+    null,
+  );
   const [captcha, setCaptcha] = useState<CaptchaAction | null>(null);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const [busyAction, setBusyAction] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [secondsUntilResend, setSecondsUntilResend] = useState(0);
+  const challengeClock = useRef<{ server: number; monotonic: number } | null>(
+    null,
+  );
+  const restorePending = useRef(true);
   const palette = usePalette();
+  const rememberRegistration = useCallback(
+    (value: SavedRegistration, fresh: boolean) => {
+      const server = Date.parse(value.challenge.serverNow);
+      const receivedAt = fresh ? Date.now() : value.receivedAt;
+      // Keep a server-based clock for this process. Older saved challenges lack
+      // a receipt timestamp and fall back to the device's absolute time.
+      const elapsed =
+        receivedAt && Number.isFinite(receivedAt)
+          ? Math.max(0, Date.now() - receivedAt)
+          : 0;
+      const estimatedServer =
+        Number.isFinite(server) && receivedAt ? server + elapsed : Date.now();
+      challengeClock.current = {
+        server: estimatedServer,
+        monotonic: performance.now(),
+      };
+      setRegistration({ ...value, ...(receivedAt ? { receivedAt } : {}) });
+      const deadline = Date.parse(value.challenge.resendAvailableAt);
+      setSecondsUntilResend(
+        Number.isFinite(deadline)
+          ? Math.max(0, Math.ceil((deadline - estimatedServer) / 1000))
+          : 0,
+      );
+    },
+    [],
+  );
   useEffect(() => {
-    if (resetToken) return;
+    if (resetToken) {
+      restorePending.current = false;
+      setMode("reset-confirm");
+      setError("");
+      setNotice("");
+    }
+  }, [resetToken]);
+  useEffect(() => {
+    if (resetToken || initialMode === "reset" || !resumeRegistration) return;
     let live = true;
     void native
       .restoreRegistration()
       .then((saved) => {
-        if (live && saved) {
-          setRegistration(saved);
+        if (live && restorePending.current && saved) {
+          rememberRegistration(saved, false);
           setMode("confirm");
           setEmail(saved.challenge.email);
         }
@@ -279,24 +335,47 @@ export function AuthScreen({
     return () => {
       live = false;
     };
-  }, [resetToken]);
+  }, [resetToken, initialMode, resumeRegistration, rememberRegistration]);
+  useEffect(() => {
+    if (mode !== "confirm" || !registration || !challengeClock.current) return;
+    const clock = challengeClock.current;
+    const deadline = Date.parse(registration.challenge.resendAvailableAt);
+    const tick = () =>
+      setSecondsUntilResend(
+        Number.isFinite(deadline)
+          ? Math.max(
+              0,
+              Math.ceil(
+                (deadline -
+                  clock.server -
+                  (performance.now() - clock.monotonic)) /
+                  1000,
+              ),
+            )
+          : 0,
+      );
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [mode, registration]);
 
-  const run = useCallback(
-    async (work: () => Promise<void>) => {
-      if (busy) return;
-      setBusy(true);
-      setError("");
-      setNotice("");
-      try {
-        await work();
-      } catch (cause) {
-        setError(errorText(cause));
-      } finally {
-        setBusy(false);
-      }
-    },
-    [busy],
-  );
+  const run = useCallback(async (work: () => Promise<void>, action = "") => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setBusyAction(action);
+    setError("");
+    setNotice("");
+    try {
+      await work();
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+      setBusyAction("");
+    }
+  }, []);
 
   const captchaResult = (token: string) => {
     const action = captcha;
@@ -324,9 +403,10 @@ export function AuthScreen({
             turnstileToken: token,
           },
         });
-        await native.saveRegistration(result);
+        const saved = { ...result, receivedAt: Date.now() };
+        await native.saveRegistration(saved);
         setPassword("");
-        setRegistration(result);
+        rememberRegistration(saved, true);
         setMode("confirm");
         setNotice("Код отправлен на email. Введите шесть цифр.");
         return;
@@ -360,9 +440,14 @@ export function AuthScreen({
             },
           },
         );
-        const updated = { ...registration, challenge: result.challenge };
+        const updated = {
+          ...registration,
+          challenge: result.challenge,
+          receivedAt: Date.now(),
+        };
         await native.saveRegistration(updated);
-        setRegistration(updated);
+        rememberRegistration(updated, true);
+        setCode("");
         setNotice("Новый код отправлен. Используйте только последнее письмо.");
         return;
       }
@@ -377,7 +462,7 @@ export function AuthScreen({
           "Если аккаунт существует, письмо со ссылкой отправлено. Откройте ссылку на этом устройстве.",
         );
       }
-    });
+    }, action);
   };
 
   const oauth = (provider: Provider) =>
@@ -406,12 +491,29 @@ export function AuthScreen({
         mode: "login",
       });
       await native.openCustomTab(result.authorizationUrl);
-    });
+    }, provider);
 
   const changeMode = (next: Mode) => {
+    restorePending.current = false;
     setError("");
     setNotice("");
+    setPassword("");
+    setNewPassword("");
+    setCode("");
     setMode(next);
+  };
+  const openLegal = (path: "/terms" | "/privacy") =>
+    void run(() => native.openCustomTab(`${ORIGIN}${path}`), path);
+  const submit = () => {
+    if (busyRef.current) return;
+    restorePending.current = false;
+    if (mode === "login" && email.trim() && password) setCaptcha("login");
+    else if (mode === "register" && name.trim() && email.trim() && password)
+      setCaptcha("register");
+    else if (mode === "reset" && email.trim() && !native.DEV_CLIENT)
+      setCaptcha("reset");
+    else if (mode === "confirm" && code.length === 6 && registration)
+      setCaptcha("registration_confirm");
   };
 
   if (captcha)
@@ -452,8 +554,27 @@ export function AuthScreen({
                       ? "Восстановление доступа"
                       : "Новый пароль"}
             </Title>
+            <Label muted>
+              {mode === "login"
+                ? "Войдите, чтобы видеть свои мониторы и инциденты."
+                : mode === "register"
+                  ? "Подтвердите email, чтобы начать."
+                  : mode === "reset"
+                    ? "Отправим ссылку для установки нового пароля."
+                    : mode === "reset-confirm"
+                      ? "Задайте новый пароль для своего аккаунта."
+                      : "Проверьте входящие письма и папку «Спам»."}
+            </Label>
             {mode === "register" ? (
-              <Field label="Имя" value={name} onChangeText={setName} />
+              <Field
+                label="Имя"
+                value={name}
+                onChangeText={setName}
+                autoComplete="name"
+                textContentType="name"
+                hint="От 2 до 100 символов."
+                editable={!busy}
+              />
             ) : null}
             {mode === "login" || mode === "register" || mode === "reset" ? (
               <Field
@@ -461,6 +582,12 @@ export function AuthScreen({
                 value={email}
                 onChangeText={setEmail}
                 keyboardType="email-address"
+                autoComplete="email"
+                textContentType="emailAddress"
+                placeholder="you@example.com"
+                editable={!busy}
+                returnKeyType={mode === "reset" ? "send" : "next"}
+                onSubmitEditing={mode === "reset" ? submit : undefined}
               />
             ) : null}
             {mode === "login" || mode === "register" ? (
@@ -469,6 +596,20 @@ export function AuthScreen({
                 value={password}
                 onChangeText={setPassword}
                 secure
+                autoComplete={
+                  mode === "register" ? "new-password" : "current-password"
+                }
+                textContentType={
+                  mode === "register" ? "newPassword" : "password"
+                }
+                hint={
+                  mode === "register"
+                    ? "От 12 до 1024 байт UTF-8. Русские буквы — обычно по 2 байта. Спецсимволы не обязательны."
+                    : undefined
+                }
+                editable={!busy}
+                returnKeyType="go"
+                onSubmitEditing={submit}
               />
             ) : null}
             {mode === "confirm" ? (
@@ -481,6 +622,13 @@ export function AuthScreen({
                     setCode(value.replace(/\D/g, "").slice(0, 6))
                   }
                   keyboardType="number-pad"
+                  autoComplete="one-time-code"
+                  textContentType="oneTimeCode"
+                  maxLength={6}
+                  editable={!busy}
+                  hint="Введите код из последнего письма."
+                  returnKeyType="go"
+                  onSubmitEditing={submit}
                 />
               </>
             ) : null}
@@ -490,22 +638,30 @@ export function AuthScreen({
                 value={newPassword}
                 onChangeText={setNewPassword}
                 secure
+                autoComplete="new-password"
+                textContentType="newPassword"
+                hint="От 12 до 1024 байт UTF-8: например, 12 латинских символов или 6 русских букв. Используйте уникальную фразу."
+                editable={!busy}
               />
             ) : null}
             <ErrorNotice message={error} />
-            {notice ? <Label>{notice}</Label> : null}
+            {notice ? <Notice message={notice} tone="success" /> : null}
             {mode === "login" ? (
               <Button
                 label="Войти"
                 disabled={busy || !email || !password}
-                onPress={() => setCaptcha("login")}
+                onPress={submit}
+                loading={busyAction === "login"}
+                loadingLabel="Входим…"
               />
             ) : null}
             {mode === "register" ? (
               <Button
                 label="Создать аккаунт"
                 disabled={busy || !email || !name || !password}
-                onPress={() => setCaptcha("register")}
+                onPress={submit}
+                loading={busyAction === "register"}
+                loadingLabel="Создаём аккаунт…"
               />
             ) : null}
             {mode === "confirm" ? (
@@ -513,18 +669,21 @@ export function AuthScreen({
                 <Button
                   label="Подтвердить"
                   disabled={busy || code.length !== 6}
-                  onPress={() => setCaptcha("registration_confirm")}
+                  onPress={submit}
+                  loading={busyAction === "registration_confirm"}
+                  loadingLabel="Подтверждаем…"
                 />
                 <Button
-                  label="Отправить код снова"
-                  disabled={
-                    busy ||
-                    !registration ||
-                    Date.parse(registration.challenge.resendAvailableAt) >
-                      Date.now()
+                  label={
+                    secondsUntilResend > 0
+                      ? `Новый код через ${secondsUntilResend} с`
+                      : "Отправить код снова"
                   }
+                  disabled={busy || !registration || secondsUntilResend > 0}
                   onPress={() => setCaptcha("registration_resend")}
                   secondary
+                  loading={busyAction === "registration_resend"}
+                  loadingLabel="Отправляем код…"
                 />
               </>
             ) : null}
@@ -532,13 +691,17 @@ export function AuthScreen({
               <Button
                 label="Отправить ссылку"
                 disabled={busy || !email}
-                onPress={() => setCaptcha("reset")}
+                onPress={submit}
+                loading={busyAction === "reset"}
+                loadingLabel="Отправляем ссылку…"
               />
             ) : null}
             {mode === "reset-confirm" ? (
               <Button
                 label="Сохранить пароль"
                 disabled={busy || !resetToken || !newPassword}
+                loading={busyAction === "reset-confirm"}
+                loadingLabel="Сохраняем пароль…"
                 onPress={() =>
                   void run(async () => {
                     await api("/auth/native/password/reset/confirm", {
@@ -549,16 +712,23 @@ export function AuthScreen({
                     setNewPassword("");
                     setMode("login");
                     setNotice("Пароль изменён. Войдите с новым паролем.");
-                  })
+                  }, "reset-confirm")
                 }
               />
             ) : null}
             {mode !== "login" ? (
               <Button
                 label="Ко входу"
+                disabled={busy}
                 onPress={() => {
                   changeMode("login");
-                  if (mode === "confirm") void native.clearRegistration();
+                  if (mode === "confirm") {
+                    setRegistration(null);
+                    challengeClock.current = null;
+                    void native
+                      .clearRegistration()
+                      .catch((cause) => setError(errorText(cause)));
+                  }
                 }}
                 secondary
               />
@@ -567,6 +737,8 @@ export function AuthScreen({
               <View style={styles.authLinks}>
                 <Pressable
                   accessibilityRole="button"
+                  accessibilityState={{ disabled: busy }}
+                  disabled={busy}
                   onPress={() => changeMode("register")}
                   style={styles.authLink}
                 >
@@ -579,6 +751,8 @@ export function AuthScreen({
                 {!native.DEV_CLIENT ? (
                   <Pressable
                     accessibilityRole="button"
+                    accessibilityState={{ disabled: busy }}
+                    disabled={busy}
                     onPress={() => changeMode("reset")}
                     style={styles.authLink}
                   >
@@ -602,6 +776,8 @@ export function AuthScreen({
                   disabled={busy}
                   secondary
                   iconName="yandex"
+                  loading={busyAction === "yandex"}
+                  loadingLabel="Открываем Яндекс…"
                 />
                 <Button
                   label="Войти через VK"
@@ -609,10 +785,48 @@ export function AuthScreen({
                   disabled={busy}
                   secondary
                   iconName="vk"
+                  loading={busyAction === "vk"}
+                  loadingLabel="Открываем VK…"
                 />
               </>
             ) : null}
           </Card>
+          <View style={styles.footer}>
+            {mode === "register" ? (
+              <Label muted>
+                Создавая аккаунт, вы принимаете условия использования. Обработка
+                данных описана в политике конфиденциальности.
+              </Label>
+            ) : null}
+            <TextAction
+              label="Условия использования"
+              onPress={() => openLegal("/terms")}
+              disabled={busy}
+              iconName="arrow-up-right"
+            />
+            <TextAction
+              label="Политика конфиденциальности"
+              onPress={() => openLegal("/privacy")}
+              disabled={busy}
+              iconName="arrow-up-right"
+            />
+            {onHelp ? (
+              <TextAction
+                label="Помощь и поддержка"
+                onPress={onHelp}
+                disabled={busy}
+                iconName="info"
+              />
+            ) : null}
+            {onBack ? (
+              <TextAction
+                label="О сервисе"
+                onPress={onBack}
+                disabled={busy}
+                iconName="arrow-left"
+              />
+            ) : null}
+          </View>
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -628,7 +842,8 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
   },
   group: { width: "100%", maxWidth: 420, alignSelf: "center", gap: 14 },
-  formCard: { minHeight: 520, justifyContent: "center" },
+  formCard: { minHeight: 700, justifyContent: "center" },
+  footer: { gap: 0 },
   authLinks: { flexDirection: "row", gap: 8 },
   authLink: {
     flex: 1,

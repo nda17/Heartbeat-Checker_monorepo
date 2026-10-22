@@ -8,6 +8,7 @@ type ListOptions struct {
 	PageSize int
 	Sort     string
 	Query    string
+	Status   string
 }
 
 // Pagination describes the selected page of a filtered monitor list.
@@ -33,6 +34,7 @@ type MonitorPage struct {
 	Monitors   []ListedMonitor `json:"monitors"`
 	Pagination Pagination      `json:"pagination"`
 	Summary    MonitorSummary  `json:"summary"`
+	AsOf       time.Time       `json:"asOf"`
 }
 
 // ListedMonitor adds active notification channels without changing the legacy
@@ -127,4 +129,73 @@ type Incident struct {
 	ConfirmedAt time.Time  `json:"confirmedAt"`
 	ClosedAt    *time.Time `json:"closedAt,omitempty"`
 	CloseReason string     `json:"closeReason,omitempty"`
+}
+
+// CheckCounts reports accepted observations, never time-based uptime or SLA.
+type CheckCounts struct {
+	Up                     int64    `json:"up"`
+	Down                   int64    `json:"down"`
+	Unknown                int64    `json:"unknown"`
+	Total                  int64    `json:"total"`
+	SuccessfulCheckPercent *float64 `json:"successfulCheckPercent"`
+	AverageLatencyMS       *float64 `json:"averageLatencyMs"`
+	LatencySampleCount     int64    `json:"latencySampleCount"`
+}
+
+type StatisticsDay struct {
+	Date string `json:"date"`
+	CheckCounts
+	Partial bool `json:"partial"`
+}
+
+type StatisticsCoverage struct {
+	Kind                 string  `json:"kind"`
+	FirstRecordedDay     *string `json:"firstRecordedDay"`
+	DaysWithData         int     `json:"daysWithData"`
+	ScheduleCompleteness string  `json:"scheduleCompleteness"`
+}
+
+type Statistics struct {
+	MonitorID     string             `json:"monitorId"`
+	GeneratedAt   time.Time          `json:"generatedAt"`
+	TimeZone      string             `json:"timeZone"`
+	PeriodDays    int                `json:"periodDays"`
+	From          time.Time          `json:"from"`
+	To            time.Time          `json:"to"`
+	Methodology   string             `json:"methodology"`
+	RetentionDays int                `json:"retentionDays"`
+	Coverage      StatisticsCoverage `json:"coverage"`
+	Totals        CheckCounts        `json:"totals"`
+	Days          []StatisticsDay    `json:"days"`
+}
+
+type IncidentMonitor struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	CheckType string `json:"checkType"`
+	Target    string `json:"target"`
+	TimeZone  string `json:"timeZone"`
+}
+
+type IncidentFeedItem struct {
+	ID          string          `json:"id"`
+	Number      int64           `json:"number"`
+	MonitorID   string          `json:"monitorId"`
+	OpenedAt    time.Time       `json:"openedAt"`
+	ConfirmedAt time.Time       `json:"confirmedAt"`
+	ClosedAt    *time.Time      `json:"closedAt"`
+	CloseReason *string         `json:"closeReason"`
+	Monitor     IncidentMonitor `json:"monitor"`
+}
+
+type IncidentFeedPagination struct {
+	Limit      int     `json:"limit"`
+	NextCursor *string `json:"nextCursor"`
+	HasMore    bool    `json:"hasMore"`
+}
+
+type IncidentFeed struct {
+	Incidents  []IncidentFeedItem     `json:"incidents"`
+	Pagination IncidentFeedPagination `json:"pagination"`
+	AsOf       time.Time              `json:"asOf"`
 }

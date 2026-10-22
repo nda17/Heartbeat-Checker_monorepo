@@ -36,6 +36,8 @@ func messengerFailure(w http.ResponseWriter, err error) {
 		status, code = 409, "version_conflict"
 	case errors.Is(err, ErrMessengerNotReady):
 		status, code = 409, "link_not_ready"
+	case errors.Is(err, ErrMessengerLinkConfirmed):
+		status, code = 409, "link_already_confirmed"
 	}
 	messengerWrite(w, status, map[string]string{"error": code})
 }
@@ -76,6 +78,7 @@ func (m *Messenger) RegisterAPI(mux *http.ServeMux, protect func(http.Handler) h
 		"POST /api/v1/messenger-destinations/email":                           m.connectEmail,
 		"POST /api/v1/messenger-links":                                        m.createLink,
 		"GET /api/v1/messenger-links/{id}":                                    m.getLink,
+		"DELETE /api/v1/messenger-links/{id}":                                 m.cancelLink,
 		"POST /api/v1/messenger-links/{id}/confirm":                           m.confirmLink,
 		"GET /api/v1/messenger-destinations":                                  m.destinations,
 		"DELETE /api/v1/messenger-destinations/{id}":                          m.disconnect,
@@ -135,6 +138,19 @@ func (m *Messenger) confirmLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	messengerWrite(w, 200, map[string]any{"destination": d})
+}
+
+func (m *Messenger) cancelLink(w http.ResponseWriter, r *http.Request) {
+	owner, ok := messengerOwner(w, r)
+	if !ok {
+		return
+	}
+	if err := m.CancelLink(r.Context(), owner, r.PathValue("id")); err != nil {
+		messengerFailure(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNoContent)
 }
 func (m *Messenger) destinations(w http.ResponseWriter, r *http.Request) {
 	owner, ok := messengerOwner(w, r)

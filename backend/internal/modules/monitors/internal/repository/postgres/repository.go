@@ -60,39 +60,42 @@ func (r *Repository) List(ctx context.Context, tx pgx.Tx, owner string) ([]Row, 
 const searchMatch = `($2='' OR position(lower($2) IN lower(name || ' ' ||
  CASE check_type WHEN 'http' THEN COALESCE(url,'') WHEN 'tcp' THEN COALESCE(host,'') || ':' || COALESCE(port::text,'') ELSE COALESCE(host,'') END))>0)`
 
-// PageSummary ranks enabled monitors across the entire account before search.
-// Paused saved records remain visible without consuming a quota position.
-func (r *Repository) PageSummary(ctx context.Context, tx pgx.Tx, owner string, options contracts.ListOptions, quota int, asOf time.Time) (contracts.MonitorSummary, int, error) {
-	var summary contracts.MonitorSummary
-	var total int
-	err := tx.QueryRow(ctx, `WITH ranked AS (
+// Rank and effective state are resolved across the account before any filter.
+// Summary and page share this SQL and the exact same quota/freshness instant.
+const listStates = `WITH ranked AS (
  SELECT *,sum(enabled::integer) OVER (ORDER BY created_at,id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS quota_rank
  FROM monitors.monitors WHERE account_id=$1
  ), states AS (
  SELECT *,CASE WHEN NOT enabled THEN 'PAUSED'
  WHEN $3::integer=0 OR quota_rank>$3 THEN 'SUBSCRIPTION_REQUIRED'
  WHEN last_checked_at IS NULL OR $4::timestamptz-last_checked_at > (2*interval_minutes*interval '1 minute'+interval '30 seconds') THEN 'UNKNOWN'
- ELSE outcome END AS effective_state FROM ranked WHERE account_id=$1
- ) SELECT count(*),count(*) FILTER (WHERE effective_state='UP'),count(*) FILTER (WHERE effective_state='DOWN'),
+ ELSE outcome END AS effective_state FROM ranked
+ ) `
+
+const statusMatch = `($5='all' OR effective_state=$5 OR ($5='problems' AND effective_state IN ('DOWN','UNKNOWN','SUBSCRIPTION_REQUIRED')))`
+
+func (r *Repository) PageSummary(ctx context.Context, tx pgx.Tx, owner string, options contracts.ListOptions, quota int, asOf time.Time) (contracts.MonitorSummary, int, error) {
+	var summary contracts.MonitorSummary
+	var total int
+	err := tx.QueryRow(ctx, listStates+`SELECT count(*),count(*) FILTER (WHERE effective_state='UP'),count(*) FILTER (WHERE effective_state='DOWN'),
  count(*) FILTER (WHERE effective_state='UNKNOWN'),count(*) FILTER (WHERE effective_state='PAUSED'),
- count(*) FILTER (WHERE effective_state='SUBSCRIPTION_REQUIRED'),count(*) FILTER (WHERE `+searchMatch+`)
- FROM states WHERE account_id=$1`, owner, options.Query, quota, asOf).Scan(&summary.Total, &summary.Up, &summary.Down, &summary.Unknown, &summary.Paused, &summary.SubscriptionRequired, &total)
+ count(*) FILTER (WHERE effective_state='SUBSCRIPTION_REQUIRED'),count(*) FILTER (WHERE `+searchMatch+` AND `+statusMatch+`)
+ FROM states WHERE account_id=$1`, owner, options.Query, quota, asOf, options.Status).Scan(&summary.Total, &summary.Up, &summary.Down, &summary.Unknown, &summary.Paused, &summary.SubscriptionRequired, &total)
 	return summary, total, err
 }
 
-func (r *Repository) ListPage(ctx context.Context, tx pgx.Tx, owner string, options contracts.ListOptions) ([]Row, error) {
+func (r *Repository) ListPage(ctx context.Context, tx pgx.Tx, owner string, options contracts.ListOptions, quota int, asOf time.Time) ([]Row, error) {
 	// Only reviewed SQL fragments can reach ORDER BY; client text stays in values.
 	order := map[string]string{
 		"created_desc": "created_at DESC,id DESC", "created_asc": "created_at,id",
 		"name_asc": "lower(name),id", "name_desc": "lower(name) DESC,id DESC",
+		"problems_first": "CASE effective_state WHEN 'DOWN' THEN 0 WHEN 'UNKNOWN' THEN 1 WHEN 'SUBSCRIPTION_REQUIRED' THEN 2 WHEN 'UP' THEN 3 ELSE 4 END,created_at DESC,id DESC",
 	}[options.Sort]
 	if order == "" {
 		return nil, errors.New("invalid monitor ordering")
 	}
-	rows, err := tx.Query(ctx, `WITH ranked AS (
- SELECT *,sum(enabled::integer) OVER (ORDER BY created_at,id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS quota_rank FROM monitors.monitors WHERE account_id=$1
- ) SELECT `+columns+`,quota_rank FROM ranked WHERE account_id=$1 AND `+searchMatch+`
- ORDER BY `+order+` LIMIT $3 OFFSET $4`, owner, options.Query, options.PageSize, (options.Page-1)*options.PageSize)
+	rows, err := tx.Query(ctx, listStates+`SELECT `+columns+`,quota_rank FROM states WHERE account_id=$1 AND `+searchMatch+` AND `+statusMatch+`
+ ORDER BY `+order+` LIMIT $6 OFFSET $7`, owner, options.Query, quota, asOf, options.Status, options.PageSize, (options.Page-1)*options.PageSize)
 	if err != nil {
 		return nil, err
 	}
