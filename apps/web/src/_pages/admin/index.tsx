@@ -14,6 +14,7 @@ import {
 } from "@/entities/monitor";
 import { AdminPricing } from "@/features/admin-pricing";
 import { AdminMfa, MfaState } from "@/features/admin-mfa";
+import { AndroidDevDownload } from "@/features/android-dev-download";
 import { MonitorForm } from "@/features/monitor-form";
 import { api, ApiError, errorMessage } from "@/shared/api";
 import { dateTime, Loading, Notice, Icon } from "@/shared/ui";
@@ -492,6 +493,7 @@ export function AdminPage() {
         sessionRevision={pricingRevision}
         onBusyChange={setPricingBusy}
       />
+      {canRead && !mfaBusy && <AndroidDevDownload key={profile.account.id} />}
       {error && <Notice>{error}</Notice>}
 
       {refreshError && (

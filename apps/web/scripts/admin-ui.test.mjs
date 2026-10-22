@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
 
 const requireWeb = createRequire(new URL("../package.json", import.meta.url));
@@ -221,8 +222,21 @@ function adminPageHarness({
   account,
   monitors = [],
   apiHandler,
+  fetchImpl = async () => ({
+    ok: true,
+    json: async () => ({
+      release: {
+        packageName: "ru.heartbeatchecker.app.dev",
+        versionName: "0.28.5-dev",
+        sizeBytes: 12_345_678,
+        sha256: "a".repeat(64),
+      },
+      downloadPath: "/api/v1/admin/android-dev/apk",
+    }),
+  }),
   replacements = [],
   mfaState,
+  actorRole = "admin",
   dateImplementation = Date,
 }) {
   const harness = createHarness();
@@ -255,7 +269,7 @@ function adminPageHarness({
       account: {
         id: "admin-actor",
         name: "Admin",
-        role: "admin",
+        role: actorRole,
         status: "active",
         createdAt: "2026-01-01T00:00:00Z",
       },
@@ -303,6 +317,11 @@ function adminPageHarness({
       },
     },
   );
+  const { AndroidDevDownload } = loadComponent(
+    "../src/features/android-dev-download/index.tsx",
+    { "@/entities/session": sessionModule },
+    { Date: dateImplementation, fetch: fetchImpl },
+  );
   const { AdminPage } = loadComponent(
     "../src/_pages/admin/index.tsx",
     {
@@ -312,6 +331,7 @@ function adminPageHarness({
       "@/entities/monitor": { ...monitorHelpers, Status: () => null },
       "@/features/admin-mfa": { AdminMfa },
       "@/features/monitor-form": { MonitorForm },
+      "@/features/android-dev-download": { AndroidDevDownload },
     },
     { Date: dateImplementation },
   );
@@ -334,6 +354,202 @@ function adminPageHarness({
     },
   };
 }
+
+test("Android dev APK is public-page absent and appears only in the verified admin session", async (t) => {
+  const publicPage = loadComponent("../app/android/page.tsx", {
+    "next/image": (props) => {
+      const imageProps = { ...props };
+      delete imageProps.unoptimized;
+      return React.createElement("img", imageProps);
+    },
+    "next/link": ({ href, ...props }) =>
+      React.createElement("a", { href, ...props }),
+    "@/shared/ui": {
+      AppStoreSoon: () => null,
+      Brand: () => null,
+      PublicFooter: () => null,
+      Icon: () => null,
+    },
+    "@/features/theme-toggle": { ThemeToggle: () => null },
+    "@/shared/seo": {
+      publicPageMetadata: () => ({}),
+      PublicPageStructuredData: () => null,
+    },
+    "@/shared/android": {
+      androidRelease: () => ({
+        versionName: "1.0.0",
+        versionCode: 1,
+        sizeBytes: 1,
+        releasedAt: "2026-01-01T00:00:00Z",
+        sha256: "b".repeat(64),
+        signingCertificateSha256: "c".repeat(64),
+      }),
+    },
+  });
+  const publicMarkup = renderToStaticMarkup(
+    React.createElement(publicPage.default),
+  );
+  assert.doesNotMatch(publicMarkup, /Скачать dev APK/);
+
+  const pendingMfa = deferred();
+  const verification = deferred();
+  const metadataRequests = [];
+  const account = {
+    id: "target-1",
+    name: "Target account",
+    email: "target@example.test",
+    role: "user",
+    status: "active",
+    version: 1,
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+  const fixture = adminPageHarness({
+    account,
+    mfaState: pendingMfa.promise,
+    apiHandler: (path) =>
+      path === "/auth/mfa/verify" ? verification.promise : undefined,
+    fetchImpl: async (path, options) => {
+      metadataRequests.push({ path, options });
+      return {
+        ok: true,
+        json: async () => ({
+          release: {
+            packageName: "ru.heartbeatchecker.app.dev",
+            versionName: "0.28.5-dev",
+            sizeBytes: 12_345_678,
+            sha256: "a".repeat(64),
+          },
+          downloadPath: "/api/v1/admin/android-dev/apk",
+        }),
+      };
+    },
+  });
+  const { harness } = fixture;
+  Object.defineProperty(harness.dom.window.document, "visibilityState", {
+    configurable: true,
+    value: "visible",
+  });
+  harness.dom.window.setInterval = () => 1;
+  harness.dom.window.clearInterval = () => {};
+  t.after(() => harness.unmount());
+  await fixture.render();
+  assert.equal(
+    harness.host.querySelector(".android-dev-download"),
+    null,
+    "the feature stays unmounted while MFA status is pending",
+  );
+  assert.equal(metadataRequests.length, 0);
+
+  const verifiedMfa = {
+    enabled: true,
+    verifiedUntil: "2099-01-15T00:00:00Z",
+    stepUpUntil: "2099-01-16T00:00:00Z",
+    recoveryCodesRemaining: 6,
+  };
+  pendingMfa.resolve(verifiedMfa);
+  await act(async () => {
+    await pendingMfa.promise;
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  await fixture.render();
+  assert.equal(
+    harness.host.querySelector("#admin-android-dev-title")?.textContent,
+    "Разработка Android",
+    JSON.stringify(metadataRequests),
+  );
+  assert.equal(metadataRequests.length, 1);
+  assert.equal(metadataRequests[0].path, "/api/v1/admin/android-dev");
+  assert.ok(
+    harness.host.querySelector('a[href="/api/v1/admin/android-dev/apk"]'),
+  );
+
+  const confirm = [...harness.host.querySelectorAll("button")].find(
+    (button) => button.textContent === "Подтвердить действия",
+  );
+  assert.ok(confirm);
+  await act(async () => confirm.click());
+  const verifyForm = harness.host.querySelector(".admin-mfa-verify");
+  assert.ok(verifyForm);
+  fill(verifyForm, "password", "synthetic-password");
+  fill(verifyForm, "code", "123456");
+  await submit(verifyForm);
+  assert.equal(
+    harness.host.querySelector(".android-dev-download"),
+    null,
+    "the feature unmounts while MFA verification changes the session",
+  );
+  assert.equal(
+    harness.host.querySelector(".admin-mfa-panel")?.getAttribute("aria-busy"),
+    "true",
+  );
+  await act(async () => {
+    verification.resolve({
+      verifiedUntil: "2099-01-17T00:00:00Z",
+      stepUpUntil: "2099-01-18T00:00:00Z",
+    });
+    await verification.promise;
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+});
+
+test("an authenticated non-admin does not mount the Android dev APK control", async (t) => {
+  const fixture = adminPageHarness({
+    account: {
+      id: "target-1",
+      name: "Target account",
+      email: "target@example.test",
+      role: "user",
+      status: "active",
+      version: 1,
+      createdAt: "2026-01-01T00:00:00Z",
+    },
+    actorRole: "user",
+  });
+  fixture.harness.dom.window.setInterval = () => 1;
+  fixture.harness.dom.window.clearInterval = () => {};
+  t.after(() => fixture.harness.unmount());
+  await fixture.render();
+  assert.equal(
+    fixture.harness.host.querySelector(".android-dev-download"),
+    null,
+  );
+});
+
+test("an admin without a verified MFA session does not request dev APK metadata", async (t) => {
+  const metadataRequests = [];
+  const fixture = adminPageHarness({
+    account: {
+      id: "target-1",
+      name: "Target account",
+      email: "target@example.test",
+      role: "user",
+      status: "active",
+      version: 1,
+      createdAt: "2026-01-01T00:00:00Z",
+    },
+    mfaState: {
+      enabled: true,
+      verifiedUntil: null,
+      stepUpUntil: null,
+      recoveryCodesRemaining: 6,
+    },
+    fetchImpl: async (...args) => {
+      metadataRequests.push(args);
+      return { ok: false, json: async () => ({}) };
+    },
+  });
+  fixture.harness.dom.window.setInterval = () => 1;
+  fixture.harness.dom.window.clearInterval = () => {};
+  t.after(() => fixture.harness.unmount());
+  await fixture.render();
+  assert.equal(
+    fixture.harness.host.querySelector(".android-dev-download"),
+    null,
+  );
+  assert.equal(metadataRequests.length, 0);
+});
 
 async function selectAdminAccount(harness, accountName) {
   const accountButton = [

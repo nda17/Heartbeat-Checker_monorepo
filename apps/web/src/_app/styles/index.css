@@ -3298,14 +3298,9 @@ html[data-installed-app="true"] .android-hero {
   font-size: 14px;
 }
 .android-dev-download {
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid var(--line);
+  margin-block: 24px;
 }
-.android-dev-download .android-apk-button {
-  margin-top: 0;
-}
-.android-dev-download p {
+.android-dev-download > p {
   margin-top: 8px;
   color: var(--muted);
   font-size: 13px;
