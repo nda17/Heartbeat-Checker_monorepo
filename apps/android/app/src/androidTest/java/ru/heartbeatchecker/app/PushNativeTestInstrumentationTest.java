@@ -6,6 +6,7 @@ import android.content.ContextWrapper;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 
+import org.json.JSONException;
 import org.json.JSONObject;
 import org.junit.After;
 import org.junit.Before;
@@ -107,14 +108,14 @@ public final class PushNativeTestInstrumentationTest {
                         .put("expiresAt", Instant.ofEpochMilli(System.currentTimeMillis() + 3_600_000).toString()));
     }
 
-    private static JSONObject installation(String id, long generation) throws Exception {
+    private static JSONObject installation(String id, long generation) throws JSONException {
         return new JSONObject().put("id", id).put("bindingGeneration", generation);
     }
 
     private static String credential(String id, String secret) { return id + "." + secret; }
 
     private static JSONObject pending(String request, String account, String session, String installation, long generation)
-            throws Exception {
+            throws JSONException {
         return new JSONObject().put("requestId", request).put("createdAt", System.currentTimeMillis())
                 .put("accountId", account).put("sessionId", session).put("installationId", installation)
                 .put("bindingGeneration", generation);
