@@ -1,5 +1,6 @@
 package ru.heartbeatchecker.app;
 
+import android.app.Instrumentation;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.AssetManager;
@@ -61,6 +62,7 @@ public final class MainActivitySmokeTest {
             assertTrue("a rendered React Native screen is required; Activity launch alone is insufficient",
                     awaitVisibleText(scenario, "Круглосуточный мониторинг ваших сайтов и сервисов."));
             assertTrue("the full public landing must offer registration", awaitVisibleText(scenario, "Создать аккаунт"));
+            waitForBundledLandingImages();
             saveScreenshot(scenario, "Круглосуточный мониторинг ваших сайтов и сервисов.", "Войти через Яндекс", "public-landing.png");
 
             tapText(scenario, "Возможности");
@@ -185,16 +187,28 @@ public final class MainActivitySmokeTest {
         String token = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
         Intent verification = new Intent(Intent.ACTION_VIEW).setClass(context, MainActivity.class)
                 .setData(Uri.parse("https://heartbeat-checker.ru/app/settings#verify-email=" + token));
-        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(verification)) {
+        MainActivity activity = null;
+        try {
+            activity = launchMainActivity(verification);
+            MainActivity launchedActivity = activity;
             JSONObject pending = auth.emailVerification(null, false);
             assertNotNull("cold email link is durably retained before login", pending);
             assertEquals(token, pending.getString("token"));
             assertNull("verification link never creates an authenticated session", auth.active());
             assertTrue("initially unauthenticated token remains unbound", pending.isNull("accountId") && pending.isNull("sessionId"));
-            scenario.onActivity(activity -> assertNull("consumed email token is scrubbed from Activity intent",
-                    activity.getIntent().getData()));
+            AtomicReference<String> activityIntentData = new AtomicReference<>();
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                    activityIntentData.set(launchedActivity.getIntent().getDataString()));
+            assertEquals("Activity intent retains only the reviewed settings route",
+                    "https://heartbeat-checker.ru/app/settings", activityIntentData.get());
+            assertNull("consumed email token is scrubbed from Activity intent",
+                    Uri.parse(activityIntentData.get()).getFragment());
         } finally {
-            clearAuthStore(auth);
+            try {
+                finishMainActivity(activity);
+            } finally {
+                clearAuthStore(auth);
+            }
         }
     }
 
@@ -204,25 +218,56 @@ public final class MainActivitySmokeTest {
         AuthStore auth = new AuthStore(context);
         clearAuthStore(auth);
         String coldToken = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
-        String warmToken = "BCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghi";
+        String warmToken = "BCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefgh";
         Intent cold = new Intent(Intent.ACTION_VIEW).setClass(context, MainActivity.class)
                 .setData(Uri.parse("https://heartbeat-checker.ru/app/settings#verify-email=" + coldToken));
-        try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(cold)) {
+        MainActivity activity = null;
+        try {
+            activity = launchMainActivity(cold);
+            MainActivity launchedActivity = activity;
             Intent warm = new Intent(Intent.ACTION_VIEW, Uri.parse(
                     "https://heartbeat-checker.ru/app/settings#verify-email=" + warmToken));
-            scenario.onActivity(activity -> activity.onNewIntent(warm));
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> launchedActivity.onNewIntent(warm));
             JSONObject pending = auth.emailVerification(null, false);
             assertNotNull(pending);
             assertEquals("new warm link owns durable storage", warmToken, pending.getString("token"));
-            scenario.onActivity(activity -> {
-                assertNull("stale cold handoff is cleared before the warm link is forwarded",
-                        activity.takeEmailVerificationLink());
-                assertEquals("Activity intent retains only the reviewed settings route",
-                        "https://heartbeat-checker.ru/app/settings", activity.getIntent().getDataString());
+            AtomicReference<String> staleHandoff = new AtomicReference<>();
+            AtomicReference<String> activityIntentData = new AtomicReference<>();
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+                staleHandoff.set(launchedActivity.takeEmailVerificationLink());
+                activityIntentData.set(launchedActivity.getIntent().getDataString());
             });
+            assertNull("stale cold handoff is cleared before the warm link is forwarded", staleHandoff.get());
+            assertEquals("Activity intent retains only the reviewed settings route",
+                    "https://heartbeat-checker.ru/app/settings", activityIntentData.get());
         } finally {
-            clearAuthStore(auth);
+            try {
+                finishMainActivity(activity);
+            } finally {
+                clearAuthStore(auth);
+            }
         }
+    }
+
+    private static MainActivity launchMainActivity(Intent intent) {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        return (MainActivity) InstrumentationRegistry.getInstrumentation().startActivitySync(intent);
+    }
+
+    private static void finishMainActivity(MainActivity activity) {
+        if (activity == null) return;
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        instrumentation.runOnMainSync(activity::finish);
+        instrumentation.waitForIdleSync();
+        AtomicBoolean destroyed = new AtomicBoolean();
+        long deadline = android.os.SystemClock.uptimeMillis() + 3_000;
+        while (android.os.SystemClock.uptimeMillis() < deadline) {
+            instrumentation.runOnMainSync(() -> destroyed.set(activity.isDestroyed()));
+            if (destroyed.get()) return;
+            android.os.SystemClock.sleep(25);
+        }
+        instrumentation.runOnMainSync(() -> destroyed.set(activity.isDestroyed()));
+        assertTrue("email-link Activity must reach DESTROYED after finish", destroyed.get());
     }
 
     @Test
@@ -422,6 +467,13 @@ public final class MainActivitySmokeTest {
         } finally {
             screenshot.recycle();
         }
+    }
+
+    private static void waitForBundledLandingImages() throws InterruptedException {
+        android.app.Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        instrumentation.waitForIdleSync();
+        Thread.sleep(500);
+        instrumentation.waitForIdleSync();
     }
 
     private static void assertScreenMarkers(ActivityScenario<MainActivity> scenario, String expected, String forbidden) {

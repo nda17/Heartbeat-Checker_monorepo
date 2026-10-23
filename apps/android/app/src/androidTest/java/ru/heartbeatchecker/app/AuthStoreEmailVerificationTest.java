@@ -26,7 +26,7 @@ public final class AuthStoreEmailVerificationTest {
     private static final String SESSION_A = "22222222-2222-4222-8222-222222222222";
     private static final String SESSION_B = "33333333-3333-4333-8333-333333333333";
     private static final String TOKEN_A = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
-    private static final String TOKEN_B = "BCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghi";
+    private static final String TOKEN_B = "BCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefgh";
     private Context context;
     private File directory;
     private AuthStore store;
@@ -72,12 +72,19 @@ public final class AuthStoreEmailVerificationTest {
         JSONObject pending = store.emailVerification(TOKEN_A, false);
         assertNotNull(pending);
         long originalReceivedAt = pending.getLong("receivedAt");
-        assertNull("pending link remains available before login", pending.optString("accountId", null));
+        assertTrue("an unauthenticated link stores an explicit accountId null", pending.has("accountId")
+                && pending.isNull("accountId"));
+        assertTrue("an unauthenticated link stores an explicit sessionId null", pending.has("sessionId")
+                && pending.isNull("sessionId"));
 
         AuthStore restarted = new AuthStore(context);
         JSONObject restored = restarted.emailVerification(null, false);
         assertEquals("pending token survives process restart", TOKEN_A, restored.getString("token"));
         assertEquals(originalReceivedAt, restored.getLong("receivedAt"));
+        assertTrue("the restarted pending link is still unbound to an account",
+                restored.has("accountId") && restored.isNull("accountId"));
+        assertTrue("the restarted pending link is still unbound to a session",
+                restored.has("sessionId") && restored.isNull("sessionId"));
 
         long epoch = restarted.epoch();
         restarted.saveSession(session(ACCOUNT, SESSION_A), epoch);

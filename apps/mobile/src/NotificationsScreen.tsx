@@ -330,7 +330,6 @@ export function NotificationsScreen({
       title={
         monitor ? `Уведомления · ${monitor.name}` : "Адреса и чаты аккаунта"
       }
-      refresh={refresh}
     >
       <Button
         label={monitor ? "К монитору" : "К уведомлениям"}

@@ -149,23 +149,27 @@ public final class PushStoreTest {
 
     @Test
     public void testNotificationPermissionDenialNeverSubmitsAnAndroidNotification() throws Exception {
-        if (Build.VERSION.SDK_INT < 33) return;
-        boolean wasGranted = context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
-                == android.content.pm.PackageManager.PERMISSION_GRANTED;
-        if (wasGranted) InstrumentationRegistry.getInstrumentation().getUiAutomation()
-                .revokeRuntimePermission(context.getPackageName(), android.Manifest.permission.POST_NOTIFICATIONS);
-        try {
+        if (Build.VERSION.SDK_INT < 33) {
+            assertTrue("pre-33 Android has no runtime notification permission gate",
+                    PushNotifications.readiness(context).getBoolean("permissionGranted"));
+        } else {
+            Context deniedContext = new ContextWrapper(context) {
+                @Override public int checkSelfPermission(String permission) {
+                    if (android.Manifest.permission.POST_NOTIFICATIONS.equals(permission))
+                        return android.content.pm.PackageManager.PERMISSION_DENIED;
+                    return super.checkSelfPermission(permission);
+                }
+            };
+            assertFalse("the app gate observes the synthetic denied permission state",
+                    PushNotifications.readiness(deniedContext).getBoolean("permissionGranted"));
             String id = deliveryId(92);
             JSONObject content = new JSONObject().put("deliveryId", id)
                     .put("title", "Проверка уведомлений")
                     .put("body", "Синтетическая проверка без запроса к провайдеру.");
             assertFalse("a denied Android permission prevents NotificationManager submission",
-                    PushNotifications.displayTest(context, content));
+                    PushNotifications.displayTest(deniedContext, content));
             assertFalse("permission denial cannot leave a test banner", hasNotification(
                     context.getSystemService(NotificationManager.class), "test:" + id));
-        } finally {
-            if (wasGranted) InstrumentationRegistry.getInstrumentation().getUiAutomation()
-                    .grantRuntimePermission(context.getPackageName(), android.Manifest.permission.POST_NOTIFICATIONS);
         }
     }
 

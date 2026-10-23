@@ -8,7 +8,7 @@ import {
   Switch,
   View,
 } from "react-native";
-import { api, errorText, session } from "./api";
+import { api, errorText, session, sessionEpoch } from "./api";
 import type { Entitlement, Incident, Monitor, Result } from "./types";
 import {
   Button,
@@ -218,6 +218,7 @@ export function MonitorsScreen({
     });
   }, [draft, editing, retained.ready]);
   const buyQuota = async () => {
+    const capturedEpoch = sessionEpoch();
     retained.update({
       schemaVersion: 1,
       form: draft,
@@ -228,8 +229,10 @@ export function MonitorsScreen({
     });
     try {
       await retained.flush();
+      if (!mounted.current || sessionEpoch() !== capturedEpoch) return;
       onBuyQuota();
     } catch {
+      if (!mounted.current || sessionEpoch() !== capturedEpoch) return;
       setError(
         "Не удалось сохранить черновик на телефоне. Повторите переход после восстановления хранилища.",
       );
