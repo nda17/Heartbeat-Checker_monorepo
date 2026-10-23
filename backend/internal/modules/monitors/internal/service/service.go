@@ -201,7 +201,15 @@ func (s *Service) ListPage(ctx context.Context, owner string, options contracts.
 		return contracts.MonitorPage{}, ErrInvalid
 	}
 	switch options.Sort {
-	case "created_desc", "created_asc", "name_asc", "name_desc":
+	case "created_desc", "created_asc", "name_asc", "name_desc", "problems_first":
+	default:
+		return contracts.MonitorPage{}, ErrInvalid
+	}
+	if options.Status == "" {
+		options.Status = "all"
+	}
+	switch options.Status {
+	case "all", "UP", "DOWN", "UNKNOWN", "PAUSED", "SUBSCRIPTION_REQUIRED", "problems":
 	default:
 		return contracts.MonitorPage{}, ErrInvalid
 	}
@@ -217,11 +225,11 @@ func (s *Service) ListPage(ctx context.Context, owner string, options contracts.
 	}
 	totalPages := max(1, (total+options.PageSize-1)/options.PageSize)
 	options.Page = min(options.Page, totalPages)
-	rows, err := s.repo.ListPage(ctx, tx, owner, options)
+	rows, err := s.repo.ListPage(ctx, tx, owner, options, e.Quota, asOf)
 	if err != nil {
 		return contracts.MonitorPage{}, err
 	}
-	result := contracts.MonitorPage{Monitors: make([]contracts.ListedMonitor, 0, len(rows)), Pagination: contracts.Pagination{Page: options.Page, PageSize: options.PageSize, Total: total, TotalPages: totalPages}, Summary: summary}
+	result := contracts.MonitorPage{Monitors: make([]contracts.ListedMonitor, 0, len(rows)), Pagination: contracts.Pagination{Page: options.Page, PageSize: options.PageSize, Total: total, TotalPages: totalPages}, Summary: summary, AsOf: asOf}
 	ids := make([]string, 0, len(rows))
 	for _, m := range rows {
 		ids = append(ids, m.ID)

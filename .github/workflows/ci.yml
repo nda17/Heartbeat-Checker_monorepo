@@ -155,7 +155,7 @@ jobs:
           apk=apps/android/app/build/outputs/apk/ci/app-ci.apk
           test -s "$apk"
           unzip -p "$apk" assets/index.android.bundle | wc -c | awk '$1 > 100000 { found = 1 } END { exit !found }'
-          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | grep -F "package: name='ru.heartbeatchecker.app' versionCode='9' versionName='2.0.2'"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | grep -F "package: name='ru.heartbeatchecker.app' versionCode='10' versionName='2.1.0'"
           size=$(wc -c < "$apk" | tr -d ' ')
           [[ $size =~ ^[0-9]+$ ]]
           echo "Bundled CI APK bytes: $size"
@@ -202,6 +202,9 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Install Android SDK and API 35 emulator image
         run: bash deploy/android/setup-sdk.sh 'emulator' 'system-images;android-35;google_apis;x86_64'
+      - name: Build native instrumentation APKs before emulator boot
+        working-directory: apps/android
+        run: ./gradlew --no-daemon -Pandroid.enableAdditionalTestOutput=true :app:assembleCi :app:assembleCiAndroidTest
       - name: Prepare accelerated Android emulator
         shell: bash
         run: |
@@ -229,6 +232,8 @@ jobs:
             set +e
             timeout 5 "$adb_bin" devices -l > "$report_dir/adb-devices.txt" 2>&1
             timeout 10 "$adb_bin" -s emulator-5554 logcat -d -t 200 > "$report_dir/logcat.txt" 2>&1
+            timeout 10 "$adb_bin" -s emulator-5554 shell dumpsys window windows > "$report_dir/window-state.txt" 2>&1
+            timeout 10 "$adb_bin" -s emulator-5554 shell dumpsys activity lastanr > "$report_dir/last-anr.txt" 2>&1
             tail -150 "$emulator_log" >&3 2>&3
             timeout 10 "$adb_bin" -s emulator-5554 emu kill > /dev/null 2>&1
             if [[ -n "$emulator_pid" ]]; then kill "$emulator_pid" 2>/dev/null; fi

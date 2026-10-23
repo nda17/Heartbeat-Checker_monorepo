@@ -1,5 +1,6 @@
 package ru.heartbeatchecker.app;
 
+import android.app.Instrumentation;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.AssetManager;
@@ -10,6 +11,7 @@ import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.TextView;
 import android.widget.EditText;
 
@@ -17,6 +19,10 @@ import androidx.test.core.app.ActivityScenario;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.test.runner.lifecycle.ActivityLifecycleCallback;
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitor;
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry;
+import androidx.test.runner.lifecycle.Stage;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -45,7 +51,7 @@ public final class MainActivitySmokeTest {
     private static final String SESSION = "22222222-2222-4222-8222-222222222222";
 
     @Test
-    public void bundledOfflineJavascriptRegistersAndRendersNativeAuthScreen() throws Exception {
+    public void bundledOfflineJavascriptRendersNativePublicLandingBeforeLogin() throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         AssetManager assets = context.getAssets();
         byte[] bundle;
@@ -59,7 +65,18 @@ public final class MainActivitySmokeTest {
 
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
             assertTrue("a rendered React Native screen is required; Activity launch alone is insufficient",
-                    awaitVisibleText(scenario, "Войти через Яндекс"));
+                    awaitVisibleText(scenario, "Круглосуточный мониторинг ваших сайтов и сервисов."));
+            assertTrue("the full public landing must offer registration", awaitVisibleText(scenario, "Создать аккаунт"));
+            waitForBundledLandingImages();
+            saveScreenshot(scenario, "Круглосуточный мониторинг ваших сайтов и сервисов.", "Войти через Яндекс", "public-landing.png");
+
+            tapText(scenario, "Возможности");
+            assertTrue("the landing navigation must reach the native features section", awaitVisibleText(scenario, "Три типа проверки"));
+            saveScreenshot(scenario, "Три типа проверки", "Войти через Яндекс", "public-features.png");
+
+            scrollToTop(scenario);
+            tapText(scenario, "Войти");
+            assertTrue("public login action must open the native authentication screen", awaitVisibleText(scenario, "Войти через Яндекс"));
             saveScreenshot(scenario, "Войти", "Мониторы", "login.png");
         }
     }
@@ -67,6 +84,8 @@ public final class MainActivitySmokeTest {
     @Test
     public void authModesAndPasswordVisibilityRenderInTheBundledReactNativeScreen() throws Exception {
         try (ActivityScenario<MainActivity> scenario = ActivityScenario.launch(MainActivity.class)) {
+            assertTrue(awaitVisibleText(scenario, "Круглосуточный мониторинг ваших сайтов и сервисов."));
+            tapText(scenario, "Войти");
             assertTrue(awaitVisibleText(scenario, "Войти через Яндекс"));
 
             tapDescription(scenario, "Показать пароль");
@@ -166,6 +185,120 @@ public final class MainActivitySmokeTest {
     }
 
     @Test
+    public void emailVerificationColdStartStoresPendingLinkAndScrubsActivityIntent() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        AuthStore auth = new AuthStore(context);
+        clearAuthStore(auth);
+        String token = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
+        Intent verification = new Intent(Intent.ACTION_VIEW).setClass(context, MainActivity.class)
+                .setData(Uri.parse("https://heartbeat-checker.ru/app/settings#verify-email=" + token));
+        AtomicBoolean created = new AtomicBoolean();
+        AtomicReference<MainActivity> activityAtCreate = new AtomicReference<>();
+        AtomicReference<String> intentDataAtCreate = new AtomicReference<>();
+        ActivityLifecycleMonitor lifecycleMonitor = ActivityLifecycleMonitorRegistry.getInstance();
+        ActivityLifecycleCallback captureSafeIntent = (candidate, stage) -> {
+            if (candidate instanceof MainActivity && stage == Stage.CREATED) {
+                activityAtCreate.set((MainActivity) candidate);
+                intentDataAtCreate.set(candidate.getIntent().getDataString());
+                created.set(true);
+            }
+        };
+        MainActivity activity = null;
+        boolean callbackRegistered = false;
+        try {
+            lifecycleMonitor.addLifecycleCallback(captureSafeIntent);
+            callbackRegistered = true;
+            activity = launchMainActivity(verification);
+            MainActivity launchedActivity = activity;
+            assertTrue("cold-start intent snapshot must be captured after onCreate", created.get());
+            assertSame("snapshot must belong to the launched MainActivity", launchedActivity, activityAtCreate.get());
+            assertEquals("onCreate must replace the secret link with the reviewed settings route before RN boot",
+                    "https://heartbeat-checker.ru/app/settings", intentDataAtCreate.get());
+            JSONObject pending = auth.emailVerification(null, false);
+            assertNotNull("cold email link is durably retained before login", pending);
+            assertEquals(token, pending.getString("token"));
+            assertNull("verification link never creates an authenticated session", auth.active());
+            assertTrue("initially unauthenticated token remains unbound", pending.isNull("accountId") && pending.isNull("sessionId"));
+            AtomicReference<String> activityIntentData = new AtomicReference<>();
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() ->
+                    activityIntentData.set(launchedActivity.getIntent().getDataString()));
+            assertTrue("after RN consumes the initial handoff, Activity keeps no URI or only the safe route",
+                    activityIntentData.get() == null
+                            || "https://heartbeat-checker.ru/app/settings".equals(activityIntentData.get()));
+            assertFalse("consumed email token is scrubbed from Activity intent",
+                    activityIntentData.get() != null && activityIntentData.get().contains(token));
+        } finally {
+            try {
+                try {
+                    finishMainActivity(activity);
+                } finally {
+                    clearAuthStore(auth);
+                }
+            } finally {
+                if (callbackRegistered) lifecycleMonitor.removeLifecycleCallback(captureSafeIntent);
+            }
+        }
+    }
+
+    @Test
+    public void warmEmailLinkReplacesUnconsumedColdHandoffForTheNewToken() throws Exception {
+        Context context = ApplicationProvider.getApplicationContext();
+        AuthStore auth = new AuthStore(context);
+        clearAuthStore(auth);
+        String coldToken = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
+        String warmToken = "BCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefgh";
+        Intent cold = new Intent(Intent.ACTION_VIEW).setClass(context, MainActivity.class)
+                .setData(Uri.parse("https://heartbeat-checker.ru/app/settings#verify-email=" + coldToken));
+        MainActivity activity = null;
+        try {
+            activity = launchMainActivity(cold);
+            MainActivity launchedActivity = activity;
+            Intent warm = new Intent(Intent.ACTION_VIEW, Uri.parse(
+                    "https://heartbeat-checker.ru/app/settings#verify-email=" + warmToken));
+            AtomicReference<String> staleHandoff = new AtomicReference<>();
+            AtomicReference<String> activityIntentData = new AtomicReference<>();
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+                launchedActivity.onNewIntent(warm);
+                staleHandoff.set(launchedActivity.takeEmailVerificationLink());
+                activityIntentData.set(launchedActivity.getIntent().getDataString());
+            });
+            JSONObject pending = auth.emailVerification(null, false);
+            assertNotNull(pending);
+            assertEquals("new warm link owns durable storage", warmToken, pending.getString("token"));
+            assertNull("stale cold handoff is cleared before the warm link is forwarded", staleHandoff.get());
+            assertEquals("Activity intent retains only the reviewed settings route",
+                    "https://heartbeat-checker.ru/app/settings", activityIntentData.get());
+        } finally {
+            try {
+                finishMainActivity(activity);
+            } finally {
+                clearAuthStore(auth);
+            }
+        }
+    }
+
+    private static MainActivity launchMainActivity(Intent intent) {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        return (MainActivity) InstrumentationRegistry.getInstrumentation().startActivitySync(intent);
+    }
+
+    private static void finishMainActivity(MainActivity activity) {
+        if (activity == null) return;
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        instrumentation.runOnMainSync(activity::finish);
+        instrumentation.waitForIdleSync();
+        AtomicBoolean destroyed = new AtomicBoolean();
+        long deadline = android.os.SystemClock.uptimeMillis() + 3_000;
+        while (android.os.SystemClock.uptimeMillis() < deadline) {
+            instrumentation.runOnMainSync(() -> destroyed.set(activity.isDestroyed()));
+            if (destroyed.get()) return;
+            android.os.SystemClock.sleep(25);
+        }
+        instrumentation.runOnMainSync(() -> destroyed.set(activity.isDestroyed()));
+        assertTrue("email-link Activity must reach DESTROYED after finish", destroyed.get());
+    }
+
+    @Test
     public void packageKeepsStableUpgradeIdentityAndDoesNotExposeShareTarget() throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         assertEquals("ru.heartbeatchecker.app", context.getPackageName());
@@ -234,6 +367,29 @@ public final class MainActivitySmokeTest {
         tapMatchingView(scenario, text, false);
     }
 
+    private static void scrollToTop(ActivityScenario<MainActivity> scenario) throws InterruptedException {
+        scenario.onActivity(activity -> {
+            View scroll = findScrollView(activity.getWindow().getDecorView());
+            assertNotNull("public landing must expose its scrolling content", scroll);
+            scroll.scrollTo(0, 0);
+        });
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        Thread.sleep(100);
+    }
+
+    private static View findScrollView(View view) {
+        for (Class<?> type = view.getClass(); type != null; type = type.getSuperclass()) {
+            if (type.getSimpleName().contains("ScrollView")) return view;
+        }
+        if (!(view instanceof ViewGroup)) return null;
+        ViewGroup group = (ViewGroup) view;
+        for (int index = 0; index < group.getChildCount(); index++) {
+            View found = findScrollView(group.getChildAt(index));
+            if (found != null) return found;
+        }
+        return null;
+    }
+
     private static void tapDescription(ActivityScenario<MainActivity> scenario, String description) throws InterruptedException {
         tapMatchingView(scenario, description, true);
     }
@@ -252,16 +408,68 @@ public final class MainActivitySmokeTest {
         });
         float[] point = coordinates.get();
         assertNotNull(point);
+        awaitAppInputWindow(scenario, "tap '" + value + "'");
         long downTime = android.os.SystemClock.uptimeMillis();
         MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, point[0], point[1], 0);
         down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        InstrumentationRegistry.getInstrumentation().sendPointerSync(down);
-        down.recycle();
+        try {
+            assertAppInputWindow(scenario, "before DOWN for '" + value + "'");
+            InstrumentationRegistry.getInstrumentation().sendPointerSync(down);
+        } finally {
+            down.recycle();
+        }
         MotionEvent up = MotionEvent.obtain(downTime, android.os.SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, point[0], point[1], 0);
         up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        InstrumentationRegistry.getInstrumentation().sendPointerSync(up);
-        up.recycle();
+        try {
+            assertAppInputWindow(scenario, "before UP for '" + value + "'");
+            InstrumentationRegistry.getInstrumentation().sendPointerSync(up);
+        } finally {
+            up.recycle();
+        }
         Thread.sleep(100);
+    }
+
+    private static void awaitAppInputWindow(ActivityScenario<MainActivity> scenario, String action)
+            throws InterruptedException {
+        long deadline = android.os.SystemClock.uptimeMillis() + 3_000;
+        String lastState;
+        do {
+            lastState = appInputWindowState(scenario);
+            if ("ready".equals(lastState)) return;
+            android.os.SystemClock.sleep(100);
+        } while (android.os.SystemClock.uptimeMillis() < deadline);
+        lastState = appInputWindowState(scenario);
+        assertEquals("Refusing to inject " + action + "; app must own the focused, visible input window. " + lastState,
+                "ready", lastState);
+    }
+
+    private static void assertAppInputWindow(ActivityScenario<MainActivity> scenario, String action) {
+        String state = appInputWindowState(scenario);
+        assertEquals("Refusing to inject " + action + "; focused window changed. " + state, "ready", state);
+    }
+
+    private static String appInputWindowState(ActivityScenario<MainActivity> scenario) {
+        AtomicBoolean activityReady = new AtomicBoolean();
+        scenario.onActivity(activity -> {
+            View decor = activity.getWindow().getDecorView();
+            activityReady.set(activity.getLifecycle().getCurrentState()
+                    .isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
+                    && decor.hasWindowFocus() && isActuallyVisible(decor));
+        });
+        AccessibilityNodeInfo activeRoot = InstrumentationRegistry.getInstrumentation()
+                .getUiAutomation().getRootInActiveWindow();
+        String activePackage = "<no-active-window>";
+        if (activeRoot != null) {
+            try {
+                CharSequence packageName = activeRoot.getPackageName();
+                activePackage = packageName == null ? "<unknown-package>" : packageName.toString();
+            } finally {
+                activeRoot.recycle();
+            }
+        }
+        return activityReady.get() && "ru.heartbeatchecker.app".equals(activePackage)
+                ? "ready"
+                : "activityResumedVisibleAndFocused=" + activityReady.get() + ", activeWindowPackage=" + activePackage;
     }
 
     private static void setInputText(ActivityScenario<MainActivity> scenario, String label, String value) {
@@ -301,6 +509,7 @@ public final class MainActivitySmokeTest {
     private static void saveScreenshot(ActivityScenario<MainActivity> scenario, String expected, String forbidden, String name)
             throws InterruptedException {
         android.app.Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        awaitAppInputWindow(scenario, "capture " + name);
         instrumentation.waitForIdleSync();
         assertScreenMarkers(scenario, expected, forbidden);
 
@@ -315,6 +524,7 @@ public final class MainActivitySmokeTest {
         assertTrue("React Native screen frame was not committed before screenshot: " + name,
                 frameCommitted.await(5, TimeUnit.SECONDS));
         instrumentation.waitForIdleSync();
+        assertAppInputWindow(scenario, "capture " + name);
         assertScreenMarkers(scenario, expected, forbidden);
 
         String additionalTestOutputDir = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir");
@@ -326,8 +536,9 @@ public final class MainActivitySmokeTest {
         if (!directory.isDirectory() && !directory.mkdirs()) throw new AssertionError("could not create auth screenshot directory");
         Bitmap screenshot = instrumentation.getUiAutomation().takeScreenshot();
         if (screenshot == null) throw new AssertionError("could not capture React Native screen: " + name);
-        File file = new File(directory, name);
         try {
+            assertAppInputWindow(scenario, "after capture " + name);
+            File file = new File(directory, name);
             assertScreenMarkers(scenario, expected, forbidden);
             try (FileOutputStream output = new FileOutputStream(file)) {
                 if (!screenshot.compress(Bitmap.CompressFormat.PNG, 100, output)) {
@@ -339,6 +550,13 @@ public final class MainActivitySmokeTest {
         } finally {
             screenshot.recycle();
         }
+    }
+
+    private static void waitForBundledLandingImages() throws InterruptedException {
+        android.app.Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        instrumentation.waitForIdleSync();
+        Thread.sleep(500);
+        instrumentation.waitForIdleSync();
     }
 
     private static void assertScreenMarkers(ActivityScenario<MainActivity> scenario, String expected, String forbidden) {

@@ -1,14 +1,19 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
+  BackHandler,
   PermissionsAndroid,
   Platform,
   Switch,
   View,
 } from "react-native";
-import { acceptSession, api, errorText, session, sessionEpoch } from "./api";
+import { api, errorText, session, sessionEpoch } from "./api";
 import { native } from "./native";
-import type { Provider } from "./types";
+import { HelpScreen } from "./HelpScreen";
+import { AuthScreen } from "./AuthScreen";
+import { NotificationsScreen } from "./NotificationsScreen";
+import { PushTestPanel } from "./PushTestPanel";
+import type { AuthResult, Provider } from "./types";
 import {
   Button,
   Card,
@@ -36,12 +41,7 @@ type DeviceSession = {
   current: boolean;
 };
 type Identity = { id: string; provider: string; label?: string };
-type PushStatus = {
-  enabled: boolean;
-  optedOut: boolean;
-  provider: string;
-  status: string;
-};
+type PushStatus = Awaited<ReturnType<typeof native.pushStatus>>;
 type Source = "profile" | "sessions" | "identities" | "push";
 type ActionArea = Source | "password" | "help" | "delete" | "logout";
 const sources: Source[] = ["profile", "sessions", "identities", "push"];
@@ -63,7 +63,18 @@ const actionMessages = () => ({
   logout: "",
 });
 
-export function AccountScreen({ onLogout }: { onLogout: () => Promise<void> }) {
+export function AccountScreen({
+  onLogout,
+  onAuthed,
+}: {
+  onLogout: () => Promise<void>;
+  onAuthed: (value: AuthResult) => Promise<void>;
+}) {
+  const [section, setSection] = useState<
+    "hub" | "profile" | "notifications" | "security" | "help"
+  >("hub");
+  const [channelsOpen, setChannelsOpen] = useState(false);
+  const [setupPassword, setSetupPassword] = useState(false);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [verifiedSessionId, setVerifiedSessionId] = useState("");
   const [name, setName] = useState("");
@@ -77,7 +88,7 @@ export function AccountScreen({ onLogout }: { onLogout: () => Promise<void> }) {
   const [newPassword, setNewPassword] = useState("");
   const [linkPassword, setLinkPassword] = useState("");
   const [deletePassword, setDeletePassword] = useState("");
-  const [helpOpen, setHelpOpen] = useState(false);
+
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState(actionMessages);
   const [actionNotice, setActionNotice] = useState(actionMessages);
@@ -210,8 +221,6 @@ export function AccountScreen({ onLogout }: { onLogout: () => Promise<void> }) {
       if (mounted.current) setBusy(false);
     }
   };
-  const openWebsite = (url: string) =>
-    void run("help", () => native.openCustomTab(url));
   const active = session();
   const verifiedProfile =
     !!profile &&
@@ -226,6 +235,25 @@ export function AccountScreen({ onLogout }: { onLogout: () => Promise<void> }) {
     loaded.identities &&
     !loading.identities &&
     !native.DEV_CLIENT;
+
+  useEffect(() => {
+    const listener = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (setupPassword) {
+        setSetupPassword(false);
+        return true;
+      }
+      if (channelsOpen) {
+        setChannelsOpen(false);
+        return true;
+      }
+      if (section !== "hub") {
+        setSection("hub");
+        return true;
+      }
+      return false;
+    });
+    return () => listener.remove();
+  }, [section, channelsOpen, setupPassword]);
 
   const changePassword = () =>
     void run("password", async () => {
@@ -311,7 +339,7 @@ export function AccountScreen({ onLogout }: { onLogout: () => Promise<void> }) {
                 method: "DELETE",
                 body: { identityId: item.id, password: linkPassword },
               });
-              await acceptSession(updated);
+              await onAuthed(updated);
               setLinkPassword("");
               showNotice("identities", "Способ входа отключён.");
               await refresh();
@@ -383,341 +411,473 @@ export function AccountScreen({ onLogout }: { onLogout: () => Promise<void> }) {
       await refreshPush();
     });
 
-  return (
-    <Page title="Аккаунт" refresh={refresh}>
-      <Card>
-        <Title>Профиль</Title>
-        {loading.profile ? <Label muted>Обновляем профиль…</Label> : null}
-        <ErrorNotice message={sourceError.profile} />
-        {verifiedProfile ? (
-          <>
-            <Label>
-              {profile.email} ·{" "}
-              {profile.emailVerified
-                ? "Email подтверждён"
-                : "Email не подтверждён"}
-            </Label>
-            <Field
-              label="Имя"
-              value={name}
-              onChangeText={(value) => {
-                nameDirty.current = true;
-                ++nameEdit.current;
-                setName(value);
-              }}
-            />
-            <Button
-              label="Сохранить имя"
-              disabled={busy || !name.trim()}
-              onPress={() =>
-                void run("profile", async () => {
-                  const submitted = name.trim();
-                  const edit = nameEdit.current;
-                  await api("/me", {
-                    method: "PATCH",
-                    body: { name: submitted },
-                  });
-                  if (edit === nameEdit.current) {
-                    nameDirty.current = false;
-                    setName(submitted);
-                  }
-                  showNotice("profile", "Имя сохранено.");
-                  await refreshProfile();
-                })
-              }
-            />
-          </>
-        ) : null}
-        <ErrorNotice message={actionError.profile} />
-        {actionNotice.profile ? <Label>{actionNotice.profile}</Label> : null}
-      </Card>
-      <Card>
-        <Title>Push на этом телефоне</Title>
-        {loading.push ? <Label muted>Проверяем уведомления…</Label> : null}
-        <ErrorNotice message={sourceError.push} />
-        {loaded.push && push ? (
-          <>
-            <View
-              style={{
-                flexDirection: "row",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-            >
-              <Label>Получать уведомления</Label>
-              <Switch
-                value={push.enabled}
-                disabled={native.DEV_CLIENT || busy}
-                onValueChange={togglePush}
-              />
-            </View>
-            {isAdmin && !loading.push ? (
-              <Label>
-                Провайдер: {push.provider || "не выбран"} ·{" "}
-                {push.status || "не подключено"}
-              </Label>
-            ) : null}
-            {!isAdmin ? (
-              <Label muted>
-                {push.enabled
-                  ? "Уведомления включены."
-                  : "Уведомления выключены."}
-              </Label>
-            ) : null}
-          </>
-        ) : null}
-        {native.DEV_CLIENT ? (
-          <Label muted>Push в dev-сборке отключён.</Label>
-        ) : null}
-        <ErrorNotice message={actionError.push} />
-        {actionNotice.push ? <Label>{actionNotice.push}</Label> : null}
-      </Card>
-      <Card>
-        <Title>Способы входа</Title>
-        {loading.identities ? (
-          <Label muted>Проверяем способы входа…</Label>
-        ) : null}
-        <ErrorNotice message={sourceError.identities} />
-        {loaded.identities && !loading.identities ? (
-          <>
-            {identities.map((item) => (
-              <View key={item.id} style={{ gap: 5 }}>
-                <View
-                  style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
-                >
-                  <Icon
-                    name={
-                      item.provider === "vk"
-                        ? "vk"
-                        : item.provider === "yandex"
-                          ? "yandex"
-                          : "user"
-                    }
-                    size={24}
-                  />
-                  <Label>
-                    {item.provider === "vk"
-                      ? "VK"
-                      : item.provider === "yandex"
-                        ? "Яндекс"
-                        : item.provider}{" "}
-                    {item.label ?? ""}
-                  </Label>
-                </View>
-                {canManageIdentity ? (
-                  <Button
-                    label="Отключить"
-                    onPress={() => unlink(item)}
-                    secondary
-                    disabled={busy || !profile.hasPassword || !linkPassword}
-                  />
-                ) : null}
-              </View>
-            ))}
-            {native.DEV_CLIENT ? (
-              <Label muted>
-                Управление социальным входом доступно в обычном приложении.
-              </Label>
-            ) : null}
-            {isAdmin && !native.DEV_CLIENT ? (
-              <Label muted>
-                Администратор управляет способами входа в кабинете на сайте
-                после подтверждения MFA.
-              </Label>
-            ) : null}
-            {canManageIdentity ? (
-              <>
-                {!profile.hasPassword ? (
-                  <Label muted>
-                    Для изменения способов входа сначала задайте пароль через
-                    восстановление доступа.
-                  </Label>
-                ) : (
-                  <>
-                    <Field
-                      label="Пароль для способов входа"
-                      value={linkPassword}
-                      onChangeText={setLinkPassword}
-                      secure
-                    />
-                    {!identities.some((item) => item.provider === "yandex") ? (
-                      <Button
-                        label="Подключить Яндекс"
-                        iconName="yandex"
-                        onPress={() => link("yandex")}
-                        disabled={busy || !linkPassword}
-                        secondary
-                      />
-                    ) : null}
-                    {!identities.some((item) => item.provider === "vk") ? (
-                      <Button
-                        label="Подключить VK"
-                        iconName="vk"
-                        onPress={() => link("vk")}
-                        disabled={busy || !linkPassword}
-                        secondary
-                      />
-                    ) : null}
-                  </>
-                )}
-              </>
-            ) : null}
-          </>
-        ) : null}
-        <ErrorNotice message={actionError.identities} />
-        {actionNotice.identities ? (
-          <Label>{actionNotice.identities}</Label>
-        ) : null}
-      </Card>
-      <Card>
-        <Title>Пароль</Title>
-        <Field
-          label="Текущий пароль"
-          value={password}
-          onChangeText={setPassword}
-          secure
-        />
-        <Field
-          label="Новый пароль"
-          value={newPassword}
-          onChangeText={setNewPassword}
-          secure
+  if (setupPassword)
+    return (
+      <AuthScreen
+        initialMode="reset"
+        initialEmail={profile?.email ?? ""}
+        onAuthed={onAuthed}
+        onBack={() => setSetupPassword(false)}
+      />
+    );
+  if (channelsOpen)
+    return <NotificationsScreen onBack={() => setChannelsOpen(false)} />;
+  if (section === "help")
+    return <HelpScreen onBack={() => setSection("hub")} />;
+  if (section === "hub")
+    return (
+      <Page title="Аккаунт" refresh={refresh}>
+        <Card>
+          <Title>
+            {profile?.account.name || session()?.account.name || "Ваш аккаунт"}
+          </Title>
+          <Label>{profile?.email ?? session()?.account.email}</Label>
+          <Label muted>
+            {profile?.emailVerified
+              ? "Email подтверждён"
+              : "Проверьте подтверждение email в профиле"}
+          </Label>
+          <ErrorNotice message={sourceError.profile} />
+        </Card>
+        <Button
+          label="Профиль и email"
+          iconName="user"
+          secondary
+          onPress={() => setSection("profile")}
         />
         <Button
-          label="Изменить пароль"
-          disabled={busy || !password || !newPassword}
-          onPress={changePassword}
+          label="Уведомления"
+          iconName="bell"
+          secondary
+          onPress={() => setSection("notifications")}
         />
-        <Label muted>После изменения пароля потребуется новый вход.</Label>
-        <ErrorNotice message={actionError.password} />
-        {actionNotice.password ? <Label>{actionNotice.password}</Label> : null}
-      </Card>
-      <Card>
-        <Title>Сеансы</Title>
-        {loading.sessions ? <Label muted>Обновляем сеансы…</Label> : null}
-        <ErrorNotice message={sourceError.sessions} />
-        {loaded.sessions && !loading.sessions ? (
-          <>
-            {sessions.map((item) => (
-              <View key={item.id} style={{ gap: 5 }}>
-                <Label>
-                  {item.current
-                    ? "Это устройство"
-                    : item.userAgent || "Другое устройство"}{" "}
-                  · до {new Date(item.expiresAt).toLocaleString("ru-RU")}
-                </Label>
-                <Button
-                  label="Завершить сеанс"
-                  onPress={() => revoke(item.id)}
-                  disabled={busy}
-                  secondary
+        <Button
+          label="Безопасность и сеансы"
+          iconName="shield"
+          secondary
+          onPress={() => setSection("security")}
+        />
+        <Button
+          label="Помощь и документы"
+          iconName="info"
+          secondary
+          onPress={() => setSection("help")}
+        />
+        <Card>
+          <Button
+            label="Выйти из аккаунта"
+            iconName="logout"
+            secondary
+            disabled={busy}
+            onPress={() => void run("logout", onLogout)}
+          />
+          <ErrorNotice message={actionError.logout} />
+        </Card>
+      </Page>
+    );
+  return (
+    <Page
+      title={
+        section === "profile"
+          ? "Профиль"
+          : section === "notifications"
+            ? "Уведомления"
+            : "Безопасность"
+      }
+      refresh={refresh}
+    >
+      <Button
+        label="К аккаунту"
+        iconName="arrow-left"
+        secondary
+        onPress={() => setSection("hub")}
+      />
+      {section === "profile" ? (
+        <Card>
+          <Title>Профиль</Title>
+          {loading.profile ? <Label muted>Обновляем профиль…</Label> : null}
+          <ErrorNotice message={sourceError.profile} />
+          {verifiedProfile ? (
+            <>
+              <Label>
+                {profile.email} ·{" "}
+                {profile.emailVerified
+                  ? "Email подтверждён"
+                  : "Email не подтверждён"}
+              </Label>
+              {!profile.emailVerified ? (
+                <>
+                  <Label muted>
+                    Это email для входа в аккаунт. Адреса уведомлений
+                    подключаются отдельно.
+                  </Label>
+                  <Button
+                    label="Отправить письмо подтверждения"
+                    secondary
+                    disabled={busy}
+                    onPress={() =>
+                      void run("profile", async () => {
+                        await api("/me/email-verification", {
+                          method: "POST",
+                          body: {},
+                        });
+                        showNotice(
+                          "profile",
+                          "Письмо отправлено. Откройте ссылку на этом телефоне, затем подтвердите email в приложении.",
+                        );
+                      })
+                    }
+                  />
+                </>
+              ) : null}
+              <Field
+                label="Имя"
+                value={name}
+                onChangeText={(value) => {
+                  nameDirty.current = true;
+                  ++nameEdit.current;
+                  setName(value);
+                }}
+              />
+              <Button
+                label="Сохранить имя"
+                disabled={busy || !name.trim()}
+                onPress={() =>
+                  void run("profile", async () => {
+                    const submitted = name.trim();
+                    const edit = nameEdit.current;
+                    await api("/me", {
+                      method: "PATCH",
+                      body: { name: submitted },
+                    });
+                    if (edit === nameEdit.current) {
+                      nameDirty.current = false;
+                      setName(submitted);
+                    }
+                    showNotice("profile", "Имя сохранено.");
+                    await refreshProfile();
+                  })
+                }
+              />
+            </>
+          ) : null}
+          <ErrorNotice message={actionError.profile} />
+          {actionNotice.profile ? <Label>{actionNotice.profile}</Label> : null}
+        </Card>
+      ) : null}
+      {section === "notifications" ? (
+        <Card>
+          <Title>Push на этом телефоне</Title>
+          {loading.push ? <Label muted>Проверяем уведомления…</Label> : null}
+          <ErrorNotice message={sourceError.push} />
+          {loaded.push && push ? (
+            <>
+              <View
+                style={{
+                  flexDirection: "row",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <Label>Получать уведомления</Label>
+                <Switch
+                  value={push.enabled}
+                  disabled={native.DEV_CLIENT || busy}
+                  onValueChange={togglePush}
                 />
               </View>
-            ))}
-            <Button
-              label="Завершить все сеансы"
-              onPress={() =>
-                Alert.alert("Завершить все сеансы?", "", [
-                  { text: "Отмена" },
-                  {
-                    text: "Завершить",
-                    onPress: () =>
-                      void run("sessions", async () => {
-                        await api("/me/sessions", { method: "DELETE" });
-                        await onLogout();
-                      }),
-                  },
-                ])
-              }
-              disabled={busy}
-              danger
-            />
-          </>
-        ) : null}
-        <ErrorNotice message={actionError.sessions} />
-        {actionNotice.sessions ? <Label>{actionNotice.sessions}</Label> : null}
-      </Card>
-      <Card>
-        <Button
-          label={helpOpen ? "Назад" : "Помощь и документы"}
-          iconName={helpOpen ? "arrow-left" : "info"}
-          onPress={() => setHelpOpen((value) => !value)}
-          secondary
-        />
-        {helpOpen ? (
-          <>
-            <Button
-              label="Поддержка"
-              iconName="mail"
-              onPress={() =>
-                openWebsite("https://heartbeat-checker.ru/contacts")
-              }
-              secondary
-            />
-            <Button
-              label="Условия и оферта"
-              iconName="arrow-up-right"
-              onPress={() => openWebsite("https://heartbeat-checker.ru/terms")}
-              secondary
-            />
-            <Button
-              label="Персональные данные"
-              iconName="shield"
-              onPress={() =>
-                openWebsite("https://heartbeat-checker.ru/privacy")
-              }
-              secondary
-            />
-            <Button
-              label="Cookie"
-              iconName="arrow-up-right"
-              onPress={() =>
-                openWebsite("https://heartbeat-checker.ru/cookies")
-              }
-              secondary
-            />
-            <Label muted>Версия Android: 2.0.2 (9) · тема системная</Label>
-          </>
-        ) : null}
-        <ErrorNotice message={actionError.help} />
-      </Card>
-      <Card>
-        <Title>Опасные действия</Title>
-        <Label>Удаление аккаунта</Label>
-        {isAdmin ? (
+              {isAdmin && !loading.push ? (
+                <Label>
+                  Провайдер: {push.provider || "не выбран"} ·{" "}
+                  {push.status || "не подключено"}
+                </Label>
+              ) : null}
+              {!isAdmin ? (
+                <Label muted>
+                  {push.enabled
+                    ? "Уведомления включены."
+                    : "Уведомления выключены."}
+                </Label>
+              ) : null}
+            </>
+          ) : null}
+          {native.DEV_CLIENT ? (
+            <Label muted>Push в dev-сборке отключён.</Label>
+          ) : null}
+          {loaded.push && push ? (
+            <>
+              <Label muted>
+                {!push.permissionGranted
+                  ? "Android не разрешил уведомления."
+                  : !push.notificationsEnabled
+                    ? "Уведомления приложения выключены в Android."
+                    : !push.channelEnabled
+                      ? "Канал уведомлений выключен в Android."
+                      : !push.bound
+                        ? "Этот телефон не подключён к текущему аккаунту."
+                        : !push.leaseValid
+                          ? "Подключение телефона обновляется. Проверьте позже."
+                          : push.ready
+                            ? "Телефон готов к проверке доставки."
+                            : "Подключение ещё не готово."}
+              </Label>
+              <PushTestPanel
+                ready={push.ready}
+                disabled={busy || native.DEV_CLIENT}
+                onRefresh={refreshPush}
+              />
+            </>
+          ) : null}
+          <Button
+            label="Адреса и чаты аккаунта"
+            secondary
+            iconName="mail"
+            onPress={() => setChannelsOpen(true)}
+          />
           <Label muted>
-            Перед удалением передайте права администратора в кабинете на сайте.
+            Маршруты каждого монитора настраиваются в его карточке. Подключение
+            адреса само по себе не включает все мониторы.
           </Label>
-        ) : verifiedProfile ? (
-          <>
-            <Label>Введите текущий пароль и подтвердите удаление.</Label>
-            <Field
-              label="Текущий пароль для удаления"
-              value={deletePassword}
-              onChangeText={setDeletePassword}
-              secure
-            />
-            <Button
-              label="Удалить аккаунт"
-              danger
-              disabled={busy || !deletePassword}
-              onPress={deleteAccount}
-            />
-          </>
-        ) : (
-          <Label muted>Проверяем права аккаунта…</Label>
-        )}
-        <ErrorNotice message={actionError.delete} />
-      </Card>
-      <Card>
-        <Button
-          label="Выйти"
-          iconName="logout"
-          onPress={() => void run("logout", onLogout)}
-          secondary
-        />
-        <ErrorNotice message={actionError.logout} />
-      </Card>
+          <ErrorNotice message={actionError.push} />
+          {actionNotice.push ? <Label>{actionNotice.push}</Label> : null}
+        </Card>
+      ) : null}
+      {section === "security" ? (
+        <Card>
+          <Title>Способы входа</Title>
+          {loading.identities ? (
+            <Label muted>Проверяем способы входа…</Label>
+          ) : null}
+          <ErrorNotice message={sourceError.identities} />
+          {loaded.identities && !loading.identities ? (
+            <>
+              {identities.map((item) => (
+                <View key={item.id} style={{ gap: 5 }}>
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 8,
+                    }}
+                  >
+                    <Icon
+                      name={
+                        item.provider === "vk"
+                          ? "vk"
+                          : item.provider === "yandex"
+                            ? "yandex"
+                            : "user"
+                      }
+                      size={24}
+                    />
+                    <Label>
+                      {item.provider === "vk"
+                        ? "VK"
+                        : item.provider === "yandex"
+                          ? "Яндекс"
+                          : item.provider}{" "}
+                      {item.label ?? ""}
+                    </Label>
+                  </View>
+                  {canManageIdentity ? (
+                    <Button
+                      label="Отключить"
+                      onPress={() => unlink(item)}
+                      secondary
+                      disabled={busy || !profile.hasPassword || !linkPassword}
+                    />
+                  ) : null}
+                </View>
+              ))}
+              {native.DEV_CLIENT ? (
+                <Label muted>
+                  Управление социальным входом доступно в обычном приложении.
+                </Label>
+              ) : null}
+              {isAdmin && !native.DEV_CLIENT ? (
+                <Label muted>
+                  Администратор управляет способами входа в кабинете на сайте
+                  после подтверждения MFA.
+                </Label>
+              ) : null}
+              {canManageIdentity ? (
+                <>
+                  {!profile.hasPassword ? (
+                    <Label muted>
+                      Для изменения способов входа сначала задайте пароль через
+                      email в разделе «Пароль».
+                    </Label>
+                  ) : (
+                    <>
+                      <Field
+                        label="Пароль для способов входа"
+                        value={linkPassword}
+                        onChangeText={setLinkPassword}
+                        secure
+                      />
+                      {!identities.some(
+                        (item) => item.provider === "yandex",
+                      ) ? (
+                        <Button
+                          label="Подключить Яндекс"
+                          iconName="yandex"
+                          onPress={() => link("yandex")}
+                          disabled={busy || !linkPassword}
+                          secondary
+                        />
+                      ) : null}
+                      {!identities.some((item) => item.provider === "vk") ? (
+                        <Button
+                          label="Подключить VK"
+                          iconName="vk"
+                          onPress={() => link("vk")}
+                          disabled={busy || !linkPassword}
+                          secondary
+                        />
+                      ) : null}
+                    </>
+                  )}
+                </>
+              ) : null}
+            </>
+          ) : null}
+          <ErrorNotice message={actionError.identities} />
+          {actionNotice.identities ? (
+            <Label>{actionNotice.identities}</Label>
+          ) : null}
+        </Card>
+      ) : null}
+      {section === "security" ? (
+        <Card>
+          <Title>Пароль</Title>
+          {verifiedProfile && !profile.hasPassword ? (
+            <>
+              <Label>
+                У аккаунта пока нет пароля. Его установка требует подтверждения
+                доступа к email. После перехода по ссылке потребуется войти
+                снова.
+              </Label>
+              <Button
+                label="Задать первый пароль через email"
+                secondary
+                disabled={busy || native.DEV_CLIENT}
+                onPress={() => setSetupPassword(true)}
+              />
+            </>
+          ) : (
+            <>
+              <Field
+                label="Текущий пароль"
+                value={password}
+                onChangeText={setPassword}
+                secure
+              />
+              <Field
+                label="Новый пароль"
+                value={newPassword}
+                onChangeText={setNewPassword}
+                secure
+              />
+              <Button
+                label="Изменить пароль"
+                disabled={busy || !password || !newPassword}
+                onPress={changePassword}
+              />
+              <Label muted>
+                После изменения пароля потребуется новый вход.
+              </Label>
+            </>
+          )}
+          <ErrorNotice message={actionError.password} />
+          {actionNotice.password ? (
+            <Label>{actionNotice.password}</Label>
+          ) : null}
+        </Card>
+      ) : null}
+      {section === "security" ? (
+        <Card>
+          <Title>Сеансы</Title>
+          {loading.sessions ? <Label muted>Обновляем сеансы…</Label> : null}
+          <ErrorNotice message={sourceError.sessions} />
+          {loaded.sessions && !loading.sessions ? (
+            <>
+              {sessions.map((item) => (
+                <View key={item.id} style={{ gap: 5 }}>
+                  <Label>
+                    {item.current
+                      ? "Это устройство"
+                      : item.userAgent || "Другое устройство"}{" "}
+                    · до {new Date(item.expiresAt).toLocaleString("ru-RU")}
+                  </Label>
+                  <Button
+                    label="Завершить сеанс"
+                    onPress={() => revoke(item.id)}
+                    disabled={busy}
+                    secondary
+                  />
+                </View>
+              ))}
+              <Button
+                label="Завершить все сеансы"
+                onPress={() =>
+                  Alert.alert("Завершить все сеансы?", "", [
+                    { text: "Отмена" },
+                    {
+                      text: "Завершить",
+                      onPress: () =>
+                        void run("sessions", async () => {
+                          await api("/me/sessions", { method: "DELETE" });
+                          await onLogout();
+                        }),
+                    },
+                  ])
+                }
+                disabled={busy}
+                danger
+              />
+            </>
+          ) : null}
+          <ErrorNotice message={actionError.sessions} />
+          {actionNotice.sessions ? (
+            <Label>{actionNotice.sessions}</Label>
+          ) : null}
+        </Card>
+      ) : null}
+      {section === "security" ? (
+        <Card>
+          <Title>Опасные действия</Title>
+          <Label>Удаление аккаунта</Label>
+          {isAdmin ? (
+            <Label muted>
+              Перед удалением передайте права администратора в кабинете на
+              сайте.
+            </Label>
+          ) : verifiedProfile && !profile.hasPassword ? (
+            <Label muted>
+              Для удаления сначала задайте пароль через email.
+            </Label>
+          ) : verifiedProfile ? (
+            <>
+              <Label>Введите текущий пароль и подтвердите удаление.</Label>
+              <Field
+                label="Текущий пароль для удаления"
+                value={deletePassword}
+                onChangeText={setDeletePassword}
+                secure
+              />
+              <Button
+                label="Удалить аккаунт"
+                danger
+                disabled={busy || !deletePassword}
+                onPress={deleteAccount}
+              />
+            </>
+          ) : (
+            <Label muted>Проверяем права аккаунта…</Label>
+          )}
+          <ErrorNotice message={actionError.delete} />
+        </Card>
+      ) : null}
     </Page>
   );
 }

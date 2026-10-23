@@ -12,6 +12,7 @@ type Service interface {
 	Reset(context.Context, pgx.Tx, string, string) error
 	List(context.Context, string, string) ([]monitorcontracts.Incident, error)
 	Get(context.Context, string, string, string) (monitorcontracts.Incident, error)
+	Feed(context.Context, pgx.Tx, string, FeedOptions) ([]FeedIncident, error)
 }
 
 type Notification struct {
@@ -65,3 +66,17 @@ const (
 	ClosePaused        = "paused"
 	CloseDeleted       = "deleted"
 )
+
+// FeedOptions is an owner-scoped keyset over confirmation-visible incidents.
+type FeedOptions struct {
+	State          string
+	Limit          int
+	AsOf           time.Time
+	BeforeOpenedAt *time.Time
+	BeforeID       string
+}
+
+type FeedIncident struct {
+	monitorcontracts.Incident
+	MonitorID string `json:"monitorId"`
+}

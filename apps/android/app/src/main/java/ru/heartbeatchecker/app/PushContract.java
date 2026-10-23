@@ -107,7 +107,7 @@ final class PushContract {
         if (data == null || !data.keySet().equals(new HashSet<>(Arrays.asList(
                 "v", "deliveryId", "installationId", "bindingGeneration", "expiresAt"))))
             throw new EnvelopeException(EnvelopeReason.DATA_KEYS);
-        if (!"1".equals(envelopeField(data, "v", EnvelopeReason.VERSION)))
+        if (!Arrays.asList("1", "2").contains(envelopeField(data, "v", EnvelopeReason.VERSION)))
             throw new EnvelopeException(EnvelopeReason.VERSION);
         if (!uuid(envelopeField(data, "deliveryId", EnvelopeReason.DELIVERY_ID)))
             throw new EnvelopeException(EnvelopeReason.DELIVERY_ID);
@@ -139,6 +139,37 @@ final class PushContract {
         positive(value, "sequence");
         instant(value.getString("occurredAt"));
         return value;
+    }
+
+    private static boolean keys(JSONObject value, String... names) {
+        Set<String> actual = new HashSet<>();
+        for (Iterator<String> it = value.keys(); it.hasNext();) actual.add(it.next());
+        return actual.equals(new HashSet<>(Arrays.asList(names)));
+    }
+
+    static JSONObject testDelivery(JSONObject value, String id, long now) throws JSONException {
+        if (!keys(value, "deliveryId", "kind", "occurredAt", "expiresAt", "title", "body", "receiptToken")
+                || !uuid(id) || !id.equals(value.getString("deliveryId")) || !"test".equals(value.getString("kind"))
+                || !bounded(value.getString("title"), 400) || value.getString("title").isEmpty()
+                || value.getString("title").codePointCount(0, value.getString("title").length()) > 100
+                || !bounded(value.getString("body"), 2048) || !secret(value.getString("receiptToken")))
+            throw new JSONException("Invalid test delivery");
+        long occurred = instant(value.getString("occurredAt")), expiry = instant(value.getString("expiresAt"));
+        if (occurred > now + 30000 || expiry <= now || expiry <= occurred || expiry - occurred > 5 * 60_000)
+            throw new JSONException("Invalid test lifetime");
+        return value;
+    }
+
+    static JSONObject nativeTest(JSONObject wrapper) throws JSONException {
+        if (!keys(wrapper, "test")) throw new JSONException("Invalid test response");
+        JSONObject value = wrapper.getJSONObject("test");
+        if (!keys(value, "id", "state", "createdAt", "expiresAt", "nextAllowedAt", "receivedAt", "displaySubmittedAt", "errorCode")
+                || !uuid(value.getString("id")) || !Arrays.asList("queued", "sending", "provider_accepted", "received",
+                "display_submitted", "failed", "expired", "cancelled").contains(value.getString("state"))
+                || !bounded(value.getString("errorCode"), 128)) throw new JSONException("Invalid test response");
+        for (String name : new String[]{"createdAt", "expiresAt", "nextAllowedAt"}) instant(value.getString(name));
+        for (String name : new String[]{"receivedAt", "displaySubmittedAt"}) if (!value.isNull(name)) instant(value.getString(name));
+        return wrapper;
     }
 
     static String incidentUrl(JSONObject delivery) throws JSONException {

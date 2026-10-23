@@ -244,6 +244,9 @@ func (p *Push) sender(provider string) PushSender {
 
 func (p *Push) cancelInstallation(ctx context.Context, tx pgx.Tx, id, code string) error {
 	_, err := tx.Exec(ctx, `UPDATE notifications.push_deliveries SET status='cancelled',attempt_token=NULL,lease_until=NULL,completed_at=now(),error_code=$2 WHERE installation_id=$1 AND status IN ('pending','leased')`, id, code)
+	if err == nil {
+		_, err = tx.Exec(ctx, `UPDATE notifications.push_test_deliveries SET status='cancelled',attempt_token=NULL,lease_until=NULL,completed_at=now(),error_code=$2 WHERE installation_id=$1 AND status IN ('pending','leased')`, id, code)
+	}
 	return err
 }
 func pushError(err error) error {

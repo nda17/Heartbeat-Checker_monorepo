@@ -1,13 +1,15 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  AppState,
+  Pressable,
   Alert,
   BackHandler,
   Switch,
   View,
 } from "react-native";
-import { api, errorText, session } from "./api";
-import type { Incident, Monitor, Result } from "./types";
+import { api, errorText, session, sessionEpoch } from "./api";
+import type { Entitlement, Incident, Monitor, Result } from "./types";
 import {
   Button,
   Card,
@@ -21,23 +23,17 @@ import {
   usePalette,
 } from "./ui";
 import { NotificationsScreen } from "./NotificationsScreen";
+import { useMonitorDraft, type MonitorForm } from "./MonitorDraft";
+import {
+  IncidentFeed,
+  MonitorStatistics,
+  closeReasonName,
+} from "./MonitorInsights";
 
-type Draft = {
-  checkType: "http" | "tcp" | "icmp";
-  name: string;
-  url: string;
-  host: string;
-  port: string;
-  method: "GET" | "HEAD";
-  expectedStatus: string;
-  bodyContains: string;
-  intervalMinutes: string;
-  failureThreshold: string;
-  timeZone: string;
-  enabled: boolean;
-};
+type Draft = MonitorForm;
 type Zone = { id: string; label: string };
-type Sort = "created_desc" | "created_asc" | "name_asc" | "name_desc";
+type Sort =
+  "created_desc" | "created_asc" | "name_asc" | "name_desc" | "problems_first";
 type MonitorPage = {
   monitors: Monitor[];
   pagination: {
@@ -46,7 +42,15 @@ type MonitorPage = {
     total: number;
     totalPages: number;
   };
-  summary: { total: number; up: number; down: number };
+  summary: {
+    total: number;
+    up: number;
+    down: number;
+    unknown: number;
+    paused: number;
+    subscriptionRequired: number;
+  };
+  asOf: string;
 };
 const blank: Draft = {
   checkType: "http",
@@ -74,6 +78,24 @@ const resultNames: Record<string, string> = {
   DOWN: "Недоступен",
   UNKNOWN: "Нет результата",
 };
+const checkFailureNames: Record<string, string> = {
+  request_timeout: "Превышено время ожидания",
+  tls_certificate_invalid: "Ошибка сертификата TLS",
+  tls_handshake_failed: "Не удалось установить защищённое соединение",
+  request_failed: "Ошибка соединения",
+  redirect_limit: "Слишком много перенаправлений",
+  invalid_redirect: "Недопустимое перенаправление",
+  response_too_large: "Слишком большой ответ",
+  unexpected_status: "Неожиданный HTTP-код",
+  body_mismatch: "Ожидаемый текст не найден",
+  blocked_target: "Адрес недоступен для проверки",
+  probe_unavailable: "Проверяющий сервер временно недоступен",
+  check_cancelled: "Проверка отменена",
+};
+const monitorStatus = (monitor: Monitor) =>
+  monitor.state === "UNKNOWN" && monitor.lastCheckedAt
+    ? "Нет свежих данных"
+    : (statusNames[monitor.state] ?? "Состояние неизвестно");
 function statusIcon(state: string): IconName {
   if (state === "UP") return "check";
   if (state === "DOWN") return "alert";
@@ -96,12 +118,42 @@ function date(value: string | null | undefined, timeZone: string) {
 
 export function MonitorsScreen({
   deepLink,
+  onBuyQuota,
+  resumeDraft,
+  onDeepLinkConsumed,
 }: {
+  onDeepLinkConsumed?: (link: {
+    monitorId: string;
+    incidentId: string;
+  }) => void;
+  onBuyQuota: () => void;
+  resumeDraft?: number;
   deepLink?: { monitorId: string; incidentId: string } | null;
 }) {
+  const retained = useMonitorDraft();
+  const [entitlementError, setEntitlementError] = useState("");
+  const [clock, setClock] = useState(Date.now());
+  const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
+  const [status, setStatus] = useState("all");
+  const [feed, setFeed] = useState(false);
+  const [feedLink, setFeedLink] = useState<{
+    monitorId: string;
+    incidentId: string;
+  } | null>(null);
+  const [advanced, setAdvanced] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [statisticsRefresh, setStatisticsRefresh] = useState(0);
+  const [incidentsOpen, setIncidentsOpen] = useState(false);
+  const [validation, setValidation] = useState(false);
+  const [stale, setStale] = useState(false);
+  const restoredDraft = useRef(false);
+  const incidentNavigation = useRef(!!deepLink);
+  const mounted = useRef(true);
+  if (deepLink) incidentNavigation.current = true;
+  const initialDraft = useRef("");
   const [list, setList] = useState<MonitorPage | null>(null);
   const [page, setPage] = useState(1);
-  const [sort, setSort] = useState<Sort>("created_desc");
+  const [sort, setSort] = useState<Sort>("problems_first");
   const [filter, setFilter] = useState("");
   const [query, setQuery] = useState("");
   const [listLoading, setListLoading] = useState(false);
@@ -135,11 +187,97 @@ export function MonitorsScreen({
   const mutation = useRef(false);
   const selectedRef = useRef<Monitor | null>(null);
   const resultsRef = useRef<Result[]>([]);
-  const selection = useRef({ page, sort, query });
-  selection.current = { page, sort, query };
+  const selection = useRef({ page, sort, query, status });
+  selection.current = { page, sort, query, status };
   selectedRef.current = selected;
   resultsRef.current = results;
 
+  useEffect(() => {
+    if (!retained.ready || restoredDraft.current) return;
+    restoredDraft.current = true;
+    if (retained.draft && !incidentNavigation.current && !feedLink) {
+      const saved = retained.draft;
+      setDraft(saved.form);
+      setEditing(true);
+      setCreating(!saved.editId);
+      editorBaseline.current = saved.editId
+        ? { id: saved.editId, version: saved.editVersion! }
+        : null;
+      initialDraft.current = JSON.stringify(saved.form);
+    }
+  }, [retained.ready, retained.draft, resumeDraft]);
+  useEffect(() => {
+    if (!editing || !retained.ready) return;
+    retained.update({
+      schemaVersion: 1,
+      form: draft,
+      editId: editorBaseline.current?.id ?? null,
+      ...(editorBaseline.current
+        ? { editVersion: editorBaseline.current.version }
+        : {}),
+    });
+  }, [draft, editing, retained.ready]);
+  const buyQuota = async () => {
+    const capturedEpoch = sessionEpoch();
+    retained.update({
+      schemaVersion: 1,
+      form: draft,
+      editId: editorBaseline.current?.id ?? null,
+      ...(editorBaseline.current
+        ? { editVersion: editorBaseline.current.version }
+        : {}),
+    });
+    try {
+      await retained.flush();
+      if (!mounted.current || sessionEpoch() !== capturedEpoch) return;
+      onBuyQuota();
+    } catch {
+      if (!mounted.current || sessionEpoch() !== capturedEpoch) return;
+      setError(
+        "Не удалось сохранить черновик на телефоне. Повторите переход после восстановления хранилища.",
+      );
+    }
+  };
+  const refreshEntitlement = useCallback(async () => {
+    try {
+      const value = await api<{ entitlement: Entitlement }>("/entitlement");
+      setEntitlement(value.entitlement);
+      setEntitlementError("");
+    } catch (cause) {
+      setEntitlementError(errorText(cause));
+    }
+  }, []);
+  useEffect(() => {
+    void refreshEntitlement();
+    const timer = setInterval(() => setClock(Date.now()), 30000);
+    return () => clearInterval(timer);
+  }, [refreshEntitlement]);
+  const cancelEditor = () => {
+    if (JSON.stringify(draft) !== initialDraft.current) {
+      Alert.alert(
+        "Выйти без сохранения?",
+        "Несохранённые изменения будут удалены.",
+        [
+          { text: "Продолжить", style: "cancel" },
+          {
+            text: "Удалить изменения",
+            style: "destructive",
+            onPress: () => {
+              retained.update(null);
+              editorBaseline.current = null;
+              setEditing(false);
+              setCreating(false);
+            },
+          },
+        ],
+      );
+    } else {
+      retained.update(null);
+      editorBaseline.current = null;
+      setEditing(false);
+      setCreating(false);
+    }
+  };
   const loadList = useCallback(async () => {
     listAbort.current?.abort();
     const controller = new AbortController();
@@ -154,6 +292,7 @@ export function MonitorsScreen({
         pageSize: "25",
         sort: current.sort,
         q: current.query,
+        status: current.status,
       });
       const data = await api<MonitorPage>(`/monitors?${params.toString()}`, {
         signal: controller.signal,
@@ -162,14 +301,18 @@ export function MonitorsScreen({
         request !== listRequest.current ||
         selection.current.page !== current.page ||
         selection.current.sort !== current.sort ||
-        selection.current.query !== current.query
+        selection.current.query !== current.query ||
+        selection.current.status !== current.status
       )
         return;
       setList(data);
+      setStale(false);
       if (data.pagination.page !== current.page) setPage(data.pagination.page);
     } catch (cause) {
-      if (!controller.signal.aborted && request === listRequest.current)
+      if (!controller.signal.aborted && request === listRequest.current) {
         setError(errorText(cause));
+        setStale(true);
+      }
     } finally {
       if (request === listRequest.current) setListLoading(false);
       if (listAbort.current === controller) listAbort.current = null;
@@ -182,7 +325,7 @@ export function MonitorsScreen({
       listAbort.current?.abort();
       listAbort.current = null;
     };
-  }, [page, sort, query, loadList]);
+  }, [page, sort, query, status, loadList]);
   useEffect(() => {
     if (!filterTouched.current) return;
     const timer = setTimeout(() => {
@@ -211,13 +354,26 @@ export function MonitorsScreen({
     };
   }, []);
 
-  const detail = useCallback(async (monitor: Monitor) => {
-    editorBaseline.current = null;
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next === "active") {
+        void loadList();
+        void refreshEntitlement();
+        if (selectedRef.current && !editing && !notifications && !feed)
+          void detail(selectedRef.current, true);
+      }
+    });
+    return () => subscription.remove();
+  }, [loadList, refreshEntitlement, editing, notifications, feed]);
+
+  const detail = useCallback(async (monitor: Monitor, passive = false) => {
+    if (!passive) editorBaseline.current = null;
     const request = ++detailRequest.current;
     paginationRequest.current++;
     setPaginationBusy(false);
     detailPending.current = true;
     setDetailRefreshing(true);
+    setStatisticsRefresh((value) => value + 1);
     const switching = selectedRef.current?.id !== monitor.id;
     if (switching) {
       selectedRef.current = monitor;
@@ -229,8 +385,12 @@ export function MonitorsScreen({
       setIncidents([]);
       setMoreResults(false);
     }
-    setEditing(false);
-    setNotifications(false);
+    if (switching && !passive) {
+      setEditing(false);
+      setHistoryOpen(false);
+      setIncidentsOpen(false);
+      setNotifications(false);
+    }
     setError("");
     try {
       const [m, r, i] = await Promise.all([
@@ -245,10 +405,21 @@ export function MonitorsScreen({
         return;
       selectedRef.current = m.monitor;
       setSelected(m.monitor);
+      const hadOlderResults =
+        resultsRef.current.length > firstResults.current.length;
+      const seen = new Set(r.results.map((item) => item.id));
+      const oldestFresh = r.results[r.results.length - 1]?.checkedAt;
+      const preservedOlder =
+        !switching && hadOlderResults && oldestFresh
+          ? resultsRef.current.filter(
+              (item) => !seen.has(item.id) && item.checkedAt < oldestFresh,
+            )
+          : [];
       firstResults.current = r.results;
-      resultsRef.current = r.results;
-      setResults(r.results);
-      setMoreResults(r.results.length >= 50);
+      const mergedResults = [...r.results, ...preservedOlder];
+      resultsRef.current = mergedResults;
+      setResults(mergedResults);
+      if (!preservedOlder.length) setMoreResults(r.results.length >= 50);
       setIncidents(i.incidents);
       setSelectedIncident((current) =>
         current
@@ -265,9 +436,22 @@ export function MonitorsScreen({
     }
   }, []);
   useEffect(() => {
-    if (!deepLink) return;
-    let active = true;
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      detailRequest.current++;
+      paginationRequest.current++;
+    };
+  }, []);
+  useEffect(() => {
+    const targetLink = deepLink ?? feedLink;
+    if (!targetLink) return;
     const request = ++detailRequest.current;
+    incidentNavigation.current = true;
+    setFeed(false);
+    // Transfer the one-shot link into this guarded request before acknowledging it.
+    setFeedLink(null);
+    if (deepLink) onDeepLinkConsumed?.(deepLink);
     paginationRequest.current++;
     setPaginationBusy(false);
     detailPending.current = false;
@@ -278,16 +462,16 @@ export function MonitorsScreen({
     setEditing(false);
     setNotifications(false);
     void Promise.all([
-      api<{ monitor: Monitor }>(`/monitors/${deepLink.monitorId}`),
+      api<{ monitor: Monitor }>(`/monitors/${targetLink.monitorId}`),
       api<{ incident: Incident }>(
-        `/monitors/${deepLink.monitorId}/incidents/${deepLink.incidentId}`,
+        `/monitors/${targetLink.monitorId}/incidents/${targetLink.incidentId}`,
       ),
     ])
       .then(([monitor, incident]) => {
         if (
-          !active ||
+          !mounted.current ||
           request !== detailRequest.current ||
-          incident.incident.id !== deepLink.incidentId
+          incident.incident.id !== targetLink.incidentId
         )
           return;
         setSelected(monitor.monitor);
@@ -295,19 +479,22 @@ export function MonitorsScreen({
         const loading = detail(monitor.monitor);
         const detailGeneration = detailRequest.current;
         void loading.then(() => {
-          if (active && detailGeneration === detailRequest.current)
+          if (mounted.current && detailGeneration === detailRequest.current)
             setSelectedIncident(incident.incident);
         });
       })
       .catch((cause) => {
-        if (active && request === detailRequest.current)
+        if (mounted.current && request === detailRequest.current)
           setError(`Ссылка недоступна этому аккаунту. ${errorText(cause)}`);
       });
-    return () => {
-      active = false;
-      detailRequest.current++;
-    };
-  }, [deepLink?.monitorId, deepLink?.incidentId, detail]);
+  }, [
+    deepLink?.monitorId,
+    deepLink?.incidentId,
+    feedLink?.monitorId,
+    feedLink?.incidentId,
+    detail,
+    onDeepLinkConsumed,
+  ]);
 
   const olderResults = async () => {
     const monitor = selectedRef.current;
@@ -392,6 +579,26 @@ export function MonitorsScreen({
           }
         : { ...blank },
     );
+    setValidation(false);
+    setAdvanced(false);
+    initialDraft.current = JSON.stringify(
+      monitor
+        ? {
+            checkType: monitor.checkType,
+            name: monitor.name,
+            url: monitor.url,
+            host: monitor.host,
+            port: String(monitor.port),
+            method: monitor.method,
+            expectedStatus: String(monitor.expectedStatus),
+            bodyContains: monitor.bodyContains,
+            intervalMinutes: String(monitor.intervalMinutes),
+            failureThreshold: String(monitor.failureThreshold),
+            timeZone: monitor.timeZone,
+            enabled: monitor.enabled,
+          }
+        : blank,
+    );
     setZonePicker(false);
     setZoneQuery("");
     setError("");
@@ -400,6 +607,24 @@ export function MonitorsScreen({
   };
   const save = async () => {
     if (mutation.current) return;
+    setValidation(true);
+    if (Object.keys(formErrors).length) {
+      setError("Проверьте отмеченные поля.");
+      return;
+    }
+    if (
+      creating &&
+      (!entitlement ||
+        entitlement.quota === 0 ||
+        (draft.enabled && entitlement.enabledMonitorCount >= entitlement.quota))
+    ) {
+      setError(
+        entitlement
+          ? "Для создания монитора нужна подходящая квота. Черновик сохранён."
+          : "Не удалось проверить квоту. Обновите её и повторите.",
+      );
+      return;
+    }
     mutation.current = true;
     setBusy(true);
     setError("");
@@ -413,7 +638,10 @@ export function MonitorsScreen({
         method: draft.checkType === "http" ? draft.method : "",
         expectedStatus:
           draft.checkType === "http" ? Number(draft.expectedStatus) : 0,
-        bodyContains: draft.checkType === "http" ? draft.bodyContains : "",
+        bodyContains:
+          draft.checkType === "http" && draft.method === "GET"
+            ? draft.bodyContains
+            : "",
         timeZone: draft.timeZone,
         intervalMinutes: Number(draft.intervalMinutes),
         failureThreshold: Number(draft.failureThreshold),
@@ -438,6 +666,8 @@ export function MonitorsScreen({
             method: "PATCH",
             body: { ...body, version: target!.version },
           });
+      retained.update(null);
+      void refreshEntitlement();
       // The write is committed. Subsequent read failures must never invite a second POST.
       setEditing(false);
       setCreating(false);
@@ -476,6 +706,7 @@ export function MonitorsScreen({
               setSelected(null);
               setSelectedIncident(null);
               void loadList();
+              void refreshEntitlement();
             } catch (cause) {
               setError(errorText(cause));
             } finally {
@@ -488,6 +719,10 @@ export function MonitorsScreen({
   };
   useEffect(() => {
     const listener = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (feed) {
+        setFeed(false);
+        return true;
+      }
       if (selectedIncident) {
         setSelectedIncident(null);
         return true;
@@ -497,9 +732,7 @@ export function MonitorsScreen({
         return true;
       }
       if (editing) {
-        editorBaseline.current = null;
-        setEditing(false);
-        setCreating(false);
+        cancelEditor();
         return true;
       }
       if (selected) {
@@ -514,8 +747,59 @@ export function MonitorsScreen({
       return false;
     });
     return () => listener.remove();
-  }, [selectedIncident, notifications, editing, selected]);
+  }, [selectedIncident, notifications, editing, selected, draft, feed]);
 
+  const formErrors: Partial<Record<keyof Draft, string>> = {};
+  const integer = (value: string, min: number, max: number) =>
+    /^\d+$/.test(value) && Number(value) >= min && Number(value) <= max;
+  if (!draft.name.trim() || Array.from(draft.name.trim()).length > 100)
+    formErrors.name = "От 1 до 100 символов";
+  if (!integer(draft.intervalMinutes, 1, 10))
+    formErrors.intervalMinutes = "От 1 до 10 минут";
+  if (!integer(draft.failureThreshold, 1, 10))
+    formErrors.failureThreshold = "От 1 до 10 проверок";
+  if (draft.checkType === "http") {
+    try {
+      const target = new URL(draft.url.trim());
+      if (
+        !["http:", "https:"].includes(target.protocol) ||
+        !target.hostname ||
+        target.username ||
+        target.password ||
+        draft.url.length > 2048
+      )
+        throw new Error();
+    } catch {
+      formErrors.url = "Введите полный HTTP или HTTPS адрес";
+    }
+    if (!integer(draft.expectedStatus, 100, 599))
+      formErrors.expectedStatus = "HTTP-код от 100 до 599";
+    if (draft.bodyContains.length > 1000)
+      formErrors.bodyContains = "Не более 1000 символов";
+  } else {
+    if (!draft.host.trim() || /[\s/]/.test(draft.host))
+      formErrors.host = "Введите домен или IP без протокола и пути";
+    if (draft.checkType === "tcp" && !integer(draft.port, 1, 65535))
+      formErrors.port = "Порт от 1 до 65535";
+  }
+  const fieldError = (key: keyof Draft) =>
+    validation ? formErrors[key] : undefined;
+  if (feed)
+    return (
+      <IncidentFeed
+        onBack={() => setFeed(false)}
+        onOpen={(monitorId, incidentId) => {
+          setFeed(false);
+          setFeedLink({ monitorId, incidentId });
+        }}
+      />
+    );
+  if (!retained.ready)
+    return (
+      <Page title="Мониторы">
+        <Label muted>Восстанавливаем черновик…</Label>
+      </Page>
+    );
   if (notifications && selected)
     return (
       <NotificationsScreen
@@ -536,6 +820,11 @@ export function MonitorsScreen({
     return (
       <Page title={creating ? "Новый монитор" : "Изменить монитор"}>
         <Card>
+          <Label muted>
+            {creating
+              ? "Настройте проверку, затем запустите её. Оплата не создаёт монитор автоматически."
+              : "Изменения применятся после сохранения."}
+          </Label>
           <Title>Тип проверки</Title>
           <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
             {(["http", "tcp", "icmp"] as const).map((type) => (
@@ -547,7 +836,15 @@ export function MonitorsScreen({
               />
             ))}
           </View>
+          <Label muted>
+            {draft.checkType === "http"
+              ? "HTTP проверяет страницу и код ответа. GET также умеет искать текст."
+              : draft.checkType === "tcp"
+                ? "TCP проверяет доступность порта сервиса."
+                : "ICMP проверяет ответ на ping. Сервис может работать и при запрете ping."}
+          </Label>
           <Field
+            error={fieldError("name")}
             label="Название"
             value={draft.name}
             onChangeText={(name) => setDraft({ ...draft, name })}
@@ -555,6 +852,8 @@ export function MonitorsScreen({
           {draft.checkType === "http" ? (
             <>
               <Field
+                error={fieldError("url")}
+                hint="Полный адрес, например https://example.ru/health"
                 label="URL HTTPS/HTTP"
                 value={draft.url}
                 onChangeText={(url) => setDraft({ ...draft, url })}
@@ -569,10 +868,14 @@ export function MonitorsScreen({
                 <Button
                   label="HEAD"
                   secondary={draft.method !== "HEAD"}
-                  onPress={() => setDraft({ ...draft, method: "HEAD" })}
+                  onPress={() =>
+                    setDraft({ ...draft, method: "HEAD", bodyContains: "" })
+                  }
                 />
               </View>
               <Field
+                error={fieldError("expectedStatus")}
+                hint="От 100 до 599"
                 label="Ожидаемый HTTP-код"
                 value={draft.expectedStatus}
                 onChangeText={(expectedStatus) =>
@@ -580,23 +883,35 @@ export function MonitorsScreen({
                 }
                 keyboardType="number-pad"
               />
-              <Field
-                label="Текст в ответе (необязательно)"
-                value={draft.bodyContains}
-                onChangeText={(bodyContains) =>
-                  setDraft({ ...draft, bodyContains })
-                }
-              />
+              {draft.method === "GET" ? (
+                <Field
+                  error={fieldError("bodyContains")}
+                  hint="До 1000 символов. Проверяется только для GET."
+                  label="Текст в ответе (необязательно)"
+                  value={draft.bodyContains}
+                  onChangeText={(bodyContains) =>
+                    setDraft({ ...draft, bodyContains })
+                  }
+                />
+              ) : (
+                <Label muted>
+                  HEAD получает только заголовки, поиск текста выключен.
+                </Label>
+              )}
             </>
           ) : (
             <>
               <Field
+                error={fieldError("host")}
+                hint="Домен или IP без https:// и пути"
                 label="Хост"
                 value={draft.host}
                 onChangeText={(host) => setDraft({ ...draft, host })}
               />
               {draft.checkType === "tcp" ? (
                 <Field
+                  error={fieldError("port")}
+                  hint="От 1 до 65535"
                   label="Порт"
                   value={draft.port}
                   onChangeText={(port) => setDraft({ ...draft, port })}
@@ -605,91 +920,145 @@ export function MonitorsScreen({
               ) : null}
             </>
           )}
-          <Label>Часовой пояс отчётов: {zoneName}</Label>
           <Button
             label={
-              zonePicker
-                ? "Закрыть список часовых поясов"
-                : "Выбрать часовой пояс"
+              advanced
+                ? "Скрыть дополнительные настройки"
+                : "Дополнительные настройки"
             }
             secondary
-            onPress={() => setZonePicker(!zonePicker)}
+            onPress={() => setAdvanced(!advanced)}
           />
-          {zonePicker ? (
-            <Card>
-              <Field
-                label="Поиск города или часового пояса"
-                value={zoneQuery}
-                onChangeText={setZoneQuery}
-                placeholder="Москва, Berlin…"
+          {advanced ? (
+            <>
+              <Label>Часовой пояс отчётов: {zoneName}</Label>
+              <Button
+                label={
+                  zonePicker
+                    ? "Закрыть список часовых поясов"
+                    : "Выбрать часовой пояс"
+                }
+                secondary
+                onPress={() => setZonePicker(!zonePicker)}
               />
-              {zoneList.map((zone) => (
-                <Button
-                  key={zone.id}
-                  label={`${zone.label} · ${zone.id}`}
-                  secondary={zone.id !== draft.timeZone}
-                  onPress={() => {
-                    setDraft({ ...draft, timeZone: zone.id });
-                    setZonePicker(false);
-                  }}
-                />
-              ))}
-              {!zoneList.length ? (
-                <Label muted>Ничего не найдено. Измените запрос.</Label>
+              {zonePicker ? (
+                <Card>
+                  <Field
+                    label="Поиск города или часового пояса"
+                    value={zoneQuery}
+                    onChangeText={setZoneQuery}
+                    placeholder="Москва, Berlin…"
+                  />
+                  {zoneList.map((zone) => (
+                    <Button
+                      key={zone.id}
+                      label={`${zone.label} · ${zone.id}`}
+                      secondary={zone.id !== draft.timeZone}
+                      onPress={() => {
+                        setDraft({ ...draft, timeZone: zone.id });
+                        setZonePicker(false);
+                      }}
+                    />
+                  ))}
+                  {!zoneList.length ? (
+                    <Label muted>Ничего не найдено. Измените запрос.</Label>
+                  ) : null}
+                </Card>
               ) : null}
+              <Field
+                error={fieldError("intervalMinutes")}
+                hint="От 1 до 10 минут"
+                label="Интервал, минут"
+                value={draft.intervalMinutes}
+                onChangeText={(intervalMinutes) =>
+                  setDraft({ ...draft, intervalMinutes })
+                }
+                keyboardType="number-pad"
+              />
+              <Field
+                error={fieldError("failureThreshold")}
+                hint="От 1 до 10 неудачных проверок подряд"
+                label="Подтверждение сбоя, проверок"
+                value={draft.failureThreshold}
+                onChangeText={(failureThreshold) =>
+                  setDraft({ ...draft, failureThreshold })
+                }
+                keyboardType="number-pad"
+              />
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <Label>Монитор включён</Label>
+                <Switch
+                  value={draft.enabled}
+                  onValueChange={(enabled) => setDraft({ ...draft, enabled })}
+                />
+              </View>
+            </>
+          ) : null}
+          <ErrorNotice message={retained.error} />
+          {creating &&
+          entitlement &&
+          (entitlement.quota === 0 ||
+            (draft.enabled &&
+              entitlement.enabledMonitorCount >= entitlement.quota)) ? (
+            <Card>
+              <Title>
+                {draft.enabled
+                  ? "Нужна квота для запуска"
+                  : "Нужна квота для создания"}
+              </Title>
+              <Label>
+                Настройки остаются в черновике. Купите место и вернитесь к этой
+                форме.
+              </Label>
+              <Button
+                label="Купить квоту"
+                iconName="payment"
+                onPress={() => void buyQuota()}
+              />
             </Card>
           ) : null}
-          <Field
-            label="Интервал, минут"
-            value={draft.intervalMinutes}
-            onChangeText={(intervalMinutes) =>
-              setDraft({ ...draft, intervalMinutes })
-            }
-            keyboardType="number-pad"
-          />
-          <Field
-            label="Подтверждение сбоя, проверок"
-            value={draft.failureThreshold}
-            onChangeText={(failureThreshold) =>
-              setDraft({ ...draft, failureThreshold })
-            }
-            keyboardType="number-pad"
-          />
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-            }}
-          >
-            <Label>Монитор включён</Label>
-            <Switch
-              value={draft.enabled}
-              onValueChange={(enabled) => setDraft({ ...draft, enabled })}
-            />
-          </View>
+          {creating && !entitlement ? (
+            <>
+              <ErrorNotice
+                message={
+                  entitlementError || "Не удалось проверить доступную квоту."
+                }
+              />
+              <Button
+                label="Обновить квоту"
+                secondary
+                onPress={() => void refreshEntitlement()}
+              />
+            </>
+          ) : null}
           <ErrorNotice message={error} />
           <Button
-            label="Сохранить"
+            label={
+              creating
+                ? draft.enabled
+                  ? "Запустить монитор"
+                  : "Сохранить на паузе"
+                : "Сохранить изменения"
+            }
+            loading={busy}
+            loadingLabel="Сохраняем…"
             disabled={busy}
             onPress={() => void save()}
           />
-          <Button
-            label="Отмена"
-            secondary
-            onPress={() => {
-              editorBaseline.current = null;
-              setEditing(false);
-              setCreating(false);
-            }}
-          />
+          <Button label="Отмена" secondary onPress={cancelEditor} />
         </Card>
       </Page>
     );
   }
   if (selected)
     return (
-      <Page title={selected.name} refresh={() => detail(selected)}>
+      <Page title={selected.name} refresh={() => detail(selected, true)}>
         <Button
           label="К списку"
           iconName="arrow-left"
@@ -710,7 +1079,7 @@ export function MonitorsScreen({
               name={statusIcon(selected.state)}
               color={selected.state === "DOWN" ? c.dangerText : c.accentText}
             />
-            <Title>{statusNames[selected.state] ?? selected.state}</Title>
+            <Title>{monitorStatus(selected)}</Title>
           </View>
           <Label>
             {selected.checkType === "http"
@@ -754,6 +1123,7 @@ export function MonitorsScreen({
         {selectedIncident ? (
           <Card>
             <Title>Инцидент №{selectedIncident.number}</Title>
+            <Label>{closeReasonName(selectedIncident.closeReason)}</Label>
             <Label>
               Открыт: {date(selectedIncident.openedAt, selected.timeZone)}
             </Label>
@@ -772,8 +1142,23 @@ export function MonitorsScreen({
             />
           </Card>
         ) : null}
-        <Title>Инциденты</Title>
-        {incidents.map((item) => (
+        <MonitorStatistics
+          monitorId={selected.id}
+          refreshKey={statisticsRefresh}
+        />
+        <Button
+          label={
+            incidentsOpen
+              ? "Свернуть инциденты"
+              : `Инциденты · ${incidents.length}`
+          }
+          secondary
+          onPress={() => setIncidentsOpen(!incidentsOpen)}
+        />
+        {(incidentsOpen
+          ? incidents
+          : incidents.filter((item) => !item.closedAt)
+        ).map((item) => (
           <Card key={item.id}>
             <Label>
               №{item.number} · {date(item.openedAt, selected.timeZone)}
@@ -792,9 +1177,17 @@ export function MonitorsScreen({
           </Card>
         ))}
         {!incidents.length ? <Label muted>Инцидентов пока нет.</Label> : null}
-        <Title>История проверок</Title>
-        {results.map((item) => (
-          <Card key={item.id}>
+        <Button
+          label={
+            historyOpen
+              ? "Свернуть историю проверок"
+              : `История проверок · ${results.length}`
+          }
+          secondary
+          onPress={() => setHistoryOpen(!historyOpen)}
+        />
+        {(historyOpen ? results : results.slice(0, 3)).map((item) => (
+          <Card key={item.id} style={{ padding: 10, gap: 4 }}>
             <View
               style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
             >
@@ -808,13 +1201,18 @@ export function MonitorsScreen({
               </Label>
             </View>
             <Label>
-              {item.errorCode ||
-                (item.httpStatus ? `HTTP ${item.httpStatus}` : "Ответ")}{" "}
-              · {item.latencyMs} мс
+              {item.errorCode
+                ? (checkFailureNames[item.errorCode] ??
+                  "Проверка не завершилась успешно")
+                : "Ответ получен"}
+              {item.httpStatus ? ` · HTTP ${item.httpStatus}` : ""} ·{" "}
+              {typeof item.roundTripMs === "number"
+                ? `RTT ${item.roundTripMs} мс`
+                : `${item.latencyMs} мс`}
             </Label>
           </Card>
         ))}
-        {moreResults ? (
+        {historyOpen && moreResults ? (
           <Button
             label="Более ранние результаты"
             iconName="arrow-down"
@@ -840,8 +1238,69 @@ export function MonitorsScreen({
       </Page>
     );
   return (
-    <Page title="Мониторы" refresh={loadList}>
+    <Page
+      title="Мониторы"
+      refresh={async () => {
+        await Promise.all([loadList(), refreshEntitlement()]);
+      }}
+    >
+      <Card>
+        <Title>Состояние всех мониторов</Title>
+        <Label>
+          Всего {list?.summary.total ?? "—"} · доступны{" "}
+          {list?.summary.up ?? "—"} · сбои {list?.summary.down ?? "—"}
+        </Label>
+        <Label muted>
+          Ожидают {list?.summary.unknown ?? "—"} · пауза{" "}
+          {list?.summary.paused ?? "—"} · нужна квота{" "}
+          {list?.summary.subscriptionRequired ?? "—"}
+        </Label>
+        <ErrorNotice message={entitlementError} />
+        <Label>
+          Квота: {entitlement?.enabledMonitorCount ?? "—"} включено из{" "}
+          {entitlement?.quota ?? "—"}
+        </Label>
+        {entitlement && entitlement.enabledMonitorCount >= entitlement.quota ? (
+          <Button
+            label="Добавить квоту"
+            iconName="payment"
+            secondary
+            onPress={onBuyQuota}
+          />
+        ) : null}
+      </Card>
+      <Button
+        label="Лента инцидентов"
+        iconName="alert"
+        secondary
+        onPress={() => setFeed(true)}
+      />
       <Button label="Добавить монитор" iconName="plus" onPress={() => edit()} />
+      {list?.asOf ? (
+        <Label muted>
+          Обновлено {date(list.asOf, "Europe/Moscow")}
+          {stale || clock - Date.parse(list.asOf) > 120000
+            ? " · данные могут устареть; потяните вниз для повтора"
+            : ""}
+        </Label>
+      ) : null}
+      <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap" }}>
+        {[
+          ["all", "Все"],
+          ["problems", "Проблемы"],
+          ...Object.entries(statusNames),
+        ].map(([key, label]) => (
+          <Button
+            key={key}
+            label={label}
+            secondary={status !== key}
+            onPress={() => {
+              setStatus(key);
+              setPage(1);
+            }}
+          />
+        ))}
+      </View>
       <Field
         label="Поиск мониторов"
         value={filter}
@@ -856,6 +1315,14 @@ export function MonitorsScreen({
           flexWrap: "wrap",
         }}
       >
+        <Button
+          label="Сначала проблемы"
+          secondary={sort !== "problems_first"}
+          onPress={() => {
+            setSort("problems_first");
+            setPage(1);
+          }}
+        />
         <Button
           label={
             sort.startsWith("name")
@@ -912,32 +1379,60 @@ export function MonitorsScreen({
         </View>
       </View>
       {list?.monitors.map((monitor) => (
-        <Card key={monitor.id}>
-          <Title>{monitor.name}</Title>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <Icon
-              name={statusIcon(monitor.state)}
-              color={monitor.state === "DOWN" ? c.dangerText : c.accentText}
-            />
-            <Label>{statusNames[monitor.state] ?? monitor.state}</Label>
-          </View>
-          <Label>
-            {monitor.checkType === "http"
-              ? monitor.url
-              : monitor.checkType === "tcp"
-                ? `${monitor.host}:${monitor.port}`
-                : monitor.host}
-          </Label>
-          <Button
-            label="Открыть"
-            iconName="arrow-right"
-            onPress={() => void detail(monitor)}
-            secondary
-          />
-        </Card>
+        <Pressable
+          key={monitor.id}
+          accessibilityRole="button"
+          accessibilityLabel={`${monitor.name}. ${statusNames[monitor.state] ?? "Состояние неизвестно"}`}
+          onPress={() => void detail(monitor)}
+        >
+          <Card style={{ padding: 14, gap: 6 }}>
+            <Title>{monitor.name}</Title>
+            <View
+              style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
+            >
+              <Icon
+                name={statusIcon(monitor.state)}
+                color={monitor.state === "DOWN" ? c.dangerText : c.accentText}
+              />
+              <Label>{monitorStatus(monitor)}</Label>
+            </View>
+            <Label>
+              {monitor.checkType === "http"
+                ? monitor.url
+                : monitor.checkType === "tcp"
+                  ? `${monitor.host}:${monitor.port}`
+                  : monitor.host}
+            </Label>
+            {monitor.state === "DOWN" ? (
+              <Label muted>Есть проблема · откройте монитор для деталей</Label>
+            ) : null}
+          </Card>
+        </Pressable>
       ))}
       {list && !list.monitors.length ? (
-        <Label muted>По этому запросу мониторов нет.</Label>
+        <Card>
+          <Title>
+            {list.summary.total > 0
+              ? "Ничего не найдено"
+              : "Добавьте первый монитор"}
+          </Title>
+          <Label muted>
+            {list.summary.total > 0
+              ? "Измените поиск или выберите другой статус."
+              : "Настройте адрес проверки. При необходимости купите квоту, затем явно запустите монитор."}
+          </Label>
+          {list.summary.total > 0 ? (
+            <Button
+              label="Сбросить фильтры"
+              secondary
+              onPress={() => {
+                changeFilter("");
+                setStatus("all");
+                setPage(1);
+              }}
+            />
+          ) : null}
+        </Card>
       ) : null}
       <View
         style={{

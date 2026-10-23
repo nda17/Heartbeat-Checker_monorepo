@@ -31,10 +31,25 @@ type Bridge = {
   saveRegistration(value: Registration): Promise<void>;
   restoreRegistration(): Promise<Registration | null>;
   clearRegistration(): Promise<void>;
+  saveEmailVerification(
+    token: string,
+  ): Promise<PendingEmailVerification | null>;
+  restoreEmailVerification(): Promise<PendingEmailVerification | null>;
+  clearEmailVerification(token: string): Promise<void>;
   openCustomTab(url: string): Promise<void>;
   takeInitialLink(): Promise<string | null>;
   randomUUID(): Promise<string>;
   randomToken(): Promise<string>;
+  saveMonitorDraft(
+    value: Record<string, unknown>,
+    accountId: string,
+    sessionId: string,
+  ): Promise<void>;
+  restoreMonitorDraft(
+    accountId: string,
+    sessionId: string,
+  ): Promise<Record<string, unknown> | null>;
+  clearMonitorDraft(accountId: string, sessionId: string): Promise<void>;
   savePaymentIntent(value: PaymentIntent): Promise<void>;
   restorePaymentIntent(): Promise<PaymentIntent | null>;
   clearPaymentIntent(): Promise<void>;
@@ -77,8 +92,43 @@ type Bridge = {
     optedOut: boolean;
     provider: string;
     status: string;
+    permissionGranted: boolean;
+    notificationsEnabled: boolean;
+    channelEnabled: boolean;
+    bound: boolean;
+    leaseValid: boolean;
+    ready: boolean;
   }>;
+  requestPushTest(requestId: string): Promise<{ test: PushTest }>;
+  pushTestStatus(id: string): Promise<{ test: PushTest }>;
+  restorePushTest(): Promise<{ requestId: string; test?: PushTest } | null>;
   pushToggle(enabled: boolean, allowAccountChange?: boolean): Promise<void>;
+};
+
+export type PushTest = {
+  id: string;
+  state:
+    | "queued"
+    | "sending"
+    | "provider_accepted"
+    | "received"
+    | "display_submitted"
+    | "failed"
+    | "expired"
+    | "cancelled";
+  createdAt: string;
+  expiresAt: string;
+  nextAllowedAt: string;
+  receivedAt: string | null;
+  displaySubmittedAt: string | null;
+  errorCode: string;
+};
+
+export type PendingEmailVerification = {
+  token: string;
+  receivedAt: number;
+  accountId: string | null;
+  sessionId: string | null;
 };
 
 export type PaymentIntent = {

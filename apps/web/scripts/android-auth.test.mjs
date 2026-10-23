@@ -60,9 +60,20 @@ function mobileMonitorPage(monitors) {
   };
 }
 
+function mobileEntitlement(overrides = {}) {
+  return {
+    quota: 10,
+    enabledMonitorCount: 1,
+    activeMonitorCount: 1,
+    admin: null,
+    packages: [],
+    ...overrides,
+  };
+}
+
 function mobileResult(
   id,
-  errorCode = `result-${id}`,
+  errorCode = "request_failed",
   checkedAt = "2026-10-21T12:00:00Z",
 ) {
   return {
@@ -112,12 +123,22 @@ function createNativeMocks(reducedMotionInitially = false) {
         start: () => steps.forEach((step) => step.start()),
       };
     },
-    Text: ({ children, accessibilityLabel, ...props }) =>
+    Text: ({
+      children,
+      accessibilityLabel,
+      accessibilityLiveRegion,
+      style,
+      ...props
+    }) =>
       React.createElement(
         "span",
         {
           ...props,
           ...(accessibilityLabel ? { "aria-label": accessibilityLabel } : {}),
+          ...(accessibilityLiveRegion
+            ? { "aria-live": accessibilityLiveRegion }
+            : {}),
+          style: flattenStyle(style),
         },
         children,
       ),
@@ -154,19 +175,26 @@ function createNativeMocks(reducedMotionInitially = false) {
     function MockNativeComponent(props) {
       const {
         children,
-        style,
+      style,
         contentContainerStyle,
         refreshControl,
         accessibilityLabel,
         accessibilityRole,
         accessibilityState,
+        accessibilityLiveRegion,
         ...nativeProps
       } = props;
       delete nativeProps.keyboardShouldPersistTaps;
+      delete nativeProps.onLayout;
+      delete nativeProps.accessible;
+      delete nativeProps.selectable;
       const css = flattenStyle(style ?? contentContainerStyle);
       const attrs = {
         ...(accessibilityLabel ? { "aria-label": accessibilityLabel } : {}),
         ...(accessibilityRole ? { role: accessibilityRole } : {}),
+        ...(accessibilityLiveRegion
+          ? { "aria-live": accessibilityLiveRegion }
+          : {}),
         ...(accessibilityState?.disabled ? { "aria-disabled": "true" } : {}),
         ...(css.minHeight !== undefined
           ? { "data-min-height": String(css.minHeight) }
@@ -186,16 +214,25 @@ function createNativeMocks(reducedMotionInitially = false) {
       secureTextEntry,
       accessibilityLabel,
       keyboardType,
+      style,
       ...inputProps
     } = props;
+    delete inputProps.accessibilityHint;
     delete inputProps.autoCapitalize;
     delete inputProps.autoCorrect;
     delete inputProps.placeholderTextColor;
+    delete inputProps.returnKeyType;
+    delete inputProps.textContentType;
+    delete inputProps.onSubmitEditing;
+    const editable = inputProps.editable;
+    delete inputProps.editable;
     return React.createElement("input", {
       ...inputProps,
       "aria-label": accessibilityLabel,
       type: secureTextEntry ? "password" : "text",
       inputMode: keyboardType === "email-address" ? "email" : undefined,
+      disabled: editable === false,
+      style: flattenStyle(style),
       value,
       onInput: (event) => onChangeText?.(event.target.value),
     });
@@ -207,9 +244,14 @@ function createNativeMocks(reducedMotionInitially = false) {
     accessibilityLabel,
     accessibilityRole,
     accessibilityState,
+    style,
     ...props
-  }) =>
-    React.createElement(
+  }) => {
+    const resolvedStyle =
+      typeof style === "function"
+        ? style({ pressed: false, hovered: false, focused: false })
+        : style;
+    return React.createElement(
       "button",
       {
         ...props,
@@ -218,10 +260,14 @@ function createNativeMocks(reducedMotionInitially = false) {
         disabled,
         "aria-label": accessibilityLabel,
         "aria-pressed": accessibilityState?.selected,
+        "aria-expanded": accessibilityState?.expanded,
+        "aria-disabled": accessibilityState?.disabled ? "true" : undefined,
         role: accessibilityRole,
+        style: flattenStyle(resolvedStyle),
       },
       children,
     );
+  };
   const Switch = ({ value, onValueChange, disabled }) =>
     React.createElement("input", {
       type: "checkbox",
@@ -229,12 +275,13 @@ function createNativeMocks(reducedMotionInitially = false) {
       disabled,
       onChange: (event) => onValueChange?.(event.target.checked),
     });
-  const Image = ({ accessibilityLabel, accessible, source, ...props }) =>
+  const Image = ({ accessibilityLabel, accessible, source, style, ...props }) =>
     React.createElement("img", {
       ...props,
       "data-source": source?.uri,
       ...(accessible === false ? { "aria-hidden": "true" } : {}),
       alt: accessibilityLabel ?? "",
+      style: flattenStyle(style),
     });
   const RefreshControl = ({ refreshing, onRefresh }) =>
     React.createElement("button", {
@@ -360,6 +407,8 @@ async function createHarness({
   const root = createRoot(host);
   const mocks = createNativeMocks(reducedMotion);
   const requests = [];
+  let monitorContractActive = false;
+  let monitorEntitlementOverride = null;
   const native = {
     API_ORIGIN: challengeOrigin,
     CHALLENGE_ORIGIN: challengeOrigin,
@@ -380,6 +429,9 @@ async function createHarness({
     restoreRegistration: async () => null,
     saveRegistration: async () => {},
     clearRegistration: async () => {},
+    restoreMonitorDraft: async () => null,
+    saveMonitorDraft: async () => {},
+    clearMonitorDraft: async () => {},
     ...mocks.native,
   };
   let fetchImpl = async (url, options) => {
@@ -396,6 +448,15 @@ async function createHarness({
     { "./native": { native }, "./types": {} },
     {
       fetch: (...args) => fetchImpl(...args),
+    },
+  );
+  const monitorDraftModule = compile(
+    "../../mobile/src/MonitorDraft.tsx",
+    {
+      "react-native": mocks.reactNative,
+      "./api": apiModule,
+      "./native": { native },
+      "./types": {},
     },
   );
   const uiModule = compile(
@@ -460,7 +521,94 @@ async function createHarness({
       );
       await act(async () => Promise.resolve());
     },
+    async renderPublicScreen({
+      onLogin = async () => {},
+      onRegister = async () => {},
+      onHelp = async () => {},
+    } = {}) {
+      const helpModule = compile(
+        "../../mobile/src/HelpScreen.tsx",
+        {
+          "react-native": mocks.reactNative,
+          "./api": apiModule,
+          "./native": { native },
+          "./ui": uiModule,
+        },
+        {
+          require(id) {
+            if (id.endsWith(".png")) return { uri: id };
+            return requireWeb(id);
+          },
+        },
+      );
+      const publicModule = compile(
+        "../../mobile/src/PublicScreen.tsx",
+        {
+          "react-native": mocks.reactNative,
+          "./api": apiModule,
+          "./HelpScreen": helpModule,
+          "./ui": uiModule,
+        },
+        {
+          require(id) {
+            if (id.endsWith(".png")) return { uri: id };
+            return requireWeb(id);
+          },
+        },
+      );
+      await act(async () =>
+        root.render(
+          React.createElement(publicModule.PublicScreen, {
+            onLogin,
+            onRegister,
+            onHelp,
+          }),
+        ),
+      );
+      await act(async () => Promise.resolve());
+      return publicModule.PublicScreen;
+    },
     async renderAccountScreen(onLogout = async () => {}) {
+      const helpModule = compile(
+        "../../mobile/src/HelpScreen.tsx",
+        {
+          "react-native": mocks.reactNative,
+          "./api": apiModule,
+          "./native": { native },
+          "./ui": uiModule,
+        },
+        {
+          require(id) {
+            if (id.endsWith(".png")) return { uri: id };
+            return requireWeb(id);
+          },
+        },
+      );
+      const notificationsModule = compile(
+        "../../mobile/src/NotificationsScreen.tsx",
+        {
+          "react-native": mocks.reactNative,
+          "./api": apiModule,
+          "./native": { native },
+          "./types": {},
+          "./ui": uiModule,
+        },
+        {
+          require(id) {
+            if (id.endsWith(".png")) return { uri: id };
+            return requireWeb(id);
+          },
+        },
+      );
+      const pushTestModule = compile(
+        "../../mobile/src/PushTestPanel.tsx",
+        {
+          "react-native": mocks.reactNative,
+          "./api": apiModule,
+          "./native": { native },
+          "./ui": uiModule,
+        },
+      );
       const accountModule = compile(
         "../../mobile/src/AccountScreen.tsx",
         {
@@ -469,6 +617,10 @@ async function createHarness({
           "./native": { native },
           "./types": {},
           "./ui": uiModule,
+          "./HelpScreen": helpModule,
+          "./AuthScreen": authModule,
+          "./NotificationsScreen": notificationsModule,
+          "./PushTestPanel": pushTestModule,
         },
         {
           require(id) {
@@ -486,7 +638,11 @@ async function createHarness({
       await act(async () => Promise.resolve());
       return accountModule.AccountScreen;
     },
-    async renderMonitorsScreen(deepLink = null) {
+    async renderMonitorsScreen(
+      deepLink = null,
+      { onBuyQuota = async () => {} } = {},
+    ) {
+      monitorContractActive = true;
       const notificationsModule = compile(
         "../../mobile/src/NotificationsScreen.tsx",
         {
@@ -503,6 +659,15 @@ async function createHarness({
           },
         },
       );
+      const monitorInsightsModule = compile(
+        "../../mobile/src/MonitorInsights.tsx",
+        {
+          "react-native": mocks.reactNative,
+          "./api": apiModule,
+          "./types": {},
+          "./ui": uiModule,
+        },
+      );
       const monitorsModule = compile(
         "../../mobile/src/MonitorsScreen.tsx",
         {
@@ -511,6 +676,8 @@ async function createHarness({
           "./types": {},
           "./ui": uiModule,
           "./NotificationsScreen": notificationsModule,
+          "./MonitorDraft": monitorDraftModule,
+          "./MonitorInsights": monitorInsightsModule,
         },
         {
           require(id) {
@@ -521,7 +688,14 @@ async function createHarness({
       );
       await act(async () =>
         root.render(
-          React.createElement(monitorsModule.MonitorsScreen, { deepLink }),
+          React.createElement(
+            monitorDraftModule.MonitorDraftProvider,
+            { auth: apiModule.session() },
+            React.createElement(monitorsModule.MonitorsScreen, {
+              deepLink,
+              onBuyQuota,
+            }),
+          ),
         ),
       );
       await act(async () => Promise.resolve());
@@ -529,6 +703,7 @@ async function createHarness({
       return monitorsModule.MonitorsScreen;
     },
     async renderBillingScreen(returnOrder = null, timerRuntime = {}) {
+      monitorContractActive = false;
       const billingModule = compile(
         "../../mobile/src/BillingScreen.tsx",
         {
@@ -537,6 +712,7 @@ async function createHarness({
           "./native": { native },
           "./types": {},
           "./ui": uiModule,
+          "./MonitorDraft": monitorDraftModule,
         },
         {
           require(id) {
@@ -556,19 +732,187 @@ async function createHarness({
       await act(async () => Promise.resolve());
       return billingModule.BillingScreen;
     },
+    async renderDraftCheckoutFlow(onNavigateBilling = () => {}) {
+      monitorContractActive = true;
+      const notificationsModule = compile(
+        "../../mobile/src/NotificationsScreen.tsx",
+        {
+          "react-native": mocks.reactNative,
+          "./api": apiModule,
+          "./native": { native },
+          "./types": {},
+          "./ui": uiModule,
+        },
+        {
+          require(id) {
+            if (id.endsWith(".png")) return { uri: id };
+            return requireWeb(id);
+          },
+        },
+      );
+      const monitorInsightsModule = compile(
+        "../../mobile/src/MonitorInsights.tsx",
+        {
+          "react-native": mocks.reactNative,
+          "./api": apiModule,
+          "./types": {},
+          "./ui": uiModule,
+        },
+      );
+      const monitorsModule = compile(
+        "../../mobile/src/MonitorsScreen.tsx",
+        {
+          "react-native": mocks.reactNative,
+          "./api": apiModule,
+          "./types": {},
+          "./ui": uiModule,
+          "./NotificationsScreen": notificationsModule,
+          "./MonitorDraft": monitorDraftModule,
+          "./MonitorInsights": monitorInsightsModule,
+        },
+        {
+          require(id) {
+            if (id.endsWith(".png")) return { uri: id };
+            return requireWeb(id);
+          },
+        },
+      );
+      const billingModule = compile(
+        "../../mobile/src/BillingScreen.tsx",
+        {
+          "react-native": mocks.reactNative,
+          "./api": apiModule,
+          "./native": { native },
+          "./types": {},
+          "./ui": uiModule,
+          "./MonitorDraft": monitorDraftModule,
+        },
+        {
+          require(id) {
+            if (id.endsWith(".png")) return { uri: id };
+            return requireWeb(id);
+          },
+        },
+      );
+      function DraftCheckoutNavigation() {
+        const [tab, setTab] = React.useState("monitors");
+        const [resumeDraft, setResumeDraft] = React.useState(0);
+        return tab === "monitors"
+          ? React.createElement(monitorsModule.MonitorsScreen, {
+              resumeDraft,
+              onBuyQuota: () => {
+                onNavigateBilling();
+                setTab("billing");
+              },
+            })
+          : React.createElement(billingModule.BillingScreen, {
+              onContinueMonitor: () => {
+                setResumeDraft((value) => value + 1);
+                setTab("monitors");
+              },
+            });
+      }
+      await act(async () =>
+        root.render(
+          React.createElement(
+            monitorDraftModule.MonitorDraftProvider,
+            { auth: apiModule.session() },
+            React.createElement(DraftCheckoutNavigation),
+          ),
+        ),
+      );
+      await act(async () => Promise.resolve());
+      await act(async () => Promise.resolve());
+      return { monitorsModule, billingModule };
+    },
+    async renderDraftProvider(children, auth = apiModule.session(), key) {
+      await act(async () =>
+        root.render(
+          React.createElement(
+            monitorDraftModule.MonitorDraftProvider,
+            { auth, key },
+            children,
+          ),
+        ),
+      );
+      await act(async () => Promise.resolve());
+    },
     apiModule,
+    monitorDraftModule,
     pressBack: mocks.pressBack,
     setFetch(fn) {
-      fetchImpl = fn;
+      fetchImpl = async (url, options) => {
+        const path = new URL(url).pathname.replace("/api/v1", "");
+        if (monitorContractActive && path === "/entitlement")
+          return jsonResponse({
+            entitlement: monitorEntitlementOverride ?? mobileEntitlement(),
+          });
+        if (
+          monitorContractActive &&
+          /^\/monitors\/[^/]+\/statistics$/.test(path)
+        )
+          return jsonResponse({
+            statistics: {
+              monitorId: "monitor-1",
+              periodDays: 7,
+              from: "2026-10-15",
+              to: "2026-10-21",
+              generatedAt: "2026-10-21T12:00:00Z",
+              timeZone: "UTC",
+              coverage: {
+                firstRecordedDay: "2026-10-21",
+                daysWithData: 1,
+                scheduleCompleteness: "unknown",
+              },
+              totals: {
+                up: 1,
+                down: 0,
+                unknown: 0,
+                total: 1,
+                successfulCheckPercent: 100,
+                averageLatencyMs: 25,
+                latencySampleCount: 1,
+              },
+              days: [],
+            },
+          });
+        return fn(url, options);
+      };
+    },
+    setMonitorEntitlement(entitlement) {
+      monitorEntitlementOverride = entitlement;
     },
     async click(label) {
-      const button = [...host.querySelectorAll("button")].find(
+      const matches = [...host.querySelectorAll('button, [role="button"]')].filter(
         (item) =>
           item.getAttribute("aria-label") === label ||
           item.textContent?.trim() === label,
       );
-      assert.ok(button, `button not found: ${label}`);
+      assert.equal(matches.length, 1, `expected one button named: ${label}`);
+      const [button] = matches;
       await act(async () => button.click());
+    },
+    async clickAll(label) {
+      const matches = [...host.querySelectorAll('button, [role="button"]')].filter(
+        (item) =>
+          item.getAttribute("aria-label") === label ||
+          item.textContent?.trim() === label,
+      );
+      assert.ok(matches.length > 0, `button not found: ${label}`);
+      for (const button of matches)
+        await act(async () => button.click());
+      return matches.length;
+    },
+    byRole(role, name, { exactlyOne = true } = {}) {
+      const matches = [...host.querySelectorAll(`[role="${role}"]`)].filter(
+        (item) =>
+          item.getAttribute("aria-label") === name ||
+          item.textContent?.trim() === name,
+      );
+      assert.ok(matches.length > 0, `${role} not found: ${name}`);
+      if (exactlyOne)
+        assert.equal(matches.length, 1, `expected one ${role} named: ${name}`);
+      return matches[0];
     },
     async fill(label, value) {
       const input = host.querySelector(`input[aria-label="${label}"]`);
@@ -741,7 +1085,7 @@ test("auth screens expose password visibility and preserve the shared card heigh
       true,
     );
     assert.equal(
-      login.host.querySelector('[data-min-height="520"]') !== null,
+      login.host.querySelector('[data-min-height="700"]') !== null,
       true,
     );
     await login.click("Показать пароль");
@@ -757,12 +1101,12 @@ test("auth screens expose password visibility and preserve the shared card heigh
     assertSharedBrand();
     assert.ok(login.host.textContent.includes("Регистрация"));
     assert.ok(login.host.querySelector('input[aria-label="Имя"]'));
-    assert.ok(login.host.querySelector('[data-min-height="520"]'));
+    assert.ok(login.host.querySelector('[data-min-height="700"]'));
     await login.click("Ко входу");
     await login.click("Забыли пароль?");
     assertSharedBrand();
     assert.ok(login.host.textContent.includes("Восстановление доступа"));
-    assert.ok(login.host.querySelector('[data-min-height="520"]'));
+    assert.ok(login.host.querySelector('[data-min-height="700"]'));
   } finally {
     await login.unmount();
   }
@@ -777,9 +1121,34 @@ test("auth screens expose password visibility and preserve the shared card heigh
       reset.host.querySelector('input[aria-label="Новый пароль"]').type,
       "password",
     );
-    assert.ok(reset.host.querySelector('[data-min-height="520"]'));
+    assert.ok(reset.host.querySelector('[data-min-height="700"]'));
   } finally {
     await reset.unmount();
+  }
+});
+
+test("public landing routes its accessible login, registration, and help actions", async () => {
+  const harness = await createHarness();
+  const actions = { login: 0, register: 0, help: 0 };
+  try {
+    await harness.renderPublicScreen({
+      onLogin: () => actions.login++,
+      onRegister: () => actions.register++,
+      onHelp: () => actions.help++,
+    });
+    harness.byRole("header", "Круглосуточный мониторинг ваших сайтов и сервисов.");
+    await harness.click("У меня уже есть аккаунт");
+    assert.equal(actions.login, 1);
+    assert.equal(
+      await harness.clickAll("Создать аккаунт"),
+      3,
+      "all public registration entry points share the current registration route",
+    );
+    assert.equal(actions.register, 3);
+    await harness.click("Открыть раздел помощи");
+    assert.equal(actions.help, 1);
+  } finally {
+    await harness.unmount();
   }
 });
 
@@ -1052,6 +1421,7 @@ test("account refresh isolates a failed source and preserves a dirty profile nam
       throw new Error(`Unexpected account request: ${path}`);
     });
     await harness.renderAccountScreen();
+    await harness.click("Профиль и email");
     const name = harness.host.querySelector('input[aria-label="Имя"]');
     assert.ok(
       name,
@@ -1077,13 +1447,46 @@ test("account refresh isolates a failed source and preserves a dirty profile nam
       "Локальный черновик",
       "a server refresh must not overwrite an unsaved edit",
     );
-    assert.match(harness.host.textContent, /сервис временно недоступен/i);
+    await harness.click("К аккаунту");
+    await harness.click("Безопасность и сеансы");
     assert.match(harness.host.textContent, /Способы входа/);
-    assert.equal(
-      harness.host.querySelector('input[aria-label="Имя"]') !== null,
-      true,
-      "one source failure does not hide the healthy profile section",
+    assert.match(
+      harness.host.textContent,
+      /сервис временно недоступен/i,
+      "a failed sessions source is reported in its security subsection",
     );
+    await harness.click("К аккаунту");
+    await harness.click("Профиль и email");
+    assert.equal(
+      harness.host.querySelector('input[aria-label="Имя"]').value,
+      "Локальный черновик",
+      "the healthy profile section remains available with its unsaved edit",
+    );
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("account hub opens its profile and security subsections and returns to the hub", async () => {
+  const harness = await createHarness();
+  try {
+    await harness.renderAccountScreen();
+    harness.byRole("header", "Аккаунт");
+
+    await harness.click("Профиль и email");
+    harness.byRole("header", "Профиль", { exactlyOne: false });
+    await harness.click("К аккаунту");
+    harness.byRole("header", "Аккаунт");
+
+    await harness.click("Безопасность и сеансы");
+    harness.byRole("header", "Безопасность");
+    await harness.click("К аккаунту");
+    harness.byRole("header", "Аккаунт");
+
+    await harness.click("Помощь и документы");
+    harness.byRole("header", "Помощь и документы");
+    await harness.click("Назад");
+    harness.byRole("header", "Аккаунт");
   } finally {
     await harness.unmount();
   }
@@ -1124,6 +1527,7 @@ test("account does not offer linked providers until identity state is verified",
       throw new Error(`Unexpected account request: ${path}`);
     });
     await harness.renderAccountScreen();
+    await harness.click("Безопасность и сеансы");
     assert.equal(
       harness.host.querySelector('button[aria-label="Подключить Яндекс"]'),
       null,
@@ -1187,6 +1591,7 @@ test("push diagnostics appear only after the current account is verified as admi
       throw new Error(`Unexpected account request: ${path}`);
     });
     await harness.renderAccountScreen();
+    await harness.click("Уведомления");
     assert.doesNotMatch(
       harness.host.textContent,
       /push-gateway-test|Провайдер:/,
@@ -1249,6 +1654,8 @@ test("push diagnostics appear only after the current account is verified as admi
       harness.host.textContent,
       /Провайдер: push-gateway-test · ready/,
     );
+    await harness.click("К аккаунту");
+    await harness.click("Безопасность и сеансы");
     assert.match(
       harness.host.textContent,
       /Администратор управляет способами входа/,
@@ -1378,21 +1785,22 @@ test("monitor detail refresh keeps old content visible and applies the refreshed
       }
       if (path === "/monitors/monitor-1/results")
         return jsonResponse({
-          results: [mobileResult(`detail-${detailReads}`)],
+          results: [
+            mobileResult(
+              `detail-${detailReads}`,
+              detailReads === 1 ? "request_failed" : "request_timeout",
+            ),
+          ],
         });
       if (path === "/monitors/monitor-1/incidents")
         return jsonResponse({ incidents: [] });
       throw new Error(`Unexpected monitor request: ${path}`);
     });
     await harness.renderMonitorsScreen();
-    await act(async () =>
-      [...harness.host.querySelectorAll("button")]
-        .find((button) => button.textContent.includes("Открыть"))
-        .click(),
-    );
+    await harness.click("Primary monitor. Доступен");
     await harness.flush();
     assert.match(harness.host.textContent, /Доступен/);
-    assert.match(harness.host.textContent, /result-detail-1/);
+    assert.match(harness.host.textContent, /Ошибка соединения/);
 
     await act(async () =>
       harness.host
@@ -1401,7 +1809,7 @@ test("monitor detail refresh keeps old content visible and applies the refreshed
     );
     await harness.flush();
     assert.match(harness.host.textContent, /Доступен/);
-    assert.match(harness.host.textContent, /result-detail-1/);
+    assert.match(harness.host.textContent, /Ошибка соединения/);
     await act(async () =>
       resolveMonitor(
         jsonResponse({ monitor: mobileMonitor({ state: "DOWN" }) }),
@@ -1409,7 +1817,7 @@ test("monitor detail refresh keeps old content visible and applies the refreshed
     );
     await harness.flush();
     assert.match(harness.host.textContent, /Недоступен/);
-    assert.match(harness.host.textContent, /result-detail-2/);
+    assert.match(harness.host.textContent, /Превышено время ожидания/);
   } finally {
     await harness.unmount();
   }
@@ -1428,7 +1836,7 @@ test("collapsing monitor history fences a pending older-results page", async () 
     });
     await harness.apiModule.restoreSession();
     const firstResults = Array.from({ length: 50 }, (_, index) =>
-      mobileResult(`first-${index}`, `first-page-${index}`),
+      mobileResult(`first-${index}`, "request_failed"),
     );
     let olderResponse;
     let olderPageCalls = 0;
@@ -1447,7 +1855,7 @@ test("collapsing monitor history fences a pending older-results page", async () 
           if (olderPageCalls === 1)
             return jsonResponse({
               results: Array.from({ length: 50 }, (_, index) =>
-                mobileResult(`older-${index}`, `older-page-${index}`),
+                mobileResult(`older-${index}`, "request_timeout"),
               ),
             });
           return new Promise((resolve) => {
@@ -1461,13 +1869,10 @@ test("collapsing monitor history fences a pending older-results page", async () 
       throw new Error(`Unexpected monitor request: ${path}`);
     });
     await harness.renderMonitorsScreen();
-    await act(async () =>
-      [...harness.host.querySelectorAll("button")]
-        .find((button) => button.textContent.includes("Открыть"))
-        .click(),
-    );
+    await harness.click("Primary monitor. Доступен");
     await harness.flush();
-    assert.match(harness.host.textContent, /first-page-49/);
+    assert.match(harness.host.textContent, /Ошибка соединения/);
+    await harness.click("История проверок · 50");
     await act(async () =>
       [...harness.host.querySelectorAll("button")]
         .find((button) =>
@@ -1476,7 +1881,7 @@ test("collapsing monitor history fences a pending older-results page", async () 
         .click(),
     );
     await harness.flush();
-    assert.match(harness.host.textContent, /older-page-49/);
+    assert.match(harness.host.textContent, /Превышено время ожидания/);
     await act(async () =>
       [...harness.host.querySelectorAll("button")]
         .find((button) =>
@@ -1486,29 +1891,48 @@ test("collapsing monitor history fences a pending older-results page", async () 
     );
     await harness.flush();
     assert.equal(typeof olderResponse, "function");
-    await act(async () =>
-      [...harness.host.querySelectorAll("button")]
-        .find((button) => button.textContent.includes("Свернуть историю"))
-        .click(),
-    );
+    await harness.click("Свернуть историю");
     await act(async () => {
       olderResponse({
         ok: true,
         status: 200,
         headers: { get: () => "application/json" },
         json: async () => ({
-          results: [mobileResult("late-older", "late-page")],
+          results: [mobileResult("late-older", "unexpected_status")],
         }),
       });
     });
     await harness.flush();
-    assert.match(harness.host.textContent, /first-page-49/);
+    assert.match(harness.host.textContent, /Ошибка соединения/);
     assert.doesNotMatch(
       harness.host.textContent,
-      /late-page/,
+      /Неожиданный HTTP-код/,
       "a late paging response cannot reappend history after collapse",
     );
-    assert.doesNotMatch(harness.host.textContent, /Свернуть историю/);
+    assert.doesNotMatch(
+      harness.host.textContent,
+      /Превышено время ожидания/,
+      "collapsing history removes the previously loaded older page",
+    );
+    assert.equal(
+      [...harness.host.querySelectorAll("button")].some(
+        (button) => button.textContent.trim() === "Свернуть историю",
+      ),
+      false,
+      "the exact collapse control disappears after history is collapsed",
+    );
+    assert.equal(
+      [...harness.host.querySelectorAll("button")].some(
+        (button) => button.textContent.trim() === "Свернуть историю",
+      ),
+      false,
+      "the exact collapse control is removed after collapsing the older page",
+    );
+    assert.equal(
+      (harness.host.textContent.match(/Ошибка соединения/g) ?? []).length,
+      50,
+      "the original 50 visible results remain after collapsing the older page",
+    );
   } finally {
     await harness.unmount();
   }
@@ -1554,11 +1978,7 @@ test("editing a monitor keeps its opened version when a newer detail read finish
       throw new Error(`Unexpected monitor request: ${path}`);
     });
     await harness.renderMonitorsScreen();
-    await act(async () =>
-      [...harness.host.querySelectorAll("button")]
-        .find((button) => button.textContent.includes("Открыть"))
-        .click(),
-    );
+    await harness.click("Primary monitor. Доступен");
     await harness.flush();
     await act(async () =>
       harness.host
@@ -1615,14 +2035,14 @@ test("detail refresh fences old pagination, blocks new paging, and refreshes the
     const firstPage = Array.from({ length: 50 }, (_, index) =>
       mobileResult(
         `initial-${index}`,
-        `initial-${index}`,
+        "request_failed",
         `2026-10-21T12:${String(index).padStart(2, "0")}:00Z`,
       ),
     );
     const refreshedPage = Array.from({ length: 50 }, (_, index) =>
       mobileResult(
         `refreshed-${index}`,
-        `refreshed-${index}`,
+        "request_timeout",
         `2026-10-22T12:${String(index).padStart(2, "0")}:00Z`,
       ),
     );
@@ -1652,7 +2072,7 @@ test("detail refresh fences old pagination, blocks new paging, and refreshes the
               oldPageResponse = resolve;
             });
           return jsonResponse({
-            results: [mobileResult("fresh-older", "fresh-older-page")],
+            results: [mobileResult("fresh-older", "unexpected_status")],
           });
         }
         resultsReads++;
@@ -1666,12 +2086,9 @@ test("detail refresh fences old pagination, blocks new paging, and refreshes the
       throw new Error(`Unexpected monitor request: ${path}`);
     });
     await harness.renderMonitorsScreen();
-    await act(async () =>
-      [...harness.host.querySelectorAll("button")]
-        .find((button) => button.textContent.includes("Открыть"))
-        .click(),
-    );
+    await harness.click("Primary monitor. Доступен");
     await harness.flush();
+    await harness.click("История проверок · 50");
     await act(async () =>
       [...harness.host.querySelectorAll("button")]
         .find((button) =>
@@ -1706,18 +2123,18 @@ test("detail refresh fences old pagination, blocks new paging, and refreshes the
     await act(async () =>
       oldPageResponse(
         jsonResponse({
-          results: [mobileResult("stale-older", "stale-older-page")],
+          results: [mobileResult("stale-older", "tls_certificate_invalid")],
         }),
       ),
     );
     await harness.flush();
-    assert.doesNotMatch(harness.host.textContent, /stale-older-page/);
+    assert.doesNotMatch(harness.host.textContent, /Ошибка сертификата TLS/);
     await act(async () =>
       refreshedResultsResponse(jsonResponse({ results: refreshedPage })),
     );
     await harness.flush();
-    assert.match(harness.host.textContent, /refreshed-49/);
-    assert.doesNotMatch(harness.host.textContent, /initial-0/);
+    assert.match(harness.host.textContent, /Превышено время ожидания/);
+    assert.doesNotMatch(harness.host.textContent, /Ошибка соединения/);
 
     await act(async () =>
       [...harness.host.querySelectorAll("button")]
@@ -1729,8 +2146,8 @@ test("detail refresh fences old pagination, blocks new paging, and refreshes the
     await harness.flush();
     assert.equal(pageCursors.length, 2);
     assert.equal(pageCursors[1], refreshedPage.at(-1).checkedAt);
-    assert.match(harness.host.textContent, /fresh-older-page/);
-    assert.doesNotMatch(harness.host.textContent, /stale-older-page/);
+    assert.match(harness.host.textContent, /Неожиданный HTTP-код/);
+    assert.doesNotMatch(harness.host.textContent, /Ошибка сертификата TLS/);
   } finally {
     await harness.unmount();
   }
@@ -1748,11 +2165,12 @@ test("account action retries clear only their own card error", async () => {
       },
     });
     await harness.apiModule.restoreSession();
-    harness.native.openCustomTab = async () => {
-      throw new Error("browser unavailable");
-    };
     let passwordAttempts = 0;
     let resolvePasswordRetry;
+    harness.native.beginOAuth = async () => ({
+      state: "oauth-state",
+      codeChallenge: "oauth-challenge",
+    });
     harness.setFetch(async (url, options) => {
       const path = new URL(url).pathname.replace("/api/v1", "");
       if (path === "/me")
@@ -1769,6 +2187,8 @@ test("account action retries clear only their own card error", async () => {
         });
       if (path === "/me/sessions") return jsonResponse({ sessions: [] });
       if (path === "/me/identities") return jsonResponse({ identities: [] });
+      if (path === "/auth/native/oauth/yandex/start")
+        return jsonResponse({ error: "temporarily_unavailable" }, 503);
       if (
         path === "/auth/native/password/change" &&
         options.method === "POST"
@@ -1783,64 +2203,73 @@ test("account action retries clear only their own card error", async () => {
       throw new Error(`Unexpected account request: ${path}`);
     });
     await harness.renderAccountScreen();
-    await harness.click("Помощь и документы");
-    await harness.click("Поддержка");
+    await harness.click("Безопасность и сеансы");
     await harness.fill("Текущий пароль", "incorrect");
     await harness.fill("Новый пароль", "new-password-strong");
     await harness.click("Изменить пароль");
     await harness.flush();
 
-    const passwordError = () =>
-      [...harness.host.querySelectorAll('[role="alert"]')].find((alert) =>
-        alert.textContent.includes("Неверный email или пароль."),
+    const cardAlert = (headingText) => {
+      const heading = [...harness.host.querySelectorAll('[role="header"]')].find(
+        (item) => item.textContent.trim() === headingText,
       );
-    const helpError = () =>
-      [...harness.host.querySelectorAll('[role="alert"]')].find((alert) =>
-        alert.textContent.includes("Ошибка приложения."),
-      );
+      assert.ok(heading, `card heading not found: ${headingText}`);
+      const card = heading.parentElement;
+      return card?.querySelector('[role="alert"]');
+    };
+    const passwordError = () => cardAlert("Пароль");
+    const identityError = () => cardAlert("Способы входа");
     let inlinePasswordError = passwordError();
     assert.ok(inlinePasswordError);
-    assert.match(
-      inlinePasswordError.parentElement.textContent,
-      /Текущий пароль/,
-    );
-    assert.match(
-      inlinePasswordError.parentElement.textContent,
-      /Изменить пароль/,
-    );
+    const passwordCard = () => {
+      let element = inlinePasswordError;
+      while (element && !element.textContent.includes("Текущий пароль"))
+        element = element.parentElement;
+      return element;
+    };
+    assert.match(passwordCard()?.textContent ?? "", /Текущий пароль/);
+    assert.match(passwordCard()?.textContent ?? "", /Изменить пароль/);
     assert.doesNotMatch(
-      inlinePasswordError.parentElement.textContent,
+      passwordCard()?.textContent ?? "",
       /Удаление аккаунта/,
     );
-    assert.ok(helpError(), "the independent help-card error is also retained");
+    await harness.fill("Пароль для способов входа", "identity-password");
+    await harness.click("Подключить Яндекс");
+    await harness.flush();
+    assert.match(
+      identityError()?.textContent ?? "",
+      /Сервис временно недоступен\./,
+      "the OAuth action failure is shown in the identity card",
+    );
+    assert.match(
+      passwordError()?.textContent ?? "",
+      /Неверный email или пароль\./,
+      "the password failure remains visible in the password card",
+    );
 
     await harness.click("Изменить пароль");
     await harness.flush();
     assert.equal(typeof resolvePasswordRetry, "function");
     assert.equal(
       passwordError(),
-      undefined,
+      null,
       "retry clears stale password error immediately",
     );
-    assert.ok(helpError(), "retry preserves the help card's unrelated error");
+    assert.ok(identityError(), "retry preserves the unrelated identity error");
     await act(async () =>
       resolvePasswordRetry(
         jsonResponse({ error: "temporarily_unavailable" }, 503),
       ),
     );
     await harness.flush();
-    inlinePasswordError = [
-      ...harness.host.querySelectorAll('[role="alert"]'),
-    ].find((alert) =>
-      alert.textContent.includes("Сервис временно недоступен."),
-    );
+    inlinePasswordError = passwordError();
     assert.ok(
-      inlinePasswordError,
+      inlinePasswordError?.textContent.includes("Сервис временно недоступен."),
       "the new failure returns to the password card",
     );
     assert.ok(
-      helpError(),
-      "the other action error remains visible after retry fails",
+      identityError(),
+      "the identity error remains visible after the password retry fails",
     );
   } finally {
     await harness.unmount();
@@ -1901,24 +2330,21 @@ test("notification settings preserve a dirty webhook draft across unrelated upda
       throw new Error(`Unexpected notification request: ${path}`);
     });
     await harness.renderMonitorsScreen();
-    await act(async () =>
-      [...harness.host.querySelectorAll("button")]
-        .find((button) => button.textContent.includes("Открыть"))
-        .click(),
-    );
+    await harness.click("Primary monitor. Доступен");
     await harness.flush();
     await harness.click("Уведомления");
-    await harness.flush();
+    await harness.click("Дополнительно: webhook");
     const webhookURL = harness.host.querySelector(
       'input[aria-label="HTTPS URL"]',
     );
     assert.ok(webhookURL);
     assert.equal(webhookURL.value, "https://saved.example.test/hook");
     assert.equal(
-      harness.host.querySelector('button[aria-label="Обновить страницу"]'),
-      null,
+      harness.host.querySelector('button[aria-label="Обновить страницу"]') === null,
+      true,
       "the screen does not expose a generic pull refresh that can replace dirty settings",
     );
+    await harness.click("Подключить адрес или чат аккаунта");
     await harness.fill("HTTPS URL", "https://draft.example.test/hook");
     await harness.click("Telegram · личный чат");
     await harness.flush();
@@ -1929,8 +2355,301 @@ test("notification settings preserve a dirty webhook draft across unrelated upda
       "an unrelated successful link action re-renders without discarding the webhook draft",
     );
     assert.equal(
-      harness.host.querySelector('button[aria-label="Обновить страницу"]'),
-      null,
+      harness.host.querySelector('button[aria-label="Обновить страницу"]') === null,
+      true,
+    );
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("a monitor draft survives the billing return without posting until the user starts it", async () => {
+  const harness = await createHarness();
+  const actor = {
+    account: { id: "account-1" },
+    session: {
+      id: "session-1",
+      token: "token-1",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    },
+  };
+  let storedDraft = null;
+  const monitorCreates = [];
+  try {
+    harness.native.restore = async () => actor;
+    harness.native.restoreMonitorDraft = async (accountId, sessionId) =>
+      accountId === actor.account.id && sessionId === actor.session.id
+        ? storedDraft
+        : null;
+    harness.native.saveMonitorDraft = async (draft, accountId, sessionId) => {
+      assert.equal(accountId, actor.account.id);
+      assert.equal(sessionId, actor.session.id);
+      storedDraft = structuredClone(draft);
+    };
+    harness.native.clearMonitorDraft = async (accountId, sessionId) => {
+      assert.equal(accountId, actor.account.id);
+      assert.equal(sessionId, actor.session.id);
+      storedDraft = null;
+    };
+    harness.native.restorePaymentIntent = async () => null;
+    harness.native.sdkCapabilities = async () => ({
+      configured: false,
+      shopId: "",
+      environment: "test",
+    });
+    harness.native.savePaymentIntent = async () => {};
+    harness.native.clearPaymentIntent = async () => {};
+    await harness.apiModule.restoreSession();
+    harness.setMonitorEntitlement({
+      quota: 1,
+      enabledMonitorCount: 1,
+      activeMonitorCount: 1,
+      admin: null,
+      packages: [],
+    });
+    harness.setFetch(async (url, options) => {
+      const parsed = new URL(url);
+      const path = parsed.pathname.replace("/api/v1", "");
+      if (path === "/monitor-time-zones")
+        return jsonResponse({ timeZones: [] });
+      if (path === "/monitors" && options.method === "POST") {
+        const body = JSON.parse(options.body);
+        monitorCreates.push(body);
+        return jsonResponse({
+          monitor: mobileMonitor({
+            id: "monitor-created",
+            name: body.name,
+            url: body.url,
+          }),
+        });
+      }
+      if (path === "/monitors")
+        return jsonResponse(mobileMonitorPage([]));
+      if (path === "/monitors/monitor-created")
+        return jsonResponse({
+          monitor: mobileMonitor({
+            id: "monitor-created",
+            name: "Checkout return draft",
+            url: "https://draft.example.test/health",
+          }),
+        });
+      if (path === "/monitors/monitor-created/results")
+        return jsonResponse({ results: [] });
+      if (path === "/monitors/monitor-created/incidents")
+        return jsonResponse({ incidents: [] });
+      if (path === "/billing") return jsonResponse(billingOverview([]));
+      if (path === "/billing/orders" && parsed.search === "?page=1&pageSize=10")
+        return jsonResponse(billingPage([]));
+      if (path === "/messenger-destinations")
+        return jsonResponse({ destinations: [] });
+      if (path === "/messenger-destinations/email/verification")
+        return jsonResponse({ challenge: null });
+      throw new Error(`Unexpected draft flow request: ${path}`);
+    });
+    await harness.renderDraftCheckoutFlow();
+    await harness.click("Добавить монитор");
+    await harness.fill("Название", "Checkout return draft");
+    await harness.fill("URL HTTPS/HTTP", "https://draft.example.test/health");
+    await harness.flush();
+    assert.equal(storedDraft?.form.name, "Checkout return draft");
+    assert.equal(monitorCreates.length, 0, "editing alone does not create a monitor");
+
+    await harness.click("Купить квоту");
+    await harness.flush();
+    assert.match(harness.host.textContent, /Черновик монитора сохранён/);
+    assert.equal(monitorCreates.length, 0, "opening billing does not create a monitor");
+
+    harness.setMonitorEntitlement({
+      quota: 2,
+      enabledMonitorCount: 1,
+      activeMonitorCount: 1,
+      admin: null,
+      packages: [],
+    });
+    await harness.click("Вернуться к настройке монитора");
+    await harness.flush();
+    assert.equal(
+      harness.host.querySelector('input[aria-label="Название"]')?.value,
+      "Checkout return draft",
+      "the form name survives the billing screen unmount and return",
+    );
+    assert.equal(
+      harness.host.querySelector('input[aria-label="URL HTTPS/HTTP"]')?.value,
+      "https://draft.example.test/health",
+      "the target URL survives the billing screen unmount and return",
+    );
+    assert.equal(monitorCreates.length, 0, "returning never auto-posts the draft");
+
+    await harness.click("Запустить монитор");
+    await harness.flush();
+    assert.equal(monitorCreates.length, 1, "only the explicit start action posts");
+    assert.equal(monitorCreates[0].name, "Checkout return draft");
+    assert.equal(monitorCreates[0].url, "https://draft.example.test/health");
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("pending quota-save cannot navigate to billing after logout unmounts the monitor editor", async () => {
+  const harness = await createHarness();
+  const actor = {
+    account: { id: "account-1" },
+    session: {
+      id: "session-1",
+      token: "token-1",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    },
+  };
+  let resolveNativeSave;
+  let saveStartedResolve;
+  const saveStarted = new Promise((resolve) => {
+    saveStartedResolve = resolve;
+  });
+  let billingNavigationCalls = 0;
+  try {
+    harness.native.restore = async () => actor;
+    harness.native.restoreMonitorDraft = async () => null;
+    harness.native.saveMonitorDraft = async () => {};
+    harness.native.clearMonitorDraft = async () => {};
+    await harness.apiModule.restoreSession();
+    harness.setMonitorEntitlement({
+      quota: 0,
+      enabledMonitorCount: 0,
+      activeMonitorCount: 0,
+      admin: null,
+      packages: [],
+    });
+    harness.setFetch(async (url) => {
+      const path = new URL(url).pathname.replace("/api/v1", "");
+      if (path === "/monitor-time-zones")
+        return jsonResponse({ timeZones: [] });
+      if (path === "/monitors") return jsonResponse(mobileMonitorPage([]));
+      throw new Error(`Unexpected logout draft request: ${path}`);
+    });
+    await harness.renderMonitorsScreen(null, {
+      onBuyQuota: () => billingNavigationCalls++,
+    });
+    await harness.click("Добавить монитор");
+    await harness.fill("Название", "Pending checkout draft");
+    await harness.fill("URL HTTPS/HTTP", "https://draft.example.test/health");
+    await harness.flush();
+
+    harness.native.saveMonitorDraft = async () => {
+      saveStartedResolve();
+      return new Promise((resolve) => {
+        resolveNativeSave = resolve;
+      });
+    };
+    await harness.click("Купить квоту");
+    await saveStarted;
+    assert.equal(billingNavigationCalls, 0, "billing waits for the native draft write");
+
+    await harness.apiModule.closeSession();
+    await harness.renderPage();
+    assert.match(harness.host.textContent, /Содержимое/);
+    await act(async () => resolveNativeSave());
+    await harness.flush();
+    assert.equal(
+      billingNavigationCalls,
+      0,
+      "a completed save from the logged-out editor cannot trigger its stale navigation callback",
+    );
+    assert.doesNotMatch(harness.host.textContent, /Черновик монитора сохранён/);
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("a late native draft restore from a previous account cannot replace the current account draft", async () => {
+  const harness = await createHarness();
+  const actorA = {
+    account: { id: "account-a" },
+    session: {
+      id: "session-a",
+      token: "token-a",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    },
+  };
+  const actorB = {
+    account: { id: "account-b" },
+    session: {
+      id: "session-b",
+      token: "token-b",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    },
+  };
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  };
+  const restoreA = deferred();
+  const restoreB = deferred();
+  const restoredFor = [];
+  const draft = (name) => ({
+    schemaVersion: 1,
+    form: {
+      checkType: "http",
+      name,
+      url: "https://draft.example.test/health",
+      host: "",
+      port: "443",
+      method: "GET",
+      expectedStatus: "200",
+      bodyContains: "",
+      intervalMinutes: "5",
+      failureThreshold: "2",
+      timeZone: "Europe/Moscow",
+      enabled: true,
+    },
+    editId: null,
+    savedAt: Date.now(),
+  });
+  try {
+    harness.native.restore = async () => actorA;
+    harness.native.restoreMonitorDraft = async (accountId, sessionId) => {
+      restoredFor.push([accountId, sessionId]);
+      if (accountId === actorA.account.id) return restoreA.promise;
+      if (accountId === actorB.account.id) return restoreB.promise;
+      return null;
+    };
+    await harness.apiModule.restoreSession();
+    function DraftSnapshot() {
+      const retained = harness.monitorDraftModule.useMonitorDraft();
+      return React.createElement(
+        "span",
+        { "data-ready": String(retained.ready) },
+        retained.draft?.form.name ?? "no draft",
+      );
+    }
+    await harness.renderDraftProvider(
+      React.createElement(DraftSnapshot),
+      harness.apiModule.session(),
+      `${actorA.account.id}:${actorA.session.id}`,
+    );
+    assert.deepEqual(restoredFor[0], [actorA.account.id, actorA.session.id]);
+
+    harness.native.restore = async () => actorB;
+    await harness.apiModule.restoreSession();
+    await harness.renderDraftProvider(
+      React.createElement(DraftSnapshot),
+      harness.apiModule.session(),
+      `${actorB.account.id}:${actorB.session.id}`,
+    );
+    assert.deepEqual(restoredFor[1], [actorB.account.id, actorB.session.id]);
+
+    await act(async () => restoreB.resolve(draft("Current account draft")));
+    await harness.flush();
+    assert.match(harness.host.textContent, /Current account draft/);
+    await act(async () => restoreA.resolve(draft("Previous account draft")));
+    await harness.flush();
+    assert.match(harness.host.textContent, /Current account draft/);
+    assert.doesNotMatch(
+      harness.host.textContent,
+      /Previous account draft/,
+      "a stale native restore from account A cannot overwrite account B's draft",
     );
   } finally {
     await harness.unmount();

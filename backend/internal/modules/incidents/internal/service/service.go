@@ -161,3 +161,29 @@ func (s *Service) Cleanup(ctx context.Context, tx pgx.Tx) error {
 	_, err := tx.Exec(ctx, `DELETE FROM incidents.incidents WHERE id IN (SELECT id FROM incidents.incidents WHERE closed_at < now()-interval '90 days' ORDER BY closed_at LIMIT 500)`)
 	return err
 }
+
+// Feed uses the caller's account transaction and returns one extra keyset row.
+// A backdated incident confirmed after AsOf cannot enter a later feed page.
+func (s *Service) Feed(ctx context.Context, tx pgx.Tx, accountID string, options contracts.FeedOptions) ([]contracts.FeedIncident, error) {
+	rows, err := tx.Query(ctx, `SELECT id::text,number,monitor_id::text,opened_at,confirmed_at,
+ CASE WHEN closed_at <= $2 THEN closed_at END,
+ CASE WHEN closed_at <= $2 THEN close_reason ELSE '' END
+ FROM incidents.incidents WHERE account_id=$1 AND confirmed_at <= $2
+ AND (closed_at IS NULL OR closed_at >= $2-interval '90 days')
+ AND ($3='all' OR $3='active' AND (closed_at IS NULL OR closed_at>$2) OR $3='closed' AND closed_at <= $2)
+ AND ($4::timestamptz IS NULL OR (opened_at,id)<($4::timestamptz,NULLIF($5,'')::uuid))
+ ORDER BY opened_at DESC,id DESC LIMIT $6`, accountID, options.AsOf, options.State, options.BeforeOpenedAt, options.BeforeID, options.Limit+1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []contracts.FeedIncident{}
+	for rows.Next() {
+		var i contracts.FeedIncident
+		if err := rows.Scan(&i.ID, &i.Number, &i.MonitorID, &i.OpenedAt, &i.ConfirmedAt, &i.ClosedAt, &i.CloseReason); err != nil {
+			return nil, err
+		}
+		result = append(result, i)
+	}
+	return result, rows.Err()
+}

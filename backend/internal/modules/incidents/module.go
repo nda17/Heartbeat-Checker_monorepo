@@ -32,3 +32,7 @@ func (m *Module) Get(ctx context.Context, accountID, monitorID, incidentID strin
 	return m.service.Get(ctx, accountID, monitorID, incidentID)
 }
 func (m *Module) Cleanup(ctx context.Context, tx pgx.Tx) error { return m.service.Cleanup(ctx, tx) }
+
+func (m *Module) Feed(ctx context.Context, tx pgx.Tx, accountID string, options contracts.FeedOptions) ([]contracts.FeedIncident, error) {
+	return m.service.Feed(ctx, tx, accountID, options)
+}

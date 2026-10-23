@@ -10,6 +10,7 @@ import {
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import {
+  ApiError,
   acceptSession,
   api,
   closeSession,
@@ -19,12 +20,15 @@ import {
   session,
   sessionEpoch,
 } from "./api";
-import { native } from "./native";
+import { native, type PendingEmailVerification } from "./native";
 import type { AuthResult, OAuthPending } from "./types";
 import { AccountScreen } from "./AccountScreen";
 import { AuthScreen } from "./AuthScreen";
 import { BillingScreen } from "./BillingScreen";
 import { MonitorsScreen } from "./MonitorsScreen";
+import { PublicScreen } from "./PublicScreen";
+import { HelpScreen } from "./HelpScreen";
+import { MonitorDraftProvider } from "./MonitorDraft";
 import {
   Button,
   Card,
@@ -77,6 +81,10 @@ function exactKeys(params: URLSearchParams, keys: string[]) {
 }
 
 function AppContent() {
+  const [publicView, setPublicView] = useState<
+    "landing" | "login" | "register" | "help"
+  >("landing");
+  const [resumeDraft, setResumeDraft] = useState(0);
   const [ready, setReady] = useState(false);
   const [authed, setAuthed] = useState<AuthResult | null>(null);
   const [tab, setTab] = useState<Tab>("monitors");
@@ -92,6 +100,12 @@ function AppContent() {
     incidentId: string;
   } | null>(null);
   const [returnOrder, setReturnOrder] = useState<string | null>(null);
+  const [emailVerification, setEmailVerification] =
+    useState<PendingEmailVerification | null>(null);
+  const [emailVerificationNotice, setEmailVerificationNotice] = useState("");
+  const emailBusy = useRef(false);
+  const emailPendingRef = useRef(emailVerification);
+  emailPendingRef.current = emailVerification;
   const [verificationBusy, setVerificationBusy] = useState(false);
   const restoring = useRef(true);
   const earlyLinks = useRef<string[]>([]);
@@ -103,6 +117,7 @@ function AppContent() {
   const navigate = useCallback((target: Navigation) => {
     if (!session()) {
       queuedNavigation.current = target;
+      setPublicView("login");
       setError("Войдите в аккаунт, чтобы открыть ссылку.");
       return;
     }
@@ -120,10 +135,31 @@ function AppContent() {
     } else setTab(target.tab);
   }, []);
 
+  const consumeMonitorLink = useCallback(
+    (link: { monitorId: string; incidentId: string }) => {
+      setMonitorLink((current) => (current === link ? null : current));
+    },
+    [],
+  );
+
   const takeSession = useCallback(
     async (value: AuthResult) => {
       await acceptSession(value);
-      setAuthed(session());
+      const accepted = session();
+      const acceptedEpoch = sessionEpoch();
+      if (!accepted) return;
+      const pendingEmail = await native.restoreEmailVerification();
+      const active = session();
+      if (
+        sessionEpoch() !== acceptedEpoch ||
+        active?.account.id !== accepted.account.id ||
+        active?.session.id !== accepted.session.id
+      )
+        return;
+      setAuthed(accepted);
+      setEmailVerificationNotice("");
+      emailPendingRef.current = pendingEmail;
+      setEmailVerification(pendingEmail);
       setTab("monitors");
       setError("");
       setResetToken(null);
@@ -140,6 +176,9 @@ function AppContent() {
     } finally {
       if (!session()) {
         setAuthed(null);
+        setPublicView("landing");
+        setEmailVerification(null);
+        setEmailVerificationNotice("");
         setMonitorLink(null);
         setReturnOrder(null);
         setTab("monitors");
@@ -167,6 +206,40 @@ function AppContent() {
         return;
       lastLink.current = { raw, at: Date.now() };
       try {
+        if (url.pathname === "/app/settings" && url.hash) {
+          const hash = new URLSearchParams(url.hash.slice(1));
+          const token = hash.get("verify-email");
+          if (
+            url.search ||
+            !exactKeys(hash, ["verify-email"]) ||
+            !token ||
+            !nonce.test(token)
+          )
+            return;
+          const capturedEpoch = sessionEpoch();
+          // MainActivity persisted the latest accepted link before publishing the event.
+          // A queued older event must never write over that durable value.
+          const pending = await native.restoreEmailVerification();
+          if (capturedEpoch !== sessionEpoch()) return;
+          if (!pending) {
+            setError(
+              "Ссылка подтверждения истекла. Запросите новое письмо в профиле.",
+            );
+            return;
+          }
+          if (pending.token !== token) return;
+          emailPendingRef.current = pending;
+          setEmailVerification(pending);
+          setEmailVerificationNotice("");
+          if (!session()) {
+            setPublicView("login");
+            setError("Войдите в аккаунт, чей email подтверждает это письмо.");
+          } else {
+            setTab("account");
+            setError("");
+          }
+          return;
+        }
         if (url.pathname === "/android/auth/reset") {
           const hash = new URLSearchParams(url.hash.slice(1));
           const token = hash.get("token");
@@ -185,6 +258,8 @@ function AppContent() {
           setReturnOrder(null);
           setRegistration(null);
           setVerifyToken(null);
+          setEmailVerification(null);
+          setEmailVerificationNotice("");
           setResetToken(token);
           setAuthGeneration((value) => value + 1);
           setError("");
@@ -376,19 +451,26 @@ function AppContent() {
     let active = true;
     void (async () => {
       try {
-        const [saved, pending, link] = await Promise.all([
+        const [saved, pending, passwordRegistration, link] = await Promise.all([
           restoreSession(),
           native.restoreOAuthRegistration(),
+          native.restoreRegistration(),
           native.takeInitialLink(),
         ]);
         if (!active) return;
         setAuthed(saved);
+        const pendingEmail = await native.restoreEmailVerification();
+        if (!active) return;
+        setEmailVerification(pendingEmail);
+        if (!saved && pendingEmail) setPublicView("login");
         setRegistration(saved ? null : pending);
-        setReady(true);
+        if (!saved && passwordRegistration && !pendingEmail)
+          setPublicView("register");
         restoring.current = false;
-        const links = [...earlyLinks.current, ...(link ? [link] : [])];
+        const links = [...(link ? [link] : []), ...earlyLinks.current];
         earlyLinks.current = [];
         for (const item of links) await handleLink(item);
+        if (active) setReady(true);
       } catch (cause) {
         if (active) {
           restoring.current = false;
@@ -410,6 +492,9 @@ function AppContent() {
   useEffect(() => {
     onSessionExpired(() => {
       queuedNavigation.current = null;
+      setPublicView("login");
+      setEmailVerification(null);
+      setEmailVerificationNotice("");
       setAuthed(null);
       setMonitorLink(null);
       setReturnOrder(null);
@@ -423,12 +508,89 @@ function AppContent() {
   }, []);
   useEffect(() => {
     const listener = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (emailVerification) {
+        void dismissAccountEmail();
+        return true;
+      }
       if (!authed || tab === "monitors") return false;
       setTab("monitors");
       return true;
     });
     return () => listener.remove();
-  }, [authed, tab]);
+  }, [authed, tab, emailVerification]);
+
+  const dismissAccountEmail = async () => {
+    const pending = emailPendingRef.current;
+    if (!pending || emailBusy.current) return;
+    const epoch = sessionEpoch();
+    try {
+      await native.clearEmailVerification(pending.token);
+      if (
+        epoch === sessionEpoch() &&
+        emailPendingRef.current?.token === pending.token
+      ) {
+        emailPendingRef.current = null;
+        setEmailVerification((current) =>
+          current?.token === pending.token ? null : current,
+        );
+        setTab("account");
+      }
+    } catch (cause) {
+      if (
+        epoch === sessionEpoch() &&
+        emailPendingRef.current?.token === pending.token
+      )
+        setError(errorText(cause));
+    }
+  };
+  const confirmAccountEmail = async () => {
+    const pending = emailVerification;
+    const active = session();
+    if (
+      !pending ||
+      !active ||
+      emailBusy.current ||
+      pending.accountId !== active.account.id ||
+      pending.sessionId !== active.session.id
+    )
+      return;
+    const epoch = sessionEpoch();
+    emailBusy.current = true;
+    setVerificationBusy(true);
+    setError("");
+    try {
+      await api("/me/email-verification/confirm", {
+        method: "POST",
+        body: { token: pending.token },
+      });
+      if (epoch !== sessionEpoch()) return;
+      // Confirmation is committed. Never invite a second POST because a later profile read failed.
+      if (emailPendingRef.current?.token === pending.token) {
+        emailPendingRef.current = null;
+        setEmailVerification((current) =>
+          current?.token === pending.token ? null : current,
+        );
+        setEmailVerificationNotice("Email аккаунта подтверждён.");
+      }
+      await native.clearEmailVerification(pending.token);
+      if (epoch === sessionEpoch() && !emailPendingRef.current)
+        setTab("account");
+    } catch (cause) {
+      if (
+        epoch === sessionEpoch() &&
+        (!emailPendingRef.current ||
+          emailPendingRef.current.token === pending.token)
+      )
+        setError(
+          cause instanceof ApiError && cause.status === 400
+            ? "Ссылка истекла или относится к другому аккаунту. Войдите в нужный аккаунт и откройте письмо заново либо запросите новое в профиле."
+            : errorText(cause),
+        );
+    } finally {
+      emailBusy.current = false;
+      if (epoch === sessionEpoch()) setVerificationBusy(false);
+    }
+  };
 
   const confirmOAuthEmail = () => {
     if (!registration || !verifyToken || verificationBusy || session()) return;
@@ -465,7 +627,7 @@ function AppContent() {
         <ActivityIndicator size="large" color={palette.accent} />
       </View>
     );
-  if (registration && !authed)
+  if (registration && !authed && !emailVerification)
     return (
       <Page title="Подтвердите email">
         <Card>
@@ -502,75 +664,157 @@ function AppContent() {
     return (
       <>
         <StatusBar barStyle={palette.dark ? "light-content" : "dark-content"} />
-        <AuthScreen
-          key={authGeneration}
-          onAuthed={takeSession}
-          resetToken={resetToken}
-        />
+        {publicView === "help" && !resetToken ? (
+          <HelpScreen onBack={() => setPublicView("landing")} />
+        ) : publicView === "landing" &&
+          !resetToken &&
+          !queuedNavigation.current &&
+          !emailVerification ? (
+          <PublicScreen
+            onLogin={() => setPublicView("login")}
+            onRegister={() => setPublicView("register")}
+            onHelp={() => setPublicView("help")}
+          />
+        ) : (
+          <AuthScreen
+            key={`${authGeneration}:${emailVerification ? "account-email" : "auth"}`}
+            resumeRegistration={!emailVerification}
+            initialMode={
+              !emailVerification && publicView === "register"
+                ? "register"
+                : "login"
+            }
+            onBack={() => {
+              if (emailVerification) {
+                void dismissAccountEmail();
+                return;
+              }
+              setResetToken(null);
+              setPublicView("landing");
+            }}
+            onHelp={() => setPublicView("help")}
+            onAuthed={takeSession}
+            resetToken={resetToken}
+          />
+        )}
         <ErrorNotice message={error} />
       </>
     );
+  if (
+    emailVerification &&
+    emailVerification.accountId === authed.account.id &&
+    emailVerification.sessionId === authed.session.id
+  )
+    return (
+      <Page title="Подтверждение email аккаунта">
+        <Card>
+          <Label>Вы вошли как {authed.account.email}.</Label>
+          <Label>
+            Подтвердите, что открытое письмо относится к этому email. Это не
+            подключение адреса уведомлений.
+          </Label>
+          <Button
+            label="Подтвердить email этого аккаунта"
+            loading={verificationBusy}
+            onPress={() => void confirmAccountEmail()}
+          />
+          <Button
+            label="Вернуться в аккаунт"
+            secondary
+            disabled={verificationBusy}
+            onPress={() => void dismissAccountEmail()}
+          />
+          <Button
+            label="Выйти и войти в другой аккаунт"
+            secondary
+            disabled={verificationBusy}
+            onPress={() => void logout()}
+          />
+        </Card>
+        <ErrorNotice message={error} />
+      </Page>
+    );
   return (
-    <View style={{ flex: 1, backgroundColor: palette.bg }}>
-      <StatusBar barStyle={palette.dark ? "light-content" : "dark-content"} />
-      <View style={{ flex: 1 }}>
-        {tab === "monitors" ? (
-          <MonitorsScreen deepLink={monitorLink} />
-        ) : tab === "billing" ? (
-          <BillingScreen returnOrder={returnOrder} />
-        ) : (
-          <AccountScreen onLogout={logout} />
-        )}
-      </View>
-      <View
-        accessibilityRole="tablist"
-        style={{
-          flexDirection: "row",
-          borderTopWidth: 1,
-          borderTopColor: glassEnabled ? palette.glassBorder : palette.border,
-          backgroundColor: glassEnabled ? palette.glass : palette.card,
-          elevation: 5,
-        }}
-      >
-        {(
-          [
-            ["monitors", "Мониторы", "activity"],
-            ["billing", "Оплата", "payment"],
-            ["account", "Аккаунт", "user"],
-          ] as const
-        ).map(([key, label, icon]) => (
-          <Pressable
-            key={key}
-            accessibilityRole="tab"
-            accessibilityState={{ selected: tab === key }}
-            onPress={() => setTab(key)}
-            style={{
-              flex: 1,
-              minHeight: 64,
-              paddingVertical: 8,
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 3,
-            }}
-          >
-            <Icon
-              name={icon}
-              color={tab === key ? palette.accentText : palette.subtle}
+    <MonitorDraftProvider
+      key={authed.account.id + ":" + authed.session.id}
+      auth={authed}
+    >
+      <View style={{ flex: 1, backgroundColor: palette.bg }}>
+        <StatusBar barStyle={palette.dark ? "light-content" : "dark-content"} />
+        <View style={{ flex: 1 }}>
+          {tab === "monitors" ? (
+            <MonitorsScreen
+              deepLink={monitorLink}
+              onDeepLinkConsumed={consumeMonitorLink}
+              resumeDraft={resumeDraft}
+              onBuyQuota={() => setTab("billing")}
             />
-            <Text
+          ) : tab === "billing" ? (
+            <BillingScreen
+              returnOrder={returnOrder}
+              onContinueMonitor={() => {
+                setMonitorLink(null);
+                setResumeDraft((value) => value + 1);
+                setTab("monitors");
+              }}
+            />
+          ) : (
+            <AccountScreen onLogout={logout} onAuthed={takeSession} />
+          )}
+        </View>
+        <View
+          accessibilityRole="tablist"
+          style={{
+            flexDirection: "row",
+            borderTopWidth: 1,
+            borderTopColor: glassEnabled ? palette.glassBorder : palette.border,
+            backgroundColor: glassEnabled ? palette.glass : palette.card,
+            elevation: 5,
+          }}
+        >
+          {(
+            [
+              ["monitors", "Мониторы", "activity"],
+              ["billing", "Оплата", "payment"],
+              ["account", "Аккаунт", "user"],
+            ] as const
+          ).map(([key, label, icon]) => (
+            <Pressable
+              key={key}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: tab === key }}
+              onPress={() => setTab(key)}
               style={{
-                fontSize: 14,
-                color: tab === key ? palette.accentText : palette.subtle,
-                fontWeight: tab === key ? "700" : "500",
+                flex: 1,
+                minHeight: 64,
+                paddingVertical: 8,
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 3,
               }}
             >
-              {label}
-            </Text>
-          </Pressable>
-        ))}
+              <Icon
+                name={icon}
+                color={tab === key ? palette.accentText : palette.subtle}
+              />
+              <Text
+                style={{
+                  fontSize: 14,
+                  color: tab === key ? palette.accentText : palette.subtle,
+                  fontWeight: tab === key ? "700" : "500",
+                }}
+              >
+                {label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        {emailVerificationNotice ? (
+          <Label>{emailVerificationNotice}</Label>
+        ) : null}
+        <ErrorNotice message={error} />
       </View>
-      <ErrorNotice message={error} />
-    </View>
+    </MonitorDraftProvider>
   );
 }
 

@@ -89,12 +89,18 @@ public final class PushEnvelopeInstrumentationTest {
         assertEquals(INSTALLATION, parsed.getString("installationId"));
         assertEquals("17", parsed.getString("bindingGeneration"));
 
+        JSONObject testEnvelope = PushContract.envelope(message(with(data, "v", "2"), null), now);
+        assertEquals("test pushes use the same strict five-field opaque envelope", 5, testEnvelope.length());
+        assertEquals("2", testEnvelope.getString("v"));
+
         assertReason(PushContract.EnvelopeReason.NULL_MESSAGE, null, now);
         assertMapReason(PushContract.EnvelopeReason.DATA_KEYS, null, now);
         assertReason(PushContract.EnvelopeReason.DATA_KEYS, message(new HashMap<>(), null), now);
         assertReason(PushContract.EnvelopeReason.DATA_KEYS, message(without(data, "expiresAt"), null), now);
         assertReason(PushContract.EnvelopeReason.DATA_KEYS, message(with(data, "title", "private-marker"), null), now);
-        assertReason(PushContract.EnvelopeReason.VERSION, message(with(data, "v", "2"), null), now);
+        assertReason(PushContract.EnvelopeReason.VERSION, message(with(data, "v", "3"), null), now);
+        assertReason(PushContract.EnvelopeReason.DATA_KEYS,
+                message(with(with(data, "v", "2"), "title", "private-marker"), null), now);
         assertReason(PushContract.EnvelopeReason.DELIVERY_ID, message(with(data, "deliveryId", "invalid-private-marker"), null), now);
         assertReason(PushContract.EnvelopeReason.INSTALLATION_ID, message(with(data, "installationId", "not-a-uuid"), null), now);
         assertReason(PushContract.EnvelopeReason.GENERATION, message(with(data, "bindingGeneration", "0"), null), now);

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Pressable, View } from "react-native";
 import { ApiError, api, errorText, session, sessionEpoch } from "./api";
+import { useMonitorDraft } from "./MonitorDraft";
 import { native, type PaymentIntent } from "./native";
 import type { Billing, Entitlement, Order, Subscription } from "./types";
 import { Button, Card, ErrorNotice, Field, Label, Page, Title } from "./ui";
@@ -251,9 +252,12 @@ function statusLabel(order: PaymentOrder) {
 
 export function BillingScreen({
   returnOrder,
+  onContinueMonitor,
 }: {
+  onContinueMonitor: () => void;
   returnOrder?: string | null;
 }) {
+  const retained = useMonitorDraft();
   const [billing, setBilling] = useState<NativeBilling | null>(null);
   const [sdkCapabilities, setSDKCapabilities] =
     useState<SDKCapabilities | null>(null);
@@ -1112,13 +1116,90 @@ export function BillingScreen({
   const nativeAvailable = (current?.checkoutKind ?? route) === "android_sdk";
   return (
     <Page title="Оплата" refresh={refresh}>
+      {openOrder ? (
+        <Card>
+          <Title>Текущий заказ</Title>
+          <Label>{orderMessage(openOrder)}</Label>
+          <Label>Сумма: {money(openOrder.amountMinor)}</Label>
+          <Button
+            label={currentDetails ? "Скрыть детали" : "Детали заказа"}
+            onPress={() => setCurrentDetails((value) => !value)}
+            secondary
+          />
+          {currentDetails ? (
+            <Label>ID для поддержки: {openOrder.id}</Label>
+          ) : null}
+          {unfinished(openOrder) ? (
+            <Button
+              label="Проверить статус"
+              onPress={checkOrder}
+              disabled={busy}
+              secondary
+            />
+          ) : null}
+          {!native.DEV_CLIENT &&
+          openOrder.checkoutKind === "android_sdk" &&
+          openOrder.sdk?.state === "confirmation_required" ? (
+            <Button
+              label="Подтвердить в банке"
+              onPress={confirmSDK}
+              disabled={busy}
+              secondary
+            />
+          ) : null}
+          {!native.DEV_CLIENT &&
+          openOrder.checkoutKind === "android_sdk" &&
+          openOrder.sdk?.state === "awaiting_token" ? (
+            <Button
+              label="Отменить этот заказ"
+              onPress={cancelSDK}
+              disabled={busy}
+              secondary
+            />
+          ) : null}
+          {!native.DEV_CLIENT &&
+          openOrder.checkoutKind !== "android_sdk" &&
+          openOrder.status === "pending" &&
+          openOrder.confirmationUrl &&
+          validPaymentURL(openOrder.confirmationUrl) ? (
+            <Button
+              label="Продолжить оплату"
+              onPress={() =>
+                void native
+                  .openCustomTab(openOrder.confirmationUrl!)
+                  .catch((cause) => setError(billingError(cause)))
+              }
+              disabled={busy}
+              secondary
+            />
+          ) : null}
+        </Card>
+      ) : null}
+      {retained.draft ? (
+        <Card>
+          <Title>Черновик монитора сохранён</Title>
+          <Label>
+            {entitlement && entitlement.quota > entitlement.enabledMonitorCount
+              ? "Квота доступна. Вернитесь к настройкам и нажмите «Запустить монитор»."
+              : "Завершите покупку, затем вернитесь к настройке. Монитор не запустится автоматически."}
+          </Label>
+          <Button
+            label="Вернуться к настройке монитора"
+            iconName="arrow-left"
+            secondary
+            onPress={onContinueMonitor}
+          />
+        </Card>
+      ) : null}
       <Card>
         <Title>Доступность мониторов</Title>
         <Label>
           Включено: {entitlement?.enabledMonitorCount ?? "—"} · Доступная квота:{" "}
           {entitlement?.quota ?? "—"}
         </Label>
-        <Label>Административная квота: {entitlement?.admin?.quota ?? 0}</Label>
+        {session()?.account.role === "admin" && entitlement?.admin ? (
+          <Label>Административная квота: {entitlement.admin.quota}</Label>
+        ) : null}
         <Label>
           Цена:{" "}
           {validQuote
@@ -1286,65 +1367,6 @@ export function BillingScreen({
         <Label>
           {orderMessage(order)} Детали заказа доступны в истории заказов.
         </Label>
-      ) : null}
-      {openOrder ? (
-        <Card>
-          <Title>Текущий заказ</Title>
-          <Label>{orderMessage(openOrder)}</Label>
-          <Label>Сумма: {money(openOrder.amountMinor)}</Label>
-          <Button
-            label={currentDetails ? "Скрыть детали" : "Детали заказа"}
-            onPress={() => setCurrentDetails((value) => !value)}
-            secondary
-          />
-          {currentDetails ? (
-            <Label>ID для поддержки: {openOrder.id}</Label>
-          ) : null}
-          {unfinished(openOrder) ? (
-            <Button
-              label="Проверить статус"
-              onPress={checkOrder}
-              disabled={busy}
-              secondary
-            />
-          ) : null}
-          {!native.DEV_CLIENT &&
-          openOrder.checkoutKind === "android_sdk" &&
-          openOrder.sdk?.state === "confirmation_required" ? (
-            <Button
-              label="Подтвердить в банке"
-              onPress={confirmSDK}
-              disabled={busy}
-              secondary
-            />
-          ) : null}
-          {!native.DEV_CLIENT &&
-          openOrder.checkoutKind === "android_sdk" &&
-          openOrder.sdk?.state === "awaiting_token" ? (
-            <Button
-              label="Отменить этот заказ"
-              onPress={cancelSDK}
-              disabled={busy}
-              secondary
-            />
-          ) : null}
-          {!native.DEV_CLIENT &&
-          openOrder.checkoutKind !== "android_sdk" &&
-          openOrder.status === "pending" &&
-          openOrder.confirmationUrl &&
-          validPaymentURL(openOrder.confirmationUrl) ? (
-            <Button
-              label="Продолжить оплату"
-              onPress={() =>
-                void native
-                  .openCustomTab(openOrder.confirmationUrl!)
-                  .catch((cause) => setError(billingError(cause)))
-              }
-              disabled={busy}
-              secondary
-            />
-          ) : null}
-        </Card>
       ) : null}
       {history ? (
         <Card>

@@ -7,7 +7,9 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	authcontracts "github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/auth/contracts"
 )
@@ -32,6 +34,13 @@ func pushFailure(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrPushRateLimited):
 		status, code = 429, "rate_limited"
 		w.Header().Set("Retry-After", "60")
+		var testLimit pushTestRateError
+		if errors.As(err, &testLimit) {
+			seconds := max(1, int(time.Until(testLimit.Next).Seconds()+0.999999999))
+			w.Header().Set("Retry-After", strconv.Itoa(seconds))
+			messengerWrite(w, status, map[string]any{"error": code, "nextAllowedAt": testLimit.Next})
+			return
+		}
 	}
 	messengerWrite(w, status, map[string]string{"error": code})
 }
@@ -69,6 +78,8 @@ func (p *Push) RegisterAPI(mux *http.ServeMux, protect func(http.Handler) http.H
 	for pattern, handler := range map[string]http.HandlerFunc{
 		"POST /api/v1/push/native/bind":           p.bindNativePush,
 		"GET /api/v1/push/native/installation":    p.getNativePushInstallation,
+		"POST /api/v1/push/native/tests":          p.createNativePushTest,
+		"GET /api/v1/push/native/tests/{id}":      p.getNativePushTest,
 		"GET /api/v1/push/installations":          p.listPushInstallations,
 		"DELETE /api/v1/push/installations/{id}":  p.disconnectPushInstallation,
 		"GET /api/v1/push/pairings/{id}":          p.getPushPairing,
@@ -79,13 +90,15 @@ func (p *Push) RegisterAPI(mux *http.ServeMux, protect func(http.Handler) http.H
 		mux.Handle(pattern, protect(handler))
 	}
 	for pattern, handler := range map[string]http.HandlerFunc{
-		"GET /api/v1/push/capabilities":                         p.pushCapabilities,
-		"POST /api/v1/push/pairings":                            p.createPushPairing,
-		"POST /api/v1/push/pairings/{id}/exchange":              p.exchangePushPairing,
-		"GET /api/v1/push/installation":                         p.getPushInstallation,
-		"PUT /api/v1/push/installation":                         p.updatePushInstallation,
-		"DELETE /api/v1/push/installation":                      p.revokePushInstallation,
-		"GET /api/v1/push/installation/deliveries/{deliveryId}": p.getPushDelivery,
+		"GET /api/v1/push/capabilities":                               p.pushCapabilities,
+		"POST /api/v1/push/pairings":                                  p.createPushPairing,
+		"POST /api/v1/push/pairings/{id}/exchange":                    p.exchangePushPairing,
+		"GET /api/v1/push/installation":                               p.getPushInstallation,
+		"PUT /api/v1/push/installation":                               p.updatePushInstallation,
+		"DELETE /api/v1/push/installation":                            p.revokePushInstallation,
+		"GET /api/v1/push/installation/deliveries/{deliveryId}":       p.getPushDelivery,
+		"GET /api/v1/push/installation/test-deliveries/{id}":          p.getInstallationPushTest,
+		"POST /api/v1/push/installation/test-deliveries/{id}/receipt": p.receiptInstallationPushTest,
 	} {
 		mux.Handle(pattern, handler)
 	}

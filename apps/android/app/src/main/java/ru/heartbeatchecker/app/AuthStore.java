@@ -16,6 +16,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
+import java.security.MessageDigest;
 import java.util.Arrays;
 
 import javax.crypto.Cipher;
@@ -28,6 +29,7 @@ final class AuthStore {
     private static final Object LOCK = new Object();
     private static final String ALIAS = "heartbeat.auth.v1";
     private static final int LIMIT = 64 * 1024;
+    private static final long EMAIL_VERIFICATION_TTL = 30 * 60_000;
     private final AtomicFile file;
 
     AuthStore(Context context) { file = new AtomicFile(new File(context.getNoBackupFilesDir(), "auth-state.enc")); }
@@ -125,8 +127,17 @@ final class AuthStore {
                 throw new IOException("Existing account must sign out");
             }
             try {
+                JSONObject email = state.optJSONObject("emailVerification");
+                if (email != null) {
+                    if (!validEmailVerification(email, System.currentTimeMillis())) expireEmailVerification(state, email);
+                    else if (email.isNull("accountId") && email.isNull("sessionId"))
+                        bindEmailVerification(email, auth);
+                    else if (!emailScope(email, auth)) state.remove("emailVerification");
+                }
                 state.put("auth", auth).put("gate", true).put("epoch", state.optLong("epoch") + 1);
                 state.remove("registration");
+                if (previous == null || !previous.getJSONObject("session").getString("id").equals(auth.getJSONObject("session").getString("id")))
+                    state.remove("monitorDraft");
                 write(state);
             } catch (JSONException failure) { throw new IOException("Invalid native session"); }
         }
@@ -145,7 +156,8 @@ final class AuthStore {
                 // The gate is persisted before any queue worker or push cleanup runs.
                 state.put("gate", false).put("epoch", state.optLong("epoch") + 1).put("pendingRevokes", pending);
                 state.remove("auth"); state.remove("oauth"); state.remove("oauthRegistration");
-                state.remove("registration"); state.remove("paymentIntent"); write(state);
+                state.remove("registration"); state.remove("paymentIntent"); state.remove("monitorDraft");
+                state.remove("emailVerification"); write(state);
             } catch (JSONException failure) { throw new IOException("Invalid revocation state"); }
         }
     }
@@ -159,6 +171,89 @@ final class AuthStore {
     }
     void remove(String key) throws IOException {
         synchronized (LOCK) { JSONObject state = read(); state.remove(key); write(state); }
+    }
+
+    JSONObject monitorDraft(String accountId, String sessionId, JSONObject value, boolean clear) throws IOException, JSONException {
+        synchronized (LOCK) {
+            JSONObject auth = active();
+            if (auth == null || !PushContract.uuid(accountId) || !PushContract.uuid(sessionId)
+                    || !accountId.equals(auth.getJSONObject("account").getString("id"))
+                    || !sessionId.equals(auth.getJSONObject("session").getString("id"))) throw new IOException("Session changed");
+            JSONObject state = read();
+            if (clear) {state.remove("monitorDraft"); write(state); return null;}
+            if (value != null) {
+                if (value.toString().getBytes(StandardCharsets.UTF_8).length > 16384 || value.optInt("schemaVersion") != 1
+                        || value.optJSONObject("form") == null) throw new JSONException("Invalid draft");
+                state.put("monitorDraft", new JSONObject().put("accountId", accountId).put("sessionId", sessionId).put("value", value));
+                write(state); return null;
+            }
+            JSONObject saved = state.optJSONObject("monitorDraft");
+            return saved != null && accountId.equals(saved.optString("accountId")) && sessionId.equals(saved.optString("sessionId"))
+                    ? saved.optJSONObject("value") : null;
+        }
+    }
+
+    private static String emailTokenDigest(String token) throws IOException {
+        try {
+            return android.util.Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(token.getBytes(StandardCharsets.UTF_8)), android.util.Base64.NO_WRAP);
+        } catch (Exception failure) {throw new IOException("Email verification unavailable");}
+    }
+
+    private static boolean validEmailVerification(JSONObject value, long now) {
+        Object received = value.opt("receivedAt");
+        if (!(received instanceof Long || received instanceof Integer) || !PushContract.secret(value.optString("token"))) return false;
+        long at = ((Number) received).longValue();
+        return at > 0 && at <= now && now - at < EMAIL_VERIFICATION_TTL
+                && (value.isNull("accountId") && value.isNull("sessionId")
+                || PushContract.uuid(value.optString("accountId")) && PushContract.uuid(value.optString("sessionId")));
+    }
+
+    private static boolean emailScope(JSONObject pending, JSONObject auth) {
+        return auth != null && pending.optString("accountId").equals(auth.optJSONObject("account").optString("id"))
+                && pending.optString("sessionId").equals(auth.optJSONObject("session").optString("id"));
+    }
+
+    private static void bindEmailVerification(JSONObject pending, JSONObject auth) throws JSONException {
+        pending.put("accountId", auth.getJSONObject("account").getString("id"))
+                .put("sessionId", auth.getJSONObject("session").getString("id"));
+    }
+
+    private static void expireEmailVerification(JSONObject state, JSONObject previous) throws JSONException, IOException {
+        // Retain only a digest tombstone: replay of the same cold/warm intent must not restart its TTL.
+        String digest = previous.optString("tokenDigest");
+        if (PushContract.secret(previous.optString("token"))) digest = emailTokenDigest(previous.getString("token"));
+        state.put("emailVerification", new JSONObject().put("tokenDigest", digest).put("receivedAt", previous.optLong("receivedAt")));
+    }
+
+    JSONObject emailVerification(String token, boolean clear) throws IOException, JSONException {
+        synchronized (LOCK) {
+            JSONObject auth = active(), state = read(), pending = state.optJSONObject("emailVerification");
+            if (clear) {
+                if (pending != null && token != null && (token.equals(pending.optString("token"))
+                        || emailTokenDigest(token).equals(pending.optString("tokenDigest")))) {
+                    state.remove("emailVerification"); write(state);
+                }
+                return null;
+            }
+            long now = System.currentTimeMillis();
+            if (token != null) {
+                if (!PushContract.secret(token)) throw new JSONException("Invalid verification token");
+                if (pending != null && emailTokenDigest(token).equals(pending.optString("tokenDigest"))) return null;
+                if (pending == null || !token.equals(pending.optString("token")))
+                    pending = new JSONObject().put("token", token).put("receivedAt", now).put("accountId", JSONObject.NULL).put("sessionId", JSONObject.NULL);
+            }
+            if (pending == null) return null;
+            if (!validEmailVerification(pending, now)) {
+                expireEmailVerification(state, pending); write(state); return null;
+            }
+            if (pending.isNull("accountId") && pending.isNull("sessionId")) {
+                if (auth != null) bindEmailVerification(pending, auth);
+            } else if (!emailScope(pending, auth)) {
+                state.remove("emailVerification"); write(state); return null;
+            }
+            state.put("emailVerification", pending); write(state);
+            return new JSONObject(pending.toString());
+        }
     }
 
     void removeOAuth(String flowId, String oauthState) throws IOException {

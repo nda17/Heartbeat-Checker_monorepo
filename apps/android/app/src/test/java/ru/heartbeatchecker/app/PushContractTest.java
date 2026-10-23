@@ -53,16 +53,21 @@ public final class PushContractTest {
         Map<String, String> data = envelope(now + 60_000);
         assertEquals("1", PushContract.envelope(data, now).getString("v"));
         assertEquals("17", PushContract.envelope(data, now).getString("bindingGeneration"));
+		Map<String, String> testEnvelope = with(data, "v", "2");
+		assertEquals("2", PushContract.envelope(testEnvelope, now).getString("v"));
 
         Map<String, String> extra = new HashMap<>(data);
         extra.put("title", "private notification content");
         assertInvalidEnvelope(extra, now);
+		extra = new HashMap<>(testEnvelope);
+		extra.put("title", "test content must be fetched after validation");
+		assertInvalidEnvelope(extra, now);
         Map<String, String> missing = new HashMap<>(data);
         missing.remove("expiresAt");
         assertInvalidEnvelope(missing, now);
         Map<String, String> expired = envelope(now);
         assertInvalidEnvelope(expired, now);
-        assertInvalidEnvelope(with(data, "v", "2"), now);
+		assertInvalidEnvelope(with(data, "v", "3"), now);
         assertInvalidEnvelope(with(data, "deliveryId", DELIVERY.toUpperCase()), now);
         assertInvalidEnvelope(with(data, "installationId", "not-a-uuid"), now);
         assertInvalidEnvelope(with(data, "bindingGeneration", "0"), now);
@@ -89,7 +94,7 @@ public final class PushContractTest {
         assertInvalidDelivery(delivery(DELIVERY, 1, now + 60_000).put("body", repeat("é", 1025)), now);
         assertInvalidDelivery(delivery(DELIVERY, 1, now + 60_000).put("body", repeat("я", 1025)), now);
         assertInvalidDelivery(delivery(DELIVERY, 1, now + 60_000).put("body", "bad\nbody"), now);
-        assertInvalidDelivery(delivery(DELIVERY, 1, now + 60_000).put("body", "bad\tbody"), now);
+        assertInvalidDelivery(delivery(DELIVERY, 1, now + 60_000).put("body", "bad	body"), now);
         assertInvalidDelivery(delivery(DELIVERY, 1, now + 60_000).put("occurredAt", "not-an-instant"), now);
     }
 
