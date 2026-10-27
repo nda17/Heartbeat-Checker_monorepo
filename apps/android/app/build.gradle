@@ -90,8 +90,8 @@ android {
         applicationId 'ru.heartbeatchecker.app'
         minSdk 29
         targetSdk 37
-        versionCode 12
-        versionName '2.3.0'
+        versionCode 13
+        versionName '2.3.1'
         manifestPlaceholders = [appLinkHost: 'heartbeat-checker.ru', huaweiEnabled: huaweiFlag,
             huaweiAppId: 'appid=' + huaweiOptions.HUAWEI_APP_ID, huaweiPublicAppId: huaweiOptions.HUAWEI_APP_ID,
             huaweiProjectId: huaweiOptions.HUAWEI_PROJECT_ID, huaweiCpId: huaweiOptions.HUAWEI_CP_ID]

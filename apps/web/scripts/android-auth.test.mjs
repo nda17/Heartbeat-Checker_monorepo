@@ -94,7 +94,7 @@ function flattenStyle(style) {
   return typeof style === "object" ? style : {};
 }
 
-function createNativeMocks(reducedMotionInitially = false) {
+function createNativeMocks(reducedMotionInitially = false, motionRead = null) {
   const backHandlers = new Set();
   const appListeners = new Set();
   const motionListeners = new Set();
@@ -102,6 +102,14 @@ function createNativeMocks(reducedMotionInitially = false) {
   let colorScheme = "light";
   const intervalCounts = { started: 0, cleared: 0 };
   const animatedValues = new Set();
+  const animationLog = {
+    started: 0,
+    stopped: 0,
+    pressIns: 0,
+    pressOuts: 0,
+    handles: [],
+  };
+  let manualAnimations = false;
   const Animated = {
     Value: class {
       constructor(value) {
@@ -111,11 +119,39 @@ function createNativeMocks(reducedMotionInitially = false) {
       setValue(value) {
         this.value = value;
       }
-      stopAnimation() {}
+      stopAnimation() {
+        for (const handle of animationLog.handles) {
+          if (handle.value === this && handle.active) handle.stop();
+        }
+      }
+      interpolate(config) {
+        return config.outputRange[0];
+      }
     },
     timing(value, config) {
+      const handle = {
+        value,
+        config,
+        active: false,
+        finish() {
+          if (!handle.active) return;
+          handle.active = false;
+          value.setValue(config.toValue);
+        },
+        stop() {
+          if (!handle.active) return;
+          handle.active = false;
+          animationLog.stopped++;
+        },
+      };
+      animationLog.handles.push(handle);
       return {
-        start: () => value.setValue(config.toValue),
+        start() {
+          animationLog.started++;
+          handle.active = true;
+          if (!manualAnimations) handle.finish();
+        },
+        stop: handle.stop,
       };
     },
     sequence(steps) {
@@ -123,6 +159,9 @@ function createNativeMocks(reducedMotionInitially = false) {
         start: () => steps.forEach((step) => step.start()),
       };
     },
+    createAnimatedComponent: (component) => component,
+    View: null,
+    ScrollView: null,
     Text: ({
       children,
       accessibilityLabel,
@@ -144,7 +183,7 @@ function createNativeMocks(reducedMotionInitially = false) {
       ),
   };
   const AccessibilityInfo = {
-    isReduceMotionEnabled: async () => reducedMotion,
+    isReduceMotionEnabled: async () => motionRead ?? reducedMotion,
     addEventListener(_event, listener) {
       motionListeners.add(listener);
       return { remove: () => motionListeners.delete(listener) };
@@ -189,6 +228,7 @@ function createNativeMocks(reducedMotionInitially = false) {
       delete nativeProps.accessible;
       delete nativeProps.selectable;
       const css = flattenStyle(style ?? contentContainerStyle);
+      if (Array.isArray(css.transform)) css.transform = "none";
       const attrs = {
         ...(testId ? { "data-native-component": testId } : {}),
         ...(accessibilityLabel ? { "aria-label": accessibilityLabel } : {}),
@@ -246,6 +286,8 @@ function createNativeMocks(reducedMotionInitially = false) {
     accessibilityRole,
     accessibilityState,
     style,
+    onPressIn,
+    onPressOut,
     ...props
   }) => {
     const resolvedStyle =
@@ -258,6 +300,15 @@ function createNativeMocks(reducedMotionInitially = false) {
         ...props,
         type: "button",
         onClick: onPress,
+        onMouseDown: (event) => {
+          animationLog.pressIns++;
+          onPressIn?.(event);
+        },
+        onMouseUp: (event) => {
+          animationLog.pressOuts++;
+          onPressOut?.(event);
+        },
+        onMouseLeave: (event) => onPressOut?.(event),
         disabled,
         "aria-label": accessibilityLabel,
         "aria-pressed": accessibilityState?.selected,
@@ -291,6 +342,8 @@ function createNativeMocks(reducedMotionInitially = false) {
       "data-refreshing": refreshing ? "true" : "false",
       onClick: onRefresh,
     });
+  Animated.View = component("div");
+  Animated.ScrollView = component("div", "ScrollView");
   const WebView = React.forwardRef(function MockWebView(props, ref) {
     React.useImperativeHandle(
       ref,
@@ -341,6 +394,10 @@ function createNativeMocks(reducedMotionInitially = false) {
     AccessibilityInfo,
     AppState,
     animatedValues,
+    animationLog,
+    setManualAnimations(value) {
+      manualAnimations = value;
+    },
     intervalCounts,
     setColorScheme(value) {
       colorScheme = value;
@@ -395,6 +452,7 @@ async function createHarness({
   tokens = ["nonce_1", "nonce_2"],
   onAuthed = async () => {},
   reducedMotion = false,
+  motionRead = null,
 } = {}) {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", {
     url: "https://heartbeat-checker.ru/login",
@@ -406,7 +464,7 @@ async function createHarness({
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
-  const mocks = createNativeMocks(reducedMotion);
+  const mocks = createNativeMocks(reducedMotion, motionRead);
   const requests = [];
   let monitorContractActive = false;
   let monitorEntitlementOverride = null;
@@ -477,6 +535,8 @@ async function createHarness({
       },
     },
   );
+  const renderWithMotionPreferences = (element) =>
+    root.render(React.createElement(uiModule.MotionPreferences, null, element));
   const authModule = compile(
     "../../mobile/src/AuthScreen.tsx",
     {
@@ -495,7 +555,7 @@ async function createHarness({
     },
   );
   await act(async () =>
-    root.render(
+    renderWithMotionPreferences(
       React.createElement(authModule.AuthScreen, { onAuthed, resetToken }),
     ),
   );
@@ -507,12 +567,12 @@ async function createHarness({
     native,
     uiModule,
     nativeMocks: mocks,
-    async renderPage(refresh) {
+    async renderPage(refresh, motionKey) {
       await act(async () =>
-        root.render(
+        renderWithMotionPreferences(
           React.createElement(
             uiModule.Page,
-            { title: "Обновление", refresh },
+            { title: "Обновление", refresh, motionKey },
             React.createElement("span", null, "Содержимое"),
           ),
         ),
@@ -557,7 +617,7 @@ async function createHarness({
         },
       );
       await act(async () =>
-        root.render(
+        renderWithMotionPreferences(
           React.createElement(publicModule.PublicScreen, {
             onLogin,
             onRegister,
@@ -627,7 +687,7 @@ async function createHarness({
         },
       );
       await act(async () =>
-        root.render(
+        renderWithMotionPreferences(
           React.createElement(accountModule.AccountScreen, { onLogout }),
         ),
       );
@@ -684,7 +744,7 @@ async function createHarness({
         },
       );
       await act(async () =>
-        root.render(
+        renderWithMotionPreferences(
           React.createElement(
             monitorDraftModule.MonitorDraftProvider,
             { auth: apiModule.session() },
@@ -722,7 +782,7 @@ async function createHarness({
       );
       await apiModule.restoreSession();
       await act(async () =>
-        root.render(
+        renderWithMotionPreferences(
           React.createElement(billingModule.BillingScreen, { returnOrder }),
         ),
       );
@@ -811,7 +871,7 @@ async function createHarness({
             });
       }
       await act(async () =>
-        root.render(
+        renderWithMotionPreferences(
           React.createElement(
             monitorDraftModule.MonitorDraftProvider,
             { auth: apiModule.session() },
@@ -825,7 +885,7 @@ async function createHarness({
     },
     async renderDraftProvider(children, auth = apiModule.session(), key) {
       await act(async () =>
-        root.render(
+        renderWithMotionPreferences(
           React.createElement(
             monitorDraftModule.MonitorDraftProvider,
             { auth, key },
@@ -891,6 +951,21 @@ async function createHarness({
       assert.equal(matches.length, 1, `expected one button named: ${label}`);
       const [button] = matches;
       await act(async () => button.click());
+    },
+    async mouse(label, type, index = 0) {
+      const matches = [
+        ...host.querySelectorAll('button, [role="button"]'),
+      ].filter(
+        (item) =>
+          item.getAttribute("aria-label") === label ||
+          item.textContent?.trim() === label,
+      );
+      assert.ok(matches.length > index, `button not found: ${label}`);
+      await act(async () =>
+        matches[index].dispatchEvent(
+          new dom.window.MouseEvent(type, { bubbles: true }),
+        ),
+      );
     },
     async clickAll(label) {
       const matches = [
@@ -1838,6 +1913,253 @@ test("shared mobile brand follows reduced-motion and app-state changes, with lig
     await harness.flush();
     assert.equal(harness.nativeMocks.intervalCounts.cleared, 2);
     assert.equal([...harness.nativeMocks.animatedValues][0].value, 0);
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("mobile motion stays off after a settings read failure", async () => {
+  const harness = await createHarness({
+    motionRead: Promise.reject(new Error("settings unavailable")),
+  });
+  try {
+    harness.nativeMocks.setManualAnimations(true);
+    await harness.renderPublicScreen();
+    const website = [
+      ...harness.host.querySelectorAll("button[aria-label]"),
+    ].find((button) =>
+      button.getAttribute("aria-label").startsWith("Главная страница."),
+    );
+    assert.ok(website, "the public demo monitor can still be selected");
+    await act(async () => website.click());
+    await harness.flush();
+    assert.equal(
+      harness.nativeMocks.animationLog.started,
+      0,
+      "an unavailable reduced-motion preference must default to no animation",
+    );
+    assert.equal(website.getAttribute("aria-pressed"), "true");
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("a reduced-motion event wins over a late initial settings read", async () => {
+  let resolveMotionRead;
+  const motionRead = new Promise((resolve) => {
+    resolveMotionRead = resolve;
+  });
+  const harness = await createHarness({ motionRead });
+  try {
+    harness.nativeMocks.setManualAnimations(true);
+    await harness.renderPublicScreen();
+    const findMonitorButton = (name) =>
+      [...harness.host.querySelectorAll("button[aria-label]")].find((button) =>
+        button.getAttribute("aria-label").startsWith(`${name}.`),
+      );
+    const monitorButtons = [
+      ...harness.host.querySelectorAll("button[aria-label]"),
+    ].filter((button) =>
+      button.getAttribute("aria-label").includes("Успешные проверки за 7 дней"),
+    );
+    assert.equal(monitorButtons.length, 3);
+    await act(async () => findMonitorButton("Главная страница")?.click());
+    await harness.flush();
+    assert.equal(harness.nativeMocks.animationLog.started, 0);
+
+    await act(async () =>
+      harness.nativeMocks.AccessibilityInfo.setReducedMotion(true),
+    );
+    await harness.flush();
+    await act(async () => findMonitorButton("SSH сервера")?.click());
+    await harness.flush();
+    assert.equal(harness.nativeMocks.animationLog.started, 0);
+
+    await act(async () => resolveMotionRead(false));
+    await harness.flush();
+    await act(async () => findMonitorButton("API магазина")?.click());
+    await harness.flush();
+    assert.equal(harness.nativeMocks.animationLog.started, 0);
+    const selected = [
+      ...harness.host.querySelectorAll("button[aria-label]"),
+    ].find((button) => button.getAttribute("aria-pressed") === "true");
+    assert.match(selected?.getAttribute("aria-label") ?? "", /^API магазина\./);
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("monitor chart motion stops in background and does not replay on foreground", async () => {
+  const harness = await createHarness({ reducedMotion: false });
+  try {
+    harness.nativeMocks.setManualAnimations(true);
+    await harness.renderPublicScreen();
+    await act(async () =>
+      harness.nativeMocks.AccessibilityInfo.setReducedMotion(false),
+    );
+    await harness.flush();
+    const monitorButtons = [
+      ...harness.host.querySelectorAll("button[aria-label]"),
+    ].filter((button) =>
+      button.getAttribute("aria-label").includes("Успешные проверки за 7 дней"),
+    );
+    await act(async () => monitorButtons[0].click());
+    await harness.flush();
+    assert.equal(harness.nativeMocks.animationLog.started, 1);
+    assert.equal(
+      harness.nativeMocks.animationLog.handles[0].config.duration,
+      180,
+    );
+
+    await act(async () =>
+      harness.nativeMocks.AppState.setCurrentState("background"),
+    );
+    await harness.flush();
+    assert.equal(harness.nativeMocks.animationLog.handles[0].active, false);
+    const afterBackground = harness.nativeMocks.animationLog.started;
+    assert.ok(harness.nativeMocks.animationLog.stopped >= 1);
+
+    await act(async () =>
+      harness.nativeMocks.AppState.setCurrentState("active"),
+    );
+    await harness.flush();
+    assert.equal(
+      harness.nativeMocks.animationLog.started,
+      afterBackground,
+      "returning to the foreground does not replay the selection animation",
+    );
+    await act(async () =>
+      harness.nativeMocks.AccessibilityInfo.setReducedMotion(true),
+    );
+    await harness.flush();
+    await act(async () =>
+      harness.nativeMocks.AccessibilityInfo.setReducedMotion(false),
+    );
+    await harness.flush();
+    assert.equal(
+      harness.nativeMocks.animationLog.started,
+      afterBackground,
+      "loading a later preference change does not replay the same selection",
+    );
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("incident entry motion is cancelled by Android Back without changing navigation", async () => {
+  const harness = await createHarness({ reducedMotion: false });
+  const monitor = mobileMonitor();
+  const incident = {
+    id: "20000000-0000-4000-8000-000000000041",
+    number: 41,
+    status: "resolved",
+    startedAt: "2026-10-20T10:00:00Z",
+    resolvedAt: "2026-10-20T10:30:00Z",
+    startedAtText: "20.10.2026 10:00",
+    resolvedAtText: "20.10.2026 10:30",
+    durationSeconds: 1800,
+    summary: "Сервис восстановился",
+    latestResultId: "incident-result",
+  };
+  harness.setFetch(async (url) => {
+    const path = new URL(url).pathname.replace("/api/v1", "");
+    if (path === "/monitor-time-zones") return jsonResponse({ timeZones: [] });
+    if (path === "/monitors") return jsonResponse(mobileMonitorPage([monitor]));
+    if (path === "/monitors/monitor-1") return jsonResponse({ monitor });
+    if (path === "/monitors/monitor-1/results")
+      return jsonResponse({ results: [mobileResult("incident-result")] });
+    if (path === "/monitors/monitor-1/incidents")
+      return jsonResponse({ incidents: [incident] });
+    throw new Error(`Unexpected monitor request: ${path}`);
+  });
+  try {
+    harness.native.restore = async () => ({
+      account: { id: "account-motion-test" },
+      session: {
+        id: "session-motion-test",
+        token: "motion-test-token",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      },
+    });
+    await harness.apiModule.restoreSession();
+    harness.nativeMocks.setManualAnimations(true);
+    await harness.renderMonitorsScreen();
+    await harness.click("Primary monitor. Доступен");
+    await harness.flush();
+    for (const handle of harness.nativeMocks.animationLog.handles)
+      handle.finish();
+    await harness.click("Инциденты · 1");
+    await harness.flush();
+    for (const handle of harness.nativeMocks.animationLog.handles)
+      handle.finish();
+
+    const startsBeforeEntry = harness.nativeMocks.animationLog.started;
+    await harness.click("Подробнее");
+    await harness.flush();
+    assert.match(harness.host.textContent, /Инцидент №41/);
+    assert.equal(
+      harness.nativeMocks.animationLog.started,
+      startsBeforeEntry + 1,
+    );
+    const entry = harness.nativeMocks.animationLog.handles.at(-1);
+    assert.equal(entry.config.duration, 180);
+    assert.equal(entry.active, true);
+
+    await act(async () => harness.pressBack());
+    await harness.flush();
+    assert.match(harness.host.textContent, /Primary monitor/);
+    assert.doesNotMatch(harness.host.textContent, /Инцидент №41/);
+    assert.equal(
+      entry.active,
+      false,
+      "Back cancels the interrupted detail animation",
+    );
+    await act(async () => entry.finish());
+    assert.doesNotMatch(harness.host.textContent, /Инцидент №41/);
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("shared button press animation is brief and keeps its callback immediate", async () => {
+  const harness = await createHarness({ reducedMotion: false });
+  let registrations = 0;
+  try {
+    harness.nativeMocks.setManualAnimations(true);
+    await harness.renderPublicScreen({ onRegister: () => registrations++ });
+    await act(async () =>
+      harness.nativeMocks.AccessibilityInfo.setReducedMotion(false),
+    );
+    await harness.flush();
+    const label = "Создать аккаунт";
+    await harness.mouse(label, "mousedown");
+    assert.equal(harness.nativeMocks.animationLog.pressIns, 1);
+    assert.equal(
+      harness.nativeMocks.animationLog.handles.at(-1).config.duration,
+      80,
+    );
+    await harness.mouse(label, "mouseup");
+    assert.equal(
+      harness.nativeMocks.animationLog.handles.at(-1).config.duration,
+      120,
+    );
+    const registrationButton = harness.byRole("button", label, {
+      exactlyOne: false,
+    });
+    await act(async () => registrationButton.click());
+    assert.equal(
+      registrations,
+      1,
+      "the navigation callback does not wait for animation completion",
+    );
+    for (const handle of harness.nativeMocks.animationLog.handles)
+      handle.finish();
+    assert.equal(
+      harness.nativeMocks.animationLog.handles.filter((handle) => handle.active)
+        .length,
+      0,
+      "the pressed state settles after the response animation",
+    );
   } finally {
     await harness.unmount();
   }

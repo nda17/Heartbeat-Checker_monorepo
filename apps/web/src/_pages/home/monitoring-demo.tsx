@@ -157,6 +157,7 @@ export function AnalyticsDemo() {
         </div>
         <div
           id="landing-analytics-details"
+          key={selectedId}
           className="landing-analytics-details"
           role="region"
           aria-label={`Результаты проверок: ${selected.name}`}

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   AppState,
+  Animated,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -22,6 +23,7 @@ import {
   TextAction,
   Title,
   usePalette,
+  useEntryMotion,
 } from "./ui";
 
 type Pricing = {
@@ -299,6 +301,21 @@ function successfulChecks(down: number, total: number) {
 function Demo() {
   const c = usePalette();
   const [selectedMonitor, setSelectedMonitor] = useState(1);
+  const progress = useEntryMotion(selectedMonitor, false);
+  const revealStyle = {
+    opacity: progress.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0.72, 1],
+    }),
+    transform: [
+      {
+        translateY: progress.interpolate({
+          inputRange: [0, 1],
+          outputRange: [3, 0],
+        }),
+      },
+    ],
+  };
   const selected = demoMonitors[selectedMonitor];
   const total = checksPerDay * demoDays.length;
   const failed = selected.down.reduce((sum, count) => sum + count, 0);
@@ -370,7 +387,10 @@ function Demo() {
           </Pressable>
         );
       })}
-      <View style={styles.analyticsSummary} accessibilityLiveRegion="polite">
+      <Animated.View
+        style={[styles.analyticsSummary, revealStyle]}
+        accessibilityLiveRegion="polite"
+      >
         <Text style={[styles.demoName, { color: c.text }]}>
           {selected.name} · 7 дней
         </Text>
@@ -381,8 +401,8 @@ function Demo() {
         <Label muted>
           {total - failed} из {total} проверок успешны
         </Label>
-      </View>
-      <View style={styles.dailyChart}>
+      </Animated.View>
+      <Animated.View style={[styles.dailyChart, revealStyle]}>
         {selected.down.map((down, index) => (
           <View
             key={index}
@@ -408,7 +428,7 @@ function Demo() {
             </Text>
           </View>
         ))}
-      </View>
+      </Animated.View>
       <Label muted>
         По 288 проверок в день. Процент рассчитан по результатам проверок.
       </Label>

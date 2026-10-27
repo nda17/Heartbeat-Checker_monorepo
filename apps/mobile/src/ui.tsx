@@ -16,7 +16,6 @@ import {
   KeyboardAvoidingView,
   Pressable,
   RefreshControl,
-  ScrollView,
   StyleProp,
   StyleSheet,
   Text,
@@ -56,6 +55,79 @@ const iconSources = {
 } as const;
 
 export type IconName = keyof typeof iconSources;
+
+const MotionEnabled = createContext(false);
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+
+export function MotionPreferences({ children }: { children: React.ReactNode }) {
+  const [reduced, setReduced] = useState<boolean | null>(null);
+  const [active, setActive] = useState(AppState.currentState === "active");
+  useEffect(() => {
+    let mounted = true;
+    let changed = false;
+    const motion = AccessibilityInfo.addEventListener(
+      "reduceMotionChanged",
+      (value) => {
+        if (!mounted) return;
+        changed = true;
+        setReduced(value);
+      },
+    );
+    void AccessibilityInfo.isReduceMotionEnabled()
+      .then((value) => {
+        if (mounted && !changed) setReduced(value);
+      })
+      .catch(() => {
+        if (mounted && !changed) setReduced(true);
+      });
+    const app = AppState.addEventListener("change", (state) => {
+      if (mounted) setActive(state === "active");
+    });
+    return () => {
+      mounted = false;
+      motion.remove();
+      app.remove();
+    };
+  }, []);
+  return (
+    <MotionEnabled.Provider value={active && reduced === false}>
+      {children}
+    </MotionEnabled.Provider>
+  );
+}
+
+export const useMotionEnabled = () => useContext(MotionEnabled);
+
+export function useEntryMotion(
+  motionKey: string | number | undefined,
+  animateOnMount = true,
+) {
+  const enabled = useMotionEnabled();
+  const progress = useRef(new Animated.Value(1)).current;
+  const previous = useRef(motionKey);
+  const initial = useRef(true);
+  useEffect(() => {
+    const changed = previous.current !== motionKey;
+    const enter = changed || (initial.current && animateOnMount);
+    initial.current = false;
+    previous.current = motionKey;
+    progress.stopAnimation();
+    progress.setValue(1);
+    if (enabled && motionKey !== undefined && enter) {
+      progress.setValue(0);
+      Animated.timing(progress, {
+        toValue: 1,
+        duration: 180,
+        useNativeDriver: true,
+      }).start();
+    }
+    return () => {
+      progress.stopAnimation();
+      progress.setValue(1);
+    };
+  }, [enabled, motionKey, animateOnMount, progress]);
+  return progress;
+}
 
 export function Icon({
   name,
@@ -98,32 +170,9 @@ export function Icon({
 export function BrandHeader({ centered = false }: { centered?: boolean }) {
   const c = usePalette();
   const offset = useRef(new Animated.Value(0)).current;
-  const [reducedMotion, setReducedMotion] = useState<boolean | null>(null);
-  const [active, setActive] = useState(AppState.currentState === "active");
+  const motionEnabled = useMotionEnabled();
   useEffect(() => {
-    let mounted = true;
-    void AccessibilityInfo.isReduceMotionEnabled()
-      .then((value) => {
-        if (mounted) setReducedMotion(value);
-      })
-      .catch(() => {
-        if (mounted) setReducedMotion(true);
-      });
-    const motion = AccessibilityInfo.addEventListener(
-      "reduceMotionChanged",
-      setReducedMotion,
-    );
-    const app = AppState.addEventListener("change", (state) => {
-      setActive(state === "active");
-    });
-    return () => {
-      mounted = false;
-      motion.remove();
-      app.remove();
-    };
-  }, []);
-  useEffect(() => {
-    if (reducedMotion !== false || !active) return;
+    if (!motionEnabled) return;
     const timer = setInterval(() => {
       Animated.sequence([
         Animated.timing(offset, {
@@ -148,7 +197,7 @@ export function BrandHeader({ centered = false }: { centered?: boolean }) {
       offset.stopAnimation();
       offset.setValue(0);
     };
-  }, [active, offset, reducedMotion]);
+  }, [motionEnabled, offset]);
   return (
     <View style={[styles.brand, centered ? styles.brandCentered : null]}>
       <Image
@@ -248,12 +297,15 @@ export function Page({
   children,
   title,
   refresh,
+  motionKey,
 }: {
   children: React.ReactNode;
   title?: string;
   refresh?: () => Promise<unknown> | void;
+  motionKey?: string;
 }) {
   const c = usePalette();
+  const progress = useEntryMotion(motionKey);
   const [refreshing, setRefreshing] = useState(false);
   const refreshPending = useRef(false);
   const onRefresh = useCallback(() => {
@@ -274,9 +326,23 @@ export function Page({
       style={{ flex: 1, backgroundColor: c.bg }}
     >
       <GlassBackdrop />
-      <ScrollView
+      <Animated.ScrollView
         keyboardShouldPersistTaps="handled"
-        style={{ flex: 1 }}
+        style={{
+          flex: 1,
+          opacity: progress.interpolate({
+            inputRange: [0, 1],
+            outputRange: [0.8, 1],
+          }),
+          transform: [
+            {
+              translateY: progress.interpolate({
+                inputRange: [0, 1],
+                outputRange: [6, 0],
+              }),
+            },
+          ],
+        }}
         contentContainerStyle={styles.page}
         refreshControl={
           refresh ? (
@@ -301,7 +367,7 @@ export function Page({
           </View>
         ) : null}
         {children}
-      </ScrollView>
+      </Animated.ScrollView>
     </KeyboardAvoidingView>
   );
 }
@@ -491,15 +557,48 @@ export function Button({
   const c = usePalette();
   const reduced = useContext(ReducedTransparency);
   const [focused, setFocused] = useState(false);
+  const [pressed, setPressed] = useState(false);
+  const motionEnabled = useMotionEnabled();
+  const scale = useRef(new Animated.Value(1)).current;
+  const reset = useCallback(() => {
+    scale.stopAnimation();
+    scale.setValue(1);
+    setPressed(false);
+  }, [scale]);
+  useEffect(() => {
+    reset();
+    return () => {
+      scale.stopAnimation();
+      scale.setValue(1);
+    };
+  }, [motionEnabled, disabled, loading, reset, scale]);
+  const press = (down: boolean) => {
+    setPressed(down);
+    scale.stopAnimation();
+    if (!motionEnabled || disabled || loading) {
+      scale.setValue(1);
+      return;
+    }
+    Animated.timing(scale, {
+      toValue: down ? 0.99 : 1,
+      duration: down ? 80 : 120,
+      useNativeDriver: true,
+    }).start();
+  };
   return (
-    <Pressable
+    <AnimatedPressable
       accessibilityRole="button"
       accessibilityState={{ disabled: !!disabled || loading, busy: loading }}
       disabled={disabled || loading}
       onPress={onPress}
+      onPressIn={() => press(true)}
+      onPressOut={() => press(false)}
       onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
-      style={({ pressed }) => [
+      onBlur={() => {
+        setFocused(false);
+        reset();
+      }}
+      style={[
         styles.button,
         {
           backgroundColor: danger
@@ -519,7 +618,7 @@ export function Button({
                   : c.glassBorder
                 : c.accent,
           opacity: disabled && !loading ? 0.5 : pressed ? 0.76 : 1,
-          transform: [{ scale: pressed ? 0.99 : 1 }],
+          transform: [{ scale }],
         },
       ]}
     >
@@ -541,7 +640,7 @@ export function Button({
           {loading ? (loadingLabel ?? label) : label}
         </Text>
       </View>
-    </Pressable>
+    </AnimatedPressable>
   );
 }
 export function ErrorNotice({ message }: { message: string }) {
