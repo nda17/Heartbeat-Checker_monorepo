@@ -171,11 +171,11 @@ function createNativeMocks(reducedMotionInitially = false) {
       return { remove: () => backHandlers.delete(listener) };
     },
   };
-  const component = (tag) => {
+  const component = (tag, testId) => {
     function MockNativeComponent(props) {
       const {
         children,
-      style,
+        style,
         contentContainerStyle,
         refreshControl,
         accessibilityLabel,
@@ -190,6 +190,7 @@ function createNativeMocks(reducedMotionInitially = false) {
       delete nativeProps.selectable;
       const css = flattenStyle(style ?? contentContainerStyle);
       const attrs = {
+        ...(testId ? { "data-native-component": testId } : {}),
         ...(accessibilityLabel ? { "aria-label": accessibilityLabel } : {}),
         ...(accessibilityRole ? { role: accessibilityRole } : {}),
         ...(accessibilityLiveRegion
@@ -324,7 +325,7 @@ function createNativeMocks(reducedMotionInitially = false) {
         request: async () => "granted",
       },
       Platform: { Version: 35, OS: "android" },
-      ScrollView: component("div"),
+      ScrollView: component("div", "ScrollView"),
       StyleSheet: { create: (styles) => styles },
       Switch,
       Text: component("span"),
@@ -450,15 +451,12 @@ async function createHarness({
       fetch: (...args) => fetchImpl(...args),
     },
   );
-  const monitorDraftModule = compile(
-    "../../mobile/src/MonitorDraft.tsx",
-    {
-      "react-native": mocks.reactNative,
-      "./api": apiModule,
-      "./native": { native },
-      "./types": {},
-    },
-  );
+  const monitorDraftModule = compile("../../mobile/src/MonitorDraft.tsx", {
+    "react-native": mocks.reactNative,
+    "./api": apiModule,
+    "./native": { native },
+    "./types": {},
+  });
   const uiModule = compile(
     "../../mobile/src/ui.tsx",
     {
@@ -525,6 +523,7 @@ async function createHarness({
       onLogin = async () => {},
       onRegister = async () => {},
       onHelp = async () => {},
+      timerRuntime = {},
     } = {}) {
       const helpModule = compile(
         "../../mobile/src/HelpScreen.tsx",
@@ -554,6 +553,7 @@ async function createHarness({
             if (id.endsWith(".png")) return { uri: id };
             return requireWeb(id);
           },
+          ...timerRuntime,
         },
       );
       await act(async () =>
@@ -600,15 +600,12 @@ async function createHarness({
           },
         },
       );
-      const pushTestModule = compile(
-        "../../mobile/src/PushTestPanel.tsx",
-        {
-          "react-native": mocks.reactNative,
-          "./api": apiModule,
-          "./native": { native },
-          "./ui": uiModule,
-        },
-      );
+      const pushTestModule = compile("../../mobile/src/PushTestPanel.tsx", {
+        "react-native": mocks.reactNative,
+        "./api": apiModule,
+        "./native": { native },
+        "./ui": uiModule,
+      });
       const accountModule = compile(
         "../../mobile/src/AccountScreen.tsx",
         {
@@ -640,7 +637,7 @@ async function createHarness({
     },
     async renderMonitorsScreen(
       deepLink = null,
-      { onBuyQuota = async () => {} } = {},
+      { onBuyQuota = async () => {}, onDeepLinkConsumed = () => {} } = {},
     ) {
       monitorContractActive = true;
       const notificationsModule = compile(
@@ -694,6 +691,7 @@ async function createHarness({
             React.createElement(monitorsModule.MonitorsScreen, {
               deepLink,
               onBuyQuota,
+              onDeepLinkConsumed,
             }),
           ),
         ),
@@ -883,7 +881,9 @@ async function createHarness({
       monitorEntitlementOverride = entitlement;
     },
     async click(label) {
-      const matches = [...host.querySelectorAll('button, [role="button"]')].filter(
+      const matches = [
+        ...host.querySelectorAll('button, [role="button"]'),
+      ].filter(
         (item) =>
           item.getAttribute("aria-label") === label ||
           item.textContent?.trim() === label,
@@ -893,14 +893,15 @@ async function createHarness({
       await act(async () => button.click());
     },
     async clickAll(label) {
-      const matches = [...host.querySelectorAll('button, [role="button"]')].filter(
+      const matches = [
+        ...host.querySelectorAll('button, [role="button"]'),
+      ].filter(
         (item) =>
           item.getAttribute("aria-label") === label ||
           item.textContent?.trim() === label,
       );
       assert.ok(matches.length > 0, `button not found: ${label}`);
-      for (const button of matches)
-        await act(async () => button.click());
+      for (const button of matches) await act(async () => button.click());
       return matches.length;
     },
     byRole(role, name, { exactlyOne = true } = {}) {
@@ -1036,6 +1037,61 @@ function fakeTimerRuntime() {
   };
 }
 
+function fakePublicTimerRuntime() {
+  let now = Date.now();
+  let nextId = 1;
+  const timers = new Map();
+  class FakeDate extends Date {
+    static now() {
+      return now;
+    }
+  }
+  const runtime = {
+    Date: FakeDate,
+    setTimeout(callback, delay = 0) {
+      const id = nextId++;
+      timers.set(id, { callback, due: now + delay, interval: 0 });
+      return id;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
+    setInterval(callback, delay = 0) {
+      const id = nextId++;
+      timers.set(id, {
+        callback,
+        due: now + Math.max(delay, 1),
+        interval: Math.max(delay, 1),
+      });
+      return id;
+    },
+    clearInterval(id) {
+      timers.delete(id);
+    },
+  };
+  return {
+    runtime,
+    advance(milliseconds) {
+      const end = now + milliseconds;
+      while (true) {
+        const due = [...timers.entries()]
+          .filter(([, timer]) => timer.due <= end)
+          .sort((left, right) => left[1].due - right[1].due)[0];
+        if (!due) break;
+        const [id, timer] = due;
+        now = timer.due;
+        if (timer.interval) timer.due += timer.interval;
+        else timers.delete(id);
+        timer.callback();
+      }
+      now = end;
+    },
+    pendingCount() {
+      return timers.size;
+    },
+  };
+}
+
 async function createWebChallenge({
   url,
   state = null,
@@ -1127,6 +1183,38 @@ test("auth screens expose password visibility and preserve the shared card heigh
   }
 });
 
+test("Yandex and VK sign-in marks share a 24px slot with normalized image sizes", async () => {
+  const harness = await createHarness();
+  try {
+    const providerButton = (name) =>
+      [...harness.host.querySelectorAll("button")].find((button) =>
+        button.textContent.includes(name),
+      );
+    const yandex = providerButton("Войти через Яндекс")?.querySelector(
+      'img[data-source="../assets/yandex.png"]',
+    );
+    const vk = providerButton("Войти через VK")?.querySelector(
+      'img[data-source="../assets/vk.png"]',
+    );
+    assert.ok(yandex, "Yandex sign-in has its brand mark");
+    assert.ok(vk, "VK sign-in has its brand mark");
+
+    const yandexSlot = yandex.parentElement;
+    const vkSlot = vk.parentElement;
+    assert.equal(yandexSlot.style.width, "24px");
+    assert.equal(yandexSlot.style.height, "24px");
+    assert.equal(vkSlot.style.width, "24px");
+    assert.equal(vkSlot.style.height, "24px");
+    assert.equal(yandex.style.width, "24px");
+    assert.equal(yandex.style.height, "24px");
+    assert.equal(vk.style.width, "32px");
+    assert.equal(vk.style.height, "32px");
+    assert.equal(vkSlot.style.overflow, "hidden");
+  } finally {
+    await harness.unmount();
+  }
+});
+
 test("public landing routes its accessible login, registration, and help actions", async () => {
   const harness = await createHarness();
   const actions = { login: 0, register: 0, help: 0 };
@@ -1136,7 +1224,45 @@ test("public landing routes its accessible login, registration, and help actions
       onRegister: () => actions.register++,
       onHelp: () => actions.help++,
     });
-    harness.byRole("header", "Круглосуточный мониторинг ваших сайтов и сервисов.");
+    harness.byRole(
+      "header",
+      "Круглосуточный мониторинг ваших сайтов и сервисов.",
+    );
+    assert.doesNotMatch(
+      harness.host.textContent,
+      /Статичная демонстрация с вымышленными данными/,
+    );
+    const demoRows = [
+      ...harness.host.querySelectorAll("button[aria-label]"),
+    ].filter((button) =>
+      button.getAttribute("aria-label").includes("Успешные проверки за 7 дней"),
+    );
+    assert.equal(
+      demoRows.length,
+      3,
+      "the public demo shows all three monitors",
+    );
+    const apiRow = demoRows.find((button) =>
+      button.getAttribute("aria-label").startsWith("API магазина."),
+    );
+    assert.ok(apiRow);
+    assert.equal(apiRow.getAttribute("aria-pressed"), "true");
+    assert.match(harness.host.textContent, /99,6%/);
+    assert.match(harness.host.textContent, /2\s*008 из 2\s*016/);
+    assert.equal(
+      harness.host.querySelectorAll('[aria-label*="проверок успешны"]').length,
+      7,
+      "the selected monitor exposes a daily seven-day breakdown",
+    );
+    const websiteRow = demoRows.find((button) =>
+      button.getAttribute("aria-label").startsWith("Главная страница."),
+    );
+    assert.ok(websiteRow);
+    await act(async () => websiteRow.click());
+    await harness.flush();
+    assert.equal(websiteRow.getAttribute("aria-pressed"), "true");
+    assert.match(harness.host.textContent, /2\s*016 из 2\s*016/);
+
     await harness.click("У меня уже есть аккаунт");
     assert.equal(actions.login, 1);
     assert.equal(
@@ -1147,6 +1273,528 @@ test("public landing routes its accessible login, registration, and help actions
     assert.equal(actions.register, 3);
     await harness.click("Открыть раздел помощи");
     assert.equal(actions.help, 1);
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("public price keeps the last confirmed value through refresh timeout, backgrounding, and a late response", async () => {
+  const harness = await createHarness();
+  const timers = fakePublicTimerRuntime();
+  let reads = 0;
+  let refreshSignal;
+  let resolveRefresh;
+  harness.setFetch(async (url, options) => {
+    assert.equal(new URL(url).pathname, "/api/v1/billing/pricing");
+    reads++;
+    if (reads === 1)
+      return jsonResponse({
+        pricing: {
+          pricePerMonitorMinor: 2400,
+          currency: "RUB",
+          period: "month",
+          version: 4,
+          updatedAt: "2026-10-27T08:00:00.000Z",
+        },
+      });
+    if (reads === 2) {
+      refreshSignal = options.signal;
+      return new Promise((resolve) => {
+        resolveRefresh = resolve;
+      });
+    }
+    throw new Error("offline");
+  });
+
+  try {
+    await harness.renderPublicScreen({ timerRuntime: timers.runtime });
+    await harness.flush();
+    assert.equal(reads, 1);
+    assert.match(harness.host.textContent, /24\s*₽/);
+    assert.doesNotMatch(harness.host.textContent, /Последняя полученная цена/);
+
+    await act(async () => timers.advance(60_000));
+    await harness.flush();
+    assert.equal(
+      reads,
+      1,
+      "a short foreground interval must not refetch pricing",
+    );
+    assert.match(harness.host.textContent, /24\s*₽/);
+
+    await act(async () => timers.advance(4 * 60_000));
+    await harness.flush();
+    assert.equal(reads, 2, "the bounded freshness interval starts one refresh");
+    assert.match(harness.host.textContent, /24\s*₽/);
+
+    await act(async () =>
+      harness.nativeMocks.AppState.setCurrentState("active"),
+    );
+    await harness.flush();
+    assert.equal(
+      reads,
+      2,
+      "overlapping foreground refreshes are single-flight",
+    );
+
+    await act(async () => timers.advance(5_000));
+    await harness.flush();
+    assert.equal(
+      refreshSignal.aborted,
+      true,
+      "the GET is aborted at five seconds",
+    );
+    assert.match(harness.host.textContent, /24\s*₽/);
+    assert.match(harness.host.textContent, /Последняя полученная цена/);
+    assert.match(harness.host.textContent, /Обновить цену/);
+
+    await act(async () =>
+      resolveRefresh(
+        jsonResponse({
+          pricing: {
+            pricePerMonitorMinor: 3500,
+            currency: "RUB",
+            period: "month",
+            version: 5,
+            updatedAt: "2026-10-27T08:05:00.000Z",
+          },
+        }),
+      ),
+    );
+    await harness.flush();
+    assert.match(harness.host.textContent, /24\s*₽/);
+    assert.doesNotMatch(
+      harness.host.textContent,
+      /35\s*₽/,
+      "a response arriving after timeout cannot replace the last confirmed value",
+    );
+
+    await act(async () =>
+      harness.nativeMocks.AppState.setCurrentState("background"),
+    );
+    await harness.flush();
+    assert.match(harness.host.textContent, /24\s*₽/);
+    await act(async () =>
+      harness.nativeMocks.AppState.setCurrentState("active"),
+    );
+    await harness.flush();
+    assert.equal(reads, 3);
+    assert.match(harness.host.textContent, /24\s*₽/);
+    assert.match(harness.host.textContent, /Последняя полученная цена/);
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("a fresh foreground read just before the periodic check prevents a duplicate GET", async () => {
+  const harness = await createHarness();
+  const timers = fakePublicTimerRuntime();
+  let reads = 0;
+  let resolveInitial;
+  const quote = (minor, version) => ({
+    pricing: {
+      pricePerMonitorMinor: minor,
+      currency: "RUB",
+      period: "month",
+      version,
+      updatedAt: "2026-10-27T08:00:00.000Z",
+    },
+  });
+  harness.setFetch(async () => {
+    reads++;
+    if (reads === 1)
+      return new Promise((resolve) => {
+        resolveInitial = resolve;
+      });
+    return jsonResponse(quote(3500, 5));
+  });
+
+  try {
+    await harness.renderPublicScreen({ timerRuntime: timers.runtime });
+    await harness.flush();
+    assert.equal(reads, 1);
+    await act(async () => timers.advance(4_000));
+    await act(async () => resolveInitial(jsonResponse(quote(2400, 4))));
+    await harness.flush();
+    assert.match(harness.host.textContent, /24\s*₽/);
+
+    await act(async () => timers.advance(296_000));
+    await harness.flush();
+    assert.equal(reads, 1, "60-second ticks keep a still-fresh quote quiet");
+    await act(async () => timers.advance(5_000));
+    await act(async () =>
+      harness.nativeMocks.AppState.setCurrentState("background"),
+    );
+    await act(async () =>
+      harness.nativeMocks.AppState.setCurrentState("active"),
+    );
+    await harness.flush();
+    assert.equal(
+      reads,
+      2,
+      "foreground refreshes the quote after it becomes stale",
+    );
+    assert.match(harness.host.textContent, /35\s*₽/);
+
+    await act(async () => timers.advance(55_000));
+    await harness.flush();
+    assert.equal(
+      reads,
+      2,
+      "the next periodic tick observes the successful foreground timestamp",
+    );
+    assert.match(harness.host.textContent, /35\s*₽/);
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("public price aborts its pending read on unmount and ignores the late result", async () => {
+  const harness = await createHarness();
+  const timers = fakePublicTimerRuntime();
+  let signal;
+  let resolvePricing;
+  harness.setFetch(async (_url, options) => {
+    signal = options.signal;
+    return new Promise((resolve) => {
+      resolvePricing = resolve;
+    });
+  });
+
+  await harness.renderPublicScreen({ timerRuntime: timers.runtime });
+  await harness.flush();
+  assert.equal(typeof resolvePricing, "function");
+  assert.equal(
+    timers.pendingCount(),
+    2,
+    "timeout and periodic refresh are scheduled",
+  );
+
+  await harness.unmount();
+  assert.equal(signal.aborted, true);
+  assert.equal(timers.pendingCount(), 0, "unmount clears both timers");
+  resolvePricing(
+    jsonResponse({
+      pricing: {
+        pricePerMonitorMinor: 2400,
+        currency: "RUB",
+        period: "month",
+        version: 4,
+        updatedAt: "2026-10-27T08:00:00.000Z",
+      },
+    }),
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+});
+
+test("a closed monitor incident opens its own scroll page and returns to the monitor", async () => {
+  const harness = await createHarness();
+  const monitor = mobileMonitor();
+  const incident = {
+    id: "20000000-0000-4000-8000-000000000041",
+    number: 41,
+    openedAt: "2026-10-20T10:00:00.000Z",
+    confirmedAt: "2026-10-20T10:05:00.000Z",
+    closedAt: "2026-10-20T10:15:00.000Z",
+    closeReason: "recovered",
+  };
+  harness.native.restore = async () => ({
+    account: { id: "account-incident-test" },
+    session: {
+      id: "session-incident-test",
+      token: "incident-test-token",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    },
+  });
+  await harness.apiModule.restoreSession();
+  harness.setFetch(async (url) => {
+    const path = new URL(url).pathname.replace("/api/v1", "");
+    if (path === "/monitor-time-zones") return jsonResponse({ timeZones: [] });
+    if (path === "/monitors") return jsonResponse(mobileMonitorPage([monitor]));
+    if (path === "/monitors/monitor-1") return jsonResponse({ monitor });
+    if (path === "/monitors/monitor-1/results")
+      return jsonResponse({ results: [mobileResult("incident-result")] });
+    if (path === "/monitors/monitor-1/incidents")
+      return jsonResponse({ incidents: [incident] });
+    throw new Error(`Unexpected monitor request: ${path}`);
+  });
+
+  try {
+    await harness.renderMonitorsScreen();
+    await harness.click("Primary monitor. Доступен");
+    await harness.flush();
+    await harness.click("Инциденты · 1");
+    const monitorScrollPage = harness.host.querySelector(
+      '[data-native-component="ScrollView"]',
+    );
+    assert.ok(monitorScrollPage, "the monitor detail has a scroll container");
+
+    await harness.click("Подробнее");
+    await harness.flush();
+    const incidentScrollPage = harness.host.querySelector(
+      '[data-native-component="ScrollView"]',
+    );
+    assert.notEqual(
+      incidentScrollPage,
+      monitorScrollPage,
+      "the selected incident remounts a fresh scroll page at its start",
+    );
+    assert.match(harness.host.textContent, /Инцидент №41/);
+    assert.match(harness.host.textContent, /Сервис восстановился/);
+    assert.match(harness.host.textContent, /Завершён/);
+    assert.match(harness.host.textContent, /20\.10\.2026/);
+
+    await act(async () => harness.pressBack());
+    await harness.flush();
+    assert.match(harness.host.textContent, /Primary monitor/);
+    assert.doesNotMatch(harness.host.textContent, /Инцидент №41/);
+    assert.notEqual(
+      harness.host.querySelector('[data-native-component="ScrollView"]'),
+      incidentScrollPage,
+      "Android Back closes incident details and restores the monitor screen",
+    );
+
+    await harness.click("Подробнее");
+    await harness.flush();
+    assert.match(harness.host.textContent, /Инцидент №41/);
+    await harness.click("К монитору");
+    await harness.flush();
+    assert.match(harness.host.textContent, /Primary monitor/);
+    assert.doesNotMatch(harness.host.textContent, /Инцидент №41/);
+    assert.notEqual(
+      harness.host.querySelector('[data-native-component="ScrollView"]'),
+      incidentScrollPage,
+      "returning also remounts the monitor page rather than keeping its old scroll position",
+    );
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("opening a resolved incident from the feed fetches its linked monitor and returns to the feed", async () => {
+  const harness = await createHarness();
+  const monitor = mobileMonitor();
+  const incident = {
+    id: "20000000-0000-4000-8000-000000000042",
+    number: 42,
+    openedAt: "2026-10-20T10:00:00.000Z",
+    confirmedAt: "2026-10-20T10:05:00.000Z",
+    closedAt: "2026-10-20T10:15:00.000Z",
+    closeReason: "recovered",
+  };
+  const feedReads = [];
+  const linkedReads = [];
+  harness.native.restore = async () => ({
+    account: { id: "account-feed-test" },
+    session: {
+      id: "session-feed-test",
+      token: "feed-test-token",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    },
+  });
+  await harness.apiModule.restoreSession();
+  harness.setFetch(async (url) => {
+    const parsed = new URL(url);
+    const path = parsed.pathname.replace("/api/v1", "");
+    if (path === "/monitor-time-zones") return jsonResponse({ timeZones: [] });
+    if (path === "/monitors") return jsonResponse(mobileMonitorPage([monitor]));
+    if (path === "/monitors/monitor-1") return jsonResponse({ monitor });
+    if (path === "/monitors/monitor-1/results")
+      return jsonResponse({ results: [mobileResult("feed-result")] });
+    if (path === "/monitors/monitor-1/incidents")
+      return jsonResponse({ incidents: [incident] });
+    if (
+      path ===
+      "/monitors/monitor-1/incidents/20000000-0000-4000-8000-000000000042"
+    ) {
+      linkedReads.push(path);
+      return jsonResponse({ incident });
+    }
+    if (path === "/incidents") {
+      const state = parsed.searchParams.get("state");
+      feedReads.push(state);
+      return jsonResponse({
+        incidents:
+          state === "closed"
+            ? [
+                {
+                  ...incident,
+                  monitorId: monitor.id,
+                  monitor: {
+                    id: monitor.id,
+                    name: monitor.name,
+                    checkType: monitor.checkType,
+                    target: monitor.url,
+                    timeZone: monitor.timeZone,
+                  },
+                },
+              ]
+            : [],
+        pagination: { nextCursor: null, hasMore: false },
+        asOf: "2026-10-27T08:00:00.000Z",
+      });
+    }
+    throw new Error(`Unexpected incident request: ${path}${parsed.search}`);
+  });
+
+  try {
+    await harness.renderMonitorsScreen();
+    await harness.click("Лента инцидентов");
+    await harness.click("Завершённые");
+    assert.deepEqual(feedReads, ["active", "closed"]);
+    await harness.click("Инцидент 42, Primary monitor");
+    await harness.flush();
+    assert.deepEqual(linkedReads, [
+      "/monitors/monitor-1/incidents/20000000-0000-4000-8000-000000000042",
+    ]);
+    assert.match(harness.host.textContent, /Инцидент №42/);
+    assert.match(harness.host.textContent, /Primary monitor/);
+
+    await harness.click("К ленте инцидентов");
+    await harness.flush();
+    assert.match(harness.host.textContent, /Инциденты/);
+    assert.deepEqual(
+      feedReads,
+      ["active", "closed", "closed"],
+      "returning from the incident restores the selected closed filter",
+    );
+    assert.ok(
+      harness.host.querySelector(
+        'button[aria-label="Инцидент 42, Primary monitor"]',
+      ),
+      "the resolved row is still visible after returning",
+    );
+    assert.ok(
+      [...harness.host.querySelectorAll("button")].some((button) =>
+        button.textContent.includes("К мониторам"),
+      ),
+      "Back returns to the incident feed instead of leaving the monitor detail underneath",
+    );
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("an incident deep link consumes its token once and opens the matching incident", async () => {
+  const harness = await createHarness();
+  const monitorId = "monitor-1";
+  const incidentId = "20000000-0000-4000-8000-000000000043";
+  const monitor = mobileMonitor({ id: monitorId });
+  const incident = {
+    id: incidentId,
+    number: 43,
+    openedAt: "2026-10-20T10:00:00.000Z",
+    confirmedAt: "2026-10-20T10:05:00.000Z",
+    closedAt: "2026-10-20T10:15:00.000Z",
+    closeReason: "recovered",
+  };
+  const consumed = [];
+  const incidentRequests = [];
+  harness.native.restore = async () => ({
+    account: { id: "account-deeplink-test" },
+    session: {
+      id: "session-deeplink-test",
+      token: "deeplink-test-token",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    },
+  });
+  await harness.apiModule.restoreSession();
+  harness.setFetch(async (url) => {
+    const path = new URL(url).pathname.replace("/api/v1", "");
+    if (path === "/monitor-time-zones") return jsonResponse({ timeZones: [] });
+    if (path === `/monitors/${monitorId}`) return jsonResponse({ monitor });
+    if (path === `/monitors/${monitorId}/results`)
+      return jsonResponse({ results: [mobileResult("deep-link-result")] });
+    if (path === `/monitors/${monitorId}/incidents`)
+      return jsonResponse({ incidents: [incident] });
+    if (path === `/monitors/${monitorId}/incidents/${incidentId}`) {
+      incidentRequests.push(path);
+      return jsonResponse({ incident });
+    }
+    throw new Error(`Unexpected deep-link request: ${path}`);
+  });
+
+  try {
+    await harness.renderMonitorsScreen(
+      { monitorId, incidentId },
+      { onDeepLinkConsumed: (link) => consumed.push(link) },
+    );
+    await harness.flush();
+    assert.deepEqual(consumed, [{ monitorId, incidentId }]);
+    assert.deepEqual(incidentRequests, [
+      `/monitors/${monitorId}/incidents/${incidentId}`,
+    ]);
+    assert.match(harness.host.textContent, /Инцидент №43/);
+    assert.match(harness.host.textContent, /Primary monitor/);
+    await harness.click("К монитору");
+    assert.match(harness.host.textContent, /Primary monitor/);
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("closing incident details before monitor refresh resolves ignores the late refresh", async () => {
+  const harness = await createHarness();
+  const monitorId = "monitor-1";
+  const incidentId = "20000000-0000-4000-8000-000000000044";
+  const monitor = mobileMonitor({ id: monitorId });
+  const incident = {
+    id: incidentId,
+    number: 44,
+    openedAt: "2026-10-20T10:00:00.000Z",
+    confirmedAt: "2026-10-20T10:05:00.000Z",
+    closedAt: "2026-10-20T10:15:00.000Z",
+    closeReason: "recovered",
+  };
+  let monitorReads = 0;
+  let resolveLateMonitor;
+  harness.native.restore = async () => ({
+    account: { id: "account-close-race-test" },
+    session: {
+      id: "session-close-race-test",
+      token: "close-race-test-token",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    },
+  });
+  await harness.apiModule.restoreSession();
+  harness.setFetch(async (url) => {
+    const path = new URL(url).pathname.replace("/api/v1", "");
+    if (path === "/monitor-time-zones") return jsonResponse({ timeZones: [] });
+    if (path === "/monitors") return jsonResponse(mobileMonitorPage([monitor]));
+    if (path === `/monitors/${monitorId}`) {
+      monitorReads++;
+      if (monitorReads === 1) return jsonResponse({ monitor });
+      return new Promise((resolve) => {
+        resolveLateMonitor = resolve;
+      });
+    }
+    if (path === `/monitors/${monitorId}/results`)
+      return jsonResponse({ results: [mobileResult("late-detail-result")] });
+    if (path === `/monitors/${monitorId}/incidents`)
+      return jsonResponse({ incidents: [incident] });
+    if (path === `/monitors/${monitorId}/incidents/${incidentId}`)
+      return jsonResponse({ incident });
+    throw new Error(`Unexpected close-race request: ${path}`);
+  });
+
+  try {
+    await harness.renderMonitorsScreen({ monitorId, incidentId });
+    await harness.flush();
+    assert.equal(typeof resolveLateMonitor, "function");
+    assert.match(harness.host.textContent, /Инцидент №44/);
+
+    await harness.click("К монитору");
+    assert.match(harness.host.textContent, /Primary monitor/);
+    assert.doesNotMatch(harness.host.textContent, /Инцидент №44/);
+    await act(async () => resolveLateMonitor(jsonResponse({ monitor })));
+    await harness.flush();
+    assert.match(harness.host.textContent, /Primary monitor/);
+    assert.doesNotMatch(
+      harness.host.textContent,
+      /Инцидент №44/,
+      "a late detail response must not reopen the incident after the user closes it",
+    );
   } finally {
     await harness.unmount();
   }
@@ -2210,9 +2858,9 @@ test("account action retries clear only their own card error", async () => {
     await harness.flush();
 
     const cardAlert = (headingText) => {
-      const heading = [...harness.host.querySelectorAll('[role="header"]')].find(
-        (item) => item.textContent.trim() === headingText,
-      );
+      const heading = [
+        ...harness.host.querySelectorAll('[role="header"]'),
+      ].find((item) => item.textContent.trim() === headingText);
       assert.ok(heading, `card heading not found: ${headingText}`);
       const card = heading.parentElement;
       return card?.querySelector('[role="alert"]');
@@ -2229,10 +2877,7 @@ test("account action retries clear only their own card error", async () => {
     };
     assert.match(passwordCard()?.textContent ?? "", /Текущий пароль/);
     assert.match(passwordCard()?.textContent ?? "", /Изменить пароль/);
-    assert.doesNotMatch(
-      passwordCard()?.textContent ?? "",
-      /Удаление аккаунта/,
-    );
+    assert.doesNotMatch(passwordCard()?.textContent ?? "", /Удаление аккаунта/);
     await harness.fill("Пароль для способов входа", "identity-password");
     await harness.click("Подключить Яндекс");
     await harness.flush();
@@ -2340,7 +2985,8 @@ test("notification settings preserve a dirty webhook draft across unrelated upda
     assert.ok(webhookURL);
     assert.equal(webhookURL.value, "https://saved.example.test/hook");
     assert.equal(
-      harness.host.querySelector('button[aria-label="Обновить страницу"]') === null,
+      harness.host.querySelector('button[aria-label="Обновить страницу"]') ===
+        null,
       true,
       "the screen does not expose a generic pull refresh that can replace dirty settings",
     );
@@ -2355,7 +3001,8 @@ test("notification settings preserve a dirty webhook draft across unrelated upda
       "an unrelated successful link action re-renders without discarding the webhook draft",
     );
     assert.equal(
-      harness.host.querySelector('button[aria-label="Обновить страницу"]') === null,
+      harness.host.querySelector('button[aria-label="Обновить страницу"]') ===
+        null,
       true,
     );
   } finally {
@@ -2423,8 +3070,7 @@ test("a monitor draft survives the billing return without posting until the user
           }),
         });
       }
-      if (path === "/monitors")
-        return jsonResponse(mobileMonitorPage([]));
+      if (path === "/monitors") return jsonResponse(mobileMonitorPage([]));
       if (path === "/monitors/monitor-created")
         return jsonResponse({
           monitor: mobileMonitor({
@@ -2452,12 +3098,20 @@ test("a monitor draft survives the billing return without posting until the user
     await harness.fill("URL HTTPS/HTTP", "https://draft.example.test/health");
     await harness.flush();
     assert.equal(storedDraft?.form.name, "Checkout return draft");
-    assert.equal(monitorCreates.length, 0, "editing alone does not create a monitor");
+    assert.equal(
+      monitorCreates.length,
+      0,
+      "editing alone does not create a monitor",
+    );
 
     await harness.click("Купить квоту");
     await harness.flush();
     assert.match(harness.host.textContent, /Черновик монитора сохранён/);
-    assert.equal(monitorCreates.length, 0, "opening billing does not create a monitor");
+    assert.equal(
+      monitorCreates.length,
+      0,
+      "opening billing does not create a monitor",
+    );
 
     harness.setMonitorEntitlement({
       quota: 2,
@@ -2478,11 +3132,19 @@ test("a monitor draft survives the billing return without posting until the user
       "https://draft.example.test/health",
       "the target URL survives the billing screen unmount and return",
     );
-    assert.equal(monitorCreates.length, 0, "returning never auto-posts the draft");
+    assert.equal(
+      monitorCreates.length,
+      0,
+      "returning never auto-posts the draft",
+    );
 
     await harness.click("Запустить монитор");
     await harness.flush();
-    assert.equal(monitorCreates.length, 1, "only the explicit start action posts");
+    assert.equal(
+      monitorCreates.length,
+      1,
+      "only the explicit start action posts",
+    );
     assert.equal(monitorCreates[0].name, "Checkout return draft");
     assert.equal(monitorCreates[0].url, "https://draft.example.test/health");
   } finally {
@@ -2542,7 +3204,11 @@ test("pending quota-save cannot navigate to billing after logout unmounts the mo
     };
     await harness.click("Купить квоту");
     await saveStarted;
-    assert.equal(billingNavigationCalls, 0, "billing waits for the native draft write");
+    assert.equal(
+      billingNavigationCalls,
+      0,
+      "billing waits for the native draft write",
+    );
 
     await harness.apiModule.closeSession();
     await harness.renderPage();

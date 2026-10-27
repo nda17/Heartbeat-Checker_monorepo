@@ -70,16 +70,28 @@ export function Icon({
   const brand =
     name === "yandex" || name === "vk" || name === "max" || name === "telegram";
   return (
-    <Image
-      accessible={false}
-      source={iconSources[name]}
+    <View
       style={{
         width: size,
         height: size,
-        resizeMode: "contain",
-        ...(brand ? {} : { tintColor: color ?? c.accentText }),
+        flexShrink: 0,
+        overflow: "hidden",
+        alignItems: "center",
+        justifyContent: "center",
       }}
-    />
+    >
+      <Image
+        accessible={false}
+        source={iconSources[name]}
+        style={{
+          // VK's source has 12 px transparent padding around its 72 px mark.
+          width: name === "vk" ? size * (96 / 72) : size,
+          height: name === "vk" ? size * (96 / 72) : size,
+          resizeMode: "contain",
+          ...(brand ? {} : { tintColor: color ?? c.accentText }),
+        }}
+      />
+    </View>
   );
 }
 

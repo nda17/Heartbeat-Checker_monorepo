@@ -205,14 +205,19 @@ type FeedPage = {
   pagination: { nextCursor: string | null; hasMore: boolean };
   asOf: string;
 };
+export type IncidentFeedState = "all" | "active" | "closed";
 export function IncidentFeed({
   onBack,
   onOpen,
+  initialState = "active",
+  onStateChange,
 }: {
   onBack: () => void;
   onOpen: (monitorId: string, incidentId: string) => void;
+  initialState?: IncidentFeedState;
+  onStateChange?: (state: IncidentFeedState) => void;
 }) {
-  const [state, setState] = useState<"all" | "active" | "closed">("active");
+  const [state, setState] = useState<IncidentFeedState>(initialState);
   const [data, setData] = useState<FeedPage | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -282,7 +287,10 @@ export function IncidentFeed({
             key={key}
             label={label}
             secondary={state !== key}
-            onPress={() => setState(key)}
+            onPress={() => {
+              setState(key);
+              onStateChange?.(key);
+            }}
           />
         ))}
       </View>

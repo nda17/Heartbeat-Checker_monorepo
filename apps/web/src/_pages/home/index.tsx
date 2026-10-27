@@ -4,7 +4,7 @@ import Link from "next/link";
 import { PublicAuthLinks } from "@/features/auth";
 import { ThemeToggle } from "@/features/theme-toggle";
 import { Arrow, Brand, PublicFooter, Icon } from "@/shared/ui";
-import { MonitoringDemo } from "./monitoring-demo";
+import { AnalyticsDemo, MonitoringDemo } from "./monitoring-demo";
 
 export function HomePage({
   initialPricing = null,
@@ -90,6 +90,8 @@ export function HomePage({
           </div>
           <MonitoringDemo />
         </section>
+
+        <AnalyticsDemo />
 
         <section className="landing-awareness">
           <div>

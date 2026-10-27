@@ -1,5 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { AppState, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  AppState,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { api } from "./api";
 import { FAQ, SupportLinks } from "./HelpScreen";
 import {
@@ -53,11 +60,16 @@ function PublicPrice({ onRegister }: { onRegister: () => void }) {
   const [pricing, setPricing] = useState<Pricing | null>(null);
   const [loading, setLoading] = useState(true);
   const [attempt, setAttempt] = useState(0);
+  const [checkedAt, setCheckedAt] = useState<number | null>(null);
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  const [now, setNow] = useState(Date.now());
+  const lastSuccess = useRef<number | null>(null);
+  const refreshAfter = 5 * 60_000;
   useEffect(() => {
     let alive = true;
     let current: AbortController | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const refresh = async () => {
+    const refresh = async (force = false) => {
       if (
         !alive ||
         current ||
@@ -65,15 +77,22 @@ function PublicPrice({ onRegister }: { onRegister: () => void }) {
         AppState.currentState === "inactive"
       )
         return;
+      const startedAt = Date.now();
+      setNow(startedAt);
+      if (
+        !force &&
+        lastSuccess.current !== null &&
+        startedAt - lastSuccess.current < refreshAfter
+      )
+        return;
       const controller = new AbortController();
       current = controller;
-      setPricing(null);
       setLoading(true);
       const timeout = setTimeout(() => {
         if (!alive || current !== controller) return;
         current = null;
         controller.abort();
-        setPricing(null);
+        setRefreshFailed(true);
         setLoading(false);
       }, 5000);
       timer = timeout;
@@ -82,10 +101,18 @@ function PublicPrice({ onRegister }: { onRegister: () => void }) {
           auth: false,
           signal: controller.signal,
         });
-        if (alive && current === controller && !controller.signal.aborted)
-          setPricing(isPricing(data.pricing) ? data.pricing : null);
+        if (alive && current === controller && !controller.signal.aborted) {
+          if (!isPricing(data.pricing))
+            throw new Error("Invalid public pricing");
+          const fetchedAt = Date.now();
+          lastSuccess.current = fetchedAt;
+          setPricing(data.pricing);
+          setCheckedAt(fetchedAt);
+          setNow(fetchedAt);
+          setRefreshFailed(false);
+        }
       } catch {
-        if (alive && current === controller) setPricing(null);
+        if (alive && current === controller) setRefreshFailed(true);
       } finally {
         clearTimeout(timeout);
         if (alive && current === controller) {
@@ -94,14 +121,13 @@ function PublicPrice({ onRegister }: { onRegister: () => void }) {
         }
       }
     };
-    void refresh();
+    void refresh(attempt > 0);
     const app = AppState.addEventListener("change", (state) => {
       if (state === "active") void refresh();
       else {
         current?.abort();
         current = null;
         clearTimeout(timer);
-        setPricing(null);
         setLoading(false);
       }
     });
@@ -114,6 +140,8 @@ function PublicPrice({ onRegister }: { onRegister: () => void }) {
       app.remove();
     };
   }, [attempt]);
+  const stale =
+    refreshFailed || (checkedAt !== null && now - checkedAt >= refreshAfter);
   return (
     <Card>
       <Eyebrow>ПОНЯТНАЯ ЕДИНИЦА СТОИМОСТИ</Eyebrow>
@@ -136,9 +164,30 @@ function PublicPrice({ onRegister }: { onRegister: () => void }) {
             value={`${money(10 * pricing.pricePerMonitorMinor)} / мес.`}
           />
           <Label muted>
-            Текущая публичная цена. Итоговая сумма проверяется при оформлении
-            заказа.
+            {stale
+              ? "Последняя полученная цена. Актуальность пока не подтверждена."
+              : "Текущая публичная цена."}{" "}
+            Итоговая сумма проверяется при оформлении заказа.
           </Label>
+          {stale ? (
+            <>
+              <Notice
+                message={
+                  loading
+                    ? "Проверяем актуальность цены…"
+                    : "Не удалось подтвердить актуальную цену. Обновите её, когда появится сеть."
+                }
+              />
+              <Button
+                label="Обновить цену"
+                onPress={() => setAttempt((value) => value + 1)}
+                loading={loading}
+                loadingLabel="Проверяем цену…"
+                secondary
+                iconName="refresh"
+              />
+            </>
+          ) : null}
         </>
       ) : (
         <>
@@ -216,66 +265,153 @@ function Feature({
   );
 }
 
+const demoDays = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+const demoMonitors = [
+  {
+    name: "Главная страница",
+    target: "example.com · HTTP 200",
+    state: "UP",
+    detail: "184 мс",
+    down: [0, 0, 0, 0, 0, 0, 0],
+  },
+  {
+    name: "API магазина",
+    target: "api.example.com · HTTP 503",
+    state: "DOWN",
+    detail: "2 ошибки подряд",
+    down: [0, 0, 6, 0, 0, 0, 2],
+  },
+  {
+    name: "SSH сервера",
+    target: "server.example.com:22 · TCP",
+    state: "UP",
+    detail: "42 мс",
+    down: [0, 0, 0, 0, 0, 0, 0],
+  },
+];
+const checksPerDay = 288;
+function successfulChecks(down: number, total: number) {
+  return (((total - down) / total) * 100).toLocaleString("ru-RU", {
+    maximumFractionDigits: 1,
+  });
+}
+
 function Demo() {
   const c = usePalette();
+  const [selectedMonitor, setSelectedMonitor] = useState(1);
+  const selected = demoMonitors[selectedMonitor];
+  const total = checksPerDay * demoDays.length;
+  const failed = selected.down.reduce((sum, count) => sum + count, 0);
   return (
     <Card>
       <Eyebrow>ПРИМЕР ИНТЕРФЕЙСА</Eyebrow>
       <Title>Все важные цели перед глазами</Title>
       <Label muted>
-        Статичная демонстрация с вымышленными данными. Это не результаты живых
-        проверок.
+        Выберите монитор, чтобы посмотреть успешные проверки по дням.
       </Label>
-      {[
-        ["Главная страница", "example.com · HTTP 200", "UP", "184 мс", false],
-        [
-          "API магазина",
-          "api.example.com · HTTP 503",
-          "DOWN",
-          "2 ошибки подряд",
-          true,
-        ],
-        ["SSH сервера", "server.example.com:22 · TCP", "UP", "42 мс", false],
-      ].map(([name, target, state, detail, failed]) => (
-        <View
-          key={String(name)}
-          style={[styles.demoRow, { borderBottomColor: c.border }]}
-        >
-          <View style={styles.demoCopy}>
-            <Text style={[styles.demoName, { color: c.text }]}>{name}</Text>
-            <Text style={[styles.small, { color: c.subtle }]}>{target}</Text>
-          </View>
-          <View style={styles.demoState}>
-            <Text
-              style={[
-                styles.status,
-                { color: failed ? c.dangerText : c.accentText },
-              ]}
-            >
-              {state}
-            </Text>
-            <Text style={[styles.small, { color: c.subtle }]}>{detail}</Text>
-          </View>
-        </View>
-      ))}
-      <View
-        style={styles.demoBars}
-        accessible
-        accessibilityLabel="Демонстрация истории: большинство проверок успешны, два сбоя"
-      >
-        {Array.from({ length: 28 }, (_, index) => (
-          <View
-            key={index}
-            style={[
-              styles.demoBar,
+      {demoMonitors.map((monitor, index) => {
+        const down = monitor.down.reduce((sum, count) => sum + count, 0);
+        const success = successfulChecks(down, total);
+        return (
+          <Pressable
+            key={monitor.name}
+            accessibilityRole="button"
+            accessibilityState={{ selected: index === selectedMonitor }}
+            accessibilityLabel={`${monitor.name}. Успешные проверки за 7 дней: ${success}%. ${monitor.state}.`}
+            onPress={() => setSelectedMonitor(index)}
+            style={({ pressed }) => [
+              styles.demoRow,
               {
-                backgroundColor:
-                  index === 20 || index === 21 ? c.dangerText : c.accent,
+                borderColor:
+                  index === selectedMonitor ? c.accentText : c.border,
+                backgroundColor: index === selectedMonitor ? c.bg : c.card,
+                opacity: pressed ? 0.76 : 1,
               },
             ]}
-          />
+          >
+            <View style={styles.demoCopy}>
+              <Text style={[styles.demoName, { color: c.text }]}>
+                {monitor.name}
+              </Text>
+              <Text style={[styles.small, { color: c.subtle }]}>
+                {monitor.target}
+              </Text>
+            </View>
+            <View style={styles.demoState}>
+              <Text
+                style={[
+                  styles.status,
+                  {
+                    color:
+                      monitor.state === "DOWN" ? c.dangerText : c.accentText,
+                  },
+                ]}
+              >
+                {monitor.state}
+              </Text>
+              <Text style={[styles.small, { color: c.subtle }]}>
+                {monitor.detail}
+              </Text>
+              <Text style={[styles.small, { color: c.accentText }]}>
+                {success}% за 7 дней
+              </Text>
+            </View>
+            <View style={[styles.monitorTrack, { backgroundColor: c.border }]}>
+              <View style={{ flex: total - down, backgroundColor: c.accent }} />
+              {down > 0 ? (
+                <View
+                  style={{
+                    flex: down,
+                    backgroundColor: c.dangerText,
+                  }}
+                />
+              ) : null}
+            </View>
+          </Pressable>
+        );
+      })}
+      <View style={styles.analyticsSummary} accessibilityLiveRegion="polite">
+        <Text style={[styles.demoName, { color: c.text }]}>
+          {selected.name} · 7 дней
+        </Text>
+        <Text style={[styles.analyticsValue, { color: c.accentText }]}>
+          {successfulChecks(failed, total)}%
+        </Text>
+        <Label>Успешные проверки</Label>
+        <Label muted>
+          {total - failed} из {total} проверок успешны
+        </Label>
+      </View>
+      <View style={styles.dailyChart}>
+        {selected.down.map((down, index) => (
+          <View
+            key={index}
+            style={styles.dailyColumn}
+            accessible
+            accessibilityLabel={`${demoDays[index]}: ${checksPerDay - down} из ${checksPerDay} проверок успешны, ${successfulChecks(down, checksPerDay)}%, ошибок ${down}`}
+          >
+            <View style={[styles.dailyBar, { backgroundColor: c.border }]}>
+              {down > 0 ? (
+                <View
+                  style={{
+                    flex: down,
+                    backgroundColor: c.dangerText,
+                  }}
+                />
+              ) : null}
+              <View
+                style={{ flex: checksPerDay - down, backgroundColor: c.accent }}
+              />
+            </View>
+            <Text style={[styles.small, { color: c.subtle }]}>
+              {demoDays[index]}
+            </Text>
+          </View>
         ))}
       </View>
+      <Label muted>
+        По 288 проверок в день. Процент рассчитан по результатам проверок.
+      </Label>
       <Label muted>
         В реальном мониторе доступны результаты проверок, задержка, HTTP-код и
         история инцидентов.
@@ -577,16 +713,34 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     alignItems: "center",
     gap: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    paddingVertical: 12,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 10,
   },
-  demoCopy: { flexGrow: 1, flexBasis: 170, gap: 3 },
-  demoState: { alignItems: "flex-end", flexGrow: 1, gap: 3 },
+  demoCopy: { width: "100%", gap: 3 },
+  demoState: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "space-between",
+    width: "100%",
+    gap: 7,
+  },
   demoName: { fontSize: 15, lineHeight: 22, fontWeight: "600" },
   small: { fontSize: 12, lineHeight: 18 },
   status: { fontSize: 13, lineHeight: 19, fontWeight: "800" },
-  demoBars: { flexDirection: "row", gap: 3, height: 26, marginTop: 6 },
-  demoBar: { flex: 1, borderRadius: 3 },
+  monitorTrack: {
+    flexDirection: "row",
+    height: 5,
+    borderRadius: 3,
+    overflow: "hidden",
+    width: "100%",
+  },
+  analyticsSummary: { gap: 3, paddingTop: 8 },
+  analyticsValue: { fontSize: 32, lineHeight: 40, fontWeight: "800" },
+  dailyChart: { flexDirection: "row", gap: 8, paddingVertical: 8 },
+  dailyColumn: { flex: 1, alignItems: "center", gap: 7 },
+  dailyBar: { width: "100%", height: 72, borderRadius: 4, overflow: "hidden" },
   step: { flexDirection: "row", gap: 14, paddingVertical: 9 },
   stepNumber: { fontSize: 18, lineHeight: 25, fontWeight: "800" },
   stepCopy: { flex: 1, gap: 5 },
