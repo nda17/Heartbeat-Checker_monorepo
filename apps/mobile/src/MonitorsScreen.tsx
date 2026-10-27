@@ -26,6 +26,7 @@ import { NotificationsScreen } from "./NotificationsScreen";
 import { useMonitorDraft, type MonitorForm } from "./MonitorDraft";
 import {
   IncidentFeed,
+  type IncidentFeedState,
   MonitorStatistics,
   closeReasonName,
 } from "./MonitorInsights";
@@ -136,6 +137,7 @@ export function MonitorsScreen({
   const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
   const [status, setStatus] = useState("all");
   const [feed, setFeed] = useState(false);
+  const [feedState, setFeedState] = useState<IncidentFeedState>("active");
   const [feedLink, setFeedLink] = useState<{
     monitorId: string;
     incidentId: string;
@@ -173,6 +175,7 @@ export function MonitorsScreen({
   const [selectedIncident, setSelectedIncident] = useState<Incident | null>(
     null,
   );
+  const incidentSource = useRef<"monitor" | "feed">("monitor");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const c = usePalette();
@@ -446,6 +449,7 @@ export function MonitorsScreen({
   useEffect(() => {
     const targetLink = deepLink ?? feedLink;
     if (!targetLink) return;
+    incidentSource.current = deepLink ? "monitor" : "feed";
     const request = ++detailRequest.current;
     incidentNavigation.current = true;
     setFeed(false);
@@ -474,14 +478,10 @@ export function MonitorsScreen({
           incident.incident.id !== targetLink.incidentId
         )
           return;
-        setSelected(monitor.monitor);
+        // detail sets the monitor immediately; select the incident after that
+        // so a later response cannot reopen a detail the user already closed.
+        void detail(monitor.monitor);
         setSelectedIncident(incident.incident);
-        const loading = detail(monitor.monitor);
-        const detailGeneration = detailRequest.current;
-        void loading.then(() => {
-          if (mounted.current && detailGeneration === detailRequest.current)
-            setSelectedIncident(incident.incident);
-        });
       })
       .catch((cause) => {
         if (mounted.current && request === detailRequest.current)
@@ -717,6 +717,19 @@ export function MonitorsScreen({
       },
     ]);
   };
+  const closeIncident = () => {
+    setSelectedIncident(null);
+    if (incidentSource.current === "feed") {
+      detailRequest.current++;
+      paginationRequest.current++;
+      detailPending.current = false;
+      setDetailRefreshing(false);
+      setPaginationBusy(false);
+      setSelected(null);
+      selectedRef.current = null;
+      setFeed(true);
+    }
+  };
   useEffect(() => {
     const listener = BackHandler.addEventListener("hardwareBackPress", () => {
       if (feed) {
@@ -724,7 +737,7 @@ export function MonitorsScreen({
         return true;
       }
       if (selectedIncident) {
-        setSelectedIncident(null);
+        closeIncident();
         return true;
       }
       if (notifications) {
@@ -787,6 +800,8 @@ export function MonitorsScreen({
   if (feed)
     return (
       <IncidentFeed
+        initialState={feedState}
+        onStateChange={setFeedState}
         onBack={() => setFeed(false)}
         onOpen={(monitorId, incidentId) => {
           setFeed(false);
@@ -1056,6 +1071,43 @@ export function MonitorsScreen({
       </Page>
     );
   }
+  if (selected && selectedIncident)
+    return (
+      <Page
+        key={`incident-${selectedIncident.id}`}
+        title={`Инцидент №${selectedIncident.number}`}
+      >
+        <Button
+          label={
+            incidentSource.current === "feed"
+              ? "К ленте инцидентов"
+              : "К монитору"
+          }
+          iconName="arrow-left"
+          onPress={closeIncident}
+          secondary
+        />
+        <Card>
+          <Title>{selected.name}</Title>
+          <Label>{selectedIncident.closedAt ? "Завершён" : "Активен"}</Label>
+          <Label>{closeReasonName(selectedIncident.closeReason)}</Label>
+          <Label>
+            Открыт: {date(selectedIncident.openedAt, selected.timeZone)}
+          </Label>
+          <Label>
+            Подтверждён: {date(selectedIncident.confirmedAt, selected.timeZone)}
+          </Label>
+          <Label>
+            Завершён:{" "}
+            {selectedIncident.closedAt
+              ? date(selectedIncident.closedAt, selected.timeZone)
+              : "Ещё не завершён"}
+          </Label>
+          <Label muted>Часовой пояс: {selected.timeZone}</Label>
+        </Card>
+        <ErrorNotice message={error} />
+      </Page>
+    );
   if (selected)
     return (
       <Page title={selected.name} refresh={() => detail(selected, true)}>
@@ -1120,28 +1172,6 @@ export function MonitorsScreen({
             onPress={remove}
           />
         </Card>
-        {selectedIncident ? (
-          <Card>
-            <Title>Инцидент №{selectedIncident.number}</Title>
-            <Label>{closeReasonName(selectedIncident.closeReason)}</Label>
-            <Label>
-              Открыт: {date(selectedIncident.openedAt, selected.timeZone)}
-            </Label>
-            <Label>
-              Подтверждён:{" "}
-              {date(selectedIncident.confirmedAt, selected.timeZone)}
-            </Label>
-            <Label>
-              Завершён: {date(selectedIncident.closedAt, selected.timeZone)}
-            </Label>
-            <Button
-              label="Закрыть"
-              iconName="close"
-              onPress={() => setSelectedIncident(null)}
-              secondary
-            />
-          </Card>
-        ) : null}
         <MonitorStatistics
           monitorId={selected.id}
           refreshKey={statisticsRefresh}
@@ -1171,7 +1201,10 @@ export function MonitorsScreen({
             <Button
               label="Подробнее"
               iconName="arrow-right"
-              onPress={() => setSelectedIncident(item)}
+              onPress={() => {
+                incidentSource.current = "monitor";
+                setSelectedIncident(item);
+              }}
               secondary
             />
           </Card>

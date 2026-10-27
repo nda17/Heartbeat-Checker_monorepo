@@ -3908,6 +3908,271 @@ html[data-installed-app="true"] .android-hero {
   border-radius: 3px;
 }
 
+.landing-analytics {
+  margin-bottom: 65px;
+  min-width: 0;
+}
+.landing-analytics-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+  margin-bottom: 26px;
+}
+.landing-analytics-heading h2 {
+  font-size: clamp(25px, 2.4vw, 30px);
+  line-height: 1.35;
+  margin-top: 12px;
+}
+.landing-analytics-heading h2 + p {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.8;
+}
+.landing-analytics-example {
+  flex-shrink: 0;
+  padding: 7px 11px;
+  border: 1px solid var(--landing-border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.landing-analytics-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 2fr);
+  overflow: hidden;
+  border: 1px solid var(--landing-border);
+  border-radius: 15px;
+  background: var(--landing-card);
+}
+.landing-analytics-monitors {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 22px;
+  background: var(--landing-soft);
+  border-right: 1px solid var(--landing-border);
+}
+.landing-analytics-monitors button {
+  display: flex;
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 76px;
+  gap: 12px;
+  padding: 14px 12px;
+  border: 1px solid transparent;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+}
+.landing-analytics-monitors button:hover,
+.landing-analytics-monitors button[aria-pressed="true"] {
+  border-color: var(--landing-border);
+  background: var(--landing-card);
+}
+.landing-analytics-monitors button[aria-pressed="true"] {
+  border-color: var(--landing-success);
+}
+.landing-analytics-monitors button:focus-visible {
+  outline: 3px solid var(--landing-success);
+  outline-offset: 3px;
+}
+.landing-analytics-monitor-icon {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--landing-success);
+}
+.landing-analytics-monitor-name {
+  min-width: 0;
+}
+.landing-analytics-monitor-name strong {
+  display: block;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.landing-analytics-monitor-name > span {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+.landing-analytics-monitor-percent {
+  margin-left: auto;
+  color: var(--landing-success);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.landing-analytics-details {
+  min-width: 0;
+  padding: 28px 32px 24px;
+}
+.landing-analytics-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+}
+.landing-analytics-summary h3 {
+  font-size: 18px;
+}
+.landing-analytics-summary p {
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.landing-analytics-score {
+  text-align: right;
+}
+.landing-analytics-score strong {
+  display: block;
+  color: var(--landing-success);
+  font-family: "Manrope", sans-serif;
+  font-size: 34px;
+  letter-spacing: -0.04em;
+  line-height: 1.3;
+}
+.landing-analytics-score > span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.landing-analytics-chart {
+  margin: 24px 0;
+}
+.landing-analytics-chart figcaption {
+  margin-bottom: 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.landing-analytics-chart ol {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 12px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.landing-analytics-chart li {
+  min-width: 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.landing-analytics-chart li > span:first-child {
+  color: var(--landing-success);
+}
+.landing-analytics-bar {
+  display: flex;
+  flex-direction: column;
+  height: 120px;
+  max-width: 58px;
+  margin: 9px auto;
+  overflow: hidden;
+  border-radius: 6px;
+}
+.landing-analytics-bar > span {
+  display: block;
+}
+.landing-analytics-bar-up,
+.landing-analytics-key-up {
+  background: var(--landing-success);
+}
+.landing-analytics-bar-down,
+.landing-analytics-key-down {
+  background: var(--landing-incident);
+}
+.landing-analytics-counts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.landing-analytics-counts dt {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.landing-analytics-counts i {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+}
+.landing-analytics-counts dd {
+  margin: 7px 0 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+@media (max-width: 950px) {
+  .landing-analytics-panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .landing-analytics-monitors {
+    flex-direction: row;
+    border-right: 0;
+    border-bottom: 1px solid var(--landing-border);
+  }
+  .landing-analytics-monitors button {
+    min-width: 0;
+    flex: 1;
+    flex-wrap: wrap;
+  }
+  .landing-analytics-monitor-icon {
+    display: none;
+  }
+}
+@media (max-width: 640px) {
+  .landing-analytics {
+    margin-bottom: 43px;
+  }
+  .landing-analytics-heading {
+    flex-direction: column;
+    gap: 14px;
+  }
+  .landing-analytics-monitors {
+    flex-direction: column;
+    padding: 14px;
+    gap: 8px;
+  }
+  .landing-analytics-monitors button {
+    min-height: 64px;
+    flex-wrap: nowrap;
+  }
+  .landing-analytics-monitor-icon {
+    display: flex;
+  }
+  .landing-analytics-details {
+    padding: 20px 16px;
+  }
+  .landing-analytics-summary {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+  }
+  .landing-analytics-score {
+    text-align: left;
+  }
+  .landing-analytics-chart ol {
+    gap: 4px;
+  }
+  .landing-analytics-chart li > span:first-child {
+    font-size: clamp(10px, 2.8vw, 12px);
+  }
+  .landing-analytics-counts {
+    gap: 8px;
+  }
+}
+
 .landing-demo {
   --demo-signal: var(--landing-success);
   --demo-signal-bg: var(--soft);
@@ -4077,6 +4342,7 @@ html[data-installed-app="true"] .android-hero {
 }
 .landing-demo .landing-demo-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 15px;
@@ -4088,9 +4354,9 @@ html[data-installed-app="true"] .android-hero {
   gap: 6px;
 }
 .landing-demo .landing-demo-steps button {
-  width: 30px;
-  min-height: 30px;
-  height: 30px;
+  width: 44px;
+  min-height: 44px;
+  height: 44px;
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -4107,7 +4373,7 @@ html[data-installed-app="true"] .android-hero {
   background: transparent;
   color: var(--ink);
   padding: 5px 0;
-  min-height: 30px;
+  min-height: 44px;
   font-size: 14px;
   gap: 7px;
 }
@@ -4471,8 +4737,8 @@ html[data-installed-app="true"] .android-hero {
     gap: 5px;
   }
   .landing-demo .landing-demo-steps button {
-    width: 28px;
-    height: 30px;
+    width: 44px;
+    height: 44px;
   }
   .landing-demo .landing-demo-caption {
     padding-left: 17px;

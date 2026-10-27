@@ -1202,7 +1202,10 @@ test("installation offers are tagged in the home navigation, footer, and Android
       "@/features/auth": { PublicAuthLinks: () => null },
       "@/features/theme-toggle": { ThemeToggle: () => null },
       "@/shared/ui": ui,
-      "./monitoring-demo": { MonitoringDemo: () => null },
+      "./monitoring-demo": {
+        MonitoringDemo: () => null,
+        AnalyticsDemo: () => null,
+      },
     },
     { process: { env: { WEB_MODE: "app" } } },
   );
@@ -1402,7 +1405,10 @@ test("public home mode checks a session only in app mode", async () => {
         "@/features/auth": { PublicAuthLinks },
         "@/features/theme-toggle": { ThemeToggle: () => null },
         "@/shared/ui": ui,
-        "./monitoring-demo": { MonitoringDemo: () => null },
+        "./monitoring-demo": {
+          MonitoringDemo: () => null,
+          AnalyticsDemo: () => null,
+        },
       },
       { process: { env: { WEB_MODE: mode } } },
     );

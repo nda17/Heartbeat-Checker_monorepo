@@ -56,6 +56,177 @@ function subscribeVisibility(onChange: () => void) {
   return () => document.removeEventListener("visibilitychange", onChange);
 }
 
+const analyticsDays = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+const analyticsMonitors = [
+  {
+    id: "website",
+    name: "Главная страница",
+    target: "example.com",
+    type: "HTTPS",
+    down: [0, 0, 0, 0, 0, 0, 0],
+  },
+  {
+    id: "api",
+    name: "API магазина",
+    target: "api.example.com/health",
+    type: "HTTPS",
+    down: [0, 0, 6, 0, 0, 0, 2],
+  },
+  {
+    id: "ssh",
+    name: "SSH сервера",
+    target: "server.example.com:22",
+    type: "TCP",
+    down: [0, 0, 0, 0, 0, 0, 0],
+  },
+].map((monitor) => ({
+  ...monitor,
+  days: monitor.down.map((down, index) => ({
+    label: analyticsDays[index],
+    up: 288 - down,
+    down,
+  })),
+}));
+
+function successfulChecksPercent(up: number, down: number) {
+  return (100 * up) / (up + down);
+}
+
+function formatChecksPercent(up: number, down: number) {
+  return `${successfulChecksPercent(up, down).toLocaleString("ru-RU", {
+    maximumFractionDigits: 1,
+  })}%`;
+}
+
+export function AnalyticsDemo() {
+  const [selectedId, setSelectedId] = useState("api");
+  const selected = analyticsMonitors.find(
+    (monitor) => monitor.id === selectedId,
+  )!;
+  const totals = selected.days.reduce(
+    (sum, day) => ({ up: sum.up + day.up, down: sum.down + day.down }),
+    { up: 0, down: 0 },
+  );
+
+  return (
+    <section
+      className="landing-analytics"
+      aria-labelledby="landing-analytics-title"
+    >
+      <div className="landing-analytics-heading">
+        <div>
+          <p className="eyebrow">ИСТОРИЯ В ОДНОМ ВЗГЛЯДЕ</p>
+          <h2 id="landing-analytics-title">Каждый сервис. Каждый день.</h2>
+          <p>
+            Выберите монитор и посмотрите, как менялись результаты проверок.
+          </p>
+        </div>
+        <span className="landing-analytics-example">Пример интерфейса</span>
+      </div>
+      <div className="landing-analytics-panel">
+        <div
+          role="group"
+          aria-label="Мониторы в примере"
+          className="landing-analytics-monitors"
+        >
+          {analyticsMonitors.map((monitor) => {
+            const up = monitor.days.reduce((sum, day) => sum + day.up, 0);
+            const down = monitor.days.reduce((sum, day) => sum + day.down, 0);
+            return (
+              <button
+                type="button"
+                key={monitor.id}
+                aria-pressed={selectedId === monitor.id}
+                aria-controls="landing-analytics-details"
+                onClick={() => setSelectedId(monitor.id)}
+              >
+                <span className="landing-analytics-monitor-icon">
+                  <Icon name={monitor.type === "TCP" ? "network" : "globe"} />
+                </span>
+                <span className="landing-analytics-monitor-name">
+                  <strong>{monitor.name}</strong>
+                  <span>{monitor.type} · за 7 дней</span>
+                </span>
+                <span className="landing-analytics-monitor-percent">
+                  <span className="sr-only">Успешные проверки: </span>
+                  {formatChecksPercent(up, down)}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <div
+          id="landing-analytics-details"
+          className="landing-analytics-details"
+          role="region"
+          aria-label={`Результаты проверок: ${selected.name}`}
+        >
+          <div className="landing-analytics-summary">
+            <div>
+              <h3>{selected.name}</h3>
+              <p>{selected.target}</p>
+            </div>
+            <div className="landing-analytics-score">
+              <strong>{formatChecksPercent(totals.up, totals.down)}</strong>
+              <span>Успешные проверки за 7 дней</span>
+            </div>
+          </div>
+          <figure className="landing-analytics-chart">
+            <figcaption>Доля успешных проверок по дням</figcaption>
+            <ol>
+              {selected.days.map((day) => (
+                <li
+                  key={day.label}
+                  aria-label={`${day.label}: ${formatChecksPercent(day.up, day.down)}, успешных ${day.up}, неудачных ${day.down}`}
+                >
+                  <span aria-hidden="true">
+                    {formatChecksPercent(day.up, day.down)}
+                  </span>
+                  <div className="landing-analytics-bar" aria-hidden="true">
+                    <span
+                      className="landing-analytics-bar-down"
+                      style={{
+                        height: `${successfulChecksPercent(day.down, day.up)}%`,
+                      }}
+                    />
+                    <span
+                      className="landing-analytics-bar-up"
+                      style={{
+                        height: `${successfulChecksPercent(day.up, day.down)}%`,
+                      }}
+                    />
+                  </div>
+                  <span aria-hidden="true">{day.label}</span>
+                </li>
+              ))}
+            </ol>
+          </figure>
+          <dl className="landing-analytics-counts">
+            <div>
+              <dt>
+                <i className="landing-analytics-key-up" />
+                Успешных
+              </dt>
+              <dd>{totals.up.toLocaleString("ru-RU")}</dd>
+            </div>
+            <div>
+              <dt>
+                <i className="landing-analytics-key-down" />
+                Неудачных
+              </dt>
+              <dd>{totals.down}</dd>
+            </div>
+            <div>
+              <dt>Всего проверок</dt>
+              <dd>{(totals.up + totals.down).toLocaleString("ru-RU")}</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function MonitoringDemo() {
   const container = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState(0);

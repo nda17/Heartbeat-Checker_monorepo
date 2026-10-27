@@ -98,6 +98,75 @@ test("monitor timestamps fall back to finite UTC when Intl lacks longOffset", ()
   assert.equal(monitorDateTime("invalid", "Europe/Berlin"), "—");
 });
 
+test("landing analytics switches monitors and reports matching seven-day check counts", async () => {
+  const harness = createHarness();
+  const { AnalyticsDemo } = loadComponent(
+    "../src/_pages/home/monitoring-demo.tsx",
+    {
+      "@/shared/ui": {
+        Icon: ({ name }) => React.createElement("span", { "data-icon": name }),
+      },
+    },
+  );
+
+  try {
+    await harness.render(React.createElement(AnalyticsDemo));
+    const group = harness.host.querySelector(
+      '[role="group"][aria-label="Мониторы в примере"]',
+    );
+    assert.ok(group);
+    const buttons = [...group.querySelectorAll("button")];
+    assert.equal(buttons.length, 3);
+    assert.equal(buttons[1].getAttribute("aria-pressed"), "true");
+    assert.equal(
+      buttons[1].getAttribute("aria-controls"),
+      "landing-analytics-details",
+    );
+
+    const details = harness.host.querySelector(
+      '#landing-analytics-details[role="region"][aria-label="Результаты проверок: API магазина"]',
+    );
+    assert.ok(details);
+    assert.match(details.textContent, /99,6%/);
+    assert.match(details.textContent, /2\s*008/);
+    assert.match(details.textContent, /8/);
+    assert.match(details.textContent, /2\s*016/);
+    const daily = [...details.querySelectorAll("ol li")];
+    assert.equal(daily.length, 7);
+    assert.ok(
+      daily.some(
+        (day) =>
+          day.getAttribute("aria-label") ===
+          "Ср: 97,9%, успешных 282, неудачных 6",
+      ),
+      "the chart exposes its daily successful and failed counts",
+    );
+
+    await act(async () => buttons[0].click());
+    await flush();
+    assert.equal(buttons[0].getAttribute("aria-pressed"), "true");
+    assert.equal(buttons[1].getAttribute("aria-pressed"), "false");
+    const websiteDetails = harness.host.querySelector(
+      '#landing-analytics-details[aria-label="Результаты проверок: Главная страница"]',
+    );
+    assert.ok(websiteDetails);
+    assert.match(websiteDetails.textContent, /100%/);
+    assert.match(websiteDetails.textContent, /2\s*016/);
+    assert.equal(
+      [...websiteDetails.querySelectorAll("ol li")].length,
+      7,
+      "the selected monitor retains the seven-day breakdown",
+    );
+    assert.ok(
+      [...websiteDetails.querySelectorAll("ol li")].every((day) =>
+        day.getAttribute("aria-label")?.includes("100%"),
+      ),
+    );
+  } finally {
+    await harness.unmount();
+  }
+});
+
 function createHarness() {
   toastCalls.length = 0;
   const dom = new JSDOM("<!doctype html><html><body></body></html>", {
