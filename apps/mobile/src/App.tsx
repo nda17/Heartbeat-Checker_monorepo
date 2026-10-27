@@ -34,6 +34,7 @@ import {
   Card,
   ErrorNotice,
   GlassPreferences,
+  MotionPreferences,
   Icon,
   Label,
   Page,
@@ -822,22 +823,24 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
-        <GlassPreferences>
-          {native.DEV_CLIENT ? (
-            <View style={{ backgroundColor: "#6a4000", padding: 8 }}>
-              <Text
-                style={{
-                  color: "#ffffff",
-                  textAlign: "center",
-                  fontWeight: "700",
-                }}
-              >
-                DEV · Metro по Wi-Fi · оплата и push выключены
-              </Text>
-            </View>
-          ) : null}
-          <AppContent />
-        </GlassPreferences>
+        <MotionPreferences>
+          <GlassPreferences>
+            {native.DEV_CLIENT ? (
+              <View style={{ backgroundColor: "#6a4000", padding: 8 }}>
+                <Text
+                  style={{
+                    color: "#ffffff",
+                    textAlign: "center",
+                    fontWeight: "700",
+                  }}
+                >
+                  DEV · Metro по Wi-Fi · оплата и push выключены
+                </Text>
+              </View>
+            ) : null}
+            <AppContent />
+          </GlassPreferences>
+        </MotionPreferences>
       </SafeAreaView>
     </SafeAreaProvider>
   );

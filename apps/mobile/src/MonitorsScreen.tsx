@@ -1075,6 +1075,7 @@ export function MonitorsScreen({
     return (
       <Page
         key={`incident-${selectedIncident.id}`}
+        motionKey={`incident-${selectedIncident.id}`}
         title={`Инцидент №${selectedIncident.number}`}
       >
         <Button
@@ -1110,7 +1111,11 @@ export function MonitorsScreen({
     );
   if (selected)
     return (
-      <Page title={selected.name} refresh={() => detail(selected, true)}>
+      <Page
+        title={selected.name}
+        motionKey={`monitor-${selected.id}`}
+        refresh={() => detail(selected, true)}
+      >
         <Button
           label="К списку"
           iconName="arrow-left"

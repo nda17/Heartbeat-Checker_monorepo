@@ -147,7 +147,7 @@ jobs:
           "$RUNNER_TEMP/hc-ops/hc-ops" android-manifest --apk "$apk" \
             --signature "$RUNNER_TEMP/android-signature.txt" --badging "$RUNNER_TEMP/android-badging.txt" \
             --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" \
-            --version-name 2.3.0 --version-code 12 --output android-release/release.json
+            --version-name 2.3.1 --version-code 13 --output android-release/release.json
           "$RUNNER_TEMP/hc-ops/hc-ops" android-release android-release/release.json --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" --apk "$apk"
       - name: Retain immutable signed build before publication
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

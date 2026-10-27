@@ -4008,6 +4008,33 @@ html[data-installed-app="true"] .android-hero {
   min-width: 0;
   padding: 28px 32px 24px;
 }
+@media (prefers-reduced-motion: no-preference) {
+  .landing-analytics-details {
+    animation: analytics-reveal 180ms ease-out both;
+  }
+  .landing .button,
+  .landing button {
+    transition:
+      background 120ms ease,
+      border-color 120ms ease,
+      box-shadow 120ms ease,
+      transform 120ms ease;
+  }
+  .landing .button:active,
+  .landing button:active:not(:disabled) {
+    transform: scale(0.99);
+  }
+}
+@keyframes analytics-reveal {
+  from {
+    opacity: 0.72;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
 .landing-analytics-summary {
   display: flex;
   justify-content: space-between;
