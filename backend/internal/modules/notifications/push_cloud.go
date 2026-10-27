@@ -169,8 +169,10 @@ func (s *cloudPushSender) Send(ctx context.Context, destination string, data map
 		if e != nil {
 			return pushProviderError{code: "invalid_argument", permanent: true}
 		}
-		message = map[string]any{"token": []string{destination}, "data": string(opaque), "android": map[string]any{"ttl": strconv.Itoa(seconds) + "s", "collapse_key": -1}}
-		endpoint = "https://push-api.cloud.huawei.com/v2/" + s.projectID + "/messages:send"
+		message = map[string]any{"token": []string{destination}, "data": string(opaque), "android": map[string]any{"ttl": strconv.Itoa(seconds) + "s", "collapse_key": -1, "urgency": "HIGH"}}
+		// Huawei's Android send API is scoped to the app-level OAuth client,
+		// not the AppGallery Connect project identifier.
+		endpoint = "https://push-api.cloud.huawei.com/v1/" + s.clientID + "/messages:send"
 	}
 	body, err := json.Marshal(map[string]any{"message": message})
 	if err != nil || len(body) > 4096 {

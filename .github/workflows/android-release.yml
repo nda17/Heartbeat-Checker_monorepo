@@ -12,6 +12,11 @@ on:
         required: true
         default: false
         type: boolean
+      enable_huawei:
+        description: Include the reviewed Huawei public app configuration in this candidate or promotion
+        required: false
+        default: false
+        type: boolean
       candidate_run_id:
         description: Candidate workflow run ID (required only when publishing)
         required: false
@@ -39,6 +44,10 @@ jobs:
       FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
       FIREBASE_API_KEY: ${{ vars.FIREBASE_API_KEY }}
       FIREBASE_SENDER_ID: ${{ vars.FIREBASE_SENDER_ID }}
+      HUAWEI_PUSH_ENABLED: ${{ inputs.enable_huawei }}
+      HUAWEI_APP_ID: ${{ inputs.enable_huawei && vars.HUAWEI_APP_ID || '' }}
+      HUAWEI_PROJECT_ID: ${{ inputs.enable_huawei && vars.HUAWEI_PROJECT_ID || '' }}
+      HUAWEI_CP_ID: ${{ inputs.enable_huawei && vars.HUAWEI_CP_ID || '' }}
       YOOKASSA_SDK_CLIENT_KEY: ${{ vars.YOOKASSA_SDK_CLIENT_KEY }}
       YOOKASSA_SHOP_ID: ${{ vars.YOOKASSA_SHOP_ID }}
       YOOKASSA_SDK_ENVIRONMENT: ${{ vars.YOOKASSA_SDK_ENVIRONMENT }}
@@ -50,6 +59,12 @@ jobs:
           [[ "$GITHUB_REF" == refs/heads/master && "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$SIGNING_FINGERPRINT" =~ ^([0-9A-F]{2}:){31}[0-9A-F]{2}$ ]] || { echo 'Configure the permanent public release certificate fingerprint'; exit 1; }
           [[ "$RUSTORE_PUSH_PROJECT_ID" =~ ^[a-zA-Z0-9_-]{8,128}$ ]] || { echo 'Configure the public RuStore Push project ID'; exit 1; }
+          [[ "$HUAWEI_PUSH_ENABLED" == true || "$HUAWEI_PUSH_ENABLED" == false ]] || { echo 'Invalid Huawei build mode'; exit 1; }
+          if [[ "$HUAWEI_PUSH_ENABLED" == true ]]; then
+            for name in HUAWEI_APP_ID HUAWEI_PROJECT_ID HUAWEI_CP_ID; do
+              [[ "${!name}" =~ ^[0-9]{1,32}$ ]] || { echo 'Configure complete public Huawei app identity'; exit 1; }
+            done
+          fi
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.source_sha }}
@@ -125,10 +140,14 @@ jobs:
           apk="$PWD/android-release/Heartbeat-Checker.apk"
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/android-signature.txt"
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > "$RUNNER_TEMP/android-badging.txt"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump xmltree "$apk" AndroidManifest.xml > "$RUNNER_TEMP/android-manifest.txt"
+          "$RUNNER_TEMP/hc-ops/hc-ops" android-huawei --manifest "$RUNNER_TEMP/android-manifest.txt" --apk "$apk" \
+            --enabled "$HUAWEI_PUSH_ENABLED" --app-id "$HUAWEI_APP_ID" --project-id "$HUAWEI_PROJECT_ID" --cp-id "$HUAWEI_CP_ID" \
+            --output android-release/huawei-config.json
           "$RUNNER_TEMP/hc-ops/hc-ops" android-manifest --apk "$apk" \
             --signature "$RUNNER_TEMP/android-signature.txt" --badging "$RUNNER_TEMP/android-badging.txt" \
             --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" \
-            --version-name 2.1.0 --version-code 10 --output android-release/release.json
+            --version-name 2.2.0 --version-code 11 --output android-release/release.json
           "$RUNNER_TEMP/hc-ops/hc-ops" android-release android-release/release.json --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" --apk "$apk"
       - name: Retain immutable signed build before publication
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -137,6 +156,7 @@ jobs:
           path: |
             android-release/Heartbeat-Checker.apk
             android-release/release.json
+            android-release/huawei-config.json
           if-no-files-found: error
           retention-days: 90
   publish:
@@ -149,6 +169,10 @@ jobs:
       CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
       SIGNING_FINGERPRINT: ${{ vars.ANDROID_SIGNING_CERTIFICATE_SHA256 }}
       SIGNING_RECOVERY_SHA256: ${{ vars.ANDROID_SIGNING_RECOVERY_SHA256 }}
+      HUAWEI_PUSH_ENABLED: ${{ inputs.enable_huawei }}
+      HUAWEI_APP_ID: ${{ inputs.enable_huawei && vars.HUAWEI_APP_ID || '' }}
+      HUAWEI_PROJECT_ID: ${{ inputs.enable_huawei && vars.HUAWEI_PROJECT_ID || '' }}
+      HUAWEI_CP_ID: ${{ inputs.enable_huawei && vars.HUAWEI_CP_ID || '' }}
     steps:
       - name: Validate explicit promotion inputs
         shell: bash
@@ -199,6 +223,8 @@ jobs:
       - name: Recheck immutable signed artifact
         run: |
           "$RUNNER_TEMP/hc-ops/hc-ops" android-release android-release/release.json --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" --apk android-release/Heartbeat-Checker.apk
+          "$RUNNER_TEMP/hc-ops/hc-ops" android-huawei --receipt android-release/huawei-config.json --apk android-release/Heartbeat-Checker.apk \
+            --enabled "$HUAWEI_PUSH_ENABLED" --app-id "$HUAWEI_APP_ID" --project-id "$HUAWEI_PROJECT_ID" --cp-id "$HUAWEI_CP_ID"
       - name: Publish exact APK through protected backup runner
         shell: bash
         env:
@@ -238,6 +264,7 @@ jobs:
           name: android-release-${{ inputs.source_sha }}
           path: |
             android-release/release.json
+            android-release/huawei-config.json
             android-release/publication-receipt.json
           if-no-files-found: error
           retention-days: 90

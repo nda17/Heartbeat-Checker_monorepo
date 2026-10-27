@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -43,33 +44,46 @@ func TestPushCloudSendersUseTheirProviderSpecificDataRoutes(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name, provider, host, tokenField, expectedData string
-		sender                                         *cloudPushSender
+		name, provider, host, path, tokenField string
+		sender                                 *cloudPushSender
 	}{
-		{name: "fcm", provider: "fcm", host: "fcm.googleapis.com", tokenField: "fid", expectedData: `{"deliveryId":"opaque-1","bindingGeneration":"2"}`, sender: fcm.(*cloudPushSender)},
-		{name: "huawei", provider: "huawei", host: "push-api.cloud.huawei.com", tokenField: "token", expectedData: `{"bindingGeneration":"2","deliveryId":"opaque-1"}`, sender: huawei.(*cloudPushSender)},
+		{name: "fcm", provider: "fcm", host: "fcm.googleapis.com", path: "/v1/projects/project-123/messages:send", tokenField: "fid", sender: fcm.(*cloudPushSender)},
+		{name: "huawei", provider: "huawei", host: "push-api.cloud.huawei.com", path: "/v1/67890/messages:send", tokenField: "token", sender: huawei.(*cloudPushSender)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			requests := 0
 			tc.sender.client = &http.Client{Transport: pushRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
 				requests++
 				if r.URL.Host == "oauth2.googleapis.com" || r.URL.Host == "oauth-login.cloud.huawei.com" {
+					if tc.provider == "huawei" {
+						formBody, err := io.ReadAll(r.Body)
+						if err != nil {
+							t.Fatal(err)
+						}
+						form, err := url.ParseQuery(string(formBody))
+						if err != nil || form.Get("client_id") != "67890" || form.Get("client_id") == "12345" {
+							t.Fatalf("Huawei OAuth client ID did not remain distinct from project ID: %v", err)
+						}
+					}
 					return pushResponse(r, http.StatusOK, `{"access_token":"synthetic-access-token-123","expires_in":3600,"token_type":"Bearer"}`), nil
 				}
-				if r.URL.Host != tc.host || r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer synthetic-access-token-123" {
+				if r.URL.Host != tc.host || r.URL.Path != tc.path || r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer synthetic-access-token-123" {
 					t.Fatalf("provider request = %s %s auth=%q", r.Method, r.URL, r.Header.Get("Authorization"))
 				}
-				var body map[string]map[string]any
+				var body map[string]any
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					t.Fatal(err)
 				}
-				message := body["message"]
+				message, ok := body["message"].(map[string]any)
+				if !ok || len(body) != 1 || message["notification"] != nil {
+					t.Fatalf("provider payload must contain a data-only message: %#v", body)
+				}
 				if tc.provider == "fcm" {
 					if message["fid"] != "destination-token" || message["token"] != nil {
 						t.Errorf("FCM destination fields = %#v; require fid and prohibit token", message)
 					}
 					data, ok := message["data"].(map[string]any)
-					if !ok || data["deliveryId"] != "opaque-1" || data["bindingGeneration"] != "2" {
+					if !ok || len(data) != 5 || data["v"] != "2" || data["deliveryId"] != "opaque-1" || data["installationId"] != "install-1" || data["bindingGeneration"] != "2" || data["expiresAt"] != "2030-01-02T03:04:05Z" {
 						t.Errorf("FCM data = %#v", message["data"])
 					}
 				} else {
@@ -79,19 +93,22 @@ func TestPushCloudSendersUseTheirProviderSpecificDataRoutes(t *testing.T) {
 					}
 					data, ok := message["data"].(string)
 					var decoded map[string]string
-					if !ok || json.Unmarshal([]byte(data), &decoded) != nil || decoded["deliveryId"] != "opaque-1" {
+					if !ok || json.Unmarshal([]byte(data), &decoded) != nil || len(decoded) != 5 || decoded["v"] != "2" || decoded["deliveryId"] != "opaque-1" || decoded["installationId"] != "install-1" || decoded["bindingGeneration"] != "2" || decoded["expiresAt"] != "2030-01-02T03:04:05Z" {
 						t.Errorf("Huawei opaque data = %#v", message["data"])
 					}
-				}
-				if r.URL.Host == tc.host && r.URL.Path[len(r.URL.Path)-len("messages:send"):] != "messages:send" {
-					t.Errorf("provider send endpoint = %q", r.URL.Path)
+					android, ok := message["android"].(map[string]any)
+					if !ok || android["urgency"] != "HIGH" || android["ttl"] != "60s" || android["collapse_key"] != float64(-1) {
+						t.Errorf("Huawei Android delivery options = %#v; require high urgency, TTL, and no collapse", message["android"])
+					}
 				}
 				if tc.provider == "fcm" {
 					return pushResponse(r, http.StatusOK, `{"name":"projects/project-123/messages/opaque"}`), nil
 				}
 				return pushResponse(r, http.StatusOK, `{"code":"80000000"}`), nil
 			})}
-			if err := tc.sender.Send(context.Background(), "destination-token", map[string]string{"deliveryId": "opaque-1", "bindingGeneration": "2"}, time.Minute); err != nil {
+			if err := tc.sender.Send(context.Background(), "destination-token", map[string]string{
+				"v": "2", "deliveryId": "opaque-1", "installationId": "install-1", "bindingGeneration": "2", "expiresAt": "2030-01-02T03:04:05Z",
+			}, time.Minute); err != nil {
 				t.Fatalf("synthetic %s send: %v", tc.provider, err)
 			}
 			if requests != 2 {
@@ -132,6 +149,28 @@ func TestPushCloudInvalidTokenErrorsAreRedacted(t *testing.T) {
 				t.Fatalf("provider error exposed sensitive content: %v", err)
 			}
 		})
+	}
+}
+
+func TestHuaweiTransientProviderErrorRemainsRetryable(t *testing.T) {
+	sender, err := NewHuaweiPushSender("11111", "22222", strings.Repeat("s", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloudSender := sender.(*cloudPushSender)
+	cloudSender.client = &http.Client{Transport: pushRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "oauth-login.cloud.huawei.com" {
+			return pushResponse(r, http.StatusOK, `{"access_token":"synthetic-access-token-123","expires_in":3600,"token_type":"Bearer"}`), nil
+		}
+		if r.URL.Path != "/v1/22222/messages:send" {
+			t.Fatalf("Huawei send path = %q, want client ID path", r.URL.Path)
+		}
+		return pushResponse(r, http.StatusOK, `{"code":"81000001"}`), nil
+	})}
+	err = sender.Send(context.Background(), "synthetic-huawei-token", map[string]string{"deliveryId": "opaque"}, time.Minute)
+	var providerErr pushProviderError
+	if !errorsAs(err, &providerErr) || providerErr.code != "provider_unavailable" || providerErr.permanent {
+		t.Fatalf("Huawei transient provider error = (%v, %+v), want retryable provider_unavailable", err, providerErr)
 	}
 }
 
@@ -231,10 +270,24 @@ func TestPushDeliveryRouteStaysFrozenAcrossTokenRotationAndRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	rotatedToken := "huawei-next-registration-token"
-	if _, err := f.push.UpdateRegistration(context.Background(), pair.Installation.Credential, PushRegistrationInput{
+	registration, err = f.push.UpdateRegistration(context.Background(), pair.Installation.Credential, PushRegistrationInput{
 		RegistrationVersion: registration.RegistrationVersion, Provider: "huawei", Token: &rotatedToken, Permission: "granted",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("change provider during retry wait: %v", err)
+	}
+	listed, err := f.push.ListInstallations(context.Background(), owner.accountID)
+	if err != nil {
+		t.Fatalf("list account installations after provider route change: %v", err)
+	}
+	foundHuawei := false
+	for _, item := range listed {
+		if item.ID == installation.ID {
+			foundHuawei = item.Provider == "huawei" && item.RegistrationVersion == registration.RegistrationVersion
+		}
+	}
+	if !foundHuawei {
+		t.Fatalf("account installation list omitted current Huawei provider/version: %+v", listed)
 	}
 	retry, err := f.push.ClaimPush(context.Background())
 	if err != nil || retry == nil || retry.Provider != "fcm" || retry.RegistrationToken != newToken {
@@ -263,24 +316,35 @@ func TestPushDefaultRegistrationAndStaleInvalidTokenCAS(t *testing.T) {
 	if err != nil || legacy.Provider != "rustore" {
 		t.Fatalf("registration without provider = (%+v, %v), want legacy Rustore", legacy, err)
 	}
-	f.push.cfg.Providers = []string{"rustore", "fcm"}
-	f.push.cfg.Senders = map[string]PushSender{"rustore": pushSenderFunc(func(context.Context, string, map[string]string, time.Duration) error { return nil }), "fcm": pushSenderFunc(func(context.Context, string, map[string]string, time.Duration) error { return nil })}
+	f.push.cfg.Providers = []string{"rustore", "fcm", "huawei"}
+	f.push.cfg.Senders = map[string]PushSender{
+		"rustore": pushSenderFunc(func(context.Context, string, map[string]string, time.Duration) error { return nil }),
+		"fcm":     pushSenderFunc(func(context.Context, string, map[string]string, time.Duration) error { return nil }),
+		"huawei":  pushSenderFunc(func(context.Context, string, map[string]string, time.Duration) error { return nil }),
+	}
+	oldHuaweiToken := "old-huawei-registration-token"
+	huaweiRegistration, err := f.push.UpdateRegistration(context.Background(), pair.Installation.Credential, PushRegistrationInput{
+		RegistrationVersion: legacy.RegistrationVersion, Provider: "huawei", Token: &oldHuaweiToken, Permission: "granted",
+	})
+	if err != nil || huaweiRegistration.Provider != "huawei" {
+		t.Fatalf("switch installation route to Huawei = (%+v, %v)", huaweiRegistration, err)
+	}
 	deliveryID := f.addDeliveryEvent(t, owner, installation.ID, "down", 1, "Stale token monitor")
 	attempt, err := f.push.ClaimPush(context.Background())
-	if err != nil || attempt == nil || attempt.Provider != "rustore" {
-		t.Fatalf("claim legacy route = (%+v, %v)", attempt, err)
+	if err != nil || attempt == nil || attempt.Provider != "huawei" || attempt.RegistrationToken != oldHuaweiToken {
+		t.Fatalf("claim Huawei route = (%+v, %v)", attempt, err)
 	}
-	rotated := "new-rustore-registration-token"
+	rotated := "new-huawei-registration-token"
 	if _, err := f.push.UpdateRegistration(context.Background(), pair.Installation.Credential, PushRegistrationInput{
-		RegistrationVersion: legacy.RegistrationVersion, Token: &rotated, Permission: "granted",
+		RegistrationVersion: huaweiRegistration.RegistrationVersion, Provider: "huawei", Token: &rotated, Permission: "granted",
 	}); err != nil {
-		t.Fatalf("rotate registration before stale invalid-token response: %v", err)
+		t.Fatalf("rotate Huawei registration before stale invalid-token response: %v", err)
 	}
 	if err := f.push.CompletePush(context.Background(), *attempt, pushProviderError{code: "invalid_token", permanent: true, invalidToken: true}); err != nil {
 		t.Fatal(err)
 	}
 	state, err := f.push.Installation(context.Background(), pair.Installation.Credential)
-	if err != nil || state.Status != "ready" || state.RegistrationVersion <= attempt.RegistrationVersion {
+	if err != nil || state.Status != "ready" || state.Provider != "huawei" || state.RegistrationVersion <= attempt.RegistrationVersion {
 		t.Fatalf("stale invalid-token callback changed current registration = (%+v, %v)", state, err)
 	}
 	var valid bool

@@ -132,6 +132,13 @@ func Frame(output io.Writer, lookup func(string) string) error {
 		}
 		payload = map[string]any{"shopId": shop, "secretKey": secret}
 	}
+	huawei := lookup("ACTIVATE_HUAWEI_PUSH")
+	if huawei != "" && huawei != "true" && huawei != "false" {
+		return errors.New("Invalid Huawei push activation flag")
+	}
+	if huawei == "true" && lookup("ACTIVATE_ANDROID_PUSH") != "true" {
+		return errors.New("Huawei activation requires Android push activation")
+	}
 	if lookup("ACTIVATE_ANDROID_PUSH") == "true" {
 		project, secret := lookup("RUSTORE_PUSH_PROJECT_ID"), lookup("RUSTORE_PUSH_SERVICE_TOKEN")
 		if project == "" || secret == "" {
@@ -141,7 +148,15 @@ func Frame(output io.Writer, lookup func(string) string) error {
 		if fcmProject == "" || fcmCredentials == "" {
 			return errors.New("Missing protected Firebase push configuration")
 		}
-		payload = map[string]any{"projectId": project, "serviceToken": secret, "fcm": map[string]any{"projectId": fcmProject, "serviceAccountBase64": fcmCredentials}}
+		push := map[string]any{"projectId": project, "serviceToken": secret, "fcm": map[string]any{"projectId": fcmProject, "serviceAccountBase64": fcmCredentials}}
+		if huawei == "true" {
+			project, client, secret := lookup("HUAWEI_PROJECT_ID"), lookup("HUAWEI_CLIENT_ID"), lookup("HUAWEI_CLIENT_SECRET")
+			if !match(`^[0-9]{1,32}$`, project) || !match(`^[0-9]{1,32}$`, client) || len(secret) < 16 || len(secret) > 8192 || !match(`^[A-Za-z0-9_-]+$`, secret) {
+				return errors.New("Missing or invalid protected Huawei push configuration")
+			}
+			push["huawei"] = map[string]any{"projectId": project, "clientId": client, "clientSecret": secret}
+		}
+		payload = push
 	}
 	// Validate/encode before writing any frame, so failures never leak a partial token.
 	var b []byte

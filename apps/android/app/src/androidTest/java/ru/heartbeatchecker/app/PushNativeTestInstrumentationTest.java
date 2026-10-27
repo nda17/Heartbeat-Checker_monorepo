@@ -101,6 +101,101 @@ public final class PushNativeTestInstrumentationTest {
         assertTrue(auth.ownsPush(state));
     }
 
+    @Test
+    public void asyncBindUsesFreshProviderAndTokenSnapshotAfterRouteChanges() throws Exception {
+        JSONObject before = new JSONObject().put("credential", credential(INSTALL_A, SECRET_A))
+                .put("provider", "fcm").put("token", "old-fcm-token").put("tokenRevision", 7)
+                .put("installation", installation(INSTALL_A, 1).put("registrationVersion", 3));
+        JSONObject latest = new JSONObject().put("credential", credential(INSTALL_A, SECRET_A))
+                .put("provider", "huawei").put("token", "fresh-huawei-token").put("tokenRevision", 9)
+                .put("installation", installation(INSTALL_A, 1).put("registrationVersion", 3));
+
+        assertTrue("provider selection and token rotation do not change the binding identity",
+                PushNative.sameBinding(before, latest));
+        JSONObject snapshot = PushNative.tokenSnapshot(latest);
+        assertEquals("huawei", snapshot.getString("provider"));
+        assertEquals("fresh-huawei-token", snapshot.getString("token"));
+        assertEquals(9, snapshot.getLong("tokenRevision"));
+    }
+
+    @Test
+    public void lateHuaweiCallbackCannotTakeOverSelectedFcmRoute() throws Exception {
+        push.update(state -> state.put("provider", "fcm").put("token", "selected-fcm-token")
+                .put("tokenRevision", 4).put("enabled", false));
+
+        PushSdk.rotated(context, "huawei", "late-huawei-token");
+
+        JSONObject state = push.read();
+        assertEquals("fcm", PushSdk.provider(state));
+        assertEquals("selected-fcm-token", state.getString("token"));
+        assertEquals("late-huawei-token", state.getString("candidate_huawei"));
+        assertEquals(4, state.getLong("tokenRevision"));
+    }
+
+    @Test
+    public void asyncBindRejectsCredentialRevocationAndInstallationRotation() throws Exception {
+        JSONObject before = new JSONObject().put("credential", credential(INSTALL_A, SECRET_A))
+                .put("installation", installation(INSTALL_A, 1).put("registrationVersion", 3));
+        JSONObject revoked = new JSONObject(before.toString());
+        revoked.remove("credential");
+        JSONObject rotatedCredential = new JSONObject(before.toString()).put("credential", credential(INSTALL_A, SECRET_B));
+        JSONObject newGeneration = new JSONObject(before.toString()).put("installation", installation(INSTALL_A, 2).put("registrationVersion", 3));
+        JSONObject newRegistration = new JSONObject(before.toString()).put("installation", installation(INSTALL_A, 1).put("registrationVersion", 4));
+
+        assertFalse("revoked credential cannot reuse the old asynchronous token", PushNative.sameBinding(before, revoked));
+        assertFalse("rotated credential cannot reuse the old asynchronous token", PushNative.sameBinding(before, rotatedCredential));
+        assertFalse("new binding generation cannot reuse the old asynchronous token", PushNative.sameBinding(before, newGeneration));
+        assertFalse("new registration cannot reuse the old asynchronous token", PushNative.sameBinding(before, newRegistration));
+    }
+
+    @Test
+    public void asyncBindAcceptsOnlyCurrentProviderAndSameOrNewerTokenRevision() throws Exception {
+        JSONObject body = new JSONObject().put("provider", "huawei").put("token", "huawei-token-at-revision-5");
+        JSONObject current = new JSONObject().put("provider", "huawei").put("token", "huawei-token-at-revision-5").put("tokenRevision", 5);
+        JSONObject rotated = new JSONObject().put("provider", "huawei").put("token", "huawei-token-at-revision-6").put("tokenRevision", 6);
+        JSONObject oldRevision = new JSONObject().put("provider", "huawei").put("token", "huawei-token-at-revision-4").put("tokenRevision", 4);
+        JSONObject changedProvider = new JSONObject().put("provider", "fcm").put("token", "fcm-token").put("tokenRevision", 6);
+
+        assertTrue(PushNative.bindingTokenMatches(current, body, 5));
+        assertTrue("a newer token revision is read from the active provider", PushNative.bindingTokenMatches(rotated, body, 5));
+        assertFalse("a rollback to an older token revision is rejected", PushNative.bindingTokenMatches(oldRevision, body, 5));
+        assertFalse("a token from another selected provider is never mixed into the bind", PushNative.bindingTokenMatches(changedProvider, body, 5));
+    }
+
+    @Test
+    public void authoritativeOldFcmInstallationAfterHuaweiMigrationPreservesLocalHuaweiRoute() throws Exception {
+        String currentCredential = credential(INSTALL_A, SECRET_A);
+        push.update(state -> state.put("enabled", false).put("provider", "huawei")
+                .put("token", "current-huawei-token").put("tokenRevision", 9)
+                .put("credential", currentCredential)
+                .put("installation", installation(INSTALL_A, 2).put("provider", "huawei")
+                        .put("registrationVersion", 10))
+                .put("pendingBind", new JSONObject().put("provider", "huawei")
+                        .put("token", "current-huawei-token").put("tokenRevision", 9)));
+
+        // A CAS-conflict recovery GET can still return the authoritative prior
+        // server route while the local selected provider has already migrated.
+        JSONObject authoritativeOldRoute = installation(INSTALL_A, 2).put("provider", "fcm")
+                .put("registrationVersion", 11).put("status", "ready");
+        push.acceptInstallation(authoritativeOldRoute, currentCredential, ACCOUNT_A, SESSION_A);
+
+        JSONObject state = push.read();
+        assertEquals("the server's older route must not take over local selection", "huawei", PushSdk.provider(state));
+        assertEquals("current-huawei-token", state.getString("token"));
+        assertEquals(9, state.getLong("tokenRevision"));
+        assertEquals("fcm", state.getJSONObject("installation").getString("provider"));
+        assertEquals(11, state.getJSONObject("installation").getLong("registrationVersion"));
+        assertEquals(ACCOUNT_A, state.getString("accountId"));
+        assertEquals(SESSION_A, state.getString("sessionId"));
+        assertTrue(state.getBoolean("enabled"));
+        assertFalse("successful reconciliation clears the bind retry", state.has("pendingBind"));
+
+        JSONObject snapshot = PushNative.tokenSnapshot(state);
+        assertEquals("huawei", snapshot.getString("provider"));
+        assertEquals("current-huawei-token", snapshot.getString("token"));
+        assertEquals(9, snapshot.getLong("tokenRevision"));
+    }
+
     private static JSONObject session(String account, String id) throws Exception {
         return new JSONObject().put("account", new JSONObject().put("id", account))
                 .put("session", new JSONObject().put("id", id)

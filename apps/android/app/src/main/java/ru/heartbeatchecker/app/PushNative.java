@@ -39,6 +39,7 @@ final class PushNative {
 
         PushSdk.bindingInProgress = true;
         PushWork.blockLocally(context);
+        long revocation = PushWork.localRevocation;
         PushStore store = new PushStore(context);
         try {
             store.update(state -> state.put("enabled", false));
@@ -62,25 +63,39 @@ final class PushNative {
                 });
                 if (!completed.await(30, TimeUnit.SECONDS) || !PushContract.token(found.get())) throw new IOException("Push transport unavailable");
                 if (auth.epoch() != epoch || auth.active() == null) throw new IOException("Session changed");
-                String provider = PushSdk.provider(state);
-                if (!PushContract.provider(provider)) throw new IOException("Push provider unavailable");
-                if (credential.isEmpty()) {
-                    byte[] bytes = new byte[32]; new SecureRandom().nextBytes(bytes);
-                    credential = UUID.randomUUID() + "." + Base64.encodeToString(bytes, Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING);
+                synchronized (PushStore.LOCK) {
+                    JSONObject latest = store.read();
+                    // SDK acquisition can select a fresh route or race token rotation. Bind one current snapshot.
+                    if (!sameBinding(state, latest) || latest.has("pendingBind") || PushWork.localRevocation != revocation
+                            || auth.epoch() != epoch || auth.active() == null)
+                        throw new IOException("Binding changed");
+                    JSONObject snapshot = tokenSnapshot(latest);
+                    credential = latest.optString("credential");
+                    if (credential.isEmpty()) {
+                        byte[] bytes = new byte[32]; new SecureRandom().nextBytes(bytes);
+                        credential = UUID.randomUUID() + "." + Base64.encodeToString(bytes, Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING);
+                    }
+                    JSONObject installation = latest.optJSONObject("installation");
+                    body = new JSONObject().put("installationCredential", credential).put("provider", snapshot.getString("provider"))
+                            .put("token", snapshot.getString("token")).put("permission", "granted")
+                            .put("deviceLabel", (Build.MANUFACTURER + " " + Build.MODEL).trim())
+                            .put("appVersion", BuildConfig.VERSION_NAME);
+                    if (installation != null) body.put("bindingGeneration", installation.getLong("bindingGeneration"))
+                            .put("registrationVersion", installation.getLong("registrationVersion"));
+                    if (allowAccountChange) body.put("allowAccountChange", true);
+                    String savedCredential = credential; JSONObject savedBody = body;
+                    store.update(value -> value.put("credential", savedCredential).put("pendingBind",
+                            new JSONObject().put("accountId", accountId).put("sessionId", sessionId).put("body", savedBody)
+                                    .put("tokenRevision", snapshot.getLong("tokenRevision"))));
                 }
-                JSONObject installation = state.optJSONObject("installation");
-                body = new JSONObject().put("installationCredential", credential).put("provider", provider)
-                        .put("token", found.get()).put("permission", "granted")
-                        .put("deviceLabel", (Build.MANUFACTURER + " " + Build.MODEL).trim())
-                        .put("appVersion", BuildConfig.VERSION_NAME);
-                if (installation != null) body.put("bindingGeneration", installation.getLong("bindingGeneration"))
-                        .put("registrationVersion", installation.getLong("registrationVersion"));
-                if (allowAccountChange) body.put("allowAccountChange", true);
-                String savedCredential = credential; JSONObject savedBody = body;
-                store.update(value -> value.put("credential", savedCredential).put("pendingBind",
-                        new JSONObject().put("accountId", accountId).put("sessionId", sessionId).put("body", savedBody)));
             }
             if (auth.epoch() != epoch || auth.active() == null) throw new IOException("Session changed");
+            JSONObject expectedBinding;
+            synchronized (PushStore.LOCK) {
+                expectedBinding = store.read();
+                if (PushWork.localRevocation != revocation || !credential.equals(expectedBinding.optString("credential"))
+                        || !expectedBinding.has("pendingBind")) throw new IOException("Binding changed");
+            }
             JSONObject result;
             try { result = request("POST", "/api/v1/push/native/bind", access, null, body); }
             catch (Failure failure) {
@@ -96,12 +111,44 @@ final class PushNative {
             }
             if (auth.epoch() != epoch || auth.active() == null || !PushNotifications.permitted(context)) throw new IOException("Session changed");
             JSONObject bound = PushContract.installation(result.getJSONObject("installation"));
-            if (!accountId.equals(result.getString("accountId")) || !sessionId.equals(result.getString("sessionId"))
-                    || !credential.equals(store.read().optString("credential"))) throw new IOException("Push owner mismatch");
-            store.acceptInstallation(bound, credential, accountId, sessionId);
-            PushWork.locallyBlocked = false;
+            synchronized (PushStore.LOCK) {
+                JSONObject latest = store.read(), operation = latest.optJSONObject("pendingBind");
+                if (auth.epoch() != epoch || auth.active() == null || PushWork.localRevocation != revocation || !PushNotifications.permitted(context)
+                        || !accountId.equals(result.getString("accountId")) || !sessionId.equals(result.getString("sessionId"))
+                        || !credential.equals(latest.optString("credential")) || operation == null
+                        || !sameBinding(expectedBinding, latest)
+                        || !accountId.equals(operation.optString("accountId")) || !sessionId.equals(operation.optString("sessionId"))
+                        || !body.toString().equals(operation.getJSONObject("body").toString())
+                        || !bindingTokenMatches(latest, body, operation.optLong("tokenRevision", -1))) throw new IOException("Push owner mismatch");
+                // A 409 lookup may still expose the server's old route. Keep our current
+                // provider/token; resumed registration reconciles them with the authoritative version.
+                store.acceptInstallation(bound, credential, accountId, sessionId);
+                PushWork.locallyBlocked = false;
+            }
             PushWork.resume(context);
         } finally {PushSdk.bindingInProgress = false;}
+    }
+
+    static JSONObject tokenSnapshot(JSONObject state) throws IOException {
+        String provider = PushSdk.provider(state), token = state.optString("token");
+        if (!PushContract.provider(provider) || !PushContract.token(token)) throw new IOException("Push provider unavailable");
+        try { return new JSONObject().put("provider", provider).put("token", token).put("tokenRevision", state.optLong("tokenRevision")); }
+        catch (org.json.JSONException invalid) { throw new IOException("Push state unavailable"); }
+    }
+
+    static boolean sameBinding(JSONObject before, JSONObject after) {
+        if (!before.optString("credential").equals(after.optString("credential"))) return false;
+        JSONObject previous = before.optJSONObject("installation"), current = after.optJSONObject("installation");
+        return previous == null ? current == null : current != null && previous.optString("id").equals(current.optString("id"))
+                && previous.optLong("bindingGeneration") == current.optLong("bindingGeneration")
+                && previous.optLong("registrationVersion") == current.optLong("registrationVersion");
+    }
+
+    static boolean bindingTokenMatches(JSONObject state, JSONObject body, long revision) {
+        if (!body.optString("provider").equals(PushSdk.provider(state))) return false;
+        long currentRevision = state.optLong("tokenRevision");
+        return revision < 0 || currentRevision >= revision && PushContract.token(state.optString("token"))
+                && (currentRevision > revision || body.optString("token").equals(state.optString("token")));
     }
 
     static final class Failure extends IOException {

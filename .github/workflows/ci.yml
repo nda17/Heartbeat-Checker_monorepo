@@ -148,6 +148,8 @@ jobs:
         run: bash deploy/android/setup-sdk.sh
       - name: Android lint, tests and bundled CI build without release credentials
         working-directory: apps/android
+        env:
+          HUAWEI_PUSH_ENABLED: 'false'
         run: ./gradlew --no-daemon :app:lint :app:testCiUnitTest :app:assembleCi
       - name: Verify CI APK contains an offline React Native bundle
         run: |
@@ -155,7 +157,10 @@ jobs:
           apk=apps/android/app/build/outputs/apk/ci/app-ci.apk
           test -s "$apk"
           unzip -p "$apk" assets/index.android.bundle | wc -c | awk '$1 > 100000 { found = 1 } END { exit !found }'
-          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | grep -F "package: name='ru.heartbeatchecker.app' versionCode='10' versionName='2.1.0'"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | grep -F "package: name='ru.heartbeatchecker.app' versionCode='11' versionName='2.2.0'"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump xmltree "$apk" AndroidManifest.xml > "$RUNNER_TEMP/android-ci-manifest.txt"
+          "$RUNNER_TEMP/hc-ops/hc-ops" android-huawei --manifest "$RUNNER_TEMP/android-ci-manifest.txt" --apk "$apk" \
+            --enabled false --output "$RUNNER_TEMP/android-ci-huawei.json"
           size=$(wc -c < "$apk" | tr -d ' ')
           [[ $size =~ ^[0-9]+$ ]]
           echo "Bundled CI APK bytes: $size"

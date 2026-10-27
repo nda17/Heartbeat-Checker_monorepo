@@ -14,21 +14,26 @@ import com.facebook.react.defaults.DefaultReactNativeHost;
 import java.util.List;
 
 public final class HeartbeatApplication extends Application implements ReactApplication {
-    private final ReactNativeHost host = new DefaultReactNativeHost(this) {
-        @Override public boolean getUseDeveloperSupport() { return BuildConfig.DEBUG; }
-        @Override protected String getJSMainModuleName() { return "index"; }
-        @Override protected List<ReactPackage> getPackages() {
-            List<ReactPackage> packages = new PackageList(this).getPackages();
-            packages.add(new HeartbeatPackage());
-            return packages;
-        }
-    };
+    private ReactNativeHost host;
 
-    @Override public ReactNativeHost getReactNativeHost() { return host; }
-    @Override public ReactHost getReactHost() { return DefaultReactHost.getDefaultReactHost(this, host, null); }
+    @Override public synchronized ReactNativeHost getReactNativeHost() {
+        if (!isMainProcess(Application.getProcessName(), getPackageName())) throw new IllegalStateException("React Native requires the main process");
+        if (host == null) host = new DefaultReactNativeHost(this) {
+            @Override public boolean getUseDeveloperSupport() { return BuildConfig.DEBUG; }
+            @Override protected String getJSMainModuleName() { return "index"; }
+            @Override protected List<ReactPackage> getPackages() {
+                List<ReactPackage> packages = new PackageList(this).getPackages();
+                packages.add(new HeartbeatPackage());
+                return packages;
+            }
+        };
+        return host;
+    }
+    @Override public ReactHost getReactHost() { return DefaultReactHost.getDefaultReactHost(this, getReactNativeHost(), null); }
 
     @Override public void onCreate() {
         super.onCreate();
+        PushSdk.initializeHuawei(this);
         if (!isMainProcess(Application.getProcessName(), getPackageName())) return;
         ReactNativeApplicationEntryPoint.loadReactNative(this);
         if (BuildConfig.DEV_CLIENT) {

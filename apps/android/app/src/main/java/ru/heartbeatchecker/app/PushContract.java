@@ -38,7 +38,7 @@ final class PushContract {
                 && value.codePoints().noneMatch(c -> c < 32 || c == 127);
     }
 
-    static boolean provider(String value) { return "rustore".equals(value) || "fcm".equals(value); }
+    static boolean provider(String value) { return "rustore".equals(value) || "fcm".equals(value) || "huawei".equals(value); }
 
     static boolean token(String value) { return value != null && !value.isEmpty() && bounded(value, 4096); }
 
