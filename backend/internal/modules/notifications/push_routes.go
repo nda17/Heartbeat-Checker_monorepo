@@ -107,7 +107,7 @@ func (p *Push) ListInstallations(ctx context.Context, accountID string) ([]PushI
 			return nil, e
 		}
 		expiry, e := p.sessionLease(ctx, tx, accountID, i.SessionID)
-		status := PushInstallationStatus{ID: i.ID, Provider: "rustore", DeviceLabel: i.Label, BindingGeneration: i.Generation, RegistrationVersion: i.Version, LastPairingID: pushOptionalID(i.LastPairingID), LastSeenAt: i.LastSeenAt, Status: "ready"}
+		status := PushInstallationStatus{ID: i.ID, Provider: i.Provider, DeviceLabel: i.Label, BindingGeneration: i.Generation, RegistrationVersion: i.Version, LastPairingID: pushOptionalID(i.LastPairingID), LastSeenAt: i.LastSeenAt, Status: "ready"}
 		if errors.Is(e, ErrPushReconnect) {
 			status.Status = pushSessionStatus(e)
 		} else if e != nil {
@@ -127,6 +127,9 @@ func (p *Push) ListInstallations(ctx context.Context, accountID string) ([]PushI
 				tx.Rollback(ctx)
 				continue
 			}
+			status.Provider = current.Provider
+			status.RegistrationVersion = current.Version
+			status.LastSeenAt = current.LastSeenAt
 			status.LeaseExpiresAt = &expiry
 			switch {
 			case current.Status == "pending":

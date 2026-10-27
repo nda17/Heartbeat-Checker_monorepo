@@ -38,6 +38,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return androidrelease.Run(ctx, args[1:], stdout, stderr)
 	case "android-manifest":
 		return androidrelease.RunBuild(ctx, args[1:], stdout, stderr)
+	case "android-huawei":
+		return androidrelease.RunHuawei(ctx, args[1:], stdout, stderr)
 	case "stage-push":
 		return stagepush.Run(ctx, args[1:], stdout, stderr)
 	case "stage-yookassa":

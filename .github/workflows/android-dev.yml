@@ -34,6 +34,7 @@ jobs:
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
       SIGNING_FINGERPRINT: ${{ vars.ANDROID_DEV_SIGNING_CERTIFICATE_SHA256 }}
+      HUAWEI_PUSH_ENABLED: 'false'
     steps:
       - name: Validate dev build inputs
         shell: bash
@@ -117,6 +118,8 @@ jobs:
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/android-dev-signature.txt"
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > "$RUNNER_TEMP/android-dev-badging.txt"
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump xmltree "$apk" AndroidManifest.xml > "$RUNNER_TEMP/android-dev-manifest.txt"
+          "$RUNNER_TEMP/hc-ops/hc-ops" android-huawei --manifest "$RUNNER_TEMP/android-dev-manifest.txt" --apk "$apk" \
+            --enabled false --output "$RUNNER_TEMP/android-dev-huawei.json"
           grep -Fx 'application-debuggable' "$RUNNER_TEMP/android-dev-badging.txt" >/dev/null
           grep -F 'android.permission.ACCESS_LOCAL_NETWORK' "$RUNNER_TEMP/android-dev-manifest.txt" >/dev/null
           if unzip -Z1 "$apk" | grep -Fx 'assets/index.android.bundle'; then echo 'Dev APK must load JS from Metro'; exit 1; fi
@@ -124,7 +127,7 @@ jobs:
           "$RUNNER_TEMP/hc-ops/hc-ops" android-dev-manifest --apk "$apk" \
             --signature "$RUNNER_TEMP/android-dev-signature.txt" --badging "$RUNNER_TEMP/android-dev-badging.txt" \
             --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" --output android-dev/release.json
-          jq -e '.packageName == "ru.heartbeatchecker.app.dev" and .versionName == "2.1.0-dev" and .versionCode == 10' android-dev/release.json >/dev/null
+          jq -e '.packageName == "ru.heartbeatchecker.app.dev" and .versionName == "2.2.0-dev" and .versionCode == 11' android-dev/release.json >/dev/null
       - name: Retain immutable dev candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -205,6 +208,8 @@ jobs:
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/android-dev-signature.txt"
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > "$RUNNER_TEMP/android-dev-badging.txt"
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump xmltree "$apk" AndroidManifest.xml > "$RUNNER_TEMP/android-dev-manifest.txt"
+          "$RUNNER_TEMP/hc-ops/hc-ops" android-huawei --manifest "$RUNNER_TEMP/android-dev-manifest.txt" --apk "$apk" \
+            --enabled false --output "$RUNNER_TEMP/android-dev-huawei-rechecked.json"
           grep -Fx 'application-debuggable' "$RUNNER_TEMP/android-dev-badging.txt" >/dev/null
           grep -F 'android.permission.ACCESS_LOCAL_NETWORK' "$RUNNER_TEMP/android-dev-manifest.txt" >/dev/null
           if unzip -Z1 "$apk" | grep -Fx 'assets/index.android.bundle'; then echo 'Dev APK must load JS from Metro'; exit 1; fi
@@ -212,7 +217,7 @@ jobs:
           "$RUNNER_TEMP/hc-ops/hc-ops" android-dev-manifest --apk "$apk" \
             --signature "$RUNNER_TEMP/android-dev-signature.txt" --badging "$RUNNER_TEMP/android-dev-badging.txt" \
             --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" --output "$RUNNER_TEMP/dev-rechecked.json"
-          jq -e '.packageName == "ru.heartbeatchecker.app.dev" and .versionName == "2.1.0-dev" and .versionCode == 10' android-dev/release.json >/dev/null
+          jq -e '.packageName == "ru.heartbeatchecker.app.dev" and .versionName == "2.2.0-dev" and .versionCode == 11' android-dev/release.json >/dev/null
           [[ "$(jq -Sc 'del(.builtAt)' android-dev/release.json)" == "$(jq -Sc 'del(.builtAt)' "$RUNNER_TEMP/dev-rechecked.json")" ]]
       - name: Publish exact dev APK through protected backend runner
         shell: bash

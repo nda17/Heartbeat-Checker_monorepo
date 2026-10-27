@@ -151,7 +151,8 @@ final class PushWork {
                 if (!credential.isEmpty()) {
                     retired.put(new JSONObject().put("credential", credential).put("attempts", 0));
                 }
-                state.put("retired", retired).put("enabled", false).put("optedOut", true);
+                state.put("retired", retired).put("enabled", false).put("optedOut", true)
+                        .put("tokenRevision", state.optLong("tokenRevision") + 1);
                 for (String key : new String[]{"credential", "installation", "pair", "token", "pending", "seen", "sequences", "pendingBind",
                         "registeredToken", "registeredPermission", "everExchangeAttempted", "testSeen", "testReceipts", "pendingTest"}) state.remove(key);
             }); } finally {
@@ -170,7 +171,7 @@ final class PushWork {
                 String credential = state.optString("credential");
                 JSONArray retired = state.optJSONArray("retired"); if (retired == null) retired = new JSONArray();
                 if (!credential.isEmpty()) retired.put(new JSONObject().put("credential", credential).put("attempts", 0));
-                state.put("retired", retired).put("enabled", false);
+                state.put("retired", retired).put("enabled", false).put("tokenRevision", state.optLong("tokenRevision") + 1);
                 for (String key : new String[]{"credential", "installation", "pair", "pending", "seen", "sequences", "pendingBind",
                         "registeredToken", "registeredPermission", "accountId", "sessionId", "testSeen", "testReceipts", "pendingTest"}) state.remove(key);
             });

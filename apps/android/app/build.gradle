@@ -57,6 +57,18 @@ def publicOptions = [:]
     if (value && !(value ==~ /[A-Za-z0-9_:-]{1,256}/)) throw new GradleException('Invalid public push configuration: ' + name)
     publicOptions[name] = value
 }
+def huaweiFlag = (System.getenv('HUAWEI_PUSH_ENABLED') ?: 'false').trim()
+if (!(huaweiFlag in ['true', 'false'])) throw new GradleException('HUAWEI_PUSH_ENABLED must be true or false')
+def huaweiEnabled = huaweiFlag == 'true'
+def huaweiOptions = [:]
+['HUAWEI_APP_ID', 'HUAWEI_PROJECT_ID', 'HUAWEI_CP_ID'].each { name ->
+    def value = (System.getenv(name) ?: '').trim()
+    if (value && !(value ==~ /[0-9]{1,32}/)) throw new GradleException('Invalid public push configuration: ' + name)
+    huaweiOptions[name] = huaweiEnabled ? value : ''
+}
+if (huaweiEnabled && huaweiOptions.values().any { !it }) {
+    throw new GradleException('Huawei push requires complete public HUAWEI_APP_ID, HUAWEI_PROJECT_ID and HUAWEI_CP_ID configuration.')
+}
 
 android {
     namespace 'ru.heartbeatchecker.app'
@@ -78,9 +90,11 @@ android {
         applicationId 'ru.heartbeatchecker.app'
         minSdk 29
         targetSdk 37
-        versionCode 10
-        versionName '2.1.0'
-        manifestPlaceholders = [appLinkHost: 'heartbeat-checker.ru']
+        versionCode 11
+        versionName '2.2.0'
+        manifestPlaceholders = [appLinkHost: 'heartbeat-checker.ru', huaweiEnabled: huaweiFlag,
+            huaweiAppId: 'appid=' + huaweiOptions.HUAWEI_APP_ID, huaweiPublicAppId: huaweiOptions.HUAWEI_APP_ID,
+            huaweiProjectId: huaweiOptions.HUAWEI_PROJECT_ID, huaweiCpId: huaweiOptions.HUAWEI_CP_ID]
         resValue 'string', 'ym_app_scheme', 'heartbeatchecker'
         buildConfigField 'String', 'YOOKASSA_SDK_CLIENT_KEY', '""'
         buildConfigField 'String', 'YOOKASSA_SHOP_ID', '""'
@@ -91,6 +105,8 @@ android {
         buildConfigField 'String', 'CHALLENGE_ORIGIN', '"https://heartbeat-checker.ru"'
         buildConfigField 'String', 'RUSTORE_PUSH_PROJECT_ID', '"' + pushProjectId + '"'
         publicOptions.each { name, value -> buildConfigField 'String', name, '"' + value + '"' }
+        buildConfigField 'boolean', 'HUAWEI_PUSH_ENABLED', huaweiFlag
+        huaweiOptions.each { name, value -> buildConfigField 'String', name, '"' + value + '"' }
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
     signingConfigs {
@@ -122,6 +138,9 @@ android {
             debuggable true
             resValue 'string', 'ym_app_scheme', 'heartbeatcheckerdev'
             buildConfigField 'boolean', 'DEV_CLIENT', 'true'
+            buildConfigField 'boolean', 'HUAWEI_PUSH_ENABLED', 'false'
+            huaweiOptions.each { name, value -> buildConfigField 'String', name, '""' }
+            manifestPlaceholders += [huaweiEnabled: 'false', huaweiAppId: 'appid=', huaweiPublicAppId: '', huaweiProjectId: '', huaweiCpId: '']
             buildConfigField 'String', 'RUSTORE_PUSH_PROJECT_ID', '""'
             buildConfigField 'String', 'YOOKASSA_SDK_CLIENT_KEY', '""'
             buildConfigField 'String', 'YOOKASSA_SHOP_ID', '""'
@@ -155,6 +174,9 @@ android {
             buildConfigField 'String', 'YOOKASSA_SHOP_ID', '"' + sdkTestShopId + '"'
             buildConfigField 'String', 'YOOKASSA_SDK_ENVIRONMENT', '"test"'
             buildConfigField 'boolean', 'ISOLATED_API', 'true'
+            buildConfigField 'boolean', 'HUAWEI_PUSH_ENABLED', 'false'
+            huaweiOptions.each { name, value -> buildConfigField 'String', name, '""' }
+            manifestPlaceholders += [huaweiEnabled: 'false', huaweiAppId: 'appid=', huaweiPublicAppId: '', huaweiProjectId: '', huaweiCpId: '']
             buildConfigField 'String', 'API_ORIGIN', '"http://127.0.0.1:18080"'
             buildConfigField 'String', 'CHALLENGE_ORIGIN', '"http://127.0.0.1:13119"'
         }
@@ -223,6 +245,7 @@ dependencies {
     implementation 'ru.rustore.sdk:pushclient:7.5.0'
     implementation 'com.google.firebase:firebase-messaging:26.0.0'
     implementation 'com.google.android.gms:play-services-base:18.9.0'
+    implementation 'com.huawei.hms:push:6.13.0.301'
     implementation 'androidx.work:work-runtime:2.12.0'
     constraints {
         implementation('androidx.work:work-runtime-ktx:2.12.0') {

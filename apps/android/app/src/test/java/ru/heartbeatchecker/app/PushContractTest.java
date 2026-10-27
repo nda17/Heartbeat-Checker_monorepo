@@ -28,7 +28,7 @@ public final class PushContractTest {
         assertTrue(parsed.isNull("leaseExpiresAt"));
         assertTrue(parsed.isNull("lastPairingId"));
 
-        for (String provider : new String[] {"rustore", "fcm"}) {
+        for (String provider : new String[] {"rustore", "fcm", "huawei"}) {
             assertEquals(provider, PushContract.installation(installation("ready", 1, 1).put("provider", provider))
                     .getString("provider"));
         }
@@ -41,7 +41,6 @@ public final class PushContractTest {
         assertInvalidInstallation(installation("ready", 1, 0));
         assertInvalidInstallation(installation("ready", 1, 1).put("id", INSTALLATION.toUpperCase()));
         assertInvalidInstallation(installation("ready", 1, 1).put("provider", "unknown"));
-        assertInvalidInstallation(installation("ready", 1, 1).put("provider", "huawei"));
         assertInvalidInstallation(installation("ready", 1, 1).put("lastSeenAt", JSONObject.NULL));
         assertInvalidInstallation(installation("ready", 1, 1).put("lastPairingId", "not-a-uuid"));
         assertInvalidInstallation(installation("ready", 1, 1).put("leaseExpiresAt", "not-an-instant"));

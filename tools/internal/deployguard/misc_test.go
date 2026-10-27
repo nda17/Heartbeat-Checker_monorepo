@@ -133,6 +133,85 @@ func TestFrameWritesValidatedRegistryAndSelectedJSONWithoutPartialSecrets(t *tes
 	}
 }
 
+func TestFrameIncludesHuaweiOnlyForExplicitAndroidOptIn(t *testing.T) {
+	lookup := map[string]string{
+		"GH_TOKEN": "synthetic-token", "ACTIVATE_ANDROID_PUSH": "true", "ACTIVATE_HUAWEI_PUSH": "true",
+		"RUSTORE_PUSH_PROJECT_ID": "rustore-project", "RUSTORE_PUSH_SERVICE_TOKEN": "synthetic-rustore-service-token-0123456789",
+		"FCM_PROJECT_ID": "fcm-project", "FCM_SERVICE_ACCOUNT_BASE64": "eyJ0eXBlIjoic2VydmljZV9hY2NvdW50In0=",
+		"HUAWEI_PROJECT_ID": "11111", "HUAWEI_CLIENT_ID": "22222", "HUAWEI_CLIENT_SECRET": "synthetic_huawei_secret_0123456789",
+	}
+	frame := func(t *testing.T) map[string]any {
+		t.Helper()
+		var out bytes.Buffer
+		if err := Frame(&out, func(key string) string { return lookup[key] }); err != nil {
+			t.Fatalf("Frame() error = %v", err)
+		}
+		_, payload, ok := bytes.Cut(out.Bytes(), []byte("\n"))
+		if !ok {
+			t.Fatalf("missing registry frame delimiter: %q", out.String())
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(payload, &parsed); err != nil {
+			t.Fatalf("decode framed push config: %v", err)
+		}
+		return parsed
+	}
+
+	parsed := frame(t)
+	huawei, ok := parsed["huawei"].(map[string]any)
+	if !ok || len(huawei) != 3 || huawei["projectId"] != "11111" || huawei["clientId"] != "22222" || huawei["clientSecret"] != lookup["HUAWEI_CLIENT_SECRET"] {
+		t.Fatalf("Huawei config did not preserve its distinct project and OAuth client IDs: %#v", parsed["huawei"])
+	}
+	if huawei["projectId"] == huawei["clientId"] {
+		t.Fatal("fixture must distinguish Huawei project ID from client ID")
+	}
+
+	for _, activate := range []string{"", "false"} {
+		lookup["ACTIVATE_HUAWEI_PUSH"] = activate
+		if got := frame(t); got["huawei"] != nil {
+			t.Fatalf("Huawei config emitted with activation flag %q: %#v", activate, got["huawei"])
+		}
+	}
+}
+
+func TestFrameRejectsPartialOrMalformedHuaweiOptInWithoutPartialRegistry(t *testing.T) {
+	base := map[string]string{
+		"GH_TOKEN": "synthetic-token", "ACTIVATE_ANDROID_PUSH": "true", "ACTIVATE_HUAWEI_PUSH": "true",
+		"RUSTORE_PUSH_PROJECT_ID": "rustore-project", "RUSTORE_PUSH_SERVICE_TOKEN": "synthetic-rustore-service-token-0123456789",
+		"FCM_PROJECT_ID": "fcm-project", "FCM_SERVICE_ACCOUNT_BASE64": "eyJ0eXBlIjoic2VydmljZV9hY2NvdW50In0=",
+		"HUAWEI_PROJECT_ID": "11111", "HUAWEI_CLIENT_ID": "22222", "HUAWEI_CLIENT_SECRET": "synthetic_huawei_secret_0123456789",
+	}
+	for _, tc := range []struct {
+		name, key, value string
+		android          bool
+	}{
+		{name: "missing project", key: "HUAWEI_PROJECT_ID", value: ""},
+		{name: "missing client", key: "HUAWEI_CLIENT_ID", value: ""},
+		{name: "missing secret", key: "HUAWEI_CLIENT_SECRET", value: ""},
+		{name: "non numeric project", key: "HUAWEI_PROJECT_ID", value: "project/11111"},
+		{name: "non numeric client", key: "HUAWEI_CLIENT_ID", value: "client-22222"},
+		{name: "unsafe secret", key: "HUAWEI_CLIENT_SECRET", value: "synthetic_secret-with-space "},
+		{name: "activation without Android", android: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := make(map[string]string, len(base))
+			for key, value := range base {
+				lookup[key] = value
+			}
+			if tc.key != "" {
+				lookup[tc.key] = tc.value
+			}
+			if tc.android {
+				lookup["ACTIVATE_ANDROID_PUSH"] = "false"
+			}
+			var out bytes.Buffer
+			if err := Frame(&out, func(key string) string { return lookup[key] }); err == nil || out.Len() != 0 {
+				t.Fatalf("invalid Huawei activation produced frame %q (err=%v)", out.String(), err)
+			}
+		})
+	}
+}
+
 func TestJSONCheckRejectsDuplicateOwnerJSONAndBoundsInput(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "owner.json")

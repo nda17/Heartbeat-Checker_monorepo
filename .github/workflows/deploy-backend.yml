@@ -27,6 +27,11 @@ on:
         required: false
         default: false
         type: boolean
+      activate_huawei_push:
+        description: Add reviewed Huawei Push configuration (also select activate_android_push)
+        required: false
+        default: false
+        type: boolean
       provision_owner:
         description: Import the reviewed create-only owner payload staged on the backend VPS
         required: false
@@ -79,6 +84,7 @@ jobs:
       ACTIVATE_MESSENGER_NOTIFICATIONS: ${{ inputs.activate_messenger_notifications }}
       ACTIVATE_EMAIL_NOTIFICATIONS: ${{ inputs.activate_email_notifications }}
       ACTIVATE_ANDROID_PUSH: ${{ inputs.activate_android_push }}
+      ACTIVATE_HUAWEI_PUSH: ${{ inputs.activate_huawei_push }}
       PROVISION_OWNER: ${{ inputs.provision_owner }}
       ACTIVATE_ADMIN_MFA: ${{ inputs.activate_admin_mfa }}
       ACTIVATE_OAUTH: ${{ inputs.activate_oauth }}
@@ -124,6 +130,10 @@ jobs:
           [[ "$ACTIVATE_ANDROID_PUSH" == true || "$ACTIVATE_ANDROID_PUSH" == false ]] || {
             echo 'Invalid Android push activation flag'; exit 1;
           }
+          [[ "$ACTIVATE_HUAWEI_PUSH" == true || "$ACTIVATE_HUAWEI_PUSH" == false ]] || { echo 'Invalid Huawei push activation flag'; exit 1; }
+          if [[ "$ACTIVATE_HUAWEI_PUSH" == true && "$ACTIVATE_ANDROID_PUSH" != true ]]; then
+            echo 'Huawei activation requires Android push activation'; exit 1
+          fi
           if [[ "$ACTIVATE_ANDROID_PUSH" == true ]]; then
             [[ "$ACTIVATE_TELEGRAM_RELAY" == false && "$ACTIVATE_MESSENGER_NOTIFICATIONS" == false && "$ACTIVATE_ADMIN_MFA" == false && "$ACTIVATE_OAUTH" == false && "$PROVISION_OWNER" == false && "$ACTIVATE_YOOKASSA_TEST" == false && "$ACTIVATE_EMAIL_NOTIFICATIONS" == false ]] || {
               echo 'Android push activation must be a separate configuration operation'; exit 1;
@@ -309,6 +319,9 @@ jobs:
           RUSTORE_PUSH_SERVICE_TOKEN: ${{ secrets.RUSTORE_PUSH_SERVICE_TOKEN }}
           FCM_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
           FCM_SERVICE_ACCOUNT_BASE64: ${{ secrets.FCM_SERVICE_ACCOUNT_BASE64 }}
+          HUAWEI_PROJECT_ID: ${{ vars.HUAWEI_PROJECT_ID }}
+          HUAWEI_CLIENT_ID: ${{ secrets.HUAWEI_CLIENT_ID }}
+          HUAWEI_CLIENT_SECRET: ${{ secrets.HUAWEI_CLIENT_SECRET }}
           YOOKASSA_TEST_SHOP_ID: ${{ secrets.YOOKASSA_TEST_SHOP_ID }}
           YOOKASSA_TEST_SECRET_KEY: ${{ secrets.YOOKASSA_TEST_SECRET_KEY }}
           YOOKASSA_PRODUCTION_SHOP_ID: ${{ secrets.YOOKASSA_PRODUCTION_SHOP_ID }}
