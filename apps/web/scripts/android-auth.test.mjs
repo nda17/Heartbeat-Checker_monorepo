@@ -3248,12 +3248,16 @@ function billingOrder(id, overrides = {}) {
   };
 }
 
+const futureBillingFixtureExpiry = new Date(
+  Date.now() + 365 * 24 * 60 * 60 * 1000,
+).toISOString();
+
 const billingActor = {
   account: { id: "account-billing-test", email: "billing@example.test" },
   session: {
     id: "session-billing-test",
     token: "billing-test-token",
-    expiresAt: "2026-10-23T12:00:00Z",
+    expiresAt: futureBillingFixtureExpiry,
   },
 };
 
@@ -3299,8 +3303,8 @@ function sdkOrder(id, state, overrides = {}) {
       environment: "test",
       paymentMethodType:
         state === "confirmation_required" ? "BANK_CARD" : undefined,
-      draftExpiresAt: "2026-10-23T12:00:00Z",
-      requestExpiresAt: "2026-10-23T12:00:00Z",
+      draftExpiresAt: futureBillingFixtureExpiry,
+      requestExpiresAt: futureBillingFixtureExpiry,
     },
     ...overrides,
   });
@@ -3316,7 +3320,7 @@ function sdkQuote() {
     subtitle: "Покупка мониторов",
     savePaymentMethod: "off",
     allowedPaymentMethods: ["BANK_CARD"],
-    draftExpiresAt: "2026-10-23T12:00:00Z",
+    draftExpiresAt: futureBillingFixtureExpiry,
   };
 }
 
