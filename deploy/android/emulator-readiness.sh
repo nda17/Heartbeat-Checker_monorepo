@@ -96,6 +96,15 @@ classify_state() {
       if (line ~ /Window\{[0-9a-f]+ u0 [^}]+\}/) return "other"
       bad=1; return "unreadable"
     }
+    function activity_component(line, record) {
+      record=line
+      sub(/^[[:space:]]*(ResumedActivity:[[:space:]]*|mFocusedApp=)/,"",record)
+      if(record=="null") return "null"
+      if(record !~ /^ActivityRecord\{[0-9a-f]+ u0 [A-Za-z0-9_.]+\/[A-Za-z0-9_.]+([[:space:]}])/) {
+        bad=1; return "unreadable"
+      }
+      return component(record)
+    }
     function window_valid(needed, fields, n, i) {
       needed="display owner view surface ready draw_state on_screen is_visible"
       n=split(needed,fields," ")
@@ -158,7 +167,7 @@ classify_state() {
     FILENAME ~ /\/activities.txt$/ {
       if ($0=="ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)") activities_header++
       if ($0 ~ /^[[:space:]]*ResumedActivity/ && $0 !~ /^[[:space:]]*ResumedActivity:/) bad=1
-      if ($0 ~ /^[[:space:]]*ResumedActivity:/) field("resumed",component($0))
+      if ($0 ~ /^[[:space:]]*ResumedActivity:/) field("resumed",activity_component($0))
       next
     }
     FILENAME ~ /\/displays.txt$/ {
@@ -172,7 +181,7 @@ classify_state() {
         if (values["focus"]=="null") focus_id="null"
         else { sub(/^.*Window\{/,"",focus_id); sub(/ .*/,"",focus_id) }
       }
-      if (in_display && $0 ~ /^[[:space:]]*mFocusedApp=/) field("focused_app",component($0))
+      if (in_display && $0 ~ /^[[:space:]]*mFocusedApp=/) field("focused_app",activity_component($0))
       next
     }
     FILENAME ~ /\/windows.txt$/ {

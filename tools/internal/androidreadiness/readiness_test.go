@@ -112,6 +112,9 @@ if [[ ${1:-} == shell && ${2:-} == cmd && ${3:-} == package && ${4:-} == resolve
 	    no-resumed-permanent:*) state=no-resumed ;;
 	    focus-window-transition:1) state=focus-window-missing ;;
 	    focus-window-missing-permanent:*) state=focus-window-missing ;;
+	    malformed-resumed-prefix:1) state=malformed-resumed-prefix ;;
+	    malformed-focused-app-id:1) state=malformed-focused-app-id ;;
+	    null-focused-app-transition:1) state=null-focused-app ;;
 	    invalid-draw-state:1) state=invalid-draw-state ;;
 	    exact-anr:1|repeated-anr:1|repeated-anr:2|repeated-anr:3|post-recovery-unknown:1|force-stop-failure:1|home-start-failure:1) state=launcher-anr ;;
 	    post-recovery-unknown:2) state=unknown-anr ;;
@@ -168,7 +171,7 @@ if [[ ${1:-} == shell && ${2:-} == am && ${3:-} == start ]]; then printf 'Status
 if [[ ${1:-} == logcat ]]; then printf 'logcat fixture\n'; exit 0; fi
 exit 2
 `)
-	for _, state := range []string{"ready", "waiting", "setup-fallback", "draw-pending", "no-resumed", "focus-window-missing", "invalid-draw-state", "launcher-anr", "launcher-anr-pending", "unknown-anr", "system-error", "historical-anr", "malformed", "wrong-display", "wrong-home", "wrong-home-anr", "malformed-home", "malformed-window-id", "mixed-window"} {
+	for _, state := range []string{"ready", "waiting", "setup-fallback", "draw-pending", "no-resumed", "focus-window-missing", "invalid-draw-state", "malformed-resumed-prefix", "malformed-focused-app-id", "null-focused-app", "launcher-anr", "launcher-anr-pending", "unknown-anr", "system-error", "historical-anr", "malformed", "wrong-display", "wrong-home", "wrong-home-anr", "malformed-home", "malformed-window-id", "mixed-window"} {
 		writeStateFixtures(t, fixtures, state)
 	}
 	return root, report, bin
@@ -193,7 +196,7 @@ func writeStateFixtures(t *testing.T, dir, state string) {
 	case "setup-fallback":
 		home = "priority=3 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true\ncom.google.android.googlesdksetup/.DefaultActivity\n"
 		activities = "ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)\nResumedActivity: ActivityRecord{deae9ae u0 com.android.settings/.FallbackHome t5}\n"
-		displays = "Display: mDisplayId=0\n  mCurrentFocus=Window{7bdd436 u0 com.android.settings/com.android.settings.FallbackHome}\n  mFocusedApp=ActivityRecord{7e6effb u0 com.android.settings/.FallbackHome t5}\n"
+		displays = "Display: mDisplayId=0\n  mCurrentFocus=Window{7bdd436 u0 com.android.settings/com.android.settings.FallbackHome}\n  mFocusedApp=ActivityRecord{7e6effb u0 com.android.settings/.FallbackHome t5 f}}\n"
 		window = "Window #0 Window{7bdd436 u0 com.android.settings/com.android.settings.FallbackHome}:\n" +
 			"  mDisplayId=0 rootTaskId=1 mSession=Session{33b412b 924:u0a10181}\n" +
 			"  mOwnerUid=1000 showForAllUsers=false package=com.android.settings appop=NONE\n" +
@@ -210,6 +213,12 @@ func writeStateFixtures(t *testing.T, dir, state string) {
 			"  isOnScreen=true\n  isVisible=true\n"
 	case "no-resumed":
 		activities = "ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)\nDisplay #0 (activities from top to bottom):\n"
+	case "malformed-resumed-prefix":
+		activities = "ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)\nResumedActivity: Garbage ActivityRecord{abc u0 " + launcherComponent + " t1}\n"
+	case "malformed-focused-app-id":
+		displays = "Display: mDisplayId=0\n  mCurrentFocus=Window{abc123 u0 " + launcherComponent + "}\n  mFocusedApp=ActivityRecord{g1 u0 " + launcherComponent + " t1}\n"
+	case "null-focused-app":
+		displays = "Display: mDisplayId=0\n  mCurrentFocus=Window{abc123 u0 " + launcherComponent + "}\n  mFocusedApp=null\n"
 	case "focus-window-missing":
 		displays = "Display: mDisplayId=0\n  mCurrentFocus=Window{fa43e0e u0 " + launcherPackage + "/" + launcherPackage + ".NexusLauncherActivity}\n  mFocusedApp=ActivityRecord{abc u0 " + launcherComponent + " t1}\n"
 	case "invalid-draw-state":
@@ -402,7 +411,7 @@ func TestProvisioningHomeWaitsThenAcceptsNexusLauncher(t *testing.T) {
 }
 
 func TestIncompleteLauncherSnapshotsWaitThenAcceptReadyHome(t *testing.T) {
-	for _, mode := range []string{"draw-pending-transition", "no-resumed-transition", "focus-window-transition"} {
+	for _, mode := range []string{"draw-pending-transition", "no-resumed-transition", "focus-window-transition", "null-focused-app-transition"} {
 		t.Run(mode, func(t *testing.T) {
 			got, calls, _, reports := runHelper(t, mode)
 			assertOutcome(t, got, "ready", "home_stable", 0)
@@ -565,6 +574,8 @@ func TestMalformedStateAndAdbTimeoutFailClosed(t *testing.T) {
 	tests := []struct{ mode, reason string }{
 		{"malformed", "state_unreadable"},
 		{"malformed-home", "state_unreadable"},
+		{"malformed-resumed-prefix", "state_unreadable"},
+		{"malformed-focused-app-id", "state_unreadable"},
 		{"invalid-draw-state", "state_unreadable"},
 		{"wrong-display", "state_unreadable"},
 		{"malformed-window-id", "state_unreadable"},
