@@ -161,12 +161,6 @@ export function SupportLinks({ compact = false }: { compact?: boolean }) {
             ),
           )}
       </View>
-      {!compact ? (
-        <Label muted>
-          Документы и поддержка открываются во внешнем браузере. Сообщение
-          отправляете вы.
-        </Label>
-      ) : null}
     </View>
   );
 }

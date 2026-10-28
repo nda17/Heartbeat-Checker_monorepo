@@ -157,7 +157,7 @@ jobs:
           apk=apps/android/app/build/outputs/apk/ci/app-ci.apk
           test -s "$apk"
           unzip -p "$apk" assets/index.android.bundle | wc -c | awk '$1 > 100000 { found = 1 } END { exit !found }'
-          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | grep -F "package: name='ru.heartbeatchecker.app' versionCode='13' versionName='2.3.1'"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | grep -F "package: name='ru.heartbeatchecker.app' versionCode='14' versionName='2.3.2'"
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump xmltree "$apk" AndroidManifest.xml > "$RUNNER_TEMP/android-ci-manifest.txt"
           "$RUNNER_TEMP/hc-ops/hc-ops" android-huawei --manifest "$RUNNER_TEMP/android-ci-manifest.txt" --apk "$apk" \
             --enabled false --output "$RUNNER_TEMP/android-ci-huawei.json"

@@ -18,12 +18,15 @@ import org.json.JSONObject;
 import java.io.IOException;
 import ru.rustore.sdk.pushclient.RuStorePushClient;
 import ru.rustore.sdk.pushclient.common.logger.Logger;
-import ru.rustore.sdk.pushclient.messaging.exception.RuStorePushClientException;
 import ru.rustore.sdk.core.feature.model.FeatureAvailabilityResult;
 
 /** One active route per installation. Other SDK callbacks only cache candidates. */
 final class PushSdk {
-    interface TokenResult { void ready(String token); void unavailable(); }
+    interface TokenResult {
+        void ready(String token);
+        void unavailable();
+        default boolean active() { return true; }
+    }
     enum Availability { READY, MISSING, RETRY }
     private static volatile boolean initialized;
     // Binding may wait on PushWork.IO; token acquisition must not queue behind that wait.
@@ -126,6 +129,82 @@ final class PushSdk {
         return -1;
     }
 
+    static int nextPreferredCandidate(String current, org.json.JSONArray allowed, int start, java.util.function.Predicate<String> supported) {
+        int candidate = nextCandidate(current, allowed, start, supported);
+        String[] order = providerOrder();
+        boolean advertised = false;
+        if (allowed != null) for (int i = 0; i < allowed.length(); i++) advertised |= current.equals(allowed.optString(i));
+        if (advertised) for (int i = 0; i < order.length; i++)
+            if (current.equals(order[i])) return candidate >= 0 && candidate < i ? candidate : -1;
+        return -1;
+    }
+
+    static void requestBestProvider(String previous, org.json.JSONArray allowed, boolean keepCurrent,
+            java.util.function.Predicate<String> supported, TokenResult result,
+            java.util.function.BiConsumer<String, TokenResult> request) {
+        if (!result.active()) { result.unavailable(); return; }
+        int candidate = keepCurrent ? nextPreferredCandidate(previous, allowed, 0, supported)
+                : nextCandidate(previous, allowed, 0, supported);
+        String target = candidate >= 0 ? providerOrder()[candidate] : keepCurrent ? previous : "";
+        if (!PushContract.provider(target) || !result.active()) { result.unavailable(); return; }
+        // Select exactly one ready SDK. Token errors retry this route, never a lower-priority provider.
+        request.accept(target, result);
+    }
+
+    static void requestTokenStage(java.util.function.BooleanSupplier active, TokenResult result, Runnable request) {
+        if (!result.active() || !active.getAsBoolean()) { result.unavailable(); return; }
+        request.run();
+    }
+
+    static boolean candidateMatches(JSONObject before, JSONObject after, long revocation, long currentRevocation, boolean active) {
+        return candidateOwnerMatches(before, after, revocation, currentRevocation, active)
+                && before.optLong("tokenRevision") == after.optLong("tokenRevision");
+    }
+
+    private static boolean candidateOwnerMatches(JSONObject before, JSONObject after, long revocation, long currentRevocation, boolean active) {
+        return active && revocation == currentRevocation && PushNative.sameBinding(before, after)
+                && provider(before).equals(provider(after)) && before.optString("accountId").equals(after.optString("accountId"))
+                && before.optString("sessionId").equals(after.optString("sessionId"))
+                && before.optBoolean("enabled") == after.optBoolean("enabled")
+                && before.optBoolean("optedOut") == after.optBoolean("optedOut") && !after.has("pendingBind");
+    }
+
+    static void commitCandidate(JSONObject state, String target, String token) throws org.json.JSONException {
+        if (!PushContract.provider(target) || !PushContract.token(token)) throw new org.json.JSONException("Push candidate unavailable");
+        boolean changed = !target.equals(provider(state));
+        if (changed || !token.equals(state.optString("token")))
+            state.put("tokenRevision", state.optLong("tokenRevision") + 1);
+        state.put("provider", target).put("token", token);
+        if (changed) {
+            state.remove("providerDiagnostic");
+            state.remove("registeredToken"); state.remove("registeredProvider");
+        }
+    }
+
+    private static final class TokenAttempt {
+        final JSONObject before;
+        final long revocation, authEpoch, expiresAt;
+        final boolean binding;
+        final TokenResult result;
+        TokenAttempt(JSONObject before, long revocation, long authEpoch, boolean binding, TokenResult result) {
+            this.before = before; this.revocation = revocation; this.authEpoch = authEpoch;
+            this.binding = binding; this.result = result;
+            expiresAt = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
+        }
+        boolean active(Context context, JSONObject latest) throws IOException {
+            AuthStore auth = new AuthStore(context);
+            return result.active() && System.nanoTime() < expiresAt && binding == bindingInProgress
+                    && (!PushWork.locallyBlocked && !latest.optBoolean("optedOut") || binding)
+                    && auth.epoch() == authEpoch && auth.active() != null && (binding || auth.ownsPush(latest));
+        }
+        boolean current(Context context, PushStore store) {
+            try {
+                JSONObject latest = store.read();
+                return candidateOwnerMatches(before, latest, revocation, PushWork.localRevocation, active(context, latest));
+            } catch (IOException ignored) { return false; }
+        }
+    }
+
     static void token(Context context, TokenResult result) {
         if (BuildConfig.DEV_CLIENT || BuildConfig.ISOLATED_API) { result.unavailable(); return; }
         if (!initialized) { result.unavailable(); return; }
@@ -133,6 +212,8 @@ final class PushSdk {
             PushStore store = new PushStore(context);
             JSONObject state = store.read();
             if ((PushWork.locallyBlocked || state.optBoolean("optedOut")) && !bindingInProgress) { result.unavailable(); return; }
+            TokenAttempt attempt = new TokenAttempt(state, PushWork.localRevocation, new AuthStore(context).epoch(), bindingInProgress, result);
+            if (state.has("pendingBind") || !attempt.active(context, state)) { result.unavailable(); return; }
             JSONObject capabilities = new PushApi().request("GET", "/api/v1/push/capabilities", "", null);
             if (capabilities.optInt("protocolVersion") != 2) { result.unavailable(); return; }
             store.update(value -> value.put("serverProviders", capabilities.getJSONArray("providers")));
@@ -141,91 +222,70 @@ final class PushSdk {
             org.json.JSONArray available = capabilities.getJSONArray("providers");
             for (int i=0; i<available.length(); i++) allowed |= current.equals(available.optString(i));
             if (PushContract.provider(current) && allowed && !definitivelyUnavailable(context, current)) {
-                request(context, store, current, result); return;
+                choose(context, store, attempt, available, true); return;
             }
-            choose(context, store, current, 0, result);
+            choose(context, store, attempt, available, false);
         } catch (IOException | org.json.JSONException | RuntimeException ignored) { result.unavailable(); }
     }
 
-    private static void choose(Context context, PushStore store, String previous, int index, TokenResult result) {
-        String[] order = providerOrder();
-        final int candidate;
+    private static void choose(Context context, PushStore store, TokenAttempt attempt, org.json.JSONArray available, boolean prefer) {
+        String previous = provider(attempt.before);
         try {
-            org.json.JSONArray available = store.read().optJSONArray("serverProviders");
-            candidate = nextCandidate(previous, available, index, target -> supported(context, target));
-        } catch (IOException ignored) { result.unavailable(); return; }
-        if (candidate < 0) { store.providerIssue(PushStore.ProviderIssue.SDK_UNAVAILABLE); result.unavailable(); return; }
-        String target = order[candidate];
-        if ("rustore".equals(target)) {
-            try {
-                RuStorePushClient.INSTANCE.checkPushAvailability().addOnSuccessListener(available -> {
-                    if (available instanceof FeatureAvailabilityResult.Available) select(context, store, previous, target, result);
-                    else choose(context, store, previous, candidate + 1, result);
-                }).addOnFailureListener(ignored -> result.unavailable());
-            } catch (RuntimeException ignored) { result.unavailable(); }
-        } else select(context, store, previous, target, result);
-    }
-
-    private static void select(Context context, PushStore store, String previous, String target, TokenResult result) {
-        try {
-            synchronized (PushStore.LOCK) {
-                JSONObject latest = store.read();
-                if (!previous.equals(provider(latest)) || latest.has("pendingBind")
-                        || (PushWork.locallyBlocked || latest.optBoolean("optedOut")) && !bindingInProgress) { result.unavailable(); return; }
-                store.update(state -> {
-                    state.put("provider", target); state.remove("token");
-                    state.remove("providerDiagnostic");
-                    state.remove("registeredToken"); state.remove("registeredProvider");
-                    state.put("tokenRevision", state.optLong("tokenRevision") + 1);
-                });
+            JSONObject latest = store.read();
+            if (!candidateMatches(attempt.before, latest, attempt.revocation, PushWork.localRevocation, attempt.active(context, latest))) {
+                attempt.result.unavailable(); return;
             }
-            request(context, store, target, result);
-        } catch (IOException ignored) { result.unavailable(); }
+        } catch (IOException ignored) { attempt.result.unavailable(); return; }
+        requestBestProvider(previous, available, prefer, target -> supported(context, target), attempt.result,
+                (target, result) -> request(context, store, attempt, target, result));
     }
 
-    private static void request(Context context, PushStore store, String provider, TokenResult result) {
+    private static void request(Context context, PushStore store, TokenAttempt attempt, String provider, TokenResult result) {
         try {
+            if (!attempt.current(context, store)) { result.unavailable(); return; }
             long revision = store.read().optLong("tokenRevision");
             if ("fcm".equals(provider)) {
                 FirebaseMessaging.getInstance().register().addOnSuccessListener(unused ->
-                        FirebaseInstallations.getInstance().getId().addOnSuccessListener(value -> acquired(context, store, provider, value, revision, result))
-                                .addOnFailureListener(ignored -> result.unavailable()))
+                        requestTokenStage(() -> attempt.current(context, store), result, () ->
+                            FirebaseInstallations.getInstance().getId().addOnSuccessListener(value -> acquired(context, store, attempt, provider, value, revision, result))
+                                    .addOnFailureListener(ignored -> result.unavailable())))
                         .addOnFailureListener(ignored -> result.unavailable());
             } else if ("huawei".equals(provider)) {
                 HUAWEI_IO.execute(() -> {
                     try {
+                        if (!attempt.current(context, store)) { result.unavailable(); return; }
                         String value = HmsInstanceId.getInstance(context).getToken(BuildConfig.HUAWEI_APP_ID, "HCM");
                         if (!PushContract.token(value)) value = store.read().optString("candidate_huawei");
-                        acquired(context, store, provider, value, revision, result);
+                        acquired(context, store, attempt, provider, value, revision, result);
                     } catch (Exception ignored) { result.unavailable(); }
                 });
             } else if ("rustore".equals(provider)) {
                 RuStorePushClient.INSTANCE.checkPushAvailability().addOnSuccessListener(available -> {
                     if (!(available instanceof FeatureAvailabilityResult.Available)) {
-                        if (available instanceof FeatureAvailabilityResult.Unavailable
-                                && ((FeatureAvailabilityResult.Unavailable) available).getCause() instanceof RuStorePushClientException.HostAppNotInstalledException)
-                            choose(context, store, provider, 0, result);
-                        else result.unavailable();
+                        result.unavailable();
                         return;
                     }
-                    RuStorePushClient.INSTANCE.getToken().addOnSuccessListener(value -> acquired(context, store, provider, value, revision, result))
-                            .addOnFailureListener(ignored -> result.unavailable());
+                    requestTokenStage(() -> attempt.current(context, store), result, () ->
+                        RuStorePushClient.INSTANCE.getToken().addOnSuccessListener(value -> acquired(context, store, attempt, provider, value, revision, result))
+                                .addOnFailureListener(ignored -> result.unavailable()));
                 }).addOnFailureListener(ignored -> result.unavailable());
             } else result.unavailable();
         } catch (IOException | RuntimeException ignored) { result.unavailable(); }
     }
 
-    private static void acquired(Context context, PushStore store, String provider, String token, long revision, TokenResult result) {
+    private static void acquired(Context context, PushStore store, TokenAttempt attempt, String provider, String token, long revision, TokenResult result) {
         try {
             synchronized (PushStore.LOCK) {
                 JSONObject latest = store.read();
-                if (!provider.equals(provider(latest)) || (PushWork.locallyBlocked || latest.optBoolean("optedOut")) && !bindingInProgress) { result.unavailable(); return; }
-                String current = latest.optLong("tokenRevision") != revision ? latest.optString("token") : token;
+                boolean sameProvider = provider.equals(provider(latest));
+                boolean active = attempt.active(context, latest);
+                if (!(sameProvider ? candidateOwnerMatches(attempt.before, latest, attempt.revocation, PushWork.localRevocation, active)
+                        : candidateMatches(attempt.before, latest, attempt.revocation, PushWork.localRevocation, active))) {
+                    result.unavailable(); return;
+                }
+                String current = sameProvider && latest.optLong("tokenRevision") != revision ? latest.optString("token") : token;
                 if (!PushContract.token(current)) { result.unavailable(); return; }
-                store.update(state -> {
-                    state.put("provider", provider);
-                    if (!current.equals(state.optString("token"))) state.put("token", current).put("tokenRevision", state.optLong("tokenRevision") + 1);
-                });
+                store.update(state -> commitCandidate(state, provider, current));
                 result.ready(current);
             }
         } catch (IOException ignored) { result.unavailable(); }

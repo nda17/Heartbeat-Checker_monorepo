@@ -30,8 +30,11 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.*;
 
@@ -259,6 +262,122 @@ public final class PushStoreTest {
         assertFalse(ciphertext.contains(PushStore.DeliveryStage.QUEUED.name()));
         assertFalse(ciphertext.contains(sdkMessage));
         assertTrue("diagnostics keep encrypted state within its configured bound", encrypted.length < 8192);
+    }
+
+    @Test
+    public void providerUpgradePreservesBindingAndDeliveryDedupeState() throws Exception {
+        String duplicate = deliveryId(83);
+        String currentToken = "existing-rustore-token-123456";
+        store.update(state -> state.put("provider", "rustore").put("token", currentToken).put("tokenRevision", 9)
+                .put("seen", new JSONArray().put(duplicate))
+                .put("sequences", new JSONObject().put(MONITOR, 14))
+                .put("registeredProvider", "rustore").put("registeredToken", currentToken)
+                .put("providerDiagnostic", new JSONObject().put("code", "OTHER")));
+        JSONObject before = store.read();
+
+        store.update(state -> PushSdk.commitCandidate(state, "fcm", "new-fcm-token-123456789"));
+
+        JSONObject after = store.read();
+        assertEquals("successful acquisition promotes the route", "fcm", after.getString("provider"));
+        assertEquals("successful acquisition commits the candidate token", "new-fcm-token-123456789", after.getString("token"));
+        assertEquals("the candidate commit advances the token revision once", 10, after.getLong("tokenRevision"));
+        assertEquals("installation identity stays stable", before.getJSONObject("installation").toString(),
+                after.getJSONObject("installation").toString());
+        assertEquals("binding generation stays stable", before.getJSONObject("installation").getLong("bindingGeneration"),
+                after.getJSONObject("installation").getLong("bindingGeneration"));
+        assertEquals("incident dedupe survives a provider route switch", before.getJSONArray("seen").toString(),
+                after.getJSONArray("seen").toString());
+        assertEquals("sequence watermarks survive a provider route switch", before.getJSONObject("sequences").toString(),
+                after.getJSONObject("sequences").toString());
+        assertFalse("a changed route clears registration material for the previous provider", after.has("registeredProvider"));
+        assertFalse(after.has("registeredToken"));
+        assertFalse(after.has("providerDiagnostic"));
+        assertFalse("a duplicate delivery remains deduplicated after upgrade",
+                store.reserve(envelope(duplicate, 1, System.currentTimeMillis() + 300_000)));
+    }
+
+    @Test
+    public void failedHighestProviderTokenRequestPreservesCurrentRouteAndToken() throws Exception {
+        String currentToken = "existing-rustore-token-123456";
+        store.update(state -> state.put("provider", "rustore").put("token", currentToken).put("tokenRevision", 11));
+        String[] requestedProvider = {null};
+        AtomicInteger unavailable = new AtomicInteger();
+        PushSdk.TokenResult result = new PushSdk.TokenResult() {
+            @Override public void ready(String token) { fail("failed token acquisition cannot report ready"); }
+            @Override public void unavailable() { unavailable.incrementAndGet(); }
+        };
+
+        PushSdk.requestBestProvider("rustore", new JSONArray().put("fcm").put("huawei").put("rustore"), true,
+                provider -> true, result, (provider, callback) -> {
+                    requestedProvider[0] = provider;
+                    callback.unavailable();
+                });
+
+        JSONObject after = store.read();
+        assertEquals("only the ready higher-priority candidate was requested", "fcm", requestedProvider[0]);
+        assertEquals("failed candidate acquisition completes once", 1, unavailable.get());
+        assertEquals("failed candidate acquisition preserves the active route", "rustore", after.getString("provider"));
+        assertEquals("failed candidate acquisition preserves the active token", currentToken, after.getString("token"));
+        assertEquals("failed candidate acquisition does not advance the revision", 11, after.getLong("tokenRevision"));
+    }
+
+    @Test
+    public void lateSdkRotationCachesCandidateWithoutTakingOverSelectedRoute() throws Exception {
+        String currentToken = "existing-rustore-token-123456";
+        store.update(state -> state.put("provider", "rustore").put("token", currentToken).put("tokenRevision", 12));
+
+        PushSdk.rotated(context, "fcm", "late-fcm-candidate-token-123456");
+
+        JSONObject after = store.read();
+        assertEquals("a stale SDK callback cannot change the selected provider", "rustore", after.getString("provider"));
+        assertEquals("a stale SDK callback cannot replace the selected token", currentToken, after.getString("token"));
+        assertEquals("a stale SDK callback cannot advance the selected token revision", 12, after.getLong("tokenRevision"));
+        assertEquals("the nonselected provider token remains available as a candidate",
+                "late-fcm-candidate-token-123456", after.getString("candidate_fcm"));
+    }
+
+    @Test
+    public void timedOutTokenCallbackCannotDispatchAnotherProviderOrChangeRoute() throws Exception {
+        String currentToken = "existing-rustore-token-123456";
+        store.update(state -> state.put("provider", "rustore").put("token", currentToken).put("tokenRevision", 13));
+        JSONObject before = store.read();
+        CountDownLatch requested = new CountDownLatch(1);
+        AtomicReference<PushSdk.TokenResult> callback = new AtomicReference<>();
+        AtomicBoolean result = new AtomicBoolean(true);
+        AtomicInteger providerRequests = new AtomicInteger();
+        AtomicReference<String> requestedProvider = new AtomicReference<>();
+        JSONArray allAllowed = new JSONArray().put("fcm").put("huawei").put("rustore");
+        Thread waiter = new Thread(() -> {
+            try {
+                result.set(PushWorker.awaitToken(20, () -> true, tokenResult -> PushSdk.requestBestProvider(
+                        "rustore", allAllowed, true, provider -> true, tokenResult, (provider, providerCallback) -> {
+                            providerRequests.incrementAndGet();
+                            requestedProvider.set(provider);
+                            callback.set(providerCallback);
+                            requested.countDown();
+                        })));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        waiter.start();
+
+        assertTrue("worker must start token acquisition", requested.await(2, TimeUnit.SECONDS));
+        waiter.join(2_000);
+        assertFalse("a missing SDK callback times out", result.get());
+        assertNotNull(callback.get());
+        assertEquals("the timed-out attempt selected only its best provider", "fcm", requestedProvider.get());
+        assertFalse("the captured SDK callback is fenced after timeout", callback.get().active());
+        callback.get().ready("late-sdk-token-123456789");
+        assertFalse("a late SDK result remains inactive", callback.get().active());
+        PushSdk.requestBestProvider("rustore", allAllowed, true, provider -> true, callback.get(),
+                (provider, providerCallback) -> providerRequests.incrementAndGet());
+        assertEquals("an expired callback cannot start a lower-priority SDK request", 1, providerRequests.get());
+        JSONObject after = store.read();
+        assertEquals("a timed-out SDK result cannot change the active route", before.getString("provider"), after.getString("provider"));
+        assertEquals("a timed-out SDK result cannot replace the active token", before.getString("token"), after.getString("token"));
+        assertEquals("a timed-out SDK result cannot advance the token revision", before.getLong("tokenRevision"),
+                after.getLong("tokenRevision"));
     }
 
     @Test

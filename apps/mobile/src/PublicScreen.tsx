@@ -16,10 +16,12 @@ import {
   Card,
   DetailRow,
   GlassBackdrop,
+  GlitchAccent,
   Icon,
   IconName,
   Label,
   Notice,
+  SignalAccent,
   TextAction,
   Title,
   usePalette,
@@ -410,25 +412,63 @@ function Demo() {
             accessible
             accessibilityLabel={`${demoDays[index]}: ${checksPerDay - down} из ${checksPerDay} проверок успешны, ${successfulChecks(down, checksPerDay)}%, ошибок ${down}`}
           >
-            <View style={[styles.dailyBar, { backgroundColor: c.border }]}>
-              {down > 0 ? (
+            <View
+              style={[
+                styles.dailyOutline,
+                { borderColor: down > 0 ? c.dangerText : "transparent" },
+              ]}
+            >
+              <GlitchAccent active={down > 0} style={styles.dailyBar}>
                 <View
-                  style={{
-                    flex: down,
-                    backgroundColor: c.dangerText,
-                  }}
-                />
-              ) : null}
-              <View
-                style={{ flex: checksPerDay - down, backgroundColor: c.accent }}
-              />
+                  style={[
+                    StyleSheet.absoluteFill,
+                    { backgroundColor: c.border },
+                  ]}
+                >
+                  {down > 0 ? (
+                    <View
+                      style={{
+                        flex: down,
+                        backgroundColor: c.dangerText,
+                      }}
+                    />
+                  ) : null}
+                  <View
+                    style={{
+                      flex: checksPerDay - down,
+                      backgroundColor: c.accent,
+                    }}
+                  />
+                </View>
+              </GlitchAccent>
             </View>
-            <Text style={[styles.small, { color: c.subtle }]}>
+            <Text
+              style={[
+                styles.small,
+                {
+                  color: down > 0 ? c.dangerText : c.subtle,
+                  fontWeight: down > 0 ? "800" : "400",
+                },
+              ]}
+            >
               {demoDays[index]}
             </Text>
           </View>
         ))}
       </Animated.View>
+      {failed > 0 ? (
+        <Text
+          style={[styles.small, { color: c.dangerText, fontWeight: "600" }]}
+        >
+          Сбои:{" "}
+          {selected.down
+            .flatMap((down, index) =>
+              down > 0 ? [`${demoDays[index]} — ${down}`] : [],
+            )
+            .join(", ")}
+          . Число неудачных проверок за день.
+        </Text>
+      ) : null}
       <Label muted>
         По 288 проверок в день. Процент рассчитан по результатам проверок.
       </Label>
@@ -469,6 +509,7 @@ export function PublicScreen({
           <TextAction label="Войти" onPress={onLogin} />
         </View>
         <View style={styles.hero}>
+          <SignalAccent motionKey="public" />
           <Eyebrow>ВАШИ СЕРВИСЫ В ПОЛЕ ЗРЕНИЯ</Eyebrow>
           <Text
             accessibilityRole="header"
@@ -760,6 +801,7 @@ const styles = StyleSheet.create({
   analyticsValue: { fontSize: 32, lineHeight: 40, fontWeight: "800" },
   dailyChart: { flexDirection: "row", gap: 8, paddingVertical: 8 },
   dailyColumn: { flex: 1, alignItems: "center", gap: 7 },
+  dailyOutline: { width: "100%", padding: 2, borderWidth: 2, borderRadius: 8 },
   dailyBar: { width: "100%", height: 72, borderRadius: 4, overflow: "hidden" },
   step: { flexDirection: "row", gap: 14, paddingVertical: 9 },
   stepNumber: { fontSize: 18, lineHeight: 25, fontWeight: "800" },

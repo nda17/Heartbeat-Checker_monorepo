@@ -105,6 +105,9 @@ function createNativeMocks(reducedMotionInitially = false, motionRead = null) {
   const animationLog = {
     started: 0,
     stopped: 0,
+    loopsStarted: 0,
+    loopsStopped: 0,
+    loopHandles: [],
     pressIns: 0,
     pressOuts: 0,
     handles: [],
@@ -157,7 +160,27 @@ function createNativeMocks(reducedMotionInitially = false, motionRead = null) {
     sequence(steps) {
       return {
         start: () => steps.forEach((step) => step.start()),
+        stop: () => steps.forEach((step) => step.stop?.()),
       };
+    },
+    loop(animation) {
+      const handle = {
+        active: false,
+        start() {
+          if (handle.active) return;
+          handle.active = true;
+          animationLog.loopsStarted++;
+          animation.start();
+        },
+        stop() {
+          if (!handle.active) return;
+          handle.active = false;
+          animationLog.loopsStopped++;
+          animation.stop?.();
+        },
+      };
+      animationLog.loopHandles.push(handle);
+      return handle;
     },
     createAnimatedComponent: (component) => component,
     View: null,
@@ -217,10 +240,15 @@ function createNativeMocks(reducedMotionInitially = false, motionRead = null) {
         style,
         contentContainerStyle,
         refreshControl,
+        horizontal,
+        showsHorizontalScrollIndicator,
         accessibilityLabel,
         accessibilityRole,
         accessibilityState,
         accessibilityLiveRegion,
+        accessibilityElementsHidden,
+        importantForAccessibility,
+        pointerEvents,
         ...nativeProps
       } = props;
       delete nativeProps.keyboardShouldPersistTaps;
@@ -231,11 +259,16 @@ function createNativeMocks(reducedMotionInitially = false, motionRead = null) {
       if (Array.isArray(css.transform)) css.transform = "none";
       const attrs = {
         ...(testId ? { "data-native-component": testId } : {}),
+        ...(horizontal ? { "data-horizontal": "true" } : {}),
+        ...(showsHorizontalScrollIndicator
+          ? { "data-horizontal-indicator": "true" }
+          : {}),
         ...(accessibilityLabel ? { "aria-label": accessibilityLabel } : {}),
         ...(accessibilityRole ? { role: accessibilityRole } : {}),
         ...(accessibilityLiveRegion
           ? { "aria-live": accessibilityLiveRegion }
           : {}),
+        ...(accessibilityElementsHidden ? { "aria-hidden": "true" } : {}),
         ...(accessibilityState?.disabled ? { "aria-disabled": "true" } : {}),
         ...(css.minHeight !== undefined
           ? { "data-min-height": String(css.minHeight) }
@@ -385,6 +418,7 @@ function createNativeMocks(reducedMotionInitially = false, motionRead = null) {
       TextInput,
       View: component("div"),
       useColorScheme: () => colorScheme,
+      useWindowDimensions: () => ({ width: 360, height: 800, scale: 1, fontScale: 1 }),
     },
     webView: { WebView },
     backHandler: BackHandler,
@@ -1200,7 +1234,20 @@ async function createWebChallenge({
 
 test("auth screens expose password visibility and preserve the shared card height", async () => {
   const login = await createHarness();
+  let sharedShape;
   try {
+    const formShape = () => {
+      const card = login.host.querySelector('[data-min-height="720"]');
+      assert.ok(card, "all auth modes keep the shared responsive card minimum");
+      return {
+        minHeight: card.style.minHeight,
+        borderRadius: card.style.borderRadius,
+        paddingTop: card.style.paddingTop,
+        paddingBottom: card.style.paddingBottom,
+        gap: card.style.gap,
+      };
+    };
+    sharedShape = formShape();
     const assertSharedBrand = () =>
       assert.ok(
         login.host.querySelector('img[data-source="../assets/logo.png"]'),
@@ -1216,8 +1263,13 @@ test("auth screens expose password visibility and preserve the shared card heigh
       true,
     );
     assert.equal(
-      login.host.querySelector('[data-min-height="700"]') !== null,
+      login.host.querySelector('[data-min-height="720"]') !== null,
       true,
+    );
+    assert.equal(
+      login.host.querySelectorAll('[aria-hidden="true"]').length > 0,
+      true,
+      "the login ECG and glitch overlays remain decorative",
     );
     await login.click("Показать пароль");
     assert.equal(
@@ -1232,12 +1284,12 @@ test("auth screens expose password visibility and preserve the shared card heigh
     assertSharedBrand();
     assert.ok(login.host.textContent.includes("Регистрация"));
     assert.ok(login.host.querySelector('input[aria-label="Имя"]'));
-    assert.ok(login.host.querySelector('[data-min-height="700"]'));
+    assert.deepEqual(formShape(), sharedShape, "registration keeps the login frame shape");
     await login.click("Ко входу");
     await login.click("Забыли пароль?");
     assertSharedBrand();
     assert.ok(login.host.textContent.includes("Восстановление доступа"));
-    assert.ok(login.host.querySelector('[data-min-height="700"]'));
+    assert.deepEqual(formShape(), sharedShape, "password recovery keeps the login frame shape");
   } finally {
     await login.unmount();
   }
@@ -1252,23 +1304,37 @@ test("auth screens expose password visibility and preserve the shared card heigh
       reset.host.querySelector('input[aria-label="Новый пароль"]').type,
       "password",
     );
-    assert.ok(reset.host.querySelector('[data-min-height="700"]'));
+    const resetCard = reset.host.querySelector('[data-min-height="720"]');
+    assert.ok(resetCard, "new-password mode keeps the shared responsive card minimum");
+    assert.deepEqual(
+      {
+        minHeight: resetCard.style.minHeight,
+        borderRadius: resetCard.style.borderRadius,
+        paddingTop: resetCard.style.paddingTop,
+        paddingBottom: resetCard.style.paddingBottom,
+        gap: resetCard.style.gap,
+      },
+      sharedShape,
+      "new-password mode keeps the same auth frame shape",
+    );
   } finally {
     await reset.unmount();
   }
 });
 
-test("Yandex and VK sign-in marks share a 24px slot with normalized image sizes", async () => {
+test("Yandex and VK sign-in marks share an equal rounded icon frame", async () => {
   const harness = await createHarness();
   try {
     const providerButton = (name) =>
       [...harness.host.querySelectorAll("button")].find((button) =>
         button.textContent.includes(name),
       );
-    const yandex = providerButton("Войти через Яндекс")?.querySelector(
+    const yandexButton = providerButton("Войти через Яндекс");
+    const vkButton = providerButton("Войти через VK");
+    const yandex = yandexButton?.querySelector(
       'img[data-source="../assets/yandex.png"]',
     );
-    const vk = providerButton("Войти через VK")?.querySelector(
+    const vk = vkButton?.querySelector(
       'img[data-source="../assets/vk.png"]',
     );
     assert.ok(yandex, "Yandex sign-in has its brand mark");
@@ -1280,6 +1346,10 @@ test("Yandex and VK sign-in marks share a 24px slot with normalized image sizes"
     assert.equal(yandexSlot.style.height, "24px");
     assert.equal(vkSlot.style.width, "24px");
     assert.equal(vkSlot.style.height, "24px");
+    assert.equal(yandexSlot.style.borderRadius, "6px");
+    assert.equal(vkSlot.style.borderRadius, "6px");
+    assert.equal(yandexSlot.style.borderRadius, vkSlot.style.borderRadius);
+    assert.equal(yandexButton.style.borderRadius, vkButton.style.borderRadius);
     assert.equal(yandex.style.width, "24px");
     assert.equal(yandex.style.height, "24px");
     assert.equal(vk.style.width, "32px");
@@ -1302,6 +1372,14 @@ test("public landing routes its accessible login, registration, and help actions
     harness.byRole(
       "header",
       "Круглосуточный мониторинг ваших сайтов и сервисов.",
+    );
+    assert.ok(
+      harness.host.querySelector('[aria-hidden="true"]'),
+      "the loginless ECG motif is decorative and hidden from accessibility traversal",
+    );
+    assert.ok(
+      harness.nativeMocks.animationLog.loopsStarted > 0,
+      "the public hero starts decorative ambient motion when motion is allowed",
     );
     assert.doesNotMatch(
       harness.host.textContent,
@@ -1329,6 +1407,37 @@ test("public landing routes its accessible login, registration, and help actions
       7,
       "the selected monitor exposes a daily seven-day breakdown",
     );
+    assert.match(harness.host.textContent, /Сбои: Ср — 6, Вс — 2/);
+    const dailyColumns = [
+      ...harness.host.querySelectorAll('[aria-label*="ошибок"]'),
+    ];
+    assert.equal(dailyColumns.length, 7);
+    assert.deepEqual(
+      dailyColumns.map((column) =>
+        Number(column.getAttribute("aria-label").match(/ошибок (\d+)$/)?.[1]),
+      ),
+      [0, 0, 6, 0, 0, 0, 2],
+      "the decorative treatment retains the original seven daily failure counts",
+    );
+    for (const index of [2, 6]) {
+      const column = dailyColumns[index];
+      const outline = column.firstElementChild;
+      const dayLabel = column.lastElementChild;
+      assert.equal(outline.style.borderColor, "rgb(182, 56, 56)");
+      assert.equal(dayLabel.style.color, "rgb(182, 56, 56)");
+      assert.equal(dayLabel.style.fontWeight, "800");
+    }
+    assert.deepEqual(
+      [...dailyColumns[2].firstElementChild.firstElementChild.firstElementChild.children]
+        .map((segment) => Number.parseInt(segment.style.flex, 10)),
+      [6, 282],
+      "a failed day keeps the original success and failure flex proportions",
+    );
+    assert.deepEqual(
+      [...dailyColumns[6].firstElementChild.firstElementChild.firstElementChild.children]
+        .map((segment) => Number.parseInt(segment.style.flex, 10)),
+      [2, 286],
+    );
     const websiteRow = demoRows.find((button) =>
       button.getAttribute("aria-label").startsWith("Главная страница."),
     );
@@ -1348,6 +1457,80 @@ test("public landing routes its accessible login, registration, and help actions
     assert.equal(actions.register, 3);
     await harness.click("Открыть раздел помощи");
     assert.equal(actions.help, 1);
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("monitor status and problem-first filters use the mocked API query contract", async () => {
+  const harness = await createHarness();
+  harness.native.restore = async () => ({
+    account: { id: "account-monitor-filter-test" },
+    session: {
+      id: "session-monitor-filter-test",
+      token: "monitor-filter-test-token",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    },
+  });
+  await harness.apiModule.restoreSession();
+  const listQueries = [];
+  harness.setFetch(async (url) => {
+    const parsed = new URL(url);
+    const path = parsed.pathname.replace("/api/v1", "");
+    if (path === "/entitlement")
+      return jsonResponse({ entitlement: mobileEntitlement() });
+    if (path === "/monitor-time-zones")
+      return jsonResponse({ timeZones: [] });
+    if (path === "/monitors") {
+      listQueries.push(parsed.searchParams);
+      return jsonResponse(
+        mobileMonitorPage([
+          mobileMonitor(),
+          mobileMonitor({
+            id: "monitor-down",
+            name: "Failing monitor",
+            state: "DOWN",
+          }),
+        ]),
+      );
+    }
+    throw new Error(`Unexpected monitor filter request: ${path}`);
+  });
+
+  try {
+    await harness.renderMonitorsScreen();
+    await harness.flush();
+    assert.equal(listQueries.at(-1)?.get("status"), "all");
+    assert.equal(listQueries.at(-1)?.get("sort"), "problems_first");
+
+    const problemFilter = [...harness.host.querySelectorAll("button")].find(
+      (button) =>
+        button.textContent.trim() === "Проблемы" &&
+        button.getAttribute("aria-label") !== "Сначала проблемы",
+    );
+    assert.ok(problemFilter, "the status chip for incidents is rendered");
+    assert.equal(problemFilter.parentElement.dataset.horizontal, "true");
+    assert.equal(problemFilter.parentElement.dataset.horizontalIndicator, "true");
+    await act(async () => problemFilter.click());
+    await harness.flush();
+    assert.equal(listQueries.at(-1)?.get("status"), "problems");
+    assert.equal(
+      problemFilter.getAttribute("aria-pressed"),
+      "true",
+      "the active status chip exposes its selected state",
+    );
+
+    await harness.click("По имени");
+    await harness.flush();
+    assert.equal(listQueries.at(-1)?.get("sort"), "name_asc");
+    const issueSort = harness.host.querySelector(
+      'button[aria-label="Сначала проблемы"]',
+    );
+    assert.ok(issueSort);
+    await act(async () => issueSort.click());
+    await harness.flush();
+    assert.equal(listQueries.at(-1)?.get("sort"), "problems_first");
+    assert.equal(issueSort.getAttribute("aria-pressed"), "true");
   } finally {
     await harness.unmount();
   }
@@ -1879,7 +2062,7 @@ test("shared mobile brand follows reduced-motion and app-state changes, with lig
   const harness = await createHarness({ reducedMotion: true });
   try {
     await harness.renderPage(async () => {});
-    assert.equal(harness.nativeMocks.intervalCounts.started, 0);
+    assert.equal(harness.nativeMocks.animationLog.loopsStarted, 0);
     assert.equal(
       harness.host.querySelector("section").style.backgroundColor,
       "rgb(245, 249, 248)",
@@ -1895,23 +2078,38 @@ test("shared mobile brand follows reduced-motion and app-state changes, with lig
       harness.nativeMocks.AccessibilityInfo.setReducedMotion(false),
     );
     await harness.flush();
-    assert.equal(harness.nativeMocks.intervalCounts.started, 1);
+    const enabledLoops = harness.nativeMocks.animationLog.loopsStarted;
+    assert.ok(enabledLoops > 0, "brand glitch loops start when motion is allowed");
+    assert.ok(
+      harness.nativeMocks.animationLog.handles.some(
+        (handle) => handle.config.duration === 6200 && handle.config.isInteraction === false,
+      ),
+      "the glitch hold is non-interactive so it cannot block navigation",
+    );
     await act(async () =>
       harness.nativeMocks.AppState.setCurrentState("background"),
     );
     await harness.flush();
-    assert.equal(harness.nativeMocks.intervalCounts.cleared, 1);
+    assert.equal(harness.nativeMocks.animationLog.loopsStopped, enabledLoops);
+    assert.ok(harness.nativeMocks.animationLog.loopHandles.every((handle) => !handle.active));
     assert.equal([...harness.nativeMocks.animatedValues][0].value, 0);
     await act(async () =>
       harness.nativeMocks.AppState.setCurrentState("active"),
     );
     await harness.flush();
-    assert.equal(harness.nativeMocks.intervalCounts.started, 2);
+    assert.ok(
+      harness.nativeMocks.animationLog.loopsStarted > enabledLoops,
+      "foreground motion starts fresh loops after background cleanup",
+    );
     await act(async () =>
       harness.nativeMocks.AccessibilityInfo.setReducedMotion(true),
     );
     await harness.flush();
-    assert.equal(harness.nativeMocks.intervalCounts.cleared, 2);
+    assert.equal(
+      harness.nativeMocks.animationLog.loopsStopped,
+      harness.nativeMocks.animationLog.loopsStarted,
+      "reduced motion stops every active decorative loop",
+    );
     assert.equal([...harness.nativeMocks.animatedValues][0].value, 0);
   } finally {
     await harness.unmount();
@@ -1937,6 +2135,11 @@ test("mobile motion stays off after a settings read failure", async () => {
       harness.nativeMocks.animationLog.started,
       0,
       "an unavailable reduced-motion preference must default to no animation",
+    );
+    assert.equal(
+      harness.nativeMocks.animationLog.loopsStarted,
+      0,
+      "unknown motion preference leaves all decorative loops off",
     );
     assert.equal(website.getAttribute("aria-pressed"), "true");
   } finally {
@@ -2003,20 +2206,28 @@ test("monitor chart motion stops in background and does not replay on foreground
     ].filter((button) =>
       button.getAttribute("aria-label").includes("Успешные проверки за 7 дней"),
     );
+    const entryAnimationCount = () =>
+      harness.nativeMocks.animationLog.handles.filter(
+        (handle) => handle.config.duration === 180,
+      ).length;
+    const entriesBeforeSelection = entryAnimationCount();
     await act(async () => monitorButtons[0].click());
     await harness.flush();
-    assert.equal(harness.nativeMocks.animationLog.started, 1);
     assert.equal(
-      harness.nativeMocks.animationLog.handles[0].config.duration,
-      180,
+      entryAnimationCount(),
+      entriesBeforeSelection + 1,
+      "selecting a monitor starts one entry transition",
+    );
+    const selectionEntry = harness.nativeMocks.animationLog.handles.findLast(
+      (handle) => handle.config.duration === 180,
     );
 
     await act(async () =>
       harness.nativeMocks.AppState.setCurrentState("background"),
     );
     await harness.flush();
-    assert.equal(harness.nativeMocks.animationLog.handles[0].active, false);
-    const afterBackground = harness.nativeMocks.animationLog.started;
+    assert.equal(selectionEntry.active, false);
+    const afterBackground = entryAnimationCount();
     assert.ok(harness.nativeMocks.animationLog.stopped >= 1);
 
     await act(async () =>
@@ -2024,7 +2235,7 @@ test("monitor chart motion stops in background and does not replay on foreground
     );
     await harness.flush();
     assert.equal(
-      harness.nativeMocks.animationLog.started,
+      entryAnimationCount(),
       afterBackground,
       "returning to the foreground does not replay the selection animation",
     );
@@ -2037,7 +2248,7 @@ test("monitor chart motion stops in background and does not replay on foreground
     );
     await harness.flush();
     assert.equal(
-      harness.nativeMocks.animationLog.started,
+      entryAnimationCount(),
       afterBackground,
       "loading a later preference change does not replay the same selection",
     );
@@ -2093,15 +2304,21 @@ test("incident entry motion is cancelled by Android Back without changing naviga
     for (const handle of harness.nativeMocks.animationLog.handles)
       handle.finish();
 
-    const startsBeforeEntry = harness.nativeMocks.animationLog.started;
+    const entriesBeforeEntry = harness.nativeMocks.animationLog.handles.filter(
+      (handle) => handle.config.duration === 180,
+    ).length;
     await harness.click("Подробнее");
     await harness.flush();
     assert.match(harness.host.textContent, /Инцидент №41/);
     assert.equal(
-      harness.nativeMocks.animationLog.started,
-      startsBeforeEntry + 1,
+      harness.nativeMocks.animationLog.handles.filter(
+        (handle) => handle.config.duration === 180,
+      ).length,
+      entriesBeforeEntry + 1,
     );
-    const entry = harness.nativeMocks.animationLog.handles.at(-1);
+    const entry = harness.nativeMocks.animationLog.handles.findLast(
+      (handle) => handle.config.duration === 180,
+    );
     assert.equal(entry.config.duration, 180);
     assert.equal(entry.active, true);
 
