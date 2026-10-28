@@ -100,6 +100,9 @@ if [[ ${1:-} == shell && ${2:-} == cmd && ${3:-} == package && ${4:-} == resolve
   printf '%s\n' "$sample" > "$FAKE_SAMPLES"
   case "$FAKE_MODE:$sample" in
 	    delayed:1|delayed:2|waiting:*) state=waiting ;;
+	    setup-transition:1) state=setup-fallback ;;
+	    setup-transition:*) state=ready ;;
+	    setup-permanent:*) state=setup-fallback ;;
 	    exact-anr:1|repeated-anr:1|repeated-anr:2|repeated-anr:3|post-recovery-unknown:1|force-stop-failure:1|home-start-failure:1) state=launcher-anr ;;
 	    post-recovery-unknown:2) state=unknown-anr ;;
     unknown-anr:1) state=unknown-anr ;;
@@ -107,7 +110,9 @@ if [[ ${1:-} == shell && ${2:-} == cmd && ${3:-} == package && ${4:-} == resolve
     historical-anr:*) state=historical-anr ;;
     malformed:1) state=malformed ;;
     wrong-display:1) state=wrong-display ;;
-    wrong-home:1) state=wrong-home ;;
+	    wrong-home:*) state=wrong-home ;;
+	    wrong-home-anr:1) state=wrong-home-anr ;;
+	    malformed-home:1) state=malformed-home ;;
     malformed-window-id:1) state=malformed-window-id ;;
     mixed-window:*) state=mixed-window ;;
     command-timeout:*) exit 124 ;;
@@ -153,7 +158,7 @@ if [[ ${1:-} == shell && ${2:-} == am && ${3:-} == start ]]; then printf 'Status
 if [[ ${1:-} == logcat ]]; then printf 'logcat fixture\n'; exit 0; fi
 exit 2
 `)
-	for _, state := range []string{"ready", "waiting", "launcher-anr", "unknown-anr", "system-error", "historical-anr", "malformed", "wrong-display", "wrong-home", "malformed-window-id", "mixed-window"} {
+	for _, state := range []string{"ready", "waiting", "setup-fallback", "launcher-anr", "unknown-anr", "system-error", "historical-anr", "malformed", "wrong-display", "wrong-home", "wrong-home-anr", "malformed-home", "malformed-window-id", "mixed-window"} {
 		writeStateFixtures(t, fixtures, state)
 	}
 	return root, report, bin
@@ -175,8 +180,20 @@ func writeStateFixtures(t *testing.T, dir, state string) {
 	switch state {
 	case "waiting":
 		power = "mWakefulness=Asleep\nmWakefulnessChanging=false\n"
+	case "setup-fallback":
+		home = "priority=3 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true\ncom.google.android.googlesdksetup/.DefaultActivity\n"
+		activities = "ResumedActivity: ActivityRecord{deae9ae u0 com.android.settings/.FallbackHome t5}\n"
+		displays = "Display: mDisplayId=0\n  mCurrentFocus=Window{7bdd436 u0 com.android.settings/com.android.settings.FallbackHome}\n  mFocusedApp=ActivityRecord{7e6effb u0 com.android.settings/.FallbackHome t5}\n"
+		window = "Window #0 Window{7bdd436 u0 com.android.settings/com.android.settings.FallbackHome}:\n" +
+			"  mDisplayId=0 rootTaskId=1 mSession=Session{33b412b 924:u0a10181}\n" +
+			"  mOwnerUid=1000 showForAllUsers=false package=com.android.settings appop=NONE\n" +
+			"  mViewVisibility=0x0\n  mHasSurface=true isReadyForDisplay()=true\n" +
+			"  Surface: shown=true mDrawState=HAS_DRAWN mLastHidden=false\n" +
+			"  isOnScreen=true\n  isVisible=true\n"
 	case "wrong-home":
 		home = "com.example.other/.MainActivity\n"
+	case "malformed-home":
+		home = "com.example.invalid\n"
 	case "wrong-display":
 		displays = "Display: mDisplayId=1\n  mCurrentFocus=Window{abc123 u0 " + launcherComponent + "}\n  mFocusedApp=ActivityRecord{abc u0 " + launcherComponent + " t1}\n"
 	case "malformed-window-id":
@@ -201,6 +218,15 @@ func writeStateFixtures(t *testing.T, dir, state string) {
 			"  mOwnerUid=1000 showForAllUsers=true package=android appop=SYSTEM_ALERT_WINDOW\n" +
 			"  mViewVisibility=0x0\n  mHasSurface=true isReadyForDisplay()=true\n" +
 			"  Surface: shown=true      mDrawState=HAS_DRAWN       mLastHidden=false\n" +
+			"  isOnScreen=true\n  isVisible=true\n"
+	case "wrong-home-anr":
+		home = "com.example.other/.MainActivity\n"
+		displays = "Display: mDisplayId=0\n  mCurrentFocus=Window{def456 u0 Application Not Responding: " + launcherPackage + "}\n  mFocusedApp=ActivityRecord{abc u0 " + launcherComponent + " t1}\n"
+		window += "Window #1 Window{def456 u0 Application Not Responding: " + launcherPackage + "}:\n" +
+			"  mDisplayId=0 rootTaskId=1 mSession=Session{2 563:1000}\n" +
+			"  mOwnerUid=1000 showForAllUsers=true package=android appop=SYSTEM_ALERT_WINDOW\n" +
+			"  mViewVisibility=0x0\n  mHasSurface=true isReadyForDisplay()=true\n" +
+			"  Surface: shown=true mDrawState=HAS_DRAWN mLastHidden=false\n" +
 			"  isOnScreen=true\n  isVisible=true\n"
 	case "unknown-anr":
 		displays = "Display: mDisplayId=0\n  mCurrentFocus=Window{def456 u0 Application Not Responding: com.example.other}\n  mFocusedApp=ActivityRecord{abc u0 " + launcherComponent + " t1}\n"
@@ -242,7 +268,7 @@ func runHelper(t *testing.T, mode string) (outcome, string, string, string) {
 		"ADB_CALLS="+filepath.Join(root, "adb-calls"),
 		"TIMEOUT_LOG="+filepath.Join(root, "timeout-calls"),
 	)
-	if mode == "waiting" || mode == "mixed-window" {
+	if mode == "waiting" || mode == "mixed-window" || mode == "setup-permanent" || mode == "wrong-home" {
 		env = append(env, "FAKE_SLEEP_STEP=60")
 	}
 	cmd := exec.Command("bash", readinessScript(t), filepath.Join(bin, "adb"), "emulator-fixture", reports)
@@ -305,6 +331,24 @@ func TestReadyWaitsForStableHomeAndAcceptsDelayedBoot(t *testing.T) {
 				t.Fatalf("readiness interval outside bounds: %+v", got)
 			}
 		})
+	}
+}
+
+func TestProvisioningHomeWaitsThenAcceptsNexusLauncher(t *testing.T) {
+	got, calls, _, reports := runHelper(t, "setup-transition")
+	assertOutcome(t, got, "ready", "home_stable", 0)
+	if got.Samples < 8 || got.StableSeconds < 6 || got.ElapsedSeconds > 120 {
+		t.Fatalf("provisioning state was not followed by a full stable Nexus interval: %+v", got)
+	}
+	if strings.Contains(calls, "shell am force-stop "+launcherPackage) {
+		t.Fatalf("provisioning transition must not trigger launcher recovery:\n%s", calls)
+	}
+	finalHome, err := os.ReadFile(filepath.Join(reports, "readiness", "final", "home.txt"))
+	if err != nil {
+		t.Fatalf("read final HOME resolver snapshot: %v", err)
+	}
+	if !strings.Contains(string(finalHome), launcherComponent) {
+		t.Fatalf("readiness completed without exact Nexus HOME resolver:\n%s", finalHome)
 	}
 }
 
@@ -399,11 +443,19 @@ func TestOnlyVisibleCurrentLauncherANRTriggersRecovery(t *testing.T) {
 	}
 }
 
+func TestLauncherANRWithOtherResolvedHomeDoesNotRecover(t *testing.T) {
+	got, calls, _, _ := runHelper(t, "wrong-home-anr")
+	assertOutcome(t, got, "failed", "unknown_active_error", 0)
+	if strings.Contains(calls, "shell am force-stop "+launcherPackage) || strings.Contains(calls, "shell am start -W -a android.intent.action.MAIN") {
+		t.Fatalf("launcher ANR recovery ran while HOME resolved to another app:\n%s", calls)
+	}
+}
+
 func TestMalformedStateAndAdbTimeoutFailClosed(t *testing.T) {
 	tests := []struct{ mode, reason string }{
 		{"malformed", "state_unreadable"},
+		{"malformed-home", "state_unreadable"},
 		{"wrong-display", "state_unreadable"},
-		{"wrong-home", "state_unreadable"},
 		{"malformed-window-id", "state_unreadable"},
 		{"command-timeout", "state_unreadable"},
 	}
@@ -429,7 +481,7 @@ func TestMalformedStateAndAdbTimeoutFailClosed(t *testing.T) {
 }
 
 func TestNoReadyWindowFailsAtBoundedDeadline(t *testing.T) {
-	for _, mode := range []string{"waiting", "mixed-window"} {
+	for _, mode := range []string{"waiting", "mixed-window", "setup-permanent", "wrong-home"} {
 		t.Run(mode, func(t *testing.T) {
 			got, _, _, _ := runHelper(t, mode)
 			assertOutcome(t, got, "failed", "timeout", 0)

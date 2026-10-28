@@ -105,7 +105,7 @@ classify_state() {
         if (!visible && !hidden) bad=1
         if (visible) {
           errors++
-          if (title=="Application Not Responding: com.google.android.apps.nexuslauncher" && window_user=="u0" && window_display=="0" && owner_package=="android") launcher_anr++
+          if (title=="Application Not Responding: com.google.android.apps.nexuslauncher" && window_user=="u0" && window_display=="0" && owner_package=="android" && values["home"]==short_home) launcher_anr++
         }
       }
       if (window_id==focus_id) {
@@ -184,14 +184,14 @@ classify_state() {
       window_end()
       required="home wakefulness changing showing dreaming screenState interactiveState resumed focus focused_app"
       count=split(required,keys," "); for(i=1;i<=count;i++) if(seen[keys[i]]!=1) bad=1
-      if (policy!=1 || displays!=1 || windows<1 || values["home"]!=short_home) bad=1
+      if (policy!=1 || displays!=1 || windows<1) bad=1
       if (values["changing"] !~ /^(true|false)$/ || values["showing"] !~ /^(true|false)$/ || values["dreaming"] !~ /^(true|false)$/) bad=1
       if (values["wakefulness"] !~ /^(Awake|Asleep|Dreaming|Dozing)$/) bad=1
       if (values["focus"]!="null" && focused_windows!=1) bad=1
       if (bad) print "state_unreadable"
       else if (errors>1 || (errors==1 && launcher_anr!=1)) print "unknown_active_error"
       else if (launcher_anr==1) print "launcher_anr"
-      else if (values["wakefulness"]=="Awake" && values["changing"]=="false" && values["showing"]=="false" && values["dreaming"]=="false" && values["screenState"]=="SCREEN_STATE_ON" && values["interactiveState"]=="INTERACTIVE_STATE_AWAKE" && values["resumed"]==short_home && values["focus"]==short_home && values["focused_app"]==short_home && focused_home) print "ready"
+      else if (values["home"]==short_home && values["wakefulness"]=="Awake" && values["changing"]=="false" && values["showing"]=="false" && values["dreaming"]=="false" && values["screenState"]=="SCREEN_STATE_ON" && values["interactiveState"]=="INTERACTIVE_STATE_AWAKE" && values["resumed"]==short_home && values["focus"]==short_home && values["focused_app"]==short_home && focused_home) print "ready"
       else print "waiting"
     }
   ' "$evidence/current/home.txt" "$evidence/current/power.txt" "$evidence/current/policy.txt" \
