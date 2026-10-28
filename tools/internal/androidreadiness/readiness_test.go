@@ -103,6 +103,16 @@ if [[ ${1:-} == shell && ${2:-} == cmd && ${3:-} == package && ${4:-} == resolve
 	    setup-transition:1) state=setup-fallback ;;
 	    setup-transition:*) state=ready ;;
 	    setup-permanent:*) state=setup-fallback ;;
+	    draw-pending-transition:1) state=draw-pending ;;
+	    draw-pending-permanent:*) state=draw-pending ;;
+	    partial-anr-transition:1|post-recovery-draw-pending:2|partial-anr-permanent:*) state=launcher-anr-pending ;;
+	    post-recovery-draw-pending:1) state=launcher-anr ;;
+	    post-recovery-draw-pending:*) state=ready ;;
+	    no-resumed-transition:1) state=no-resumed ;;
+	    no-resumed-permanent:*) state=no-resumed ;;
+	    focus-window-transition:1) state=focus-window-missing ;;
+	    focus-window-missing-permanent:*) state=focus-window-missing ;;
+	    invalid-draw-state:1) state=invalid-draw-state ;;
 	    exact-anr:1|repeated-anr:1|repeated-anr:2|repeated-anr:3|post-recovery-unknown:1|force-stop-failure:1|home-start-failure:1) state=launcher-anr ;;
 	    post-recovery-unknown:2) state=unknown-anr ;;
     unknown-anr:1) state=unknown-anr ;;
@@ -158,7 +168,7 @@ if [[ ${1:-} == shell && ${2:-} == am && ${3:-} == start ]]; then printf 'Status
 if [[ ${1:-} == logcat ]]; then printf 'logcat fixture\n'; exit 0; fi
 exit 2
 `)
-	for _, state := range []string{"ready", "waiting", "setup-fallback", "launcher-anr", "unknown-anr", "system-error", "historical-anr", "malformed", "wrong-display", "wrong-home", "wrong-home-anr", "malformed-home", "malformed-window-id", "mixed-window"} {
+	for _, state := range []string{"ready", "waiting", "setup-fallback", "draw-pending", "no-resumed", "focus-window-missing", "invalid-draw-state", "launcher-anr", "launcher-anr-pending", "unknown-anr", "system-error", "historical-anr", "malformed", "wrong-display", "wrong-home", "wrong-home-anr", "malformed-home", "malformed-window-id", "mixed-window"} {
 		writeStateFixtures(t, fixtures, state)
 	}
 	return root, report, bin
@@ -169,7 +179,7 @@ func writeStateFixtures(t *testing.T, dir, state string) {
 	home := launcherComponent + "\n"
 	power := "mWakefulness=Awake\nmWakefulnessChanging=false\n"
 	policy := "KeyguardServiceDelegate:\n  showing=false\n  dreaming=false\n  screenState=SCREEN_STATE_ON\n  interactiveState=INTERACTIVE_STATE_AWAKE\n"
-	activities := "ResumedActivity: ActivityRecord{abc u0 " + launcherComponent + " t1}\n"
+	activities := "ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)\nResumedActivity: ActivityRecord{abc u0 " + launcherComponent + " t1}\n"
 	displays := "Display: mDisplayId=0\n  mCurrentFocus=Window{abc123 u0 " + launcherComponent + "}\n  mFocusedApp=ActivityRecord{abc u0 " + launcherComponent + " t1}\n"
 	window := "Window #0 Window{abc123 u0 " + launcherComponent + "}:\n" +
 		"  mDisplayId=0 rootTaskId=1 mSession=Session{1 563:10180}\n" +
@@ -182,7 +192,7 @@ func writeStateFixtures(t *testing.T, dir, state string) {
 		power = "mWakefulness=Asleep\nmWakefulnessChanging=false\n"
 	case "setup-fallback":
 		home = "priority=3 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true\ncom.google.android.googlesdksetup/.DefaultActivity\n"
-		activities = "ResumedActivity: ActivityRecord{deae9ae u0 com.android.settings/.FallbackHome t5}\n"
+		activities = "ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)\nResumedActivity: ActivityRecord{deae9ae u0 com.android.settings/.FallbackHome t5}\n"
 		displays = "Display: mDisplayId=0\n  mCurrentFocus=Window{7bdd436 u0 com.android.settings/com.android.settings.FallbackHome}\n  mFocusedApp=ActivityRecord{7e6effb u0 com.android.settings/.FallbackHome t5}\n"
 		window = "Window #0 Window{7bdd436 u0 com.android.settings/com.android.settings.FallbackHome}:\n" +
 			"  mDisplayId=0 rootTaskId=1 mSession=Session{33b412b 924:u0a10181}\n" +
@@ -190,6 +200,20 @@ func writeStateFixtures(t *testing.T, dir, state string) {
 			"  mViewVisibility=0x0\n  mHasSurface=true isReadyForDisplay()=true\n" +
 			"  Surface: shown=true mDrawState=HAS_DRAWN mLastHidden=false\n" +
 			"  isOnScreen=true\n  isVisible=true\n"
+	case "draw-pending":
+		displays = "Display: mDisplayId=0\n  mCurrentFocus=Window{fa43e0e u0 " + launcherPackage + "/" + launcherPackage + ".NexusLauncherActivity}\n  mFocusedApp=ActivityRecord{abc u0 " + launcherComponent + " t1}\n"
+		window = "Window #0 Window{fa43e0e u0 " + launcherPackage + "/" + launcherPackage + ".NexusLauncherActivity}:\n" +
+			"  mDisplayId=0 rootTaskId=1 mSession=Session{818d98e 1251:u0a10179}\n" +
+			"  mOwnerUid=10179 showForAllUsers=false package=" + launcherPackage + " appop=NONE\n" +
+			"  mViewVisibility=0x0\n  mHasSurface=true isReadyForDisplay()=false\n" +
+			"  Surface: shown=false mDrawState=DRAW_PENDING mLastHidden=true\n" +
+			"  isOnScreen=true\n  isVisible=true\n"
+	case "no-resumed":
+		activities = "ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)\nDisplay #0 (activities from top to bottom):\n"
+	case "focus-window-missing":
+		displays = "Display: mDisplayId=0\n  mCurrentFocus=Window{fa43e0e u0 " + launcherPackage + "/" + launcherPackage + ".NexusLauncherActivity}\n  mFocusedApp=ActivityRecord{abc u0 " + launcherComponent + " t1}\n"
+	case "invalid-draw-state":
+		window = strings.Replace(window, "HAS_DRAWN", "DRAW_UNKNOWN", 1)
 	case "wrong-home":
 		home = "com.example.other/.MainActivity\n"
 	case "malformed-home":
@@ -203,7 +227,7 @@ func writeStateFixtures(t *testing.T, dir, state string) {
 		window = "Window #0 Window{abc123 u0 " + launcherComponent + "}:\n" +
 			"  mDisplayId=0 rootTaskId=1 mSession=Session{1 563:10180}\n" +
 			"  mOwnerUid=10180 showForAllUsers=false package=" + launcherPackage + " appop=NONE\n" +
-			"  mViewVisibility=0x4\n  mHasSurface=false isReadyForDisplay()=false\n" +
+			"  mViewVisibility=0x4\n  mHasSurface=false isReadyForDisplay()=false\n  mDrawState=NO_SURFACE\n" +
 			"  isOnScreen=false\n  isVisible=false\n" +
 			"Window #2 Window{def456 u0 " + launcherComponent + "}:\n" +
 			"  mDisplayId=0 rootTaskId=1 mSession=Session{2 563:10180}\n" +
@@ -218,6 +242,14 @@ func writeStateFixtures(t *testing.T, dir, state string) {
 			"  mOwnerUid=1000 showForAllUsers=true package=android appop=SYSTEM_ALERT_WINDOW\n" +
 			"  mViewVisibility=0x0\n  mHasSurface=true isReadyForDisplay()=true\n" +
 			"  Surface: shown=true      mDrawState=HAS_DRAWN       mLastHidden=false\n" +
+			"  isOnScreen=true\n  isVisible=true\n"
+	case "launcher-anr-pending":
+		displays = "Display: mDisplayId=0\n  mCurrentFocus=Window{def456 u0 Application Not Responding: " + launcherPackage + "}\n  mFocusedApp=ActivityRecord{abc u0 " + launcherComponent + " t1}\n"
+		window += "Window #1 Window{def456 u0 Application Not Responding: " + launcherPackage + "}:\n" +
+			"  mDisplayId=0 rootTaskId=1 mSession=Session{2 563:1000}\n" +
+			"  mOwnerUid=1000 showForAllUsers=true package=android appop=SYSTEM_ALERT_WINDOW\n" +
+			"  mViewVisibility=0x0\n  mHasSurface=true isReadyForDisplay()=false\n" +
+			"  Surface: shown=false mDrawState=DRAW_PENDING mLastHidden=true\n" +
 			"  isOnScreen=true\n  isVisible=true\n"
 	case "wrong-home-anr":
 		home = "com.example.other/.MainActivity\n"
@@ -242,7 +274,7 @@ func writeStateFixtures(t *testing.T, dir, state string) {
 		window += "Window #1 Window{def456 u0 Application Not Responding: " + launcherPackage + "}:\n" +
 			"  mDisplayId=0 rootTaskId=1 mSession=Session{2 563:1000}\n" +
 			"  mOwnerUid=1000 showForAllUsers=true package=android appop=SYSTEM_ALERT_WINDOW\n" +
-			"  mViewVisibility=0x4\n  mHasSurface=false isReadyForDisplay()=false\n" +
+			"  mViewVisibility=0x4\n  mHasSurface=false isReadyForDisplay()=false\n  mDrawState=NO_SURFACE\n" +
 			"  isOnScreen=false\n  isVisible=false\n"
 	}
 	for name, value := range map[string]string{
@@ -268,7 +300,7 @@ func runHelper(t *testing.T, mode string) (outcome, string, string, string) {
 		"ADB_CALLS="+filepath.Join(root, "adb-calls"),
 		"TIMEOUT_LOG="+filepath.Join(root, "timeout-calls"),
 	)
-	if mode == "waiting" || mode == "mixed-window" || mode == "setup-permanent" || mode == "wrong-home" {
+	if mode == "waiting" || mode == "mixed-window" || mode == "setup-permanent" || mode == "wrong-home" || mode == "draw-pending-permanent" || mode == "no-resumed-permanent" || mode == "focus-window-missing-permanent" || mode == "partial-anr-permanent" {
 		env = append(env, "FAKE_SLEEP_STEP=60")
 	}
 	cmd := exec.Command("bash", readinessScript(t), filepath.Join(bin, "adb"), "emulator-fixture", reports)
@@ -322,6 +354,23 @@ func countCallLog(calls, needle string) int {
 	return strings.Count(calls, needle)
 }
 
+func sampleStates(t *testing.T, reports string) []string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(reports, "readiness", "samples.tsv"))
+	if err != nil {
+		t.Fatalf("read readiness sample history: %v", err)
+	}
+	var states []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 3 {
+			t.Fatalf("malformed sample history line %q", line)
+		}
+		states = append(states, fields[1])
+	}
+	return states
+}
+
 func TestReadyWaitsForStableHomeAndAcceptsDelayedBoot(t *testing.T) {
 	for _, mode := range []string{"ready", "delayed"} {
 		t.Run(mode, func(t *testing.T) {
@@ -352,6 +401,25 @@ func TestProvisioningHomeWaitsThenAcceptsNexusLauncher(t *testing.T) {
 	}
 }
 
+func TestIncompleteLauncherSnapshotsWaitThenAcceptReadyHome(t *testing.T) {
+	for _, mode := range []string{"draw-pending-transition", "no-resumed-transition", "focus-window-transition"} {
+		t.Run(mode, func(t *testing.T) {
+			got, calls, _, reports := runHelper(t, mode)
+			assertOutcome(t, got, "ready", "home_stable", 0)
+			if got.Samples < 8 || got.StableSeconds < 6 || got.ElapsedSeconds > 120 {
+				t.Fatalf("transient home state was not followed by a full stable Nexus interval: %+v", got)
+			}
+			if strings.Contains(calls, "shell am force-stop "+launcherPackage) {
+				t.Fatalf("non-error startup state triggered launcher recovery:\n%s", calls)
+			}
+			states := sampleStates(t, reports)
+			if len(states) < 2 || states[0] != "waiting" {
+				t.Fatalf("incomplete first sample was not classified as waiting: %v", states)
+			}
+		})
+	}
+}
+
 func TestExactLauncherANRRecoversOnceThenReachesReady(t *testing.T) {
 	got, calls, _, _ := runHelper(t, "exact-anr")
 	assertOutcome(t, got, "ready", "home_stable", 1)
@@ -361,6 +429,48 @@ func TestExactLauncherANRRecoversOnceThenReachesReady(t *testing.T) {
 	if countCallLog(calls, "shell am start -W -a android.intent.action.MAIN -c android.intent.category.HOME -n "+launcherComponent) != 1 {
 		t.Fatalf("HOME restart count is not one:\n%s", calls)
 	}
+}
+
+func TestPartialLauncherANRWaitsAndRecoveryDoesNotRepeatWhileRedrawing(t *testing.T) {
+	t.Run("partial ANR waits", func(t *testing.T) {
+		got, calls, _, reports := runHelper(t, "partial-anr-transition")
+		assertOutcome(t, got, "ready", "home_stable", 0)
+		states := sampleStates(t, reports)
+		if len(states) < 2 || states[0] != "waiting" || states[1] != "ready" {
+			t.Fatalf("partial visible ANR should block readiness as waiting: %v", states)
+		}
+		if strings.Contains(calls, "shell am force-stop "+launcherPackage) {
+			t.Fatalf("partial ANR must not launch recovery:\n%s", calls)
+		}
+	})
+
+	t.Run("post-recovery pending draw", func(t *testing.T) {
+		got, calls, _, reports := runHelper(t, "post-recovery-draw-pending")
+		assertOutcome(t, got, "ready", "home_stable", 1)
+		states := sampleStates(t, reports)
+		if len(states) < 3 || states[0] != "launcher_anr" || states[1] != "waiting" {
+			t.Fatalf("expected one recovery followed by pending draw wait: %v", states)
+		}
+		if countCallLog(calls, "shell am force-stop "+launcherPackage) != 1 {
+			t.Fatalf("pending redraw triggered an extra launcher recovery:\n%s", calls)
+		}
+		if countCallLog(calls, "shell am start -W -a android.intent.action.MAIN") != 1 {
+			t.Fatalf("pending redraw triggered an extra HOME start:\n%s", calls)
+		}
+	})
+
+	t.Run("permanent partial ANR", func(t *testing.T) {
+		got, calls, _, reports := runHelper(t, "partial-anr-permanent")
+		assertOutcome(t, got, "failed", "timeout", 0)
+		for _, state := range sampleStates(t, reports) {
+			if state != "waiting" {
+				t.Fatalf("partial ANR should remain waiting until the deadline: %v", sampleStates(t, reports))
+			}
+		}
+		if strings.Contains(calls, "shell am force-stop "+launcherPackage) {
+			t.Fatalf("permanently partial ANR must not launch recovery:\n%s", calls)
+		}
+	})
 }
 
 func TestRecoveryCommandFailuresStopBeforeInstrumentationReadiness(t *testing.T) {
@@ -455,6 +565,7 @@ func TestMalformedStateAndAdbTimeoutFailClosed(t *testing.T) {
 	tests := []struct{ mode, reason string }{
 		{"malformed", "state_unreadable"},
 		{"malformed-home", "state_unreadable"},
+		{"invalid-draw-state", "state_unreadable"},
 		{"wrong-display", "state_unreadable"},
 		{"malformed-window-id", "state_unreadable"},
 		{"command-timeout", "state_unreadable"},
@@ -481,12 +592,17 @@ func TestMalformedStateAndAdbTimeoutFailClosed(t *testing.T) {
 }
 
 func TestNoReadyWindowFailsAtBoundedDeadline(t *testing.T) {
-	for _, mode := range []string{"waiting", "mixed-window", "setup-permanent", "wrong-home"} {
+	for _, mode := range []string{"waiting", "mixed-window", "setup-permanent", "wrong-home", "draw-pending-permanent", "no-resumed-permanent", "focus-window-missing-permanent"} {
 		t.Run(mode, func(t *testing.T) {
-			got, _, _, _ := runHelper(t, mode)
+			got, _, _, reports := runHelper(t, mode)
 			assertOutcome(t, got, "failed", "timeout", 0)
 			if got.ElapsedSeconds > 120 || got.StableSeconds != 0 {
 				t.Fatalf("timeout exceeded configured bounds: %+v (expected <= 120s)", got)
+			}
+			for _, state := range sampleStates(t, reports) {
+				if state != "waiting" {
+					t.Fatalf("non-ready transient snapshot was not kept in waiting state: %v", sampleStates(t, reports))
+				}
 			}
 		})
 	}

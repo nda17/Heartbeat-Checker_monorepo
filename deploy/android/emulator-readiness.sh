@@ -96,24 +96,38 @@ classify_state() {
       if (line ~ /Window\{[0-9a-f]+ u0 [^}]+\}/) return "other"
       bad=1; return "unreadable"
     }
-    function window_end(visible, hidden, error) {
+    function window_valid(needed, fields, n, i) {
+      needed="display owner view surface ready draw_state on_screen is_visible"
+      n=split(needed,fields," ")
+      for(i=1;i<=n;i++) if(window_seen[fields[i]]!=1) return 0
+      if(window_user !~ /^u[0-9]+$/ || window_display !~ /^[0-9]+$/ || owner_package !~ /^[A-Za-z0-9_.]+$/) return 0
+      if(view !~ /^0x(0|4|8)$/ || surface !~ /^(true|false)$/ || ready !~ /^(true|false)$/ || on_screen !~ /^(true|false)$/ || is_visible !~ /^(true|false)$/) return 0
+      if(draw_state !~ /^(NO_SURFACE|DRAW_PENDING|COMMIT_DRAW_PENDING|READY_TO_SHOW|HAS_DRAWN)$/) return 0
+      if(window_seen["shown"]>1 || (window_seen["shown"]==1 && shown !~ /^(true|false)$/)) return 0
+      return 1
+    }
+    function window_end(visible, hidden, error, valid) {
       if (!window_id) return
-      visible=(view=="0x0" && surface=="true" && ready=="true" && drawn && on_screen=="true" && is_visible=="true")
-      hidden=(on_screen=="false" && is_visible=="false")
+      valid=window_valid()
+      visible=(valid && view=="0x0" && surface=="true" && ready=="true" && shown=="true" && draw_state=="HAS_DRAWN" && on_screen=="true" && is_visible=="true")
+      hidden=(view ~ /^0x(4|8)$/ && on_screen=="false" && is_visible=="false")
       error=(title ~ /^Application Not Responding: / || title ~ /^Application Error: / || system_error)
       if (error) {
-        if (!visible && !hidden) bad=1
-        if (visible) {
+        if (!valid) bad=1
+        if (!hidden) {
           errors++
-          if (title=="Application Not Responding: com.google.android.apps.nexuslauncher" && window_user=="u0" && window_display=="0" && owner_package=="android" && values["home"]==short_home) launcher_anr++
+          if (title=="Application Not Responding: com.google.android.apps.nexuslauncher" && window_user=="u0" && window_display=="0" && owner_package=="android" && values["home"]==short_home) {
+            known_launcher_errors++
+            if (visible && window_id==focus_id && seen["resumed"]==1 && values["resumed"]!="null") launcher_anr++
+          }
         }
       }
       if (window_id==focus_id) {
         focused_windows++
+        if (!valid) bad=1
         if (window_user!="u0" || window_display!="0") bad=1
         if (title!=short_home && title!=full_home) focused_home=0
         else if (visible) focused_home=1
-        else if (!hidden) bad=1
       }
       window_id=""
     }
@@ -142,6 +156,8 @@ classify_state() {
       next
     }
     FILENAME ~ /\/activities.txt$/ {
+      if ($0=="ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)") activities_header++
+      if ($0 ~ /^[[:space:]]*ResumedActivity/ && $0 !~ /^[[:space:]]*ResumedActivity:/) bad=1
       if ($0 ~ /^[[:space:]]*ResumedActivity:/) field("resumed",component($0))
       next
     }
@@ -164,33 +180,43 @@ classify_state() {
         window_end(); windows++; line=$0; sub(/^.*Window\{/,"",line); sub(/\}:$/,"",line)
         window_id=line; sub(/ .*/,"",window_id); title=line; sub(/^[^ ]+ u[0-9]+ /,"",title)
         if (window_id !~ /^[0-9a-f]+$/) bad=1
+        if (window_id in window_ids) bad=1
+        window_ids[window_id]=1
         window_user=line; sub(/^[^ ]+ /,"",window_user); sub(/ .*/,"",window_user)
         window_display=owner_package=""
-        view=surface=ready=on_screen=is_visible=""; drawn=system_error=0
+        view=surface=ready=on_screen=is_visible=shown=draw_state=""; system_error=0
+        for(key in window_seen) delete window_seen[key]
       }
-      if ($0 ~ /^[[:space:]]*mDisplayId=/) { window_display=$0; sub(/^.*mDisplayId=/,"",window_display); sub(/ .*/,"",window_display) }
-      if ($0 ~ /^[[:space:]]*mOwnerUid=.* package=/) { owner_package=$0; sub(/^.* package=/,"",owner_package); sub(/ .*/,"",owner_package) }
-      if ($0 ~ /mViewVisibility=/) { view=$0; sub(/^.*mViewVisibility=/,"",view); sub(/ .*/,"",view) }
+      if ($0 ~ /^[[:space:]]*mDisplayId=/) { window_seen["display"]++; window_display=$0; sub(/^.*mDisplayId=/,"",window_display); sub(/ .*/,"",window_display) }
+      if ($0 ~ /^[[:space:]]*mOwnerUid=.* package=/) { window_seen["owner"]++; owner_package=$0; sub(/^.* package=/,"",owner_package); sub(/ .*/,"",owner_package) }
+      if ($0 ~ /mViewVisibility=/) { window_seen["view"]++; view=$0; sub(/^.*mViewVisibility=/,"",view); sub(/ .*/,"",view) }
       if ($0 ~ /^[[:space:]]*mHasSurface=/) {
+        window_seen["surface"]++; window_seen["ready"]++
         surface=$0; sub(/^.*mHasSurface=/,"",surface); sub(/ .*/,"",surface)
         ready=$0; sub(/^.*isReadyForDisplay\(\)=/,"",ready); sub(/ .*/,"",ready)
       }
-      if ($0 ~ /^[[:space:]]*Surface: shown=true[[:space:]]+mDrawState=HAS_DRAWN/) drawn=1
-      if ($0 ~ /^[[:space:]]*isOnScreen=/) { on_screen=$0; sub(/^.*=/,"",on_screen) }
-      if ($0 ~ /^[[:space:]]*isVisible=/) { is_visible=$0; sub(/^.*=/,"",is_visible) }
+      if ($0 ~ /^[[:space:]]*Surface: shown=/) { window_seen["shown"]++; shown=$0; sub(/^.*Surface: shown=/,"",shown); sub(/ .*/,"",shown) }
+      if ($0 ~ /mDrawState=/) { window_seen["draw_state"]++; draw_state=$0; sub(/^.*mDrawState=/,"",draw_state); sub(/ .*/,"",draw_state) }
+      if ($0 ~ /^[[:space:]]*isOnScreen=/) { window_seen["on_screen"]++; on_screen=$0; sub(/^.*=/,"",on_screen) }
+      if ($0 ~ /^[[:space:]]*isVisible=/) { window_seen["is_visible"]++; is_visible=$0; sub(/^.*=/,"",is_visible) }
       if ($0 ~ /(^|[[:space:]=])SYSTEM_ERROR([[:space:]]|$)/) system_error=1
     }
     END {
       window_end()
-      required="home wakefulness changing showing dreaming screenState interactiveState resumed focus focused_app"
+      required="home wakefulness changing showing dreaming screenState interactiveState focus focused_app"
       count=split(required,keys," "); for(i=1;i<=count;i++) if(seen[keys[i]]!=1) bad=1
+      if(activities_header!=1 || seen["resumed"]>1) bad=1
+      if(!seen["resumed"]) values["resumed"]="null"
       if (policy!=1 || displays!=1 || windows<1) bad=1
       if (values["changing"] !~ /^(true|false)$/ || values["showing"] !~ /^(true|false)$/ || values["dreaming"] !~ /^(true|false)$/) bad=1
       if (values["wakefulness"] !~ /^(Awake|Asleep|Dreaming|Dozing)$/) bad=1
-      if (values["focus"]!="null" && focused_windows!=1) bad=1
+      if (focused_windows>1) bad=1
+      if (values["focus"]!="null" && focused_windows==0) focus_pending=1
       if (bad) print "state_unreadable"
-      else if (errors>1 || (errors==1 && launcher_anr!=1)) print "unknown_active_error"
+      else if (errors>1 || (errors==1 && known_launcher_errors!=1)) print "unknown_active_error"
+      else if (known_launcher_errors==1 && (focused_windows!=1 || seen["resumed"]!=1 || values["resumed"]=="null")) print "waiting"
       else if (launcher_anr==1) print "launcher_anr"
+      else if (errors || focus_pending) print "waiting"
       else if (values["home"]==short_home && values["wakefulness"]=="Awake" && values["changing"]=="false" && values["showing"]=="false" && values["dreaming"]=="false" && values["screenState"]=="SCREEN_STATE_ON" && values["interactiveState"]=="INTERACTIVE_STATE_AWAKE" && values["resumed"]==short_home && values["focus"]==short_home && values["focused_app"]==short_home && focused_home) print "ready"
       else print "waiting"
     }
