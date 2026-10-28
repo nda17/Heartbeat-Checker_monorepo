@@ -247,14 +247,14 @@ function createNativeMocks(reducedMotionInitially = false, motionRead = null) {
         accessibilityState,
         accessibilityLiveRegion,
         accessibilityElementsHidden,
-        importantForAccessibility,
-        pointerEvents,
         ...nativeProps
       } = props;
       delete nativeProps.keyboardShouldPersistTaps;
       delete nativeProps.onLayout;
       delete nativeProps.accessible;
       delete nativeProps.selectable;
+      delete nativeProps.importantForAccessibility;
+      delete nativeProps.pointerEvents;
       const css = flattenStyle(style ?? contentContainerStyle);
       if (Array.isArray(css.transform)) css.transform = "none";
       const attrs = {
