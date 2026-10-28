@@ -36,11 +36,17 @@ public final class PushWorker extends Worker {
     static boolean awaitToken(long timeoutMs, BooleanSupplier active, Consumer<PushSdk.TokenResult> request) throws InterruptedException {
         if (timeoutMs <= 0 || !active.getAsBoolean()) return false;
         CountDownLatch completed = new CountDownLatch(1); AtomicBoolean ready = new AtomicBoolean();
-        request.accept(new PushSdk.TokenResult() {
-            @Override public void ready(String token) { ready.set(PushContract.token(token)); completed.countDown(); }
-            @Override public void unavailable() { completed.countDown(); }
-        });
-        return completed.await(timeoutMs, TimeUnit.MILLISECONDS) && active.getAsBoolean() && ready.get();
+        AtomicBoolean accepting = new AtomicBoolean(true);
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        try {
+            request.accept(new PushSdk.TokenResult() {
+                @Override public boolean active() { return accepting.get() && System.nanoTime() < deadline && active.getAsBoolean(); }
+                @Override public void ready(String token) { if (active()) ready.set(PushContract.token(token)); completed.countDown(); }
+                @Override public void unavailable() { completed.countDown(); }
+            });
+            long remaining = Math.max(0, deadline - System.nanoTime());
+            return completed.await(remaining, TimeUnit.NANOSECONDS) && active.getAsBoolean() && ready.get();
+        } finally { accepting.set(false); }
     }
 
     interface DeliveryServices {

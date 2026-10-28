@@ -157,7 +157,7 @@ jobs:
           apk=apps/android/app/build/outputs/apk/ci/app-ci.apk
           test -s "$apk"
           unzip -p "$apk" assets/index.android.bundle | wc -c | awk '$1 > 100000 { found = 1 } END { exit !found }'
-          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | grep -F "package: name='ru.heartbeatchecker.app' versionCode='13' versionName='2.3.1'"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | grep -F "package: name='ru.heartbeatchecker.app' versionCode='14' versionName='2.3.2'"
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump xmltree "$apk" AndroidManifest.xml > "$RUNNER_TEMP/android-ci-manifest.txt"
           "$RUNNER_TEMP/hc-ops/hc-ops" android-huawei --manifest "$RUNNER_TEMP/android-ci-manifest.txt" --apk "$apk" \
             --enabled false --output "$RUNNER_TEMP/android-ci-huawei.json"
@@ -185,8 +185,10 @@ jobs:
           }
       - name: Validate Android delivery scripts
         run: |
-          shellcheck deploy/android/publish.sh deploy/android/setup-sdk.sh
-          bash -n deploy/android/publish.sh deploy/android/setup-sdk.sh
+          shellcheck deploy/android/publish.sh deploy/android/setup-sdk.sh deploy/android/emulator-readiness.sh
+          for script in deploy/android/publish.sh deploy/android/setup-sdk.sh deploy/android/emulator-readiness.sh; do
+            bash -n "$script"
+          done
 
   android-emulator:
     runs-on: ubuntu-24.04
@@ -281,6 +283,7 @@ jobs:
           "$adb_bin" -s emulator-5554 shell input keyevent 82
           "$adb_bin" -s emulator-5554 shell svc wifi disable
           "$adb_bin" -s emulator-5554 shell svc data disable
+          bash ../../deploy/android/emulator-readiness.sh "$adb_bin" emulator-5554 "$report_dir"
           test -n "$(find app/src/androidTest -type f -name '*.java' -print -quit)"
           echo 'Emulator boot complete; running native instrumentation tests'
           ANDROID_SERIAL=emulator-5554 ./gradlew --no-daemon -Pandroid.enableAdditionalTestOutput=true :app:connectedCiAndroidTest

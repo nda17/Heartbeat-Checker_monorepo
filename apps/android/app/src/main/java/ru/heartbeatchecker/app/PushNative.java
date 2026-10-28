@@ -15,9 +15,6 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.UUID;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
 /** Native bearer binding while opaque delivery remains entirely in WorkManager. */
 final class PushNative {
@@ -55,13 +52,8 @@ final class PushNative {
                     throw new IOException("Unresolved push binding belongs to another operation");
                 body = pending.getJSONObject("body");
             } else {
-                CountDownLatch completed = new CountDownLatch(1);
-                AtomicReference<String> found = new AtomicReference<>();
-                PushSdk.token(context, new PushSdk.TokenResult() {
-                    @Override public void ready(String token) {found.set(token); completed.countDown();}
-                    @Override public void unavailable() {completed.countDown();}
-                });
-                if (!completed.await(30, TimeUnit.SECONDS) || !PushContract.token(found.get())) throw new IOException("Push transport unavailable");
+                if (!PushWorker.awaitToken(30000, () -> PushSdk.bindingInProgress && PushWork.localRevocation == revocation,
+                        result -> PushSdk.token(context, result))) throw new IOException("Push transport unavailable");
                 if (auth.epoch() != epoch || auth.active() == null) throw new IOException("Session changed");
                 synchronized (PushStore.LOCK) {
                     JSONObject latest = store.read();

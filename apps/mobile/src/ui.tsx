@@ -98,6 +98,158 @@ export function MotionPreferences({ children }: { children: React.ReactNode }) {
 
 export const useMotionEnabled = () => useContext(MotionEnabled);
 
+export function GlitchAccent({
+  children,
+  active = true,
+  style,
+}: {
+  children: React.ReactNode;
+  active?: boolean;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const enabled = useMotionEnabled();
+  const c = usePalette();
+  const phase = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    phase.stopAnimation();
+    phase.setValue(0);
+    if (!enabled || !active) return;
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(phase, {
+          toValue: 0,
+          duration: 6200,
+          useNativeDriver: true,
+          isInteraction: false,
+        }),
+        Animated.timing(phase, {
+          toValue: 1,
+          duration: 65,
+          useNativeDriver: true,
+          isInteraction: false,
+        }),
+        Animated.timing(phase, {
+          toValue: -1,
+          duration: 65,
+          useNativeDriver: true,
+          isInteraction: false,
+        }),
+        Animated.timing(phase, {
+          toValue: 0,
+          duration: 90,
+          useNativeDriver: true,
+          isInteraction: false,
+        }),
+      ]),
+    );
+    animation.start();
+    return () => {
+      animation.stop();
+      phase.stopAnimation();
+      phase.setValue(0);
+    };
+  }, [active, enabled, phase]);
+  return (
+    <View style={style}>
+      {children}
+      <Animated.View
+        pointerEvents="none"
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        style={[
+          StyleSheet.absoluteFill,
+          {
+            overflow: "hidden",
+            opacity: phase.interpolate({
+              inputRange: [-1, 0, 1],
+              outputRange: [0.38, 0, 0.3],
+            }),
+            transform: [
+              {
+                translateX: phase.interpolate({
+                  inputRange: [-1, 1],
+                  outputRange: [-2, 2],
+                }),
+              },
+            ],
+          },
+        ]}
+      >
+        {children}
+        <View
+          style={[
+            styles.glitchLine,
+            { top: "31%", backgroundColor: c.accentText },
+          ]}
+        />
+        <View
+          style={[
+            styles.glitchLine,
+            { top: "65%", backgroundColor: c.dangerText },
+          ]}
+        />
+      </Animated.View>
+    </View>
+  );
+}
+
+export function SignalAccent({ motionKey }: { motionKey: string }) {
+  const c = usePalette();
+  const progress = useEntryMotion(motionKey);
+  return (
+    <Animated.View
+      pointerEvents="none"
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      style={[
+        styles.signal,
+        {
+          borderColor: c.border,
+          backgroundColor: c.bg,
+          opacity: progress,
+          transform: [
+            {
+              translateY: progress.interpolate({
+                inputRange: [0, 1],
+                outputRange: [5, 0],
+              }),
+            },
+          ],
+        },
+      ]}
+    >
+      <View style={[styles.signalDot, { backgroundColor: c.accentText }]} />
+      <View style={styles.signalWave}>
+        {(
+          [
+            { left: 0, top: 18, width: 28, rotate: "0deg" },
+            { left: 23, top: 12, width: 20, rotate: "-50deg" },
+            { left: 35, top: 17, width: 34, rotate: "65deg" },
+            { left: 55, top: 20, width: 29, rotate: "-65deg" },
+            { left: 75, top: 15, width: 18, rotate: "40deg" },
+            { left: 89, top: 18, width: 47, rotate: "0deg" },
+          ] as const
+        ).map((segment, index) => (
+          <View
+            key={index}
+            style={[
+              styles.signalLine,
+              {
+                left: segment.left,
+                top: segment.top,
+                width: segment.width,
+                backgroundColor: c.accentText,
+                transform: [{ rotate: segment.rotate }],
+              },
+            ]}
+          />
+        ))}
+      </View>
+      <View style={[styles.signalGrid, { borderColor: c.border }]} />
+    </Animated.View>
+  );
+}
+
 export function useEntryMotion(
   motionKey: string | number | undefined,
   animateOnMount = true,
@@ -148,6 +300,7 @@ export function Icon({
         height: size,
         flexShrink: 0,
         overflow: "hidden",
+        borderRadius: name === "yandex" || name === "vk" ? size * 0.25 : 0,
         alignItems: "center",
         justifyContent: "center",
       }}
@@ -169,52 +322,24 @@ export function Icon({
 
 export function BrandHeader({ centered = false }: { centered?: boolean }) {
   const c = usePalette();
-  const offset = useRef(new Animated.Value(0)).current;
-  const motionEnabled = useMotionEnabled();
-  useEffect(() => {
-    if (!motionEnabled) return;
-    const timer = setInterval(() => {
-      Animated.sequence([
-        Animated.timing(offset, {
-          toValue: -1,
-          duration: 70,
-          useNativeDriver: true,
-        }),
-        Animated.timing(offset, {
-          toValue: 1,
-          duration: 70,
-          useNativeDriver: true,
-        }),
-        Animated.timing(offset, {
-          toValue: 0,
-          duration: 70,
-          useNativeDriver: true,
-        }),
-      ]).start();
-    }, 6000);
-    return () => {
-      clearInterval(timer);
-      offset.stopAnimation();
-      offset.setValue(0);
-    };
-  }, [motionEnabled, offset]);
   return (
     <View style={[styles.brand, centered ? styles.brandCentered : null]}>
-      <Image
-        accessible={false}
-        source={require("../assets/logo.png")}
-        style={styles.brandLogo}
-      />
-      <Animated.Text
-        accessibilityLabel="Heartbeat Checker"
-        style={[
-          styles.brandText,
-          { color: c.text, transform: [{ translateX: offset }] },
-        ]}
-      >
-        <Text style={styles.brandStrong}>Heartbeat</Text>
-        <Text style={styles.brandLight}> Checker</Text>
-      </Animated.Text>
+      <GlitchAccent style={styles.brandLogo}>
+        <Image
+          accessible={false}
+          source={require("../assets/logo.png")}
+          style={styles.brandLogo}
+        />
+      </GlitchAccent>
+      <GlitchAccent style={{ flexShrink: 1 }}>
+        <Text
+          accessibilityLabel="Heartbeat Checker"
+          style={[styles.brandText, { color: c.text }]}
+        >
+          <Text style={styles.brandStrong}>Heartbeat</Text>
+          <Text style={styles.brandLight}> Checker</Text>
+        </Text>
+      </GlitchAccent>
     </View>
   );
 }
@@ -284,11 +409,82 @@ export function GlassPreferences({ children }: { children: React.ReactNode }) {
 export function GlassBackdrop() {
   const c = usePalette();
   const reduced = useContext(ReducedTransparency);
+  const enabled = useMotionEnabled();
+  const drift = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    drift.stopAnimation();
+    drift.setValue(0);
+    if (!enabled || reduced) return;
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(drift, {
+          toValue: 1,
+          duration: 11000,
+          useNativeDriver: true,
+          isInteraction: false,
+        }),
+        Animated.timing(drift, {
+          toValue: 0,
+          duration: 11000,
+          useNativeDriver: true,
+          isInteraction: false,
+        }),
+      ]),
+    );
+    animation.start();
+    return () => {
+      animation.stop();
+      drift.stopAnimation();
+      drift.setValue(0);
+    };
+  }, [drift, enabled, reduced]);
   if (reduced) return null;
   return (
     <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-      <View style={[styles.ambientOne, { backgroundColor: c.ambientOne }]} />
-      <View style={[styles.ambientTwo, { backgroundColor: c.ambientTwo }]} />
+      <Animated.View
+        style={[
+          styles.ambientOne,
+          {
+            backgroundColor: c.ambientOne,
+            transform: [
+              {
+                translateX: drift.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, 18],
+                }),
+              },
+              {
+                translateY: drift.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, 12],
+                }),
+              },
+            ],
+          },
+        ]}
+      />
+      <Animated.View
+        style={[
+          styles.ambientTwo,
+          {
+            backgroundColor: c.ambientTwo,
+            transform: [
+              {
+                translateX: drift.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, -14],
+                }),
+              },
+              {
+                translateY: drift.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, -18],
+                }),
+              },
+            ],
+          },
+        ]}
+      />
     </View>
   );
 }
@@ -543,6 +739,9 @@ export function Button({
   iconName,
   loading = false,
   loadingLabel,
+  accessibilityLabel,
+  selected,
+  style,
 }: {
   label: string;
   onPress: () => void;
@@ -553,6 +752,9 @@ export function Button({
   iconName?: IconName;
   loading?: boolean;
   loadingLabel?: string;
+  accessibilityLabel?: string;
+  selected?: boolean;
+  style?: StyleProp<ViewStyle>;
 }) {
   const c = usePalette();
   const reduced = useContext(ReducedTransparency);
@@ -588,7 +790,12 @@ export function Button({
   return (
     <AnimatedPressable
       accessibilityRole="button"
-      accessibilityState={{ disabled: !!disabled || loading, busy: loading }}
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={{
+        disabled: !!disabled || loading,
+        busy: loading,
+        selected,
+      }}
       disabled={disabled || loading}
       onPress={onPress}
       onPressIn={() => press(true)}
@@ -620,6 +827,7 @@ export function Button({
           opacity: disabled && !loading ? 0.5 : pressed ? 0.76 : 1,
           transform: [{ scale }],
         },
+        style,
       ]}
     >
       <View style={styles.buttonContent}>
@@ -748,6 +956,31 @@ export const styles = StyleSheet.create({
   brandText: { fontSize: 18, letterSpacing: -0.5, flexShrink: 1 },
   brandStrong: { fontWeight: "800" },
   brandLight: { fontWeight: "500" },
+  glitchLine: { position: "absolute", left: 0, right: 0, height: 2 },
+  signal: {
+    height: 64,
+    borderWidth: 1,
+    borderRadius: 13,
+    overflow: "hidden",
+    justifyContent: "center",
+    paddingHorizontal: 18,
+  },
+  signalDot: { width: 7, height: 7, borderRadius: 4 },
+  signalWave: {
+    position: "absolute",
+    width: 136,
+    height: 38,
+    alignSelf: "center",
+  },
+  signalLine: { position: "absolute", height: 2, borderRadius: 1 },
+  signalGrid: {
+    position: "absolute",
+    right: 18,
+    width: 18,
+    height: 18,
+    borderWidth: 1,
+    borderRadius: 5,
+  },
   header: { width: "100%" },
   title: { fontSize: 24, lineHeight: 31, fontWeight: "700", flexShrink: 1 },
   subtitle: {
@@ -837,12 +1070,18 @@ export const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 1,
   },
-  buttonText: { fontSize: 16, fontWeight: "600", textAlign: "center" },
+  buttonText: {
+    fontSize: 16,
+    fontWeight: "600",
+    textAlign: "center",
+    flexShrink: 1,
+  },
   buttonContent: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 9,
+    maxWidth: "100%",
   },
   notice: { fontSize: 14, lineHeight: 21, flex: 1 },
   noticeBox: {

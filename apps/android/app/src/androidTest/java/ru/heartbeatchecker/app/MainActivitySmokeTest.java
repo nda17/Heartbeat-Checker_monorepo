@@ -70,6 +70,14 @@ public final class MainActivitySmokeTest {
             waitForBundledLandingImages();
             saveScreenshot(scenario, "Круглосуточный мониторинг ваших сайтов и сервисов.", "Войти через Яндекс", "public-landing.png");
 
+            scrollToText(scenario, "API магазина");
+            tapText(scenario, "API магазина");
+            String failureLegend = "Сбои: Ср — 6, Вс — 2. Число неудачных проверок за день.";
+            scrollToText(scenario, failureLegend);
+            assertTrue("selected API demo must show the day-level failure counts", awaitVisibleText(scenario, failureLegend));
+            saveScreenshot(scenario, failureLegend, "Email", "public-api-failed-days.png");
+
+            scrollToTop(scenario);
             tapText(scenario, "Возможности");
             assertTrue("the landing navigation must reach the native features section", awaitVisibleText(scenario, "Три типа проверки"));
             saveScreenshot(scenario, "Три типа проверки", "Войти через Яндекс", "public-features.png");
@@ -372,6 +380,23 @@ public final class MainActivitySmokeTest {
             View scroll = findScrollView(activity.getWindow().getDecorView());
             assertNotNull("public landing must expose its scrolling content", scroll);
             scroll.scrollTo(0, 0);
+        });
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        Thread.sleep(100);
+    }
+
+    private static void scrollToText(ActivityScenario<MainActivity> scenario, String text) throws InterruptedException {
+        scenario.onActivity(activity -> {
+            View root = activity.getWindow().getDecorView();
+            View foundScroll = findScrollView(root);
+            View target = findTextView(root, text);
+            assertTrue("public landing must expose its scroll container", foundScroll instanceof ViewGroup);
+            assertNotNull("scroll target is not rendered: " + text, target);
+            ViewGroup scroll = (ViewGroup) foundScroll;
+            Rect targetBounds = new Rect(0, 0, target.getWidth(), target.getHeight());
+            scroll.offsetDescendantRectToMyCoords(target, targetBounds);
+            int offset = Math.max(0, targetBounds.top - Math.max(0, (scroll.getHeight() - target.getHeight()) / 2));
+            scroll.scrollTo(0, offset);
         });
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         Thread.sleep(100);

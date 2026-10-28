@@ -6,6 +6,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
 import {
@@ -25,6 +26,7 @@ import {
   GlassBackdrop,
   Label,
   Notice,
+  SignalAccent,
   TextAction,
   Title,
   usePalette,
@@ -280,6 +282,9 @@ export function AuthScreen({
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [secondsUntilResend, setSecondsUntilResend] = useState(0);
+  const { width } = useWindowDimensions();
+  // Width stays stable when the keyboard resizes the window; every auth mode shares this minimum.
+  const formMinHeight = Math.max(620, Math.min(760, width * 2));
   const challengeClock = useRef<{ server: number; monotonic: number } | null>(
     null,
   );
@@ -536,7 +541,8 @@ export function AuthScreen({
       >
         <View style={styles.group}>
           <BrandHeader centered />
-          <Card style={styles.formCard}>
+          <Card style={[styles.formCard, { minHeight: formMinHeight }]}>
+            <SignalAccent motionKey={mode} />
             {native.DEV_CLIENT ? (
               <Label muted>
                 Dev-сборка: вход и регистрация по email. Социальный вход и
@@ -842,7 +848,7 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
   },
   group: { width: "100%", maxWidth: 420, alignSelf: "center", gap: 14 },
-  formCard: { minHeight: 700, justifyContent: "center" },
+  formCard: { paddingVertical: 22, gap: 14 },
   footer: { gap: 0 },
   authLinks: { flexDirection: "row", gap: 8 },
   authLink: {

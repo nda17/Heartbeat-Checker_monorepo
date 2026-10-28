@@ -1,6 +1,10 @@
 package ru.heartbeatchecker.app;
 
 import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.json.JSONArray;
 import org.junit.Test;
 
@@ -65,6 +69,128 @@ public final class PushSdkProviderTest {
                 PushSdk.nextCandidate("fcm", allAllowed, 0, "fcm"::equals));
         assertEquals("a route omitted by the server cannot be selected", -1,
                 PushSdk.nextCandidate("fcm", new JSONArray().put("fcm"), 0, "huawei"::equals));
+    }
+
+    @Test
+    public void existingRoutesUpgradeOnlyToReadyHigherPriorityAllowlistedProvider() {
+        JSONArray allAllowed = new JSONArray().put("fcm").put("huawei").put("rustore");
+        assertEquals("RuStore upgrades to ready FCM", 0,
+                PushSdk.nextPreferredCandidate("rustore", allAllowed, 0,
+                        provider -> "fcm".equals(provider)));
+        assertEquals("RuStore skips unavailable FCM and upgrades to Huawei", 1,
+                PushSdk.nextPreferredCandidate("rustore", allAllowed, 0,
+                        provider -> "huawei".equals(provider)));
+        assertEquals("Huawei upgrades to ready FCM", 0,
+                PushSdk.nextPreferredCandidate("huawei", allAllowed, 0,
+                        "fcm"::equals));
+        assertEquals("an unavailable higher route leaves Huawei unchanged", -1,
+                PushSdk.nextPreferredCandidate("huawei", allAllowed, 0, provider -> false));
+        assertEquals("the current route must remain in the server allowlist", -1,
+                PushSdk.nextPreferredCandidate("rustore", new JSONArray().put("fcm").put("huawei"), 0,
+                        provider -> true));
+        assertEquals("a disallowed higher route is never selected", -1,
+                PushSdk.nextPreferredCandidate("rustore", new JSONArray().put("rustore"), 0,
+                        provider -> true));
+    }
+
+    @Test
+    public void providerTokenFailureIsTerminalForFreshAndCurrentRoutes() {
+        JSONArray allAllowed = new JSONArray().put("fcm").put("huawei").put("rustore");
+        List<String> freshRequests = new ArrayList<>();
+        List<PushSdk.TokenResult> freshCallbacks = new ArrayList<>();
+        RecordingTokenResult freshResult = new RecordingTokenResult(true);
+        PushSdk.requestBestProvider("", allAllowed, false, provider -> true, freshResult,
+                (provider, callback) -> { freshRequests.add(provider); freshCallbacks.add(callback); });
+        assertEquals("a fresh all-ready device requests only its highest-priority provider",
+                java.util.Collections.singletonList("fcm"), freshRequests);
+        freshCallbacks.get(0).unavailable();
+        assertEquals("fresh token failure is terminal", 1, freshResult.unavailable);
+        assertEquals("fresh token failure does not fall through to Huawei or RuStore",
+                java.util.Collections.singletonList("fcm"), freshRequests);
+
+        List<String> existingRequests = new ArrayList<>();
+        List<PushSdk.TokenResult> existingCallbacks = new ArrayList<>();
+        RecordingTokenResult existingResult = new RecordingTokenResult(true);
+        PushSdk.requestBestProvider("rustore", allAllowed, true, provider -> true, existingResult,
+                (provider, callback) -> { existingRequests.add(provider); existingCallbacks.add(callback); });
+        assertEquals("a valid RuStore route tries only its ready FCM upgrade",
+                java.util.Collections.singletonList("fcm"), existingRequests);
+        existingCallbacks.get(0).unavailable();
+        assertEquals("failed upgrade is terminal and does not request lower candidates",
+                java.util.Collections.singletonList("fcm"), existingRequests);
+        assertEquals(1, existingResult.unavailable);
+
+        List<String> unavailableFcmRequests = new ArrayList<>();
+        PushSdk.requestBestProvider("rustore", allAllowed, true, provider -> "huawei".equals(provider),
+                new RecordingTokenResult(true), (provider, callback) -> unavailableFcmRequests.add(provider));
+        assertEquals("an unavailable FCM allows the next ready higher route",
+                java.util.Collections.singletonList("huawei"), unavailableFcmRequests);
+    }
+
+    @Test
+    public void inactiveTokenAttemptCannotDispatchAProviderRequest() {
+        List<String> requests = new ArrayList<>();
+        RecordingTokenResult result = new RecordingTokenResult(false);
+        PushSdk.requestBestProvider("rustore", new JSONArray().put("fcm").put("huawei").put("rustore"), true,
+                provider -> true, result, (provider, callback) -> requests.add(provider));
+        assertTrue("a timed out or cancelled token attempt cannot start an SDK request", requests.isEmpty());
+        assertEquals("the expired attempt is reported unavailable", 1, result.unavailable);
+    }
+
+    @Test
+    public void delayedSdkStageIsFencedAfterTimeoutOrOwnerChange() {
+        AtomicInteger stageRequests = new AtomicInteger();
+        RecordingTokenResult timedOut = new RecordingTokenResult(false);
+        PushSdk.requestTokenStage(() -> true, timedOut, stageRequests::incrementAndGet);
+        assertEquals("a late prior-stage callback cannot start a new SDK stage after timeout", 0, stageRequests.get());
+        assertEquals(1, timedOut.unavailable);
+
+        RecordingTokenResult activeResult = new RecordingTokenResult(true);
+        PushSdk.requestTokenStage(() -> false, activeResult, stageRequests::incrementAndGet);
+        assertEquals("a changed binding owner cannot start the next SDK stage", 0, stageRequests.get());
+        assertEquals(1, activeResult.unavailable);
+    }
+
+    private static final class RecordingTokenResult implements PushSdk.TokenResult {
+        private final boolean active;
+        private int unavailable;
+
+        RecordingTokenResult(boolean active) { this.active = active; }
+        @Override public boolean active() { return active; }
+        @Override public void ready(String token) { }
+        @Override public void unavailable() { unavailable++; }
+    }
+
+    @Test
+    public void candidateCommitSnapshotRejectsLogoutAndBindingRaces() throws Exception {
+        JSONObject before = candidateState();
+        JSONObject unchanged = new JSONObject(before.toString());
+        assertTrue(PushSdk.candidateMatches(before, unchanged, 7, 7, true));
+        assertFalse("logout/cancel invalidates the attempt", PushSdk.candidateMatches(before, unchanged, 7, 7, false));
+        assertFalse("local revocation invalidates the attempt", PushSdk.candidateMatches(before, unchanged, 7, 8, true));
+
+        JSONObject changed = new JSONObject(before.toString()).put("accountId", "33333333-3333-4333-8333-333333333333");
+        assertFalse("an account switch invalidates the attempt", PushSdk.candidateMatches(before, changed, 7, 7, true));
+        changed = new JSONObject(before.toString()).put("sessionId", "44444444-4444-4444-8444-444444444444");
+        assertFalse("a session switch invalidates the attempt", PushSdk.candidateMatches(before, changed, 7, 7, true));
+        changed = new JSONObject(before.toString()).put("pendingBind", new JSONObject());
+        assertFalse("a pending bind invalidates the attempt", PushSdk.candidateMatches(before, changed, 7, 7, true));
+        changed = new JSONObject(before.toString()).put("optedOut", true);
+        assertFalse("opt-out invalidates the attempt", PushSdk.candidateMatches(before, changed, 7, 7, true));
+        changed = new JSONObject(before.toString()).put("tokenRevision", 8);
+        assertFalse("a token rotation invalidates a stale candidate", PushSdk.candidateMatches(before, changed, 7, 7, true));
+        changed = new JSONObject(before.toString());
+        changed.getJSONObject("installation").put("bindingGeneration", 5);
+        assertFalse("a rebind invalidates the attempt", PushSdk.candidateMatches(before, changed, 7, 7, true));
+    }
+
+    private static JSONObject candidateState() throws Exception {
+        return new JSONObject().put("provider", "rustore").put("token", "existing-rustore-token")
+                .put("tokenRevision", 7).put("accountId", "11111111-1111-4111-8111-111111111111")
+                .put("sessionId", "22222222-2222-4222-8222-222222222222")
+                .put("enabled", true).put("optedOut", false).put("credential", "credential")
+                .put("installation", new JSONObject().put("id", "installation-id")
+                        .put("bindingGeneration", 4).put("registrationVersion", 3));
     }
 
     @Test

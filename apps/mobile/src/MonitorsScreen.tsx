@@ -5,6 +5,7 @@ import {
   Pressable,
   Alert,
   BackHandler,
+  ScrollView,
   Switch,
   View,
 } from "react-native";
@@ -1322,7 +1323,12 @@ export function MonitorsScreen({
             : ""}
         </Label>
       ) : null}
-      <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap" }}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator
+        style={{ flexGrow: 0 }}
+        contentContainerStyle={{ gap: 8, paddingVertical: 3 }}
+      >
         {[
           ["all", "Все"],
           ["problems", "Проблемы"],
@@ -1331,6 +1337,7 @@ export function MonitorsScreen({
           <Button
             key={key}
             label={label}
+            selected={status === key}
             secondary={status !== key}
             onPress={() => {
               setStatus(key);
@@ -1338,7 +1345,7 @@ export function MonitorsScreen({
             }}
           />
         ))}
-      </View>
+      </ScrollView>
       <Field
         label="Поиск мониторов"
         value={filter}
@@ -1348,13 +1355,15 @@ export function MonitorsScreen({
       <View
         style={{
           flexDirection: "row",
-          justifyContent: "center",
+          alignItems: "stretch",
           gap: 8,
-          flexWrap: "wrap",
         }}
       >
         <Button
-          label="Сначала проблемы"
+          label="Проблемы"
+          accessibilityLabel="Сначала проблемы"
+          selected={sort === "problems_first"}
+          style={{ flex: 1, minWidth: 0, paddingHorizontal: 6 }}
           secondary={sort !== "problems_first"}
           onPress={() => {
             setSort("problems_first");
@@ -1368,6 +1377,8 @@ export function MonitorsScreen({
               : "По имени"
           }
           secondary={!sort.startsWith("name")}
+          selected={sort.startsWith("name")}
+          style={{ flex: 1, minWidth: 0, paddingHorizontal: 6 }}
           onPress={() => {
             setPage(1);
             setSort(
@@ -1386,6 +1397,8 @@ export function MonitorsScreen({
               : "По дате"
           }
           secondary={!sort.startsWith("created")}
+          selected={sort.startsWith("created")}
+          style={{ flex: 1, minWidth: 0, paddingHorizontal: 6 }}
           onPress={() => {
             setPage(1);
             setSort(
