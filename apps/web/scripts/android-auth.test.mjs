@@ -1431,15 +1431,18 @@ test("public landing routes its accessible login, registration, and help actions
     );
     assert.ok(apiRow);
     assert.equal(apiRow.getAttribute("aria-pressed"), "true");
-    assert.match(harness.host.textContent, /99,6%/);
-    assert.match(harness.host.textContent, /2\s*008 из 2\s*016/);
+    assert.match(harness.host.textContent, /95,6%/);
+    assert.match(harness.host.textContent, /1\s*928 из 2\s*016/);
     assert.equal(
       harness.host.querySelectorAll('[aria-label*="проверок успешны"]').length,
       7,
       "the selected monitor exposes a daily seven-day breakdown",
     );
-    assert.match(harness.host.textContent, /Сбои: Ср — 6, Вс — 2/);
-    assert.match(harness.host.textContent, /Красный — день со сбоями/);
+    assert.match(harness.host.textContent, /Сбои: Ср — 86, Вс — 2/);
+    assert.match(
+      harness.host.textContent,
+      /Зелёный — успешные проверки, красный — неудачные\./,
+    );
     const dailyColumns = [
       ...harness.host.querySelectorAll('[aria-label*="ошибок"]'),
     ];
@@ -1448,17 +1451,26 @@ test("public landing routes its accessible login, registration, and help actions
       dailyColumns.map((column) =>
         Number(column.getAttribute("aria-label").match(/ошибок (\d+)$/)?.[1]),
       ),
-      [0, 0, 6, 0, 0, 0, 2],
-      "the decorative treatment retains the original seven daily failure counts",
+      [0, 0, 86, 0, 0, 0, 2],
+      "the chart retains the revised seven daily failure counts",
     );
-    for (const index of [2, 6]) {
+    for (const [index, failed] of [
+      [2, 86],
+      [6, 2],
+    ]) {
       const column = dailyColumns[index];
       const bar = column.firstElementChild;
+      const segments = [...bar.firstElementChild.children];
       const dayLabel = column.lastElementChild;
       assert.equal(bar.style.borderColor, "");
-      assert.equal(
-        bar.firstElementChild.style.backgroundColor,
-        "rgb(197, 72, 72)",
+      assert.deepEqual(
+        segments.map((segment) => Number.parseInt(segment.style.flex, 10)),
+        [failed, 288 - failed],
+        "red and green segments preserve the failed and successful check proportions",
+      );
+      assert.deepEqual(
+        segments.map((segment) => segment.style.backgroundColor),
+        ["rgb(197, 72, 72)", "rgb(0, 129, 111)"],
       );
       assert.equal(dayLabel.style.color, "rgb(182, 56, 56)");
       assert.equal(dayLabel.style.fontWeight, "800");
@@ -1466,7 +1478,8 @@ test("public landing routes its accessible login, registration, and help actions
     for (const index of [0, 1, 3, 4, 5]) {
       const column = dailyColumns[index];
       assert.equal(
-        column.firstElementChild.firstElementChild.style.backgroundColor,
+        column.firstElementChild.firstElementChild.children[0].style
+          .backgroundColor,
         "rgb(0, 129, 111)",
         "a day without failures stays solid green",
       );
@@ -1474,14 +1487,12 @@ test("public landing routes its accessible login, registration, and help actions
     }
     assert.equal(
       dailyColumns[2].getAttribute("aria-label"),
-      "Ср: 282 из 288 проверок успешны, 97,9%, ошибок 6",
+      "Ср: 202 из 288 проверок успешны, 70,1%, ошибок 86",
     );
     assert.equal(
       dailyColumns[6].getAttribute("aria-label"),
       "Вс: 286 из 288 проверок успешны, 99,3%, ошибок 2",
     );
-    assert.match(harness.host.textContent, /99,6%/);
-    assert.match(harness.host.textContent, /2\s*008 из 2\s*016/);
     const websiteRow = demoRows.find((button) =>
       button.getAttribute("aria-label").startsWith("Главная страница."),
     );

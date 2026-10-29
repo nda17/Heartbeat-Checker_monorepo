@@ -283,7 +283,7 @@ const demoMonitors = [
     target: "api.example.com · HTTP 503",
     state: "DOWN",
     detail: "2 ошибки подряд",
-    down: [0, 0, 6, 0, 0, 0, 2],
+    down: [0, 0, 86, 0, 0, 0, 2],
   },
   {
     name: "SSH сервера",
@@ -416,9 +416,16 @@ function Demo() {
               <View
                 style={[
                   StyleSheet.absoluteFill,
-                  { backgroundColor: down > 0 ? c.danger : c.accent },
+                  { backgroundColor: c.accent },
                 ]}
-              />
+              >
+                {down > 0 ? (
+                  <View style={{ flex: down, backgroundColor: c.danger }} />
+                ) : null}
+                <View
+                  style={{ flex: checksPerDay - down, backgroundColor: c.accent }}
+                />
+              </View>
             </GlitchAccent>
             <Text
               style={[
@@ -435,7 +442,7 @@ function Demo() {
         ))}
       </Animated.View>
       <Label muted>
-        Красный — день со сбоями, зелёный — все проверки за день успешны.
+        Зелёный — успешные проверки, красный — неудачные.
       </Label>
       {failed > 0 ? (
         <Text

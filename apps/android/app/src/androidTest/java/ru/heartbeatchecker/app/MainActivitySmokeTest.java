@@ -83,7 +83,7 @@ public final class MainActivitySmokeTest {
 
             scrollToText(scenario, "API магазина");
             tapText(scenario, "API магазина");
-            String failureLegend = "Сбои: Ср — 6, Вс — 2. Число неудачных проверок за день.";
+            String failureLegend = "Сбои: Ср — 86, Вс — 2. Число неудачных проверок за день.";
             scrollToText(scenario, failureLegend);
             assertTrue("selected API demo must show the day-level failure counts", awaitVisibleText(scenario, failureLegend));
             saveScreenshot(scenario, failureLegend, "Email", "public-api-failed-days.png");
