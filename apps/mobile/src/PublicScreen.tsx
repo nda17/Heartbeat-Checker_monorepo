@@ -412,36 +412,14 @@ function Demo() {
             accessible
             accessibilityLabel={`${demoDays[index]}: ${checksPerDay - down} из ${checksPerDay} проверок успешны, ${successfulChecks(down, checksPerDay)}%, ошибок ${down}`}
           >
-            <View
-              style={[
-                styles.dailyOutline,
-                { borderColor: down > 0 ? c.dangerText : "transparent" },
-              ]}
-            >
-              <GlitchAccent active={down > 0} style={styles.dailyBar}>
-                <View
-                  style={[
-                    StyleSheet.absoluteFill,
-                    { backgroundColor: c.border },
-                  ]}
-                >
-                  {down > 0 ? (
-                    <View
-                      style={{
-                        flex: down,
-                        backgroundColor: c.dangerText,
-                      }}
-                    />
-                  ) : null}
-                  <View
-                    style={{
-                      flex: checksPerDay - down,
-                      backgroundColor: c.accent,
-                    }}
-                  />
-                </View>
-              </GlitchAccent>
-            </View>
+            <GlitchAccent active={down > 0} style={styles.dailyBar}>
+              <View
+                style={[
+                  StyleSheet.absoluteFill,
+                  { backgroundColor: down > 0 ? c.danger : c.accent },
+                ]}
+              />
+            </GlitchAccent>
             <Text
               style={[
                 styles.small,
@@ -456,6 +434,9 @@ function Demo() {
           </View>
         ))}
       </Animated.View>
+      <Label muted>
+        Красный — день со сбоями, зелёный — все проверки за день успешны.
+      </Label>
       {failed > 0 ? (
         <Text
           style={[styles.small, { color: c.dangerText, fontWeight: "600" }]}
@@ -801,8 +782,7 @@ const styles = StyleSheet.create({
   analyticsValue: { fontSize: 32, lineHeight: 40, fontWeight: "800" },
   dailyChart: { flexDirection: "row", gap: 8, paddingVertical: 8 },
   dailyColumn: { flex: 1, alignItems: "center", gap: 7 },
-  dailyOutline: { width: "100%", padding: 2, borderWidth: 2, borderRadius: 8 },
-  dailyBar: { width: "100%", height: 72, borderRadius: 4, overflow: "hidden" },
+  dailyBar: { width: "100%", height: 80, borderRadius: 6, overflow: "hidden" },
   step: { flexDirection: "row", gap: 14, paddingVertical: 9 },
   stepNumber: { fontSize: 18, lineHeight: 25, fontWeight: "800" },
   stepCopy: { flex: 1, gap: 5 },
