@@ -12,6 +12,7 @@ import {
   ActivityIndicator,
   Animated,
   AppState,
+  Easing,
   Image,
   KeyboardAvoidingView,
   Pressable,
@@ -57,6 +58,7 @@ const iconSources = {
 export type IconName = keyof typeof iconSources;
 
 const MotionEnabled = createContext(false);
+const MotionReady = createContext(false);
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 export function MotionPreferences({ children }: { children: React.ReactNode }) {
@@ -83,6 +85,7 @@ export function MotionPreferences({ children }: { children: React.ReactNode }) {
     const app = AppState.addEventListener("change", (state) => {
       if (mounted) setActive(state === "active");
     });
+    setActive(AppState.currentState === "active");
     return () => {
       mounted = false;
       motion.remove();
@@ -90,9 +93,11 @@ export function MotionPreferences({ children }: { children: React.ReactNode }) {
     };
   }, []);
   return (
-    <MotionEnabled.Provider value={active && reduced === false}>
-      {children}
-    </MotionEnabled.Provider>
+    <MotionReady.Provider value={reduced !== null}>
+      <MotionEnabled.Provider value={active && reduced === false}>
+        {children}
+      </MotionEnabled.Provider>
+    </MotionReady.Provider>
   );
 }
 
@@ -115,32 +120,13 @@ export function GlitchAccent({
     phase.setValue(0);
     if (!enabled || !active) return;
     const animation = Animated.loop(
-      Animated.sequence([
-        Animated.timing(phase, {
-          toValue: 0,
-          duration: 6200,
-          useNativeDriver: true,
-          isInteraction: false,
-        }),
-        Animated.timing(phase, {
-          toValue: 1,
-          duration: 65,
-          useNativeDriver: true,
-          isInteraction: false,
-        }),
-        Animated.timing(phase, {
-          toValue: -1,
-          duration: 65,
-          useNativeDriver: true,
-          isInteraction: false,
-        }),
-        Animated.timing(phase, {
-          toValue: 0,
-          duration: 90,
-          useNativeDriver: true,
-          isInteraction: false,
-        }),
-      ]),
+      Animated.timing(phase, {
+        toValue: 1,
+        duration: 6800,
+        easing: Easing.linear,
+        useNativeDriver: true,
+        isInteraction: false,
+      }),
     );
     animation.start();
     return () => {
@@ -161,14 +147,14 @@ export function GlitchAccent({
           {
             overflow: "hidden",
             opacity: phase.interpolate({
-              inputRange: [-1, 0, 1],
-              outputRange: [0.38, 0, 0.3],
+              inputRange: [0, 0.13, 0.145, 0.16, 0.177, 0.19, 0.215, 1],
+              outputRange: [0, 0, 0.72, 0.7, 0.58, 0.5, 0, 0],
             }),
             transform: [
               {
                 translateX: phase.interpolate({
-                  inputRange: [-1, 1],
-                  outputRange: [-2, 2],
+                  inputRange: [0, 0.13, 0.145, 0.16, 0.177, 0.19, 0.215, 1],
+                  outputRange: [0, 0, 4, -4, 3, -2, 0, 0],
                 }),
               },
             ],
@@ -195,9 +181,40 @@ export function GlitchAccent({
 
 export function SignalAccent({ motionKey }: { motionKey: string }) {
   const c = usePalette();
-  const progress = useEntryMotion(motionKey);
+  const enabled = useMotionEnabled();
+  const sweep = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    sweep.stopAnimation();
+    sweep.setValue(0);
+    if (!enabled) return;
+    const animation = Animated.loop(
+      Animated.timing(sweep, {
+        toValue: 1,
+        duration: 2400,
+        easing: Easing.linear,
+        useNativeDriver: true,
+        isInteraction: false,
+      }),
+    );
+    animation.start();
+    return () => {
+      animation.stop();
+      sweep.stopAnimation();
+      sweep.setValue(0);
+    };
+  }, [enabled, motionKey, sweep]);
+  const points = [
+    [4, 21],
+    [32, 21],
+    [41, 8],
+    [54, 35],
+    [68, 5],
+    [82, 21],
+    [140, 21],
+  ];
+  const positions = points.map(([x]) => (x - 4) / 136);
   return (
-    <Animated.View
+    <View
       pointerEvents="none"
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"
@@ -206,47 +223,70 @@ export function SignalAccent({ motionKey }: { motionKey: string }) {
         {
           borderColor: c.border,
           backgroundColor: c.bg,
-          opacity: progress,
-          transform: [
-            {
-              translateY: progress.interpolate({
-                inputRange: [0, 1],
-                outputRange: [5, 0],
-              }),
-            },
-          ],
         },
       ]}
     >
       <View style={[styles.signalDot, { backgroundColor: c.accentText }]} />
-      <View style={styles.signalWave}>
-        {(
-          [
-            { left: 0, top: 18, width: 28, rotate: "0deg" },
-            { left: 23, top: 12, width: 20, rotate: "-50deg" },
-            { left: 35, top: 17, width: 34, rotate: "65deg" },
-            { left: 55, top: 20, width: 29, rotate: "-65deg" },
-            { left: 75, top: 15, width: 18, rotate: "40deg" },
-            { left: 89, top: 18, width: 47, rotate: "0deg" },
-          ] as const
-        ).map((segment, index) => (
-          <View
-            key={index}
-            style={[
-              styles.signalLine,
-              {
-                left: segment.left,
-                top: segment.top,
-                width: segment.width,
-                backgroundColor: c.accentText,
-                transform: [{ rotate: segment.rotate }],
-              },
-            ]}
-          />
-        ))}
+      <View
+        testID="signal-motion-region"
+        style={[styles.signalWave, { backgroundColor: c.bg }]}
+      >
+        {points.slice(1).map(([x, y], index) => {
+          const [startX, startY] = points[index];
+          const width = Math.hypot(x - startX, y - startY);
+          return (
+            <View
+              key={index}
+              style={[
+                styles.signalLine,
+                {
+                  left: (startX + x - width) / 2,
+                  top: (startY + y) / 2 - 1,
+                  width,
+                  opacity: 0.45,
+                  backgroundColor: c.accentText,
+                  transform: [
+                    { rotate: `${Math.atan2(y - startY, x - startX)}rad` },
+                  ],
+                },
+              ]}
+            />
+          );
+        })}
+        <Animated.View
+          style={[
+            styles.signalHead,
+            {
+              backgroundColor: c.accentText,
+              opacity: sweep.interpolate({
+                inputRange: [0, 0.03, 0.94, 1],
+                outputRange: [0, 1, 1, 0],
+              }),
+              transform: [
+                {
+                  translateX: sweep.interpolate({
+                    inputRange: positions,
+                    outputRange: points.map(([x]) => x - 4),
+                  }),
+                },
+                {
+                  translateY: sweep.interpolate({
+                    inputRange: positions,
+                    outputRange: points.map(([, y]) => y - 4),
+                  }),
+                },
+                {
+                  scale: sweep.interpolate({
+                    inputRange: [0, 0.25, 0.5, 0.75, 1],
+                    outputRange: [1, 1.2, 1, 1.2, 1],
+                  }),
+                },
+              ],
+            },
+          ]}
+        />
       </View>
-      <View style={[styles.signalGrid, { borderColor: c.border }]} />
-    </Animated.View>
+    </View>
   );
 }
 
@@ -255,14 +295,15 @@ export function useEntryMotion(
   animateOnMount = true,
 ) {
   const enabled = useMotionEnabled();
+  const ready = useContext(MotionReady);
   const progress = useRef(new Animated.Value(1)).current;
   const previous = useRef(motionKey);
   const initial = useRef(true);
   useEffect(() => {
     const changed = previous.current !== motionKey;
     const enter = changed || (initial.current && animateOnMount);
-    initial.current = false;
     previous.current = motionKey;
+    if (ready) initial.current = false;
     progress.stopAnimation();
     progress.setValue(1);
     if (enabled && motionKey !== undefined && enter) {
@@ -277,7 +318,7 @@ export function useEntryMotion(
       progress.stopAnimation();
       progress.setValue(1);
     };
-  }, [enabled, motionKey, animateOnMount, progress]);
+  }, [enabled, ready, motionKey, animateOnMount, progress]);
   return progress;
 }
 
@@ -968,18 +1009,18 @@ export const styles = StyleSheet.create({
   signalDot: { width: 7, height: 7, borderRadius: 4 },
   signalWave: {
     position: "absolute",
-    width: 136,
-    height: 38,
+    width: 144,
+    height: 42,
     alignSelf: "center",
   },
   signalLine: { position: "absolute", height: 2, borderRadius: 1 },
-  signalGrid: {
+  signalHead: {
     position: "absolute",
-    right: 18,
-    width: 18,
-    height: 18,
-    borderWidth: 1,
-    borderRadius: 5,
+    left: 0,
+    top: 0,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
   header: { width: "100%" },
   title: { fontSize: 24, lineHeight: 31, fontWeight: "700", flexShrink: 1 },

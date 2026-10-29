@@ -283,7 +283,7 @@ const demoMonitors = [
     target: "api.example.com · HTTP 503",
     state: "DOWN",
     detail: "2 ошибки подряд",
-    down: [0, 0, 6, 0, 0, 0, 2],
+    down: [0, 0, 86, 0, 0, 0, 2],
   },
   {
     name: "SSH сервера",
@@ -412,36 +412,21 @@ function Demo() {
             accessible
             accessibilityLabel={`${demoDays[index]}: ${checksPerDay - down} из ${checksPerDay} проверок успешны, ${successfulChecks(down, checksPerDay)}%, ошибок ${down}`}
           >
-            <View
-              style={[
-                styles.dailyOutline,
-                { borderColor: down > 0 ? c.dangerText : "transparent" },
-              ]}
-            >
-              <GlitchAccent active={down > 0} style={styles.dailyBar}>
+            <GlitchAccent active={down > 0} style={styles.dailyBar}>
+              <View
+                style={[
+                  StyleSheet.absoluteFill,
+                  { backgroundColor: c.accent },
+                ]}
+              >
+                {down > 0 ? (
+                  <View style={{ flex: down, backgroundColor: c.danger }} />
+                ) : null}
                 <View
-                  style={[
-                    StyleSheet.absoluteFill,
-                    { backgroundColor: c.border },
-                  ]}
-                >
-                  {down > 0 ? (
-                    <View
-                      style={{
-                        flex: down,
-                        backgroundColor: c.dangerText,
-                      }}
-                    />
-                  ) : null}
-                  <View
-                    style={{
-                      flex: checksPerDay - down,
-                      backgroundColor: c.accent,
-                    }}
-                  />
-                </View>
-              </GlitchAccent>
-            </View>
+                  style={{ flex: checksPerDay - down, backgroundColor: c.accent }}
+                />
+              </View>
+            </GlitchAccent>
             <Text
               style={[
                 styles.small,
@@ -456,6 +441,9 @@ function Demo() {
           </View>
         ))}
       </Animated.View>
+      <Label muted>
+        Зелёный — успешные проверки, красный — неудачные.
+      </Label>
       {failed > 0 ? (
         <Text
           style={[styles.small, { color: c.dangerText, fontWeight: "600" }]}
@@ -801,8 +789,7 @@ const styles = StyleSheet.create({
   analyticsValue: { fontSize: 32, lineHeight: 40, fontWeight: "800" },
   dailyChart: { flexDirection: "row", gap: 8, paddingVertical: 8 },
   dailyColumn: { flex: 1, alignItems: "center", gap: 7 },
-  dailyOutline: { width: "100%", padding: 2, borderWidth: 2, borderRadius: 8 },
-  dailyBar: { width: "100%", height: 72, borderRadius: 4, overflow: "hidden" },
+  dailyBar: { width: "100%", height: 80, borderRadius: 6, overflow: "hidden" },
   step: { flexDirection: "row", gap: 14, paddingVertical: 9 },
   stepNumber: { fontSize: 18, lineHeight: 25, fontWeight: "800" },
   stepCopy: { flex: 1, gap: 5 },

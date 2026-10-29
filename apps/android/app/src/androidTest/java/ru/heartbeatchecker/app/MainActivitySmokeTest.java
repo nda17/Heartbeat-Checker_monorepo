@@ -7,6 +7,7 @@ import android.content.res.AssetManager;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.net.Uri;
+import android.os.ParcelFileDescriptor;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
@@ -32,7 +33,14 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -49,6 +57,9 @@ public final class MainActivitySmokeTest {
     private static final String CODE = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
     private static final String ACCOUNT = "11111111-1111-4111-8111-111111111111";
     private static final String SESSION = "22222222-2222-4222-8222-222222222222";
+    private static final String[] ANIMATION_SCALE_SETTINGS = {
+            "window_animation_scale", "transition_animation_scale", "animator_duration_scale"
+    };
 
     @Test
     public void bundledOfflineJavascriptRendersNativePublicLandingBeforeLogin() throws Exception {
@@ -72,7 +83,7 @@ public final class MainActivitySmokeTest {
 
             scrollToText(scenario, "API магазина");
             tapText(scenario, "API магазина");
-            String failureLegend = "Сбои: Ср — 6, Вс — 2. Число неудачных проверок за день.";
+            String failureLegend = "Сбои: Ср — 86, Вс — 2. Число неудачных проверок за день.";
             scrollToText(scenario, failureLegend);
             assertTrue("selected API demo must show the day-level failure counts", awaitVisibleText(scenario, failureLegend));
             saveScreenshot(scenario, failureLegend, "Email", "public-api-failed-days.png");
@@ -86,6 +97,71 @@ public final class MainActivitySmokeTest {
             tapText(scenario, "Войти");
             assertTrue("public login action must open the native authentication screen", awaitVisibleText(scenario, "Войти через Яндекс"));
             saveScreenshot(scenario, "Войти", "Мониторы", "login.png");
+        }
+    }
+
+    @Test
+    public void bundledSignalMotionChangesNativeFramesAndHonorsReducedMotion() throws Exception {
+        Map<String, String> originalScales = readAnimationScales();
+        ActivityScenario<MainActivity> scenario = null;
+        try {
+            setAnimationScales("1");
+            assertEquals("1", readAnimationScale("transition_animation_scale"));
+            scenario = ActivityScenario.launch(MainActivity.class);
+            assertTrue(awaitVisibleText(scenario, "Круглосуточный мониторинг ваших сайтов и сервисов."));
+            waitForBundledLandingImages();
+            assertEquals("1", readAnimationScale("transition_animation_scale"));
+
+            List<Bitmap> activeFrames = new ArrayList<>();
+            List<Rect> activeBounds = new ArrayList<>();
+            long captureStart = android.os.SystemClock.elapsedRealtime();
+            long[] offsetsMs = {0, 211, 518, 937, 1460, 2067, 2806, 3693, 4800};
+            for (long offset : offsetsMs) {
+                sleepUntil(captureStart + offset);
+                activeFrames.add(captureSignalRegion(scenario, "capture active ECG frame", activeBounds));
+            }
+            assertStableCropBounds(activeBounds);
+            int visiblyDistinctFrames = countVisiblyDistinctFrames(activeFrames);
+            int changedPixels = maxChangedPixelsFromFirst(activeFrames);
+            saveMotionFrames(activeFrames, activeBounds, "signal-motion-active", offsetsMs,
+                    "transition_animation_scale=1; native rendered ECG sweep");
+            assertTrue("native ECG sweep must commit visibly different frames; visibly distinct=" + visiblyDistinctFrames
+                            + ", max changed pixels=" + changedPixels,
+                    visiblyDistinctFrames >= 5 && changedPixels >= 24);
+            recycle(activeFrames);
+            activeFrames.clear();
+
+            scenario.close();
+            scenario = null;
+            setAnimationScale("transition_animation_scale", "0");
+            assertEquals("0", readAnimationScale("transition_animation_scale"));
+            scenario = ActivityScenario.launch(MainActivity.class);
+            assertTrue(awaitVisibleText(scenario, "Круглосуточный мониторинг ваших сайтов и сервисов."));
+            waitForBundledLandingImages();
+            Thread.sleep(800); // Allow MotionPreferences to consume Android's reduced-motion setting.
+
+            List<Bitmap> reducedFrames = new ArrayList<>();
+            List<Rect> reducedBounds = new ArrayList<>();
+            long reducedStart = android.os.SystemClock.elapsedRealtime();
+            long[] reducedOffsetsMs = {0, 503, 1237};
+            for (long offset : reducedOffsetsMs) {
+                sleepUntil(reducedStart + offset);
+                reducedFrames.add(captureSignalRegion(scenario, "capture reduced-motion ECG frame", reducedBounds));
+            }
+            assertStableCropBounds(reducedBounds);
+            int reducedChangedPixels = maxChangedPixelsFromFirst(reducedFrames);
+            saveMotionFrames(reducedFrames, reducedBounds, "signal-motion-reduced", reducedOffsetsMs,
+                    "transition_animation_scale=0; stable reduced-motion ECG trace");
+            assertTrue("reduced motion must leave the opaque ECG crop stable; changed pixels="
+                            + reducedChangedPixels,
+                    reducedChangedPixels <= 4);
+            recycle(reducedFrames);
+        } finally {
+            try {
+                if (scenario != null) scenario.close();
+            } finally {
+                restoreAnimationScales(originalScales);
+            }
         }
     }
 
@@ -574,6 +650,226 @@ public final class MainActivitySmokeTest {
             }
         } finally {
             screenshot.recycle();
+        }
+    }
+
+    private static Bitmap captureSignalRegion(ActivityScenario<MainActivity> scenario, String action,
+            List<Rect> sampledBounds)
+            throws InterruptedException {
+        Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        awaitAppInputWindow(scenario, action);
+        CountDownLatch frameCommitted = new CountDownLatch(1);
+        scenario.onActivity(activity -> {
+            View decor = activity.getWindow().getDecorView();
+            decor.postOnAnimation(() -> {
+                decor.getViewTreeObserver().registerFrameCommitCallback(frameCommitted::countDown);
+                decor.invalidate();
+            });
+        });
+        assertTrue("React Native frame did not commit before " + action,
+                frameCommitted.await(5, TimeUnit.SECONDS));
+        awaitAppInputWindow(scenario, action);
+
+        AtomicReference<Rect> bounds = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            View region = findTestId(activity.getWindow().getDecorView(), "signal-motion-region");
+            assertNotNull("fixed ECG wave must expose its native testID", region);
+            Rect visible = new Rect();
+            assertTrue("ECG test region must be on screen", region.getGlobalVisibleRect(visible));
+            assertTrue("ECG test region must have a rendered area", visible.width() >= 100 && visible.height() >= 50);
+            assertEquals("ECG crop must include the full native test region", region.getWidth(), visible.width());
+            assertEquals("ECG crop must include the full native test region", region.getHeight(), visible.height());
+            bounds.set(visible);
+        });
+
+        Bitmap screen = instrumentation.getUiAutomation().takeScreenshot();
+        if (screen == null) throw new AssertionError("could not capture native ECG frame");
+        try {
+            Rect crop = bounds.get();
+            assertNotNull("ECG crop bounds must be available", crop);
+            assertTrue("ECG crop must stay within the captured screen", crop.left >= 0 && crop.top >= 0
+                    && crop.right <= screen.getWidth() && crop.bottom <= screen.getHeight());
+            awaitAppInputWindow(scenario, action + " after screenshot");
+            sampledBounds.add(new Rect(crop));
+            return Bitmap.createBitmap(screen, crop.left, crop.top, crop.width(), crop.height());
+        } finally {
+            screen.recycle();
+        }
+    }
+
+    private static View findTestId(View view, String testId) {
+        Object value = view.getTag(com.facebook.react.R.id.react_test_id);
+        if (testId.equals(value)) return view;
+        if (!(view instanceof ViewGroup)) return null;
+        ViewGroup group = (ViewGroup) view;
+        for (int index = 0; index < group.getChildCount(); index++) {
+            View found = findTestId(group.getChildAt(index), testId);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static int countDistinctFrames(List<Bitmap> frames) {
+        List<Integer> hashes = new ArrayList<>();
+        for (Bitmap frame : frames) {
+            int[] pixels = pixels(frame);
+            int hash = Arrays.hashCode(pixels);
+            if (!hashes.contains(hash)) hashes.add(hash);
+        }
+        return hashes.size();
+    }
+
+    private static int countVisiblyDistinctFrames(List<Bitmap> frames) {
+        List<int[]> representatives = new ArrayList<>();
+        for (Bitmap frame : frames) {
+            int[] candidate = pixels(frame);
+            boolean distinct = true;
+            for (int[] previous : representatives) {
+                if (countChangedPixels(previous, candidate) < 24) {
+                    distinct = false;
+                    break;
+                }
+            }
+            if (distinct) representatives.add(candidate);
+        }
+        return representatives.size();
+    }
+
+    private static int countChangedPixels(int[] first, int[] current) {
+        if (current.length != first.length) throw new AssertionError("ECG crop dimensions changed between frames");
+        int changed = 0;
+        for (int pixel = 0; pixel < first.length; pixel++) {
+            int a = first[pixel], b = current[pixel];
+            if (Math.max(Math.max(Math.abs(((a >> 16) & 255) - ((b >> 16) & 255)),
+                            Math.abs(((a >> 8) & 255) - ((b >> 8) & 255))),
+                    Math.abs((a & 255) - (b & 255))) >= 32) changed++;
+        }
+        return changed;
+    }
+
+    private static void assertStableCropBounds(List<Rect> bounds) {
+        assertTrue("at least one full ECG crop is required", !bounds.isEmpty());
+        Rect expected = bounds.get(0);
+        for (int index = 1; index < bounds.size(); index++) {
+            assertEquals("native ECG crop must not move between frames", expected, bounds.get(index));
+        }
+    }
+
+    private static int maxChangedPixelsFromFirst(List<Bitmap> frames) {
+        if (frames.size() < 2) return 0;
+        int[] first = pixels(frames.get(0));
+        int maximum = 0;
+        for (int index = 1; index < frames.size(); index++) {
+            int[] current = pixels(frames.get(index));
+            if (current.length != first.length) throw new AssertionError("ECG crop dimensions changed between frames");
+            int changed = 0;
+            for (int pixel = 0; pixel < first.length; pixel++) {
+                int a = first[pixel], b = current[pixel];
+                if (Math.max(Math.max(Math.abs(((a >> 16) & 255) - ((b >> 16) & 255)),
+                                Math.abs(((a >> 8) & 255) - ((b >> 8) & 255))),
+                        Math.abs((a & 255) - (b & 255))) >= 32) changed++;
+            }
+            maximum = Math.max(maximum, changed);
+        }
+        return maximum;
+    }
+
+    private static int[] pixels(Bitmap bitmap) {
+        int[] result = new int[bitmap.getWidth() * bitmap.getHeight()];
+        bitmap.getPixels(result, 0, bitmap.getWidth(), 0, 0, bitmap.getWidth(), bitmap.getHeight());
+        return result;
+    }
+
+    private static void saveMotionFrames(List<Bitmap> frames, List<Rect> bounds,
+            String prefix, long[] offsetsMs, String mode)
+            throws IOException {
+        String outputPath = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir");
+        if (outputPath == null || outputPath.isEmpty() || !new File(outputPath).isAbsolute())
+            throw new AssertionError("Android Gradle Plugin did not provide additionalTestOutputDir");
+        File directory = new File(outputPath, "motion-qa");
+        if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("could not create motion QA output directory");
+        Rect crop = bounds.get(0);
+        StringBuilder metrics = new StringBuilder("mode=").append(mode)
+                .append("\ncrop=").append(crop.left).append(',').append(crop.top).append(',')
+                .append(crop.width()).append(',').append(crop.height())
+                .append("\nunique_frame_hashes=").append(countDistinctFrames(frames))
+                .append("\nvisibly_distinct_frames=").append(countVisiblyDistinctFrames(frames))
+                .append("\nmax_changed_pixels_from_first=").append(maxChangedPixelsFromFirst(frames)).append('\n');
+        int[] first = pixels(frames.get(0));
+        for (int index = 0; index < frames.size(); index++) {
+            Bitmap frame = frames.get(index);
+            File file = new File(directory, prefix + "-" + index + ".png");
+            try (FileOutputStream output = new FileOutputStream(file)) {
+                if (!frame.compress(Bitmap.CompressFormat.PNG, 100, output))
+                    throw new IOException("could not encode ECG QA frame " + file.getName());
+            }
+            int[] current = pixels(frame);
+            int changed = 0;
+            for (int pixel = 0; pixel < first.length; pixel++) {
+                int a = first[pixel], b = current[pixel];
+                if (Math.max(Math.max(Math.abs(((a >> 16) & 255) - ((b >> 16) & 255)),
+                                Math.abs(((a >> 8) & 255) - ((b >> 8) & 255))),
+                        Math.abs((a & 255) - (b & 255))) >= 32) changed++;
+            }
+            metrics.append(file.getName()).append(" offset_ms=").append(offsetsMs[index])
+                    .append(" changed_pixels_from_first=").append(changed)
+                    .append(" hash=").append(Arrays.hashCode(current)).append('\n');
+        }
+        try (FileOutputStream output = new FileOutputStream(new File(directory, prefix + "-metrics.txt"))) {
+            output.write(metrics.toString().getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    private static void recycle(List<Bitmap> frames) {
+        for (Bitmap frame : frames) frame.recycle();
+    }
+
+    private static void sleepUntil(long deadlineElapsedMs) throws InterruptedException {
+        while (true) {
+            long remaining = deadlineElapsedMs - android.os.SystemClock.elapsedRealtime();
+            if (remaining <= 0) return;
+            Thread.sleep(Math.min(remaining, 100));
+        }
+    }
+
+    private static Map<String, String> readAnimationScales() throws IOException {
+        Map<String, String> values = new LinkedHashMap<>();
+        for (String key : ANIMATION_SCALE_SETTINGS) values.put(key, readAnimationScale(key));
+        return values;
+    }
+
+    private static String readAnimationScale(String key) throws IOException {
+        assertTrue("unexpected Android animation scale setting", Arrays.asList(ANIMATION_SCALE_SETTINGS).contains(key));
+        String value = shell("settings get global " + key).trim();
+        return "null".equals(value) ? null : value;
+    }
+
+    private static void setAnimationScales(String value) throws IOException {
+        for (String key : ANIMATION_SCALE_SETTINGS) setAnimationScale(key, value);
+    }
+
+    private static void setAnimationScale(String key, String value) throws IOException {
+        assertTrue("unexpected Android animation scale setting", Arrays.asList(ANIMATION_SCALE_SETTINGS).contains(key));
+        if (value == null) {
+            shell("settings delete global " + key);
+        } else {
+            assertTrue("animation scale must be a numeric setting", value.matches("[0-9]+(?:\\.[0-9]+)?"));
+            shell("settings put global " + key + " " + value);
+        }
+        assertEquals("Android animation setting did not update: " + key, value, readAnimationScale(key));
+    }
+
+    private static void restoreAnimationScales(Map<String, String> values) throws IOException {
+        for (String key : ANIMATION_SCALE_SETTINGS) setAnimationScale(key, values.get(key));
+    }
+
+    private static String shell(String command) throws IOException {
+        ParcelFileDescriptor descriptor = InstrumentationRegistry.getInstrumentation()
+                .getUiAutomation().executeShellCommand(command);
+        try (InputStream input = new ParcelFileDescriptor.AutoCloseInputStream(descriptor);
+                ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            input.transferTo(output);
+            return output.toString(StandardCharsets.UTF_8);
         }
     }
 
