@@ -127,7 +127,7 @@ jobs:
           "$RUNNER_TEMP/hc-ops/hc-ops" android-dev-manifest --apk "$apk" \
             --signature "$RUNNER_TEMP/android-dev-signature.txt" --badging "$RUNNER_TEMP/android-dev-badging.txt" \
             --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" --output android-dev/release.json
-          jq -e '.packageName == "ru.heartbeatchecker.app.dev" and .versionName == "2.3.2-dev" and .versionCode == 14' android-dev/release.json >/dev/null
+          jq -e '.packageName == "ru.heartbeatchecker.app.dev" and .versionName == "2.3.3-dev" and .versionCode == 15' android-dev/release.json >/dev/null
       - name: Retain immutable dev candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -217,7 +217,7 @@ jobs:
           "$RUNNER_TEMP/hc-ops/hc-ops" android-dev-manifest --apk "$apk" \
             --signature "$RUNNER_TEMP/android-dev-signature.txt" --badging "$RUNNER_TEMP/android-dev-badging.txt" \
             --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" --output "$RUNNER_TEMP/dev-rechecked.json"
-          jq -e '.packageName == "ru.heartbeatchecker.app.dev" and .versionName == "2.3.2-dev" and .versionCode == 14' android-dev/release.json >/dev/null
+          jq -e '.packageName == "ru.heartbeatchecker.app.dev" and .versionName == "2.3.3-dev" and .versionCode == 15' android-dev/release.json >/dev/null
           [[ "$(jq -Sc 'del(.builtAt)' android-dev/release.json)" == "$(jq -Sc 'del(.builtAt)' "$RUNNER_TEMP/dev-rechecked.json")" ]]
       - name: Publish exact dev APK through protected backend runner
         shell: bash
