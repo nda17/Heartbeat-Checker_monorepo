@@ -113,7 +113,6 @@ export function GlitchAccent({
   style?: StyleProp<ViewStyle>;
 }) {
   const enabled = useMotionEnabled();
-  const c = usePalette();
   const phase = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     phase.stopAnimation();
@@ -136,61 +135,91 @@ export function GlitchAccent({
     };
   }, [active, enabled, phase]);
   return (
-    <View style={style}>
+    <Animated.View
+      style={[
+        style,
+        {
+          opacity: phase.interpolate({
+            inputRange: [0, 0.13, 0.145, 0.16, 0.177, 0.19, 0.215, 1],
+            outputRange: [1, 1, 0.92, 1, 0.9, 0.96, 1, 1],
+          }),
+          transform: [
+            {
+              translateX: phase.interpolate({
+                inputRange: [0, 0.13, 0.145, 0.16, 0.177, 0.19, 0.215, 1],
+                outputRange: [0, 0, 1.5, -1.5, 1, -0.5, 0, 0],
+              }),
+            },
+          ],
+        },
+      ]}
+    >
       {children}
-      <Animated.View
-        pointerEvents="none"
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-        style={[
-          StyleSheet.absoluteFill,
-          {
-            overflow: "hidden",
-            opacity: phase.interpolate({
-              inputRange: [0, 0.13, 0.145, 0.16, 0.177, 0.19, 0.215, 1],
-              outputRange: [0, 0, 0.72, 0.7, 0.58, 0.5, 0, 0],
-            }),
-            transform: [
-              {
-                translateX: phase.interpolate({
-                  inputRange: [0, 0.13, 0.145, 0.16, 0.177, 0.19, 0.215, 1],
-                  outputRange: [0, 0, 4, -4, 3, -2, 0, 0],
-                }),
-              },
-            ],
-          },
-        ]}
-      >
-        {children}
-        <View
-          style={[
-            styles.glitchLine,
-            { top: "31%", backgroundColor: c.accentText },
-          ]}
-        />
-        <View
-          style={[
-            styles.glitchLine,
-            { top: "65%", backgroundColor: c.dangerText },
-          ]}
-        />
-      </Animated.View>
-    </View>
+    </Animated.View>
   );
 }
 
 export function SignalAccent({ motionKey }: { motionKey: string }) {
   const c = usePalette();
   const enabled = useMotionEnabled();
+  const [width, setWidth] = useState(0);
   const sweep = useRef(new Animated.Value(0)).current;
+  const points = useMemo(() => {
+    if (width < 36) return [];
+    const anchors = [
+      [0, 22],
+      [0.18, 22],
+    ];
+    for (let i = 1; i <= 8; i++) {
+      const progress = i / 8;
+      anchors.push([
+        0.18 + progress * 0.12,
+        22 - Math.sin(progress * Math.PI) ** 2 * 5,
+      ]);
+    }
+    anchors.push(
+      [0.39, 22],
+      [0.42, 26],
+      [0.46, 6],
+      [0.5, 34],
+      [0.54, 22],
+      [0.64, 22],
+    );
+    for (let i = 1; i <= 8; i++) {
+      const progress = i / 8;
+      anchors.push([
+        0.64 + progress * 0.14,
+        22 - Math.sin(progress * Math.PI) ** 2 * 7,
+      ]);
+    }
+    anchors.push([1, 22]);
+    const scaled = anchors.map(([x, y]) => [6 + x * (width - 12), y]);
+    const sampled = [scaled[0]];
+    for (let index = 1; index < scaled.length; index++) {
+      const [startX, startY] = scaled[index - 1];
+      const [endX, endY] = scaled[index];
+      const segmentSize = Math.max(6, (width - 12) / 144);
+      const steps = Math.max(
+        1,
+        Math.ceil(Math.hypot(endX - startX, endY - startY) / segmentSize),
+      );
+      for (let step = 1; step <= steps; step++) {
+        sampled.push([
+          startX + ((endX - startX) * step) / steps,
+          startY + ((endY - startY) * step) / steps,
+        ]);
+      }
+    }
+    return sampled;
+  }, [width]);
   useEffect(() => {
     sweep.stopAnimation();
     sweep.setValue(0);
-    if (!enabled) return;
+    if (!enabled || points.length === 0) return;
     const animation = Animated.loop(
       Animated.timing(sweep, {
         toValue: 1,
-        duration: 2400,
+        duration: 2800,
         easing: Easing.linear,
         useNativeDriver: true,
         isInteraction: false,
@@ -202,49 +231,68 @@ export function SignalAccent({ motionKey }: { motionKey: string }) {
       sweep.stopAnimation();
       sweep.setValue(0);
     };
-  }, [enabled, motionKey, sweep]);
-  const points = [
-    [4, 21],
-    [32, 21],
-    [41, 8],
-    [54, 35],
-    [68, 5],
-    [82, 21],
-    [140, 21],
-  ];
-  const positions = points.map(([x]) => (x - 4) / 136);
+  }, [enabled, motionKey, points, sweep]);
+  const travel = Math.max(24, width - 12);
+  const tail = 48;
+  const distance = Math.max(96, width + 60);
+  const positions = points.map(([x]) => (x + 12) / distance);
+  const headOpacity = sweep.interpolate({
+    inputRange: [
+      0,
+      18 / distance,
+      24 / distance,
+      (travel + 12) / distance,
+      (travel + 18) / distance,
+      1,
+    ],
+    outputRange: [0, 0, 1, 1, 0, 0],
+  });
   return (
     <View
+      testID="signal-shell"
       pointerEvents="none"
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"
-      style={[
-        styles.signal,
-        {
-          borderColor: c.border,
-          backgroundColor: c.bg,
-        },
-      ]}
+      style={[styles.signal, { borderColor: c.border, backgroundColor: c.bg }]}
     >
-      <View style={[styles.signalDot, { backgroundColor: c.accentText }]} />
       <View
         testID="signal-motion-region"
+        onLayout={(event) => {
+          const measured = event.nativeEvent.layout.width;
+          setWidth((previous) => (previous === measured ? previous : measured));
+        }}
         style={[styles.signalWave, { backgroundColor: c.bg }]}
       >
         {points.slice(1).map(([x, y], index) => {
           const [startX, startY] = points[index];
-          const width = Math.hypot(x - startX, y - startY);
+          const length = Math.hypot(x - startX, y - startY) + 1;
+          const position = ((startX + x) / 2 + 12) / distance;
           return (
-            <View
+            <Animated.View
               key={index}
               style={[
                 styles.signalLine,
                 {
-                  left: (startX + x - width) / 2,
+                  left: (startX + x - length) / 2,
                   top: (startY + y) / 2 - 1,
-                  width,
-                  opacity: 0.45,
-                  backgroundColor: c.accentText,
+                  width: length,
+                  backgroundColor: sweep.interpolate({
+                    inputRange: [
+                      0,
+                      position - 4 / distance,
+                      position,
+                      position + tail / distance,
+                      1,
+                    ],
+                    outputRange: [
+                      c.signalTrack,
+                      c.signalTrack,
+                      c.accentText,
+                      c.signalTrack,
+                      c.signalTrack,
+                    ],
+                    extrapolate: "clamp",
+                  }),
                   transform: [
                     { rotate: `${Math.atan2(y - startY, x - startX)}rad` },
                   ],
@@ -253,38 +301,45 @@ export function SignalAccent({ motionKey }: { motionKey: string }) {
             />
           );
         })}
-        <Animated.View
-          style={[
-            styles.signalHead,
-            {
-              backgroundColor: c.accentText,
-              opacity: sweep.interpolate({
-                inputRange: [0, 0.03, 0.94, 1],
-                outputRange: [0, 1, 1, 0],
-              }),
-              transform: [
+        {points.length > 0 &&
+          [12, 4].map((size) => (
+            <Animated.View
+              key={size}
+              style={[
+                styles.signalHead,
                 {
-                  translateX: sweep.interpolate({
-                    inputRange: positions,
-                    outputRange: points.map(([x]) => x - 4),
-                  }),
+                  width: size,
+                  height: size,
+                  borderRadius: size / 2,
+                  backgroundColor: c.accentText,
+                  opacity:
+                    size === 12
+                      ? Animated.multiply(headOpacity, 0.16)
+                      : headOpacity,
+                  transform: [
+                    {
+                      translateX: sweep.interpolate({
+                        inputRange: [...positions, 1],
+                        outputRange: [
+                          ...points.map(([x]) => x - size / 2),
+                          points[points.length - 1][0] - size / 2,
+                        ],
+                      }),
+                    },
+                    {
+                      translateY: sweep.interpolate({
+                        inputRange: [...positions, 1],
+                        outputRange: [
+                          ...points.map(([, y]) => y - size / 2),
+                          points[points.length - 1][1] - size / 2,
+                        ],
+                      }),
+                    },
+                  ],
                 },
-                {
-                  translateY: sweep.interpolate({
-                    inputRange: positions,
-                    outputRange: points.map(([, y]) => y - 4),
-                  }),
-                },
-                {
-                  scale: sweep.interpolate({
-                    inputRange: [0, 0.25, 0.5, 0.75, 1],
-                    outputRange: [1, 1.2, 1, 1.2, 1],
-                  }),
-                },
-              ],
-            },
-          ]}
-        />
+              ]}
+            />
+          ))}
       </View>
     </View>
   );
@@ -404,6 +459,7 @@ export function usePalette() {
       border: dark ? "#315258" : "#d6e5e2",
       accent: "#00816f",
       accentText: dark ? "#6cddca" : "#006e60",
+      signalTrack: dark ? "#30605c" : "#9fc8c3",
       danger: "#c54848",
       dangerText: dark ? "#ff8b84" : "#b63838",
     }),
@@ -997,21 +1053,18 @@ export const styles = StyleSheet.create({
   brandText: { fontSize: 18, letterSpacing: -0.5, flexShrink: 1 },
   brandStrong: { fontWeight: "800" },
   brandLight: { fontWeight: "500" },
-  glitchLine: { position: "absolute", left: 0, right: 0, height: 2 },
   signal: {
     height: 64,
     borderWidth: 1,
     borderRadius: 13,
     overflow: "hidden",
     justifyContent: "center",
-    paddingHorizontal: 18,
+    paddingHorizontal: 12,
   },
-  signalDot: { width: 7, height: 7, borderRadius: 4 },
   signalWave: {
-    position: "absolute",
-    width: 144,
     height: 42,
-    alignSelf: "center",
+    alignSelf: "stretch",
+    overflow: "hidden",
   },
   signalLine: { position: "absolute", height: 2, borderRadius: 1 },
   signalHead: {

@@ -1194,12 +1194,24 @@ func TestBillingRenewalAnchorClampsMonthEndInMoscow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	start := time.Date(2026, time.October, 31, 12, 0, 0, 0, time.UTC)
+	var dbNow time.Time
+	if err := f.pool.QueryRow(context.Background(), `SELECT clock_timestamp()`).Scan(&dbNow); err != nil {
+		t.Fatal(err)
+	}
+	moscow := time.FixedZone("MSK", 3*60*60)
+	startYear := dbNow.In(moscow).Year() + 1
+	start := time.Date(startYear, time.October, 31, 12, 0, 0, 0, time.UTC)
 	if _, err := f.pool.Exec(context.Background(), `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason,renewal_anchor_day) VALUES($1,1,$2,'mock_test','month end test',31)`, owner.id, start); err != nil {
 		t.Fatal(err)
 	}
-	wantDates := []string{"2026-11-30", "2026-12-31", "2027-01-31", "2027-02-28", "2027-03-31"}
-	moscow := time.FixedZone("MSK", 3*60*60)
+	februaryLast := time.Date(startYear+1, time.March, 0, 0, 0, 0, 0, moscow).Day()
+	wantDates := []string{
+		fmt.Sprintf("%04d-11-30", startYear),
+		fmt.Sprintf("%04d-12-31", startYear),
+		fmt.Sprintf("%04d-01-31", startYear+1),
+		fmt.Sprintf("%04d-02-%02d", startYear+1, februaryLast),
+		fmt.Sprintf("%04d-03-31", startYear+1),
+	}
 	for index, wantDate := range wantDates {
 		key := fmt.Sprintf("a4c1a100-0000-4000-8000-%012d", index+1)
 		order, err := module.service.CreateOrder(context.Background(), owner.id, 1, key, 1)
