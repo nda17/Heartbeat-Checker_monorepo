@@ -79,6 +79,7 @@ public final class MainActivitySmokeTest {
                     awaitVisibleText(scenario, "Круглосуточный мониторинг ваших сайтов и сервисов."));
             assertTrue("the full public landing must offer registration", awaitVisibleText(scenario, "Создать аккаунт"));
             waitForBundledLandingImages();
+            assertSignalGeometry(scenario, "public landing");
             saveScreenshot(scenario, "Круглосуточный мониторинг ваших сайтов и сервисов.", "Войти через Яндекс", "public-landing.png");
 
             scrollToText(scenario, "API магазина");
@@ -143,7 +144,7 @@ public final class MainActivitySmokeTest {
             List<Bitmap> reducedFrames = new ArrayList<>();
             List<Rect> reducedBounds = new ArrayList<>();
             long reducedStart = android.os.SystemClock.elapsedRealtime();
-            long[] reducedOffsetsMs = {0, 503, 1237};
+            long[] reducedOffsetsMs = {0, 1403, 3017};
             for (long offset : reducedOffsetsMs) {
                 sleepUntil(reducedStart + offset);
                 reducedFrames.add(captureSignalRegion(scenario, "capture reduced-motion ECG frame", reducedBounds));
@@ -171,6 +172,7 @@ public final class MainActivitySmokeTest {
             assertTrue(awaitVisibleText(scenario, "Круглосуточный мониторинг ваших сайтов и сервисов."));
             tapText(scenario, "Войти");
             assertTrue(awaitVisibleText(scenario, "Войти через Яндекс"));
+            assertSignalGeometry(scenario, "login screen");
 
             tapDescription(scenario, "Показать пароль");
             assertTrue("password control must expose its visible state accessibly",
@@ -673,7 +675,7 @@ public final class MainActivitySmokeTest {
         AtomicReference<Rect> bounds = new AtomicReference<>();
         scenario.onActivity(activity -> {
             View region = findTestId(activity.getWindow().getDecorView(), "signal-motion-region");
-            assertNotNull("fixed ECG wave must expose its native testID", region);
+            assertNotNull("responsive ECG wave must expose its native testID", region);
             Rect visible = new Rect();
             assertTrue("ECG test region must be on screen", region.getGlobalVisibleRect(visible));
             assertTrue("ECG test region must have a rendered area", visible.width() >= 100 && visible.height() >= 50);
@@ -695,6 +697,41 @@ public final class MainActivitySmokeTest {
         } finally {
             screen.recycle();
         }
+    }
+
+    private static void assertSignalGeometry(ActivityScenario<MainActivity> scenario, String screenName) {
+        scenario.onActivity(activity -> {
+            View shell = findTestId(activity.getWindow().getDecorView(), "signal-shell");
+            View region = findTestId(activity.getWindow().getDecorView(), "signal-motion-region");
+            assertNotNull(screenName + " signal shell must expose its native testID", shell);
+            assertNotNull(screenName + " signal trace must expose its native testID", region);
+            assertSame(screenName + " signal trace must be laid out inside its shell", shell, region.getParent());
+
+            float density = activity.getResources().getDisplayMetrics().density;
+            Rect shellVisible = new Rect();
+            Rect regionVisible = new Rect();
+            assertTrue(screenName + " signal shell must be visible", shell.getGlobalVisibleRect(shellVisible));
+            assertTrue(screenName + " signal trace must be visible", region.getGlobalVisibleRect(regionVisible));
+            assertEquals(screenName + " signal shell must be fully visible", shell.getWidth(), shellVisible.width());
+            assertEquals(screenName + " signal trace must be fully visible", region.getWidth(), regionVisible.width());
+            assertEquals(screenName + " signal trace must be fully visible vertically", region.getHeight(), regionVisible.height());
+            assertEquals("signal shell height remains 64 dp", 64, Math.round(shell.getHeight() / density));
+            assertEquals("signal trace height remains 42 dp", 42, Math.round(region.getHeight() / density));
+
+            int leftInset = regionVisible.left - shellVisible.left;
+            int rightInset = shellVisible.right - regionVisible.right;
+            int expectedInset = Math.round(13 * density); // 12 dp horizontal padding inside a 1 dp border.
+            assertTrue(screenName + " trace must respect the shell's horizontal padding; left=" + leftInset,
+                    Math.abs(leftInset - expectedInset) <= Math.max(1, Math.round(density)));
+            assertTrue(screenName + " trace must respect the shell's horizontal padding; right=" + rightInset,
+                    Math.abs(rightInset - expectedInset) <= Math.max(1, Math.round(density)));
+            assertTrue(screenName + " trace must remain centered within the shell",
+                    Math.abs((regionVisible.left + regionVisible.right) - (shellVisible.left + shellVisible.right)) <= 2);
+            assertTrue(screenName + " trace must remain vertically centered within the shell",
+                    Math.abs((regionVisible.top + regionVisible.bottom) - (shellVisible.top + shellVisible.bottom)) <= 2);
+            assertTrue(screenName + " trace must span the shell's available inner width",
+                    region.getWidth() >= shell.getWidth() - 2 * Math.round(16 * density));
+        });
     }
 
     private static View findTestId(View view, String testId) {

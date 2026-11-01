@@ -94,7 +94,11 @@ function flattenStyle(style) {
   return typeof style === "object" ? style : {};
 }
 
-function createNativeMocks(reducedMotionInitially = false, motionRead = null) {
+function createNativeMocks(
+  reducedMotionInitially = false,
+  motionRead = null,
+  signalRegionWidth = 320,
+) {
   const backHandlers = new Set();
   const appListeners = new Set();
   const motionListeners = new Set();
@@ -130,6 +134,9 @@ function createNativeMocks(reducedMotionInitially = false, motionRead = null) {
       interpolate(config) {
         return config.outputRange[0];
       }
+    },
+    multiply(value, factor) {
+      return typeof value === "number" ? value * factor : 0;
     },
     timing(value, config) {
       const handle = {
@@ -251,16 +258,32 @@ function createNativeMocks(reducedMotionInitially = false, motionRead = null) {
         ...nativeProps
       } = props;
       delete nativeProps.keyboardShouldPersistTaps;
+      const onLayout = nativeProps.onLayout;
       delete nativeProps.onLayout;
       delete nativeProps.accessible;
       delete nativeProps.selectable;
       delete nativeProps.importantForAccessibility;
       delete nativeProps.pointerEvents;
       const css = flattenStyle(style ?? contentContainerStyle);
-      if (Array.isArray(css.transform)) css.transform = "none";
+      if (Array.isArray(css.transform)) {
+        css.transform = css.transform
+          .map((operation) => {
+            const [name, value] = Object.entries(operation)[0] ?? [];
+            if (name === "rotate") return `rotate(${value})`;
+            if (name === "translateX") return `translateX(${value}px)`;
+            if (name === "translateY") return `translateY(${value}px)`;
+            if (name === "scale") return `scale(${value})`;
+            return "";
+          })
+          .filter(Boolean)
+          .join(" ");
+      }
       const attrs = {
         ...(testId ? { "data-native-component": testId } : {}),
         ...(nativeTestId ? { "data-testid": nativeTestId } : {}),
+        ...(nativeTestId === "signal-motion-region"
+          ? { "data-layout-width": String(signalRegionWidth) }
+          : {}),
         ...(horizontal ? { "data-horizontal": "true" } : {}),
         ...(showsHorizontalScrollIndicator
           ? { "data-horizontal-indicator": "true" }
@@ -278,6 +301,11 @@ function createNativeMocks(reducedMotionInitially = false, motionRead = null) {
         style: css,
         ...nativeProps,
       };
+      React.useEffect(() => {
+        if (nativeTestId === "signal-motion-region") {
+          onLayout?.({ nativeEvent: { layout: { width: signalRegionWidth } } });
+        }
+      }, [nativeTestId, onLayout]);
       return React.createElement(tag, attrs, children, refreshControl ?? null);
     }
     MockNativeComponent.displayName = `Mock${tag}`;
@@ -495,6 +523,7 @@ async function createHarness({
   onAuthed = async () => {},
   reducedMotion = false,
   motionRead = null,
+  signalRegionWidth = 320,
 } = {}) {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", {
     url: "https://heartbeat-checker.ru/login",
@@ -506,7 +535,7 @@ async function createHarness({
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
-  const mocks = createNativeMocks(reducedMotion, motionRead);
+  const mocks = createNativeMocks(reducedMotion, motionRead, signalRegionWidth);
   const requests = [];
   let monitorContractActive = false;
   let monitorEntitlementOverride = null;
@@ -1262,6 +1291,22 @@ test("auth screens expose password visibility and preserve the shared card heigh
         "every auth state keeps the shared Heartbeat brand mark",
       );
     assertSharedBrand();
+    const brandLogo = login.host.querySelector(
+      'img[data-source="../assets/logo.png"]',
+    );
+    const brandWordmark = login.host.querySelector(
+      '[aria-label="Heartbeat Checker"]',
+    );
+    assert.equal(
+      brandLogo.parentElement.children.length,
+      1,
+      "the logo glitch wrapper renders the logo once without overlay bands",
+    );
+    assert.equal(
+      brandWordmark.parentElement.children.length,
+      1,
+      "the wordmark glitch wrapper renders text once without overlay bands",
+    );
     assert.equal(
       login.host.querySelector('input[aria-label="Пароль"]').type,
       "password",
@@ -1400,8 +1445,8 @@ test("public landing routes its accessible login, registration, and help actions
     assert.ok(signalRegion, "the ECG has a stable native motion region");
     assert.equal(
       signalRegion.parentElement.children.length,
-      2,
-      "the ECG motif contains only its status dot and trace, without the decorative square",
+      1,
+      "the ECG shell contains only the responsive trace without a stray status dot",
     );
     assert.equal(
       signalRegion.querySelector('[role="checkbox"], input[type="checkbox"]'),
@@ -1514,6 +1559,80 @@ test("public landing routes its accessible login, registration, and help actions
     assert.equal(actions.help, 1);
   } finally {
     await harness.unmount();
+  }
+});
+
+test("public ECG fills its measured width and reaches both endpoints responsively", async () => {
+  for (const signalRegionWidth of [240, 320, 600]) {
+    const harness = await createHarness({ signalRegionWidth });
+    try {
+      await harness.renderPublicScreen();
+      await harness.flush();
+      const shell = harness.host.querySelector('[data-testid="signal-shell"]');
+      const region = harness.host.querySelector(
+        '[data-testid="signal-motion-region"]',
+      );
+      assert.ok(
+        shell,
+        `the signal shell must render at ${signalRegionWidth} dp`,
+      );
+      assert.ok(
+        region,
+        `the signal trace must render at ${signalRegionWidth} dp`,
+      );
+      assert.equal(shell.style.height, "64px");
+      assert.equal(shell.style.paddingHorizontal, "12px");
+      assert.equal(region.style.height, "42px");
+      assert.equal(region.style.alignSelf, "stretch");
+      assert.equal(
+        Number(region.dataset.layoutWidth),
+        signalRegionWidth,
+        "the harness forwards the measured native onLayout width",
+      );
+
+      const segments = [...region.children].filter(
+        (child) =>
+          child.style.height === "2px" &&
+          child.style.transform.startsWith("rotate("),
+      );
+      assert.ok(
+        segments.length > 20,
+        "the responsive trace should retain its sampled smooth path",
+      );
+      const endpoint = (segment, side) => {
+        const left = Number.parseFloat(segment.style.left);
+        const width = Number.parseFloat(segment.style.width);
+        const angle = Number.parseFloat(
+          segment.style.transform.match(/rotate\(([-+\d.]+)/)?.[1],
+        );
+        assert.ok(
+          Number.isFinite(angle),
+          "each trace segment keeps its rotation",
+        );
+        return (
+          left +
+          width / 2 +
+          ((side === "start" ? -1 : 1) * Math.cos(angle) * width) / 2
+        );
+      };
+      const traceStart = endpoint(segments[0], "start");
+      const traceEnd = endpoint(segments.at(-1), "end");
+      assert.ok(
+        Math.abs(traceStart - 6) <= 1,
+        `the trace starts at its 6 dp inset; got ${traceStart} dp at width ${signalRegionWidth}`,
+      );
+      assert.ok(
+        Math.abs(traceEnd - (signalRegionWidth - 6)) <= 1,
+        `the trace reaches its 6 dp trailing inset; got ${traceEnd} dp at width ${signalRegionWidth}`,
+      );
+      assert.equal(
+        shell.children.length,
+        1,
+        "the shell has no independent dot or overlay stripe children",
+      );
+    } finally {
+      await harness.unmount();
+    }
   }
 });
 
