@@ -5,19 +5,17 @@ import (
 	"errors"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/accounts"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing"
 )
 
-func TestBootstrapLocalCreatesAdminCredentialsAndMaximumLocalQuota(t *testing.T) {
+func TestBootstrapLocalCreatesAdminCredentialsAndFundsLocalWallet(t *testing.T) {
 	f := newAuthFixture(t)
 	ctx := context.Background()
 	accountModule := accounts.New(f.pool)
 	billingModule := billing.New(f.pool, true)
-	until := time.Now().Add(30 * 24 * time.Hour).UTC().Truncate(time.Microsecond)
 	input := BootstrapInput{Email: "local-admin@example.test", Name: "Local Admin", Password: "local admin secure password"}
 
 	id, err := BootstrapLocal(ctx, f.pool, input,
@@ -26,7 +24,7 @@ func TestBootstrapLocalCreatesAdminCredentialsAndMaximumLocalQuota(t *testing.T)
 			return account.ID, err
 		},
 		func(ctx context.Context, tx pgx.Tx, accountID string) error {
-			return billingModule.GrantLocalTx(ctx, tx, accountID, 1000, until, "local admin bootstrap integration test")
+			return billingModule.CreditLocalTx(ctx, tx, accountID, 1000, "local admin bootstrap integration test")
 		},
 	)
 	if err != nil {
@@ -34,22 +32,16 @@ func TestBootstrapLocalCreatesAdminCredentialsAndMaximumLocalQuota(t *testing.T)
 	}
 
 	var name, role, status, email string
-	var passwordHash, source, reason string
-	var quota int
-	var validUntil time.Time
-	if err := f.pool.QueryRow(ctx, `SELECT a.name,a.role,a.status,c.email,c.password_hash,
-		e.monitor_limit,e.valid_until,e.source,e.reason
-		FROM accounts.accounts a
-		JOIN auth.credentials c ON c.account_id=a.id
-		JOIN billing.entitlements e ON e.account_id=a.id WHERE a.id=$1`, id).
-		Scan(&name, &role, &status, &email, &passwordHash, &quota, &validUntil, &source, &reason); err != nil {
-		t.Fatalf("read bootstrapped admin records: %v", err)
+	var passwordHash, kind string
+	var amount int
+	if err := f.pool.QueryRow(ctx, `SELECT a.name,a.role,a.status,c.email,c.password_hash,l.amount_minor,l.kind
+		FROM accounts.accounts a JOIN auth.credentials c ON c.account_id=a.id
+		JOIN billing.wallet_ledger l ON l.account_id=a.id WHERE a.id=$1`, id).
+		Scan(&name, &role, &status, &email, &passwordHash, &amount, &kind); err != nil {
+		t.Fatal(err)
 	}
-	if name != input.Name || role != "admin" || status != "active" || email != input.Email {
-		t.Fatalf("bootstrapped account = name %q role %q status %q email %q", name, role, status, email)
-	}
-	if passwordHash == "" || passwordHash == input.Password || quota != 1000 || source != "local_test" || reason == "" || !validUntil.Equal(until) {
-		t.Fatalf("bootstrapped credential/entitlement = hash-present %t quota %d source %q reason-present %t until %s", passwordHash != "", quota, source, reason != "", validUntil)
+	if name != input.Name || role != "admin" || status != "active" || email != input.Email || passwordHash == "" || passwordHash == input.Password || amount != 1000 || kind != "local_credit" {
+		t.Fatal("wrong local admin, credential or initial credit")
 	}
 
 	cookie, _, login := f.login(t, input.Email, input.Password)
@@ -71,24 +63,28 @@ func TestBootstrapLocalExistingEmailPreservesAllExistingState(t *testing.T) {
 	if err := f.pool.QueryRow(ctx, "SELECT account_id FROM auth.credentials WHERE email=$1", email).Scan(&accountID); err != nil {
 		t.Fatal(err)
 	}
-	if err := billing.New(f.pool, true).GrantLocal(ctx, accountID, 7, time.Now().Add(24*time.Hour), "existing bootstrap fixture"); err != nil {
-		t.Fatalf("grant fixture entitlement: %v", err)
+	if err := billing.New(f.pool, true).CreditLocal(ctx, accountID, 7, "existing bootstrap fixture"); err != nil {
+		t.Fatalf("fund test wallet: %v", err)
 	}
 
-	var beforeName, beforeRole, beforeStatus, beforeHash string
-	var beforeVersion int64
-	var beforeQuota int
-	var beforeSource, beforeReason string
-	var beforeUntil time.Time
-	var beforeSessions int
-	if err := f.pool.QueryRow(ctx, `SELECT a.name,a.role,a.status,c.password_hash,c.version,
-		e.monitor_limit,e.valid_until,e.source,e.reason,
-		(SELECT count(*) FROM auth.sessions s WHERE s.account_id=a.id AND s.revoked_at IS NULL)
-		FROM accounts.accounts a JOIN auth.credentials c ON c.account_id=a.id
-		JOIN billing.entitlements e ON e.account_id=a.id WHERE a.id=$1`, accountID).
-		Scan(&beforeName, &beforeRole, &beforeStatus, &beforeHash, &beforeVersion, &beforeQuota, &beforeUntil, &beforeSource, &beforeReason, &beforeSessions); err != nil {
-		t.Fatal(err)
+	type snapshot struct {
+		name, role, status, hash, units string
+		version                         int64
+		sessions, entries               int
 	}
+	read := func() snapshot {
+		var v snapshot
+		if err := f.pool.QueryRow(ctx, `SELECT a.name,a.role,a.status,c.password_hash,c.version,
+			w.available_units::text,(SELECT count(*) FROM billing.wallet_ledger WHERE account_id=a.id),
+			(SELECT count(*) FROM auth.sessions WHERE account_id=a.id AND revoked_at IS NULL)
+			FROM accounts.accounts a JOIN auth.credentials c ON c.account_id=a.id
+			JOIN billing.wallets w ON w.account_id=a.id WHERE a.id=$1`, accountID).
+			Scan(&v.name, &v.role, &v.status, &v.hash, &v.version, &v.units, &v.entries, &v.sessions); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	before := read()
 	grantCalled := false
 	_, err := BootstrapLocal(ctx, f.pool, BootstrapInput{Email: email, Name: "Replacement Admin", Password: "replacement secure password"},
 		func(ctx context.Context, tx pgx.Tx, name string) (string, error) {
@@ -107,24 +103,8 @@ func TestBootstrapLocalExistingEmailPreservesAllExistingState(t *testing.T) {
 		t.Fatal("grant callback ran for an existing email")
 	}
 
-	var afterName, afterRole, afterStatus, afterHash string
-	var afterVersion int64
-	var afterQuota int
-	var afterSource, afterReason string
-	var afterUntil time.Time
-	var afterSessions int
-	if err := f.pool.QueryRow(ctx, `SELECT a.name,a.role,a.status,c.password_hash,c.version,
-		e.monitor_limit,e.valid_until,e.source,e.reason,
-		(SELECT count(*) FROM auth.sessions s WHERE s.account_id=a.id AND s.revoked_at IS NULL)
-		FROM accounts.accounts a JOIN auth.credentials c ON c.account_id=a.id
-		JOIN billing.entitlements e ON e.account_id=a.id WHERE a.id=$1`, accountID).
-		Scan(&afterName, &afterRole, &afterStatus, &afterHash, &afterVersion, &afterQuota, &afterUntil, &afterSource, &afterReason, &afterSessions); err != nil {
-		t.Fatal(err)
-	}
-	if beforeName != afterName || beforeRole != afterRole || beforeStatus != afterStatus || beforeHash != afterHash || beforeVersion != afterVersion || beforeQuota != afterQuota || !beforeUntil.Equal(afterUntil) || beforeSource != afterSource || beforeReason != afterReason || beforeSessions != afterSessions {
-		t.Fatalf("existing account state changed: name=%t role=%t status=%t password_hash_equal=%t version=%t quota=%t expiry=%t source=%t reason=%t sessions=%t",
-			beforeName == afterName, beforeRole == afterRole, beforeStatus == afterStatus, beforeHash == afterHash,
-			beforeVersion == afterVersion, beforeQuota == afterQuota, beforeUntil.Equal(afterUntil), beforeSource == afterSource, beforeReason == afterReason, beforeSessions == afterSessions)
+	if read() != before {
+		t.Fatal("bootstrap changed an existing user, their sessions or their balance")
 	}
 	if session := f.request(t, http.MethodGet, "/api/v1/me", nil, cookie, "", "", ""); session.Code != http.StatusOK {
 		t.Fatalf("existing session after conflict status=%d", session.Code)
@@ -140,7 +120,7 @@ func TestBootstrapLocalExistingEmailPreservesAllExistingState(t *testing.T) {
 func TestBootstrapLocalGrantFailureRollsBackAccountAndCredential(t *testing.T) {
 	f := newAuthFixture(t)
 	ctx := context.Background()
-	grantFailure := errors.New("injected entitlement failure")
+	grantFailure := errors.New("injected credit failure")
 	var createdID string
 	_, err := BootstrapLocal(ctx, f.pool, BootstrapInput{Email: "rollback-bootstrap@example.test", Name: "Rollback Admin", Password: "rollback secure password"},
 		func(ctx context.Context, tx pgx.Tx, name string) (string, error) {
@@ -149,7 +129,7 @@ func TestBootstrapLocalGrantFailureRollsBackAccountAndCredential(t *testing.T) {
 			return account.ID, err
 		},
 		func(ctx context.Context, tx pgx.Tx, accountID string) error {
-			if err := billing.New(f.pool, true).GrantLocalTx(ctx, tx, accountID, 1000, time.Now().Add(24*time.Hour), "rollback integration test"); err != nil {
+			if err := billing.New(f.pool, true).CreditLocalTx(ctx, tx, accountID, 1000, "rollback integration test"); err != nil {
 				return err
 			}
 			return grantFailure
@@ -162,7 +142,7 @@ func TestBootstrapLocalGrantFailureRollsBackAccountAndCredential(t *testing.T) {
 	if err := f.pool.QueryRow(ctx, `SELECT
 		(SELECT count(*) FROM accounts.accounts WHERE id=$1),
 		(SELECT count(*) FROM auth.credentials WHERE account_id=$1 OR email=$2),
-		(SELECT count(*) FROM billing.entitlements WHERE account_id=$1),
+		(SELECT count(*) FROM billing.wallet_ledger WHERE account_id=$1),
 		(SELECT count(*) FROM auth.sessions WHERE account_id=$1)`, createdID, "rollback-bootstrap@example.test").
 		Scan(&accountsCount, &credentialsCount, &entitlementsCount, &sessionsCount); err != nil {
 		t.Fatal(err)
@@ -191,7 +171,7 @@ func TestBootstrapLocalConcurrentSameEmailCreatesExactlyOneAdmin(t *testing.T) {
 					return account.ID, err
 				},
 				func(ctx context.Context, tx pgx.Tx, accountID string) error {
-					return billing.New(f.pool, true).GrantLocalTx(ctx, tx, accountID, 1000, time.Now().Add(24*time.Hour), "concurrent bootstrap integration test")
+					return billing.New(f.pool, true).CreditLocalTx(ctx, tx, accountID, 1000, "concurrent bootstrap integration test")
 				},
 			)
 			results <- result{id: id, err: err}
@@ -219,7 +199,7 @@ func TestBootstrapLocalConcurrentSameEmailCreatesExactlyOneAdmin(t *testing.T) {
 	if err := f.pool.QueryRow(context.Background(), `SELECT
 		(SELECT count(*) FROM accounts.accounts WHERE name IN ('Concurrent Admin A','Concurrent Admin B')),
 		(SELECT count(*) FROM auth.credentials WHERE email=$1),
-		(SELECT count(*) FROM billing.entitlements WHERE account_id IN (SELECT account_id FROM auth.credentials WHERE email=$1))`, email).
+		(SELECT count(*) FROM billing.wallet_ledger WHERE account_id IN (SELECT account_id FROM auth.credentials WHERE email=$1))`, email).
 		Scan(&accountCount, &credentialCount, &entitlementCount); err != nil {
 		t.Fatal(err)
 	}

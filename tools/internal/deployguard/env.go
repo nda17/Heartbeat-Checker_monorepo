@@ -12,7 +12,9 @@ import (
 	"github.com/nda17/Heartbeat-Checker_monorepo/tools/internal/deploydata"
 )
 
-type Activation struct{ Relay, Messenger, AdminMFA, OAuth, YooKassaTest, Email, AndroidPush, YooKassaProduction, NativeSDKTest bool }
+type Activation struct {
+	Relay, Messenger, AdminMFA, OAuth, YooKassaTest, Email, AndroidPush, YooKassaProduction, NativeSDKTest, NativeSDKProduction bool
+}
 
 var pushKeys = []string{"ANDROID_PUSH_ENABLED", "RUSTORE_PUSH_PROJECT_ID", "RUSTORE_PUSH_SERVICE_TOKEN", "FCM_PUSH_ENABLED", "FCM_PROJECT_ID", "FCM_SERVICE_ACCOUNT_BASE64", "HUAWEI_PUSH_ENABLED", "HUAWEI_PROJECT_ID", "HUAWEI_CLIENT_ID", "HUAWEI_CLIENT_SECRET"}
 var messengerKeys = []string{"MESSENGER_NOTIFICATIONS_ENABLED", "TELEGRAM_INFORMER_WEBHOOK_SECRET", "MAX_INFORMER_WEBHOOK_SECRET", "TELEGRAM_BOT_INFORMER_TOKEN", "MAX_BOT_INFORMER_TOKEN", "TELEGRAM_INFORMER_BOT_USERNAME", "MAX_INFORMER_BOT_URL"}
@@ -20,6 +22,7 @@ var oauthKeys = []string{"YANDEX_CLIENT_ID", "YANDEX_CLIENT_SECRET", "YANDEX_RED
 var testKeys = []string{"BILLING_PROVIDER", "BILLING_TEST_ACCOUNT_IDS", "YOOKASSA_MODE", "YOOKASSA_TEST_SHOP_ID", "YOOKASSA_TEST_SECRET_KEY"}
 var productionKeys = []string{"BILLING_PROVIDER", "YOOKASSA_MODE", "YOOKASSA_PRODUCTION_SHOP_ID", "YOOKASSA_PRODUCTION_SECRET_KEY"}
 var nativeSDKTestKeys = []string{"BILLING_TEST_ACCOUNT_IDS", "YOOKASSA_TEST_SHOP_ID", "YOOKASSA_TEST_SECRET_KEY", "YOOKASSA_NATIVE_SDK_ENABLED", "YOOKASSA_NATIVE_SDK_MODE"}
+var nativeSDKProductionKeys = []string{"YOOKASSA_NATIVE_SDK_ENABLED", "YOOKASSA_NATIVE_SDK_MODE"}
 var relayTargets = map[string]string{"TELEGRAM_API_BASE_URL": "https://messengers-proxy.heartbeat-checker.ru/telegram-api", "TELEGRAM_API_PROXY_IP": "185.184.122.62"}
 
 func match(p, s string) bool { return regexp.MustCompile(p).MatchString(s) }
@@ -37,6 +40,9 @@ func ValidateEnv(candidate string, a Activation) error {
 		prefix = "Relay activation rejected"
 	}
 	reject := func(message string) error { return errors.New(prefix + ": " + message) }
+	if a.NativeSDKProduction && a != (Activation{NativeSDKProduction: true}) {
+		return reject("native SDK production activation must be a separate operation")
+	}
 	allowed := map[string]bool{}
 	add := func(active bool, keys []string) {
 		if active {
@@ -52,6 +58,7 @@ func ValidateEnv(candidate string, a Activation) error {
 	add(a.YooKassaTest, testKeys)
 	add(a.YooKassaProduction, productionKeys)
 	add(a.NativeSDKTest, nativeSDKTestKeys)
+	add(a.NativeSDKProduction, nativeSDKProductionKeys)
 	add(a.Email, []string{"EMAIL_NOTIFICATIONS_ENABLED"})
 	add(a.AndroidPush, pushKeys)
 	old, err := deploydata.ReadPrivate(".env", 256<<10)
@@ -153,6 +160,27 @@ func ValidateEnv(candidate string, a Activation) error {
 			if old := u(ov[key]); old != "" && old != u(nv[key]) {
 				return reject("native SDK activation cannot rotate existing credentials")
 			}
+		}
+	}
+	if a.NativeSDKProduction {
+		if u(nv["BILLING_PROVIDER"]) != "yookassa" || u(nv["YOOKASSA_MODE"]) != "production" {
+			return reject("native SDK production activation requires unchanged hosted production billing")
+		}
+		liveShop, liveSecret := u(nv["YOOKASSA_PRODUCTION_SHOP_ID"]), u(nv["YOOKASSA_PRODUCTION_SECRET_KEY"])
+		if !match(`^[0-9]{1,32}$`, liveShop) || !deploydata.Printable(liveSecret, 16, 512, "'\\") || strings.HasPrefix(liveSecret, "test_") {
+			return reject("complete YooKassa production credentials are required")
+		}
+		owner, testShop, testSecret := u(nv["BILLING_TEST_ACCOUNT_IDS"]), u(nv["YOOKASSA_TEST_SHOP_ID"]), u(nv["YOOKASSA_TEST_SECRET_KEY"])
+		if oldNativeTest := u(ov["YOOKASSA_NATIVE_SDK_ENABLED"]) == "true" && u(ov["YOOKASSA_NATIVE_SDK_MODE"]) == "test"; oldNativeTest || owner != "" || testShop != "" || testSecret != "" {
+			if owner != deploydata.OwnerID || liveShop == testShop || !match(`^[0-9]{1,32}$`, testShop) || !match(`^test_[^\s]{11,507}$`, testSecret) {
+				return reject("stored test profile must retain complete owner-only credentials")
+			}
+		}
+		if key, err := base64.StdEncoding.DecodeString(u(nv["AUTH_MAIL_ENCRYPTION_KEY"])); err != nil || len(key) != 32 {
+			return reject("existing native SDK encryption key is required")
+		}
+		if u(nv["YOOKASSA_NATIVE_SDK_ENABLED"]) != "true" || u(nv["YOOKASSA_NATIVE_SDK_MODE"]) != "production" {
+			return reject("native SDK production activation requires explicit production mode")
 		}
 	}
 	if a.OAuth {

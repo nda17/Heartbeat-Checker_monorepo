@@ -297,23 +297,8 @@ func (f *fixture) run(stdin string, extra map[string]string, flags ...bool) *exe
 	}
 	base = append(base, firewallImage, policySHA)
 	if len(flags) > 5 {
-		// Later flags keep the legacy 15..18 positional contract.
-		base = append(base, fmt.Sprint(flags[5]))
-		if len(flags) > 6 {
-			base = append(base, fmt.Sprint(flags[6]))
-		} else if len(flags) > 7 {
-			base = append(base, "false")
-		}
-		if len(flags) > 7 {
-			base = append(base, fmt.Sprint(flags[7]))
-		} else if len(flags) > 8 {
-			base = append(base, "false")
-		}
-		if len(flags) > 8 {
-			for len(base) < 18 {
-				base = append(base, "false")
-			}
-			base[17] = fmt.Sprint(flags[8])
+		for _, flag := range flags[5:] {
+			base = append(base, fmt.Sprint(flag))
 		}
 	}
 	cmd := exec.Command("/bin/bash", append([]string{f.script}, base...)...)
@@ -572,6 +557,19 @@ func mockDocker(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 					}
 				}
 			}
+			if os.Getenv("COMPOSE_NATIVE_SDK_KEYS") == "1" {
+				raw, err := os.ReadFile(filepath.Join(os.Getenv("DEPLOY_DIR"), ".env"))
+				if err != nil {
+					return 1
+				}
+				for _, line := range strings.Split(string(raw), "\n") {
+					key, value, found := strings.Cut(line, "=")
+					if found && (strings.HasPrefix(key, "YOOKASSA_") || key == "BILLING_PROVIDER" || key == "BILLING_TEST_ACCOUNT_IDS" || key == "AUTH_MAIL_ENCRYPTION_KEY") {
+						api[key] = strings.Trim(value, "'")
+						worker[key] = api[key]
+					}
+				}
+			}
 			apiVolumes := []map[string]any{{"type": "bind", "source": "/opt/heartbeat-checker/backend/android-dev-private/payload", "target": "/run/android-dev", "read_only": true}}
 			payload := map[string]any{"services": map[string]any{"api": map[string]any{"environment": api, "volumes": apiVolumes}, "postgres": map[string]any{"environment": map[string]string{"POSTGRES_PASSWORD": "testpass"}}, "worker": map[string]any{"environment": worker}, "probe": map[string]any{"environment": map[string]string{"PROBE_SHARED_SECRET": "test-probe-secret"}}, "caddy": map[string]any{"environment": map[string]string{}}, "migrate": map[string]any{"environment": map[string]string{}}, "backup": map[string]any{"environment": map[string]string{}}}}
 			encoded, _ := json.Marshal(payload)
@@ -586,6 +584,10 @@ func mockDocker(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return 0
 		}
 		if strings.Contains(joined, "exec") {
+			if strings.Contains(joined, "0030_hourly_balance") {
+				fmt.Fprintln(stdout, envOr("WALLET_CUTOVER_BLOCKERS", "0"))
+				return 0
+			}
 			if strings.Contains(joined, "billing.orders") && strings.Contains(joined, "webhook_inbox") {
 				fmt.Fprintln(stdout, envOr("YOOKASSA_SWITCH_BLOCKERS", "0"))
 				return 0
@@ -1046,7 +1048,7 @@ func TestBackupPreflightFailureKeepsReleaseAndSkipsMigration(t *testing.T) {
 	if got := f.read(".release.env"); got != "API_IMAGE=old\n" {
 		t.Fatalf("release env changed: %q", got)
 	}
-	if hasCall(f.dockerCalls(), "migration") {
+	if hasCall(f.dockerCalls(), "--profile migration run") {
 		t.Fatalf("migration ran before backup preflight: %v", f.dockerCalls())
 	}
 	if _, err := os.Stat(f.path("pending")); !os.IsNotExist(err) {
@@ -1413,7 +1415,7 @@ func TestOwnerImportSuccessKeepsPayloadPrivateAndWaitsForReadiness(t *testing.T)
 	if strings.Contains(r.stdout+r.stderr+string(loginInput)+string(log), secret) {
 		t.Fatal("owner payload leaked to public output or command log")
 	}
-	if !hasCall(f.dockerCalls(), "migration") {
+	if !hasCall(f.dockerCalls(), "--profile migration run") {
 		t.Fatal("owner import ran without migration")
 	}
 }
@@ -1561,7 +1563,7 @@ func TestYooKassaProductionActivationUsesSyntheticVerifiedShopAndStoppedWriterGa
 	if got := f.read(".env"); got != active {
 		t.Fatalf("blocked production switch did not restore prior env: %q", got)
 	}
-	if hasCall(f.dockerCalls(), "migration") {
+	if hasCall(f.dockerCalls(), "--profile migration run") {
 		t.Fatalf("migration started before payment evidence gate: %v", f.dockerCalls())
 	}
 	if _, err := os.Stat(f.path("receipts/" + sourceSHA + ".json")); !os.IsNotExist(err) {
@@ -1612,6 +1614,87 @@ func TestYooKassaProductionActivationUsesSyntheticVerifiedShopAndStoppedWriterGa
 	log, _ := os.ReadFile(f2.log)
 	if strings.Contains(r.stdout+r.stderr+string(log), "production_synthetic_secret_123") {
 		t.Fatal("production secret leaked")
+	}
+}
+
+func TestWalletMigrationGateRestartsPreviousReleaseWhileLiveOrdersArePending(t *testing.T) {
+	f := newFixture(t)
+	r := f.runResult("test-token\n", map[string]string{"WALLET_CUTOVER_BLOCKERS": "1"})
+	if r.code == 0 || !strings.Contains(r.stderr, "Wallet migration blocked by pending legacy live YooKassa orders") {
+		t.Fatalf("pending live order did not block migration: %s", r.stderr)
+	}
+	if f.read(".env") != baseEnv || f.read(".release.env") != "API_IMAGE=old\n" {
+		t.Fatal("cutover gate did not restore previous release")
+	}
+	stopped, checked, restarted := false, false, false
+	for _, args := range f.dockerCalls() {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.Contains(joined, "stop -t 30 api worker probe"):
+			stopped = true
+		case strings.Contains(joined, "0030_hourly_balance"):
+			checked = stopped && strings.Contains(joined, "provider_mode='production' AND status='pending'")
+		case strings.Contains(joined, "up -d --pull never --remove-orphans"):
+			restarted = checked
+		case strings.Contains(joined, "--profile migration"):
+			t.Fatal("migration ran with an unresolved legacy live order")
+		}
+	}
+	if !restarted {
+		t.Fatal("expected the live order gate after stopping writers, then restart of the previous release")
+	}
+}
+
+func TestNativeSDKProductionActivationUsesExistingProfilesAndReceipts(t *testing.T) {
+	flags := []bool{false, false, false, false, false, false, false, false, false, false, true}
+	liveSecret, testSecret := "live_existing_synthetic", "test_existing_synthetic"
+	kept := baseEnv + "BILLING_PROVIDER=yookassa\nYOOKASSA_MODE=production\n" +
+		"YOOKASSA_PRODUCTION_SHOP_ID=654321\nYOOKASSA_PRODUCTION_SECRET_KEY='" + liveSecret + "'\n" +
+		"BILLING_TEST_ACCOUNT_IDS=51ec7d19-80c4-4fb6-8edb-79dc7abe3120\nYOOKASSA_TEST_SHOP_ID=123456\nYOOKASSA_TEST_SECRET_KEY='" + testSecret + "'\n" +
+		"AUTH_MAIL_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n"
+	old := kept + "YOOKASSA_NATIVE_SDK_ENABLED=true\nYOOKASSA_NATIVE_SDK_MODE=test\n"
+	for _, tc := range []struct {
+		name, input string
+		env         map[string]string
+		wantSuccess bool
+	}{
+		{"predicted configuration", "test-token\n", map[string]string{"COMPOSE_NATIVE_SDK_KEYS": "1"}, true},
+		{"rendered configuration drift", "test-token\n", nil, false},
+		{"unexpected credentials", "test-token\n{}", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.write(".env", old, 0o600)
+			r := f.runResult(tc.input, tc.env, flags...)
+			if !tc.wantSuccess {
+				if r.code == 0 || f.read(".env") != old || hasCall(f.dockerCalls(), "--profile migration run") {
+					t.Fatalf("unsafe activation did not fail before migration and preserve the active env: %s", r.stderr)
+				}
+				return
+			}
+			if r.code != 0 {
+				t.Fatalf("native production activation failed: %s", r.stderr)
+			}
+			if f.read(".env") != "YOOKASSA_NATIVE_SDK_ENABLED=true\nYOOKASSA_NATIVE_SDK_MODE=production\n"+kept {
+				t.Fatal("native production activation modified unrelated env bytes")
+			}
+			var receipt map[string]any
+			if err := json.Unmarshal([]byte(f.read("receipts/"+sourceSHA+".json")), &receipt); err != nil {
+				t.Fatal(err)
+			}
+			if receipt["native_sdk_production_activated"] != true || receipt["native_sdk_test_activated"] != false || receipt["yookassa_production_activated"] != false {
+				t.Fatalf("native production activation was not independently receipted: %#v", receipt)
+			}
+			if got, err := os.ReadFile(f.stdin); err != nil || string(got) != "test-token\n" {
+				t.Fatalf("invalid registry input: %v", err)
+			}
+			log, _ := os.ReadFile(f.log)
+			for _, secret := range []string{liveSecret, testSecret} {
+				if strings.Contains(r.stdout+r.stderr+string(log), secret) {
+					t.Fatal("merchant credentials leaked in deployment log")
+				}
+			}
+		})
 	}
 }
 
@@ -1897,7 +1980,7 @@ func TestProductionFirewallMismatchFailsBeforeMigration(t *testing.T) {
 		t.Fatalf("mismatched firewall policy accepted: %+v", r)
 	}
 	calls := f.dockerCalls()
-	if indexCall(calls, "run") < 0 || hasCall(calls, "migration") {
+	if indexCall(calls, "run") < 0 || hasCall(calls, "--profile migration run") {
 		t.Fatalf("migration ran despite firewall mismatch: %v", calls)
 	}
 	f2 := newFixture(t)
@@ -1905,7 +1988,7 @@ func TestProductionFirewallMismatchFailsBeforeMigration(t *testing.T) {
 	if r.code == 0 {
 		t.Fatalf("firewall installer failure was ignored: %+v", r)
 	}
-	if hasCall(f2.dockerCalls(), "migration") {
+	if hasCall(f2.dockerCalls(), "--profile migration run") {
 		t.Fatalf("migration ran after firewall install failure: %v", f2.dockerCalls())
 	}
 }

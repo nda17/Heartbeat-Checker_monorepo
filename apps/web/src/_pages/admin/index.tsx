@@ -3,10 +3,17 @@ import { notify } from "@/shared/notifications";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import {
+  Balance,
+  balanceMoney,
+  invalidateBalance,
+  maxTopUpMinor,
+  parseRubles,
+  priceMoney,
+} from "@/entities/billing";
 import { useSession } from "@/entities/session";
 import {
   Monitor,
-  Entitlement,
   Status,
   checkTypeLabel,
   monitorTarget,
@@ -16,7 +23,7 @@ import { AdminPricing } from "@/features/admin-pricing";
 import { AdminMfa, MfaState } from "@/features/admin-mfa";
 import { AndroidDevDownload } from "@/features/android-dev-download";
 import { MonitorForm } from "@/features/monitor-form";
-import { api, ApiError, errorMessage } from "@/shared/api";
+import { api, ApiError, boundedRequest, errorMessage } from "@/shared/api";
 import { dateTime, Loading, Notice, Icon } from "@/shared/ui";
 
 type AdminAccount = {
@@ -30,7 +37,7 @@ type AdminAccount = {
 };
 type AccountDetail = {
   account: AdminAccount;
-  entitlement: Entitlement | null;
+  balance: Balance | null;
   sessionsCount: number;
 };
 type AuditEvent = {
@@ -43,14 +50,12 @@ type AuditEvent = {
   createdAt: string;
 };
 
-function localDateTime(value: string | null) {
-  if (!value) return "";
-  const date = new Date(value);
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
-    .toISOString()
-    .slice(0, 16);
-}
-
+type CreditIntent = {
+  accountId: string;
+  amountMinor: number;
+  reason: string;
+  idempotencyKey: string;
+};
 export function AdminPage() {
   const { profile, beginSessionTransition, endSessionTransition } =
     useSession();
@@ -79,6 +84,9 @@ export function AdminPage() {
   const accountRequest = useRef(0);
   const auditRequest = useRef(0);
   const mutationBusy = useRef(false);
+  const creditIntents = useRef(new Map<string, CreditIntent>());
+  const [creditPending, setCreditPending] = useState<CreditIntent | null>(null);
+  const creditStorageKey = `heartbeat-wallet-credit:${profile.account.id}`;
 
   const accessError = useRef(false);
   const reportError = useCallback((cause: unknown, transient = false) => {
@@ -294,6 +302,7 @@ export function AdminPage() {
     ++detailRequest.current;
     ++auditRequest.current;
     setDetailTab("profile");
+    setCreditPending(restoreCredit(id));
 
     setDetail(null);
     setMonitors(null);
@@ -362,6 +371,34 @@ export function AdminPage() {
     }
   }
 
+  const restoreCredit = useCallback(
+    (accountId: string) => {
+      const key = `${creditStorageKey}:${accountId}`;
+      try {
+        const saved: CreditIntent = JSON.parse(
+          window.sessionStorage.getItem(key) ?? "null",
+        );
+        if (
+          saved?.accountId === accountId &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+            saved.idempotencyKey,
+          ) &&
+          Number.isSafeInteger(saved.amountMinor) &&
+          saved.amountMinor >= 1 &&
+          saved.amountMinor <= maxTopUpMinor &&
+          typeof saved.reason === "string" &&
+          saved.reason.trim() &&
+          saved.reason.length <= 500
+        )
+          creditIntents.current.set(accountId, saved);
+      } catch {
+        // The same request can still be retried in memory.
+      }
+      return creditIntents.current.get(accountId) ?? null;
+    },
+    [creditStorageKey],
+  );
+
   function accountPath(suffix = "") {
     return `/admin/accounts/${encodeURIComponent(detail?.account.id ?? "")}${suffix}`;
   }
@@ -387,54 +424,109 @@ export function AdminPage() {
       "Профиль обновлён. Сессии пользователя могли быть завершены.",
     );
   }
-  async function saveEntitlement(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!detail) return;
-    const data = new FormData(event.currentTarget);
-    const date = new Date(String(data.get("validUntil") ?? ""));
-    // eslint-disable-next-line react-hooks/purity -- Submit-time validation must compare with the current clock.
-    if (!Number.isFinite(date.getTime()) || date.getTime() <= Date.now()) {
-      accessError.current = false;
-      setError("Укажите корректную дату окончания квоты в будущем.");
-      return;
-    }
-    const validUntil = date.toISOString();
-    await mutate(
-      "entitlement",
-      () =>
-        api(accountPath("/entitlement"), {
-          method: "PUT",
-          authenticated: true,
-          body: {
-            version: detail.entitlement?.version ?? 0,
-            quota: Number(data.get("quota")),
-            validUntil,
-            reason: String(data.get("reason") ?? "").trim(),
-          },
-        }),
-      "Административная квота обновлена.",
-    );
-  }
-  async function deleteEntitlement(event: FormEvent<HTMLFormElement>) {
+  async function creditBalance(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (
-      !detail?.entitlement?.admin ||
-      !window.confirm("Отозвать административную квоту этого аккаунта?")
+      !detail ||
+      !canWrite ||
+      mutationBusy.current ||
+      pricingBusy ||
+      accessTransition.current
     )
       return;
-    const data = new FormData(event.currentTarget);
+    const accountId = detail.account.id;
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const saved = creditIntents.current.get(accountId);
+    const amountMinor =
+      saved?.amountMinor ?? parseRubles(String(data.get("amount") ?? ""));
+    const reason = saved?.reason ?? String(data.get("reason") ?? "").trim();
+    if (
+      amountMinor < 1 ||
+      amountMinor > maxTopUpMinor ||
+      !reason ||
+      reason.length > 500
+    ) {
+      accessError.current = false;
+      setError(
+        `Укажите сумму от 0,01 до ${priceMoney(maxTopUpMinor)} и причину начисления.`,
+      );
+      return;
+    }
+    const storageKey = `${creditStorageKey}:${accountId}`;
+    const intent = saved ?? {
+      accountId,
+      amountMinor,
+      reason,
+      idempotencyKey: crypto.randomUUID(),
+    };
+    creditIntents.current.set(accountId, intent);
+    setCreditPending(intent);
+    try {
+      window.sessionStorage.setItem(storageKey, JSON.stringify(intent));
+    } catch {
+      // Keep the immutable request in memory.
+    }
     await mutate(
-      "delete-entitlement",
-      () =>
-        api(accountPath("/entitlement"), {
-          method: "DELETE",
-          authenticated: true,
-          body: {
-            version: detail.entitlement?.version,
-            reason: String(data.get("reason") ?? "").trim(),
-          },
-        }),
-      "Административная квота отозвана.",
+      "balance",
+      async () => {
+        let result: { balance: Balance };
+        try {
+          result = await boundedRequest(new AbortController(), (signal) =>
+            api<{ balance: Balance }>(
+              `/admin/accounts/${encodeURIComponent(accountId)}/balance/credits`,
+              {
+                signal,
+                method: "POST",
+                authenticated: true,
+                body: {
+                  amountMinor,
+                  reason,
+                  idempotencyKey: intent.idempotencyKey,
+                },
+              },
+            ),
+          );
+        } catch (cause) {
+          if (
+            !(cause instanceof ApiError) ||
+            cause.status === 0 ||
+            cause.status >= 500
+          ) {
+            setRefreshError(
+              "Ответ о начислении не получен. Повторите сохранённый запрос с той же суммой.",
+            );
+          } else if ([400, 404, 409, 422].includes(cause.status)) {
+            creditIntents.current.delete(accountId);
+            setCreditPending((current) =>
+              current?.accountId === accountId ? null : current,
+            );
+            try {
+              window.sessionStorage.removeItem(storageKey);
+            } catch {
+              // The request has already been removed from memory.
+            }
+          }
+          throw cause;
+        }
+        creditIntents.current.delete(accountId);
+        setCreditPending((current) =>
+          current?.accountId === accountId ? null : current,
+        );
+        try {
+          window.sessionStorage.removeItem(storageKey);
+        } catch {
+          // The request has already been removed from memory.
+        }
+        form.reset();
+        setDetail((current) =>
+          current?.account.id === accountId
+            ? { ...current, balance: result.balance }
+            : current,
+        );
+        if (accountId === profile.account.id) invalidateBalance();
+      },
+      `Начислено ${priceMoney(amountMinor)}.`,
     );
   }
   async function revokeSessions(event: FormEvent<HTMLFormElement>) {
@@ -477,7 +569,7 @@ export function AdminPage() {
         <div>
           <p className="eyebrow">УПРАВЛЕНИЕ СЕРВИСОМ</p>
           <h1>Администрирование</h1>
-          <p>Аккаунты, квоты, мониторы и история действий.</p>
+          <p>Аккаунты, баланс, мониторы и история действий.</p>
         </div>
       </div>
       <AdminMfa
@@ -603,7 +695,7 @@ export function AdminPage() {
               >
                 {[
                   ["profile", "Профиль"],
-                  ["quota", "Квота"],
+                  ["balance", "Баланс"],
                   ["monitors", "Мониторы"],
                   ["audit", "История"],
                 ].map(([key, label]) => (
@@ -632,7 +724,7 @@ export function AdminPage() {
                 <h2 id="admin-empty-title">Выберите аккаунт</h2>
                 <p>
                   Найдите пользователя по имени или email и выберите его в
-                  списке. Здесь появятся профиль, квота, мониторы и история
+                  списке. Здесь появятся профиль, баланс, мониторы и история
                   действий.
                 </p>
               </section>
@@ -665,17 +757,6 @@ export function AdminPage() {
                       ? "активен"
                       : "заблокирован"}
                   </p>
-                  {(detail.entitlement?.packages ?? []).map((part, index) => (
-                    <p className="small muted" key={part.id}>
-                      Пакет {index + 1} ·{" "}
-                      {part.source === "yookassa"
-                        ? "оплаченные места"
-                        : "тестовая или демонстрационная квота"}
-                      : {part.quota} · до{" "}
-                      {dateTime(part.activeUntil, { year: true })}
-                      {!part.active ? " · сейчас не действует" : ""}.
-                    </p>
-                  ))}
                   {canWrite && (
                     <>
                       <form
@@ -763,101 +844,55 @@ export function AdminPage() {
                 </section>
                 <section
                   className="panel admin-detail-panel"
-                  hidden={detailTab !== "quota"}
+                  hidden={detailTab !== "balance"}
                 >
                   <div className="panel-heading">
                     <div>
-                      <h2>Квота</h2>
+                      <h2>Баланс</h2>
                       <p>
-                        Административная и оплаченная части действуют
-                        независимо.
+                        Доступно{" "}
+                        {detail.balance ? balanceMoney(detail.balance) : "—"}
                       </p>
                     </div>
                   </div>
-                  <p>
-                    {detail.entitlement
-                      ? `${detail.entitlement.monitorCount} мониторов сохранено · сейчас доступно ${detail.entitlement.quota} мест до ${dateTime(detail.entitlement.activeUntil, { year: true })}`
-                      : "Действующей квоты нет."}
-                  </p>
-                  <p className="small muted">
-                    Административная:{" "}
-                    {detail.entitlement?.admin
-                      ? `${detail.entitlement.admin.quota} мест · до ${dateTime(detail.entitlement.admin.activeUntil, { year: true })}`
-                      : "нет"}
-                    .{" "}
-                  </p>
                   {canWrite && (
-                    <>
-                      <form
-                        className="form-stack"
-                        key={`entitlement-${detail.account.id}-${detail.entitlement?.admin?.version ?? 0}`}
-                        onSubmit={saveEntitlement}
-                      >
-                        <div className="form-row">
+                    <form
+                      className="form-stack"
+                      key={`balance-${detail.account.id}`}
+                      onSubmit={creditBalance}
+                    >
+                      {creditPending?.accountId === detail.account.id ? (
+                        <p>
+                          Сохранённое начисление{" "}
+                          {priceMoney(creditPending.amountMinor)} ·{" "}
+                          {creditPending.reason}
+                        </p>
+                      ) : (
+                        <>
                           <label>
-                            Лимит мониторов
+                            Сумма, ₽
                             <input
-                              type="number"
-                              name="quota"
-                              min={1}
-                              max={1000}
-                              defaultValue={
-                                detail.entitlement?.admin?.quota ?? 1
-                              }
+                              name="amount"
+                              inputMode="decimal"
+                              maxLength={9}
                               required
                             />
                           </label>
                           <label>
-                            Действует до
-                            <input
-                              type="datetime-local"
-                              name="validUntil"
-                              defaultValue={localDateTime(
-                                detail.entitlement?.admin?.activeUntil ?? null,
-                              )}
-                              required
-                            />
+                            Причина начисления
+                            <input name="reason" required maxLength={500} />
                           </label>
-                        </div>
-                        <label>
-                          Причина
-                          <input
-                            name="reason"
-                            required
-                            minLength={1}
-                            maxLength={500}
-                          />
-                        </label>
-                        <button
-                          className="secondary"
-                          disabled={!!busy || pricingBusy || mfaBusy}
-                        >
-                          Сохранить административную квоту
-                        </button>
-                      </form>
-                      {detail.entitlement?.admin && (
-                        <form
-                          className="form-stack admin-separated"
-                          onSubmit={deleteEntitlement}
-                        >
-                          <label>
-                            Причина отзыва
-                            <input
-                              name="reason"
-                              required
-                              minLength={1}
-                              maxLength={500}
-                            />
-                          </label>
-                          <button
-                            className="quiet danger-text"
-                            disabled={!!busy || pricingBusy || mfaBusy}
-                          >
-                            Отозвать административную квоту
-                          </button>
-                        </form>
+                        </>
                       )}
-                    </>
+                      <button
+                        className="secondary"
+                        disabled={!!busy || pricingBusy || mfaBusy}
+                      >
+                        {creditPending?.accountId === detail.account.id
+                          ? "Повторить начисление"
+                          : "Пополнить баланс"}
+                      </button>
+                    </form>
                   )}
                 </section>
                 <section

@@ -68,36 +68,48 @@ export type Incident = {
   closedAt?: string | null;
   closeReason?: string | null;
 };
-export type Subscription = {
-  id: string;
-  quota: number;
-  activeUntil: string | null;
-  active: boolean;
-  source: string;
-  version: number;
+export type Balance = {
+  availableMinor: number;
+  positiveBelowCent: boolean;
+  currency: "RUB";
+  enabledMonitors: number;
+  asOf: string;
+  fundedUntil: string | null;
+  suspended: boolean;
+  pricePerMonitorMinor: number;
+  priceVersion: number;
 };
-export type Entitlement = {
-  quota: number;
-  enabledMonitorCount: number;
-  activeMonitorCount: number;
-  admin: { quota: number; activeUntil: string | null } | null;
-  packages: Subscription[];
+export type BalanceEntry = {
+  id: string;
+  kind: "top_up" | "admin_credit" | "usage" | "refund";
+  amountMinor: number;
+  positiveBelowCent?: boolean;
+  test?: boolean;
+  createdAt: string;
+  periodStart?: string;
+  periodEnd?: string;
+};
+export type BalanceHistory = {
+  entries: BalanceEntry[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
 };
 export type Order = {
   id: string;
-  status: string;
   purchaseKind: string;
-  packageId?: string;
-  monitorCount: number;
+  status: string;
   amountMinor: number;
   confirmationUrl?: string;
   fulfillmentStatus: string;
   createdAt: string;
-  activeUntil?: string;
+  test?: boolean;
 };
 export type Billing = {
   canPay: boolean;
-  pricePerMonitorMinor: number;
-  priceVersion: number;
+  test?: boolean;
   orders: Order[];
 };

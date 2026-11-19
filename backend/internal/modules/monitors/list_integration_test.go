@@ -37,8 +37,8 @@ func TestMonitorPagedListSearchOrderingQuotaSummaryAndClamp(t *testing.T) {
 	f := newMonitorFixture(t)
 	owner := f.newActor(t, "Paged Monitor Owner")
 	other := f.newActor(t, "Paged Monitor Other")
-	f.grant(t, owner, 10)
-	f.grant(t, other, 2)
+	f.fund(t, owner)
+	f.fund(t, other)
 
 	names := []string{"Zeta", "Alpha", "Beta", "Gamma", "Special %_ 東京", "Omega"}
 	monitors := make([]contracts.Monitor, 0, len(names))
@@ -70,9 +70,6 @@ func TestMonitorPagedListSearchOrderingQuotaSummaryAndClamp(t *testing.T) {
 			t.Fatalf("set deterministic monitor state for %q: %v", monitor.Name, err)
 		}
 	}
-	// Paused Zeta does not consume an enabled slot. Four enabled monitors fit
-	// the quota; the fifth enabled monitor remains visible but out of quota.
-	f.grant(t, owner, 4)
 	channels := testChannelReader(t, f)
 	if _, err := f.pool.Exec(context.Background(), `INSERT INTO notifications.webhooks(id,account_id,monitor_id,version,enabled,encrypted_url,encrypted_secret,normalized_host) VALUES
 	 ('30000000-0000-4000-8000-000000000001',$1,$2,1,true,'private-url-ciphertext-marker','private-secret-ciphertext-marker','receiver.example.test')`, owner.account.ID, monitors[1].ID); err != nil {
@@ -153,27 +150,13 @@ func TestMonitorPagedListSearchOrderingQuotaSummaryAndClamp(t *testing.T) {
 	if filteredPage.Monitors[0].State != "UNKNOWN" {
 		t.Errorf("stale in-quota monitor state=%q, want UNKNOWN", filteredPage.Monitors[0].State)
 	}
-	if summary := filteredPage.Summary; summary.Total != 6 || summary.Paused != 1 || summary.Up != 2 || summary.Down != 1 || summary.SubscriptionRequired != 1 || summary.Unknown != 1 {
+	if summary := filteredPage.Summary; summary.Total != 6 || summary.Paused != 1 || summary.Up != 2 || summary.Down != 1 || summary.BalanceRequired != 0 || summary.Unknown != 2 {
 		t.Errorf("filtered query must retain global status summary: %+v", summary)
 	}
-	outOfQuota := f.request(t, owner, http.MethodGet, "/api/v1/monitors?q="+url.QueryEscape("Omega"), nil, "", "")
-	outOfQuotaPage := readMonitorPage(t, outOfQuota.Body.Bytes())
-	if outOfQuota.Code != http.StatusOK || len(outOfQuotaPage.Monitors) != 1 || outOfQuotaPage.Monitors[0].Name != "Omega" || outOfQuotaPage.Monitors[0].State != "SUBSCRIPTION_REQUIRED" {
-		t.Fatalf("search match outside global quota rank: status=%d page=%+v", outOfQuota.Code, outOfQuotaPage)
-	}
-	// Filtering happens after the global quota rank is assigned. Omega has a
-	// successful last result, but the four enabled rows before it already use
-	// the account's quota, so its visible state is subscription-required.
-	if _, err := f.pool.Exec(context.Background(), `UPDATE monitors.monitors SET outcome='UP',last_checked_at=now() WHERE id=$1`, monitors[5].ID); err != nil {
-		t.Fatal(err)
-	}
-	required := f.request(t, owner, http.MethodGet, "/api/v1/monitors?page=1&pageSize=25&status=SUBSCRIPTION_REQUIRED", nil, "", "")
-	requiredPage := readMonitorPage(t, required.Body.Bytes())
-	if required.Code != http.StatusOK || len(requiredPage.Monitors) != 1 || requiredPage.Monitors[0].Name != "Omega" || requiredPage.Monitors[0].State != "SUBSCRIPTION_REQUIRED" {
-		t.Fatalf("global quota rank must precede status filter: status=%d monitors=%+v", required.Code, requiredPage.Monitors)
-	}
-	if requiredPage.Summary.Total != len(names) || requiredPage.Summary.Up != 2 || requiredPage.Summary.SubscriptionRequired != 1 {
-		t.Fatalf("filtered page must retain global summary: %+v", requiredPage.Summary)
+	required := f.request(t, owner, http.MethodGet, "/api/v1/monitors?page=1&status=BALANCE_REQUIRED", nil, "", "")
+	pageRequired := readMonitorPage(t, required.Body.Bytes())
+	if required.Code != http.StatusOK || len(pageRequired.Monitors) != 0 || pageRequired.Summary.Total != len(names) {
+		t.Fatalf("funded account balance filter: %+v", pageRequired)
 	}
 	upOnly := f.request(t, owner, http.MethodGet, "/api/v1/monitors?page=1&pageSize=25&status=UP", nil, "", "")
 	upPage := readMonitorPage(t, upOnly.Body.Bytes())
@@ -218,7 +201,7 @@ func TestMonitorPagedListSearchOrderingQuotaSummaryAndClamp(t *testing.T) {
 func TestMonitorListQueryValidationAndEmptyPage(t *testing.T) {
 	f := newMonitorFixture(t)
 	owner := f.newActor(t, "Paged Validation Owner")
-	f.grant(t, owner, 1)
+	f.fund(t, owner)
 	invalid := []string{
 		"page=1&page=2",
 		"unknown=1",
@@ -243,7 +226,7 @@ func TestMonitorListQueryValidationAndEmptyPage(t *testing.T) {
 func TestPagedChannelBadgesTrackCurrentRecipientAndWebhookIndependently(t *testing.T) {
 	f := newMonitorFixture(t)
 	owner := f.newActor(t, "Paged Channels Owner")
-	f.grant(t, owner, 2)
+	f.fund(t, owner)
 	monitor, status := f.create(t, owner, "Channel monitor", "channels.example", true)
 	if status != http.StatusCreated {
 		t.Fatalf("create monitor status=%d", status)

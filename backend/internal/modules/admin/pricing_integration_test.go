@@ -30,7 +30,7 @@ func TestAdminPricingRequiresMFAAndCSRFAndUsesVersionedAuditCAS(t *testing.T) {
 			Version              int64  `json:"version"`
 		} `json:"pricing"`
 	}
-	if err := json.Unmarshal(get.Body.Bytes(), &initial); err != nil || initial.Pricing.PricePerMonitorMinor != 2900 || initial.Pricing.Currency != "RUB" || initial.Pricing.Period != "month" || initial.Pricing.Version != 1 {
+	if err := json.Unmarshal(get.Body.Bytes(), &initial); err != nil || initial.Pricing.PricePerMonitorMinor != 2600 || initial.Pricing.Currency != "RUB" || initial.Pricing.Period != "month" || initial.Pricing.Version != 1 {
 		t.Fatalf("initial admin pricing=%+v decode_error=%v", initial.Pricing, err)
 	}
 	if got := f.request(t, user, http.MethodGet, endpoint, nil); got.Code != http.StatusForbidden {
@@ -84,7 +84,7 @@ func TestAdminPricingRequiresMFAAndCSRFAndUsesVersionedAuditCAS(t *testing.T) {
 	if err := json.Unmarshal(audit.AfterState, &afterState); err != nil {
 		t.Fatalf("decode pricing audit after state: %v", err)
 	}
-	if audit.Action != "billing.pricing_updated" || audit.Reason != reason || audit.TargetID != nil || beforeState["pricePerMonitorMinor"] != float64(2900) || afterState["pricePerMonitorMinor"] != float64(2400) {
+	if audit.Action != "billing.pricing_updated" || audit.Reason != reason || audit.TargetID != nil || beforeState["pricePerMonitorMinor"] != float64(2600) || afterState["pricePerMonitorMinor"] != float64(2400) {
 		t.Fatalf("pricing audit=%+v", audit)
 	}
 	if got := f.request(t, admin, http.MethodPut, endpoint, input(1, 2500, "stale price editor")); got.Code != http.StatusConflict || !strings.Contains(got.Body.String(), "version_conflict") {

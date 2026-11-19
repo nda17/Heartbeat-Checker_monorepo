@@ -44,10 +44,9 @@ func run(args []string, stdout io.Writer) error {
 	flags.SetOutput(io.Discard)
 	email := flags.String("email", "", "new account email")
 	name := flags.String("name", "", "account display name")
-	quota := flags.Int("quota", 0, "local test monitor quota, 1 to 1000")
-	until := flags.String("until", "", "explicit expiration in RFC3339")
+	amount := flags.Int("amount-minor", 0, "initial local balance in kopecks")
 	passwordPath := flags.String("password-file", "", "regular mode-0600 file containing exact password bytes")
-	reason := flags.String("reason", "", "reason for this local test entitlement")
+	reason := flags.String("reason", "", "reason for this local balance credit")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			flags.SetOutput(stdout)
@@ -64,12 +63,8 @@ func run(args []string, stdout io.Writer) error {
 	if err := config.LocalGrantDatabase(databaseURL); err != nil {
 		return err
 	}
-	expiration, err := time.Parse(time.RFC3339, *until)
-	if err != nil || !expiration.After(time.Now()) {
-		return errors.New("until must be a future RFC3339 timestamp")
-	}
-	if *quota < 1 || *quota > 1000 {
-		return errors.New("quota must be between 1 and 1000")
+	if *amount < 1 || *amount > billing.MaxCreditAmountMinor {
+		return errors.New("amount-minor must be between 1 and 35000000")
 	}
 	grantReason := strings.TrimSpace(*reason)
 	if *email == "" || *name == "" || *passwordPath == "" || len(grantReason) < 1 || len(grantReason) > 500 {
@@ -95,7 +90,7 @@ func run(args []string, stdout io.Writer) error {
 			return account.ID, err
 		},
 		func(ctx context.Context, tx pgx.Tx, accountID string) error {
-			return billingModule.GrantLocalTx(ctx, tx, accountID, *quota, expiration, grantReason)
+			return billingModule.CreditLocalTx(ctx, tx, accountID, *amount, grantReason)
 		})
 	if errors.Is(err, auth.ErrAlreadyExists) {
 		return errors.New("account already exists; nothing changed")
@@ -106,7 +101,7 @@ func run(args []string, stdout io.Writer) error {
 	if err != nil {
 		return errors.New("local admin creation failed; existing accounts are never changed")
 	}
-	fmt.Fprintf(stdout, "Local admin account created with a local test entitlement: quota=%d until=%s; this is not a payment.\n", *quota, expiration.Format(time.RFC3339))
+	fmt.Fprintf(stdout, "Local admin account created with a local balance of %d kopecks.\n", *amount)
 	return nil
 }
 

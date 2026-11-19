@@ -177,6 +177,54 @@ func TestValidateEnvActivatesNativeSDKTestWithoutChangingHostedProduction(t *tes
 	}
 }
 
+func TestValidateEnvNativeSDKProductionRetainsBothProfiles(t *testing.T) {
+	old := map[string]string{
+		"BILLING_PROVIDER": "yookassa", "YOOKASSA_MODE": "production",
+		"YOOKASSA_PRODUCTION_SHOP_ID": "654321", "YOOKASSA_PRODUCTION_SECRET_KEY": "'live_existing_synthetic'",
+		"BILLING_TEST_ACCOUNT_IDS": "51ec7d19-80c4-4fb6-8edb-79dc7abe3120",
+		"YOOKASSA_TEST_SHOP_ID":    "123456", "YOOKASSA_TEST_SECRET_KEY": "'test_existing_synthetic'",
+		"YOOKASSA_NATIVE_SDK_ENABLED": "true", "YOOKASSA_NATIVE_SDK_MODE": "test",
+		"AUTH_MAIL_ENCRYPTION_KEY": base64.StdEncoding.EncodeToString(make([]byte, 32)),
+	}
+	activation := Activation{NativeSDKProduction: true}
+	for _, active := range []map[string]string{
+		old,
+		mergeEnv(old, map[string]string{"YOOKASSA_NATIVE_SDK_ENABLED": "false", "YOOKASSA_NATIVE_SDK_MODE": ""}),
+		mergeEnv(old, map[string]string{"YOOKASSA_NATIVE_SDK_MODE": "production"}),
+	} {
+		candidate := mergeEnv(active, map[string]string{"YOOKASSA_NATIVE_SDK_ENABLED": "true", "YOOKASSA_NATIVE_SDK_MODE": "production"})
+		path := writeEnvFixture(t, envText(active), envText(candidate))
+		if err := ValidateEnv(path, activation); err != nil {
+			t.Fatalf("valid production activation or retry rejected: %v", err)
+		}
+		if err := ValidateEnv(path, Activation{NativeSDKProduction: true, Email: true}); err == nil {
+			t.Fatal("mixed activation accepted")
+		}
+	}
+	for _, tc := range []struct{ key, value string }{
+		{"BILLING_PROVIDER", "disabled"},
+		{"YOOKASSA_MODE", "test"},
+		{"YOOKASSA_PRODUCTION_SECRET_KEY", "test_synthetic_secret_123"},
+		{"YOOKASSA_TEST_SECRET_KEY", ""},
+		{"YOOKASSA_TEST_SHOP_ID", "654321"},
+		{"BILLING_TEST_ACCOUNT_IDS", ""},
+		{"AUTH_MAIL_ENCRYPTION_KEY", "invalid"},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			active := mergeEnv(old, map[string]string{tc.key: tc.value})
+			candidate := mergeEnv(active, map[string]string{"YOOKASSA_NATIVE_SDK_MODE": "production"})
+			path := writeEnvFixture(t, envText(active), envText(candidate))
+			if err := ValidateEnv(path, activation); err == nil {
+				t.Fatal("invalid pre-existing profile accepted")
+			}
+			path = writeEnvFixture(t, envText(old), envText(candidate))
+			if err := ValidateEnv(path, activation); err == nil {
+				t.Fatal("mutation outside native SDK flags accepted")
+			}
+		})
+	}
+}
+
 func TestValidateEnvRequiresRelayTargetsAndRejectsSymlinkOrBadModeCandidate(t *testing.T) {
 	old := map[string]string{"DATABASE_URL": "postgresql://fixture", "TELEGRAM_API_BASE_URL": "", "TELEGRAM_API_PROXY_IP": ""}
 	candidate := mergeEnv(old, relayTargets)

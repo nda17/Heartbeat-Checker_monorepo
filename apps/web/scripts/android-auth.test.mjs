@@ -60,13 +60,17 @@ function mobileMonitorPage(monitors) {
   };
 }
 
-function mobileEntitlement(overrides = {}) {
+function mobileBalance(overrides = {}) {
   return {
-    quota: 10,
-    enabledMonitorCount: 1,
-    activeMonitorCount: 1,
-    admin: null,
-    packages: [],
+    availableMinor: 10000,
+    positiveBelowCent: false,
+    currency: "RUB",
+    enabledMonitors: 1,
+    asOf: "2026-11-01T12:00:00Z",
+    fundedUntil: null,
+    suspended: false,
+    pricePerMonitorMinor: 2600,
+    priceVersion: 1,
     ...overrides,
   };
 }
@@ -538,7 +542,7 @@ async function createHarness({
   const mocks = createNativeMocks(reducedMotion, motionRead, signalRegionWidth);
   const requests = [];
   let monitorContractActive = false;
-  let monitorEntitlementOverride = null;
+  let monitorBalanceOverride = null;
   const native = {
     API_ORIGIN: challengeOrigin,
     CHALLENGE_ORIGIN: challengeOrigin,
@@ -768,7 +772,7 @@ async function createHarness({
     },
     async renderMonitorsScreen(
       deepLink = null,
-      { onBuyQuota = async () => {}, onDeepLinkConsumed = () => {} } = {},
+      { onTopUp = async () => {}, onDeepLinkConsumed = () => {} } = {},
     ) {
       monitorContractActive = true;
       const notificationsModule = compile(
@@ -821,7 +825,9 @@ async function createHarness({
             { auth: apiModule.session() },
             React.createElement(monitorsModule.MonitorsScreen, {
               deepLink,
-              onBuyQuota,
+              onTopUp,
+              balance: monitorBalanceOverride ?? mobileBalance(),
+              refreshBalance: async () => {},
               onDeepLinkConsumed,
             }),
           ),
@@ -854,7 +860,10 @@ async function createHarness({
       await apiModule.restoreSession();
       await act(async () =>
         renderWithMotionPreferences(
-          React.createElement(billingModule.BillingScreen, { returnOrder }),
+          React.createElement(billingModule.BillingScreen, {
+            returnOrder,
+            onBalance() {},
+          }),
         ),
       );
       await act(async () => Promise.resolve());
@@ -929,12 +938,15 @@ async function createHarness({
         return tab === "monitors"
           ? React.createElement(monitorsModule.MonitorsScreen, {
               resumeDraft,
-              onBuyQuota: () => {
+              balance: monitorBalanceOverride ?? mobileBalance(),
+              refreshBalance: async () => {},
+              onTopUp: () => {
                 onNavigateBilling();
                 setTab("billing");
               },
             })
           : React.createElement(billingModule.BillingScreen, {
+              onBalance() {},
               onContinueMonitor: () => {
                 setResumeDraft((value) => value + 1);
                 setTab("monitors");
@@ -972,10 +984,8 @@ async function createHarness({
     setFetch(fn) {
       fetchImpl = async (url, options) => {
         const path = new URL(url).pathname.replace("/api/v1", "");
-        if (monitorContractActive && path === "/entitlement")
-          return jsonResponse({
-            entitlement: monitorEntitlementOverride ?? mobileEntitlement(),
-          });
+        if (monitorContractActive && path === "/billing/balance")
+          return jsonResponse(monitorBalanceOverride ?? mobileBalance());
         if (
           monitorContractActive &&
           /^\/monitors\/[^/]+\/statistics$/.test(path)
@@ -1008,8 +1018,8 @@ async function createHarness({
         return fn(url, options);
       };
     },
-    setMonitorEntitlement(entitlement) {
-      monitorEntitlementOverride = entitlement;
+    setMonitorBalance(balance) {
+      monitorBalanceOverride = balance;
     },
     async click(label) {
       const matches = [
@@ -1651,8 +1661,7 @@ test("monitor status and problem-first filters use the mocked API query contract
   harness.setFetch(async (url) => {
     const parsed = new URL(url);
     const path = parsed.pathname.replace("/api/v1", "");
-    if (path === "/entitlement")
-      return jsonResponse({ entitlement: mobileEntitlement() });
+    if (path === "/billing/balance") return jsonResponse(mobileBalance());
     if (path === "/monitor-time-zones") return jsonResponse({ timeZones: [] });
     if (path === "/monitors") {
       listQueries.push(parsed.searchParams);
@@ -3836,13 +3845,7 @@ test("a monitor draft survives the billing return without posting until the user
     harness.native.savePaymentIntent = async () => {};
     harness.native.clearPaymentIntent = async () => {};
     await harness.apiModule.restoreSession();
-    harness.setMonitorEntitlement({
-      quota: 1,
-      enabledMonitorCount: 1,
-      activeMonitorCount: 1,
-      admin: null,
-      packages: [],
-    });
+    harness.setMonitorBalance(mobileBalance({ availableMinor: 0 }));
     harness.setFetch(async (url, options) => {
       const parsed = new URL(url);
       const path = parsed.pathname.replace("/api/v1", "");
@@ -3873,7 +3876,7 @@ test("a monitor draft survives the billing return without posting until the user
       if (path === "/monitors/monitor-created/incidents")
         return jsonResponse({ incidents: [] });
       if (path === "/billing") return jsonResponse(billingOverview([]));
-      if (path === "/billing/orders" && parsed.search === "?page=1&pageSize=10")
+      if (path === "/billing/ledger" && parsed.search === "?page=1&pageSize=10")
         return jsonResponse(billingPage([]));
       if (path === "/messenger-destinations")
         return jsonResponse({ destinations: [] });
@@ -3893,7 +3896,7 @@ test("a monitor draft survives the billing return without posting until the user
       "editing alone does not create a monitor",
     );
 
-    await harness.click("Купить квоту");
+    await harness.click("Перейти к балансу");
     await harness.flush();
     assert.match(harness.host.textContent, /Черновик монитора сохранён/);
     assert.equal(
@@ -3902,13 +3905,7 @@ test("a monitor draft survives the billing return without posting until the user
       "opening billing does not create a monitor",
     );
 
-    harness.setMonitorEntitlement({
-      quota: 2,
-      enabledMonitorCount: 1,
-      activeMonitorCount: 1,
-      admin: null,
-      packages: [],
-    });
+    harness.setMonitorBalance(mobileBalance({ availableMinor: 2000 }));
     await harness.click("Вернуться к настройке монитора");
     await harness.flush();
     assert.equal(
@@ -3941,7 +3938,7 @@ test("a monitor draft survives the billing return without posting until the user
   }
 });
 
-test("pending quota-save cannot navigate to billing after logout unmounts the monitor editor", async () => {
+test("pending draft save cannot navigate to billing after logout unmounts the monitor editor", async () => {
   const harness = await createHarness();
   const actor = {
     account: { id: "account-1" },
@@ -3963,13 +3960,7 @@ test("pending quota-save cannot navigate to billing after logout unmounts the mo
     harness.native.saveMonitorDraft = async () => {};
     harness.native.clearMonitorDraft = async () => {};
     await harness.apiModule.restoreSession();
-    harness.setMonitorEntitlement({
-      quota: 0,
-      enabledMonitorCount: 0,
-      activeMonitorCount: 0,
-      admin: null,
-      packages: [],
-    });
+    harness.setMonitorBalance(mobileBalance({ availableMinor: 0 }));
     harness.setFetch(async (url) => {
       const path = new URL(url).pathname.replace("/api/v1", "");
       if (path === "/monitor-time-zones")
@@ -3978,7 +3969,7 @@ test("pending quota-save cannot navigate to billing after logout unmounts the mo
       throw new Error(`Unexpected logout draft request: ${path}`);
     });
     await harness.renderMonitorsScreen(null, {
-      onBuyQuota: () => billingNavigationCalls++,
+      onTopUp: () => billingNavigationCalls++,
     });
     await harness.click("Добавить монитор");
     await harness.fill("Название", "Pending checkout draft");
@@ -3991,7 +3982,7 @@ test("pending quota-save cannot navigate to billing after logout unmounts the mo
         resolveNativeSave = resolve;
       });
     };
-    await harness.click("Купить квоту");
+    await harness.click("Перейти к балансу");
     await saveStarted;
     assert.equal(
       billingNavigationCalls,
@@ -4694,7 +4685,7 @@ function billingOrder(id, overrides = {}) {
   return {
     id,
     status: "canceled",
-    purchaseKind: "add",
+    purchaseKind: "topup",
     monitorCount: 2,
     amountMinor: 4000,
     fulfillmentStatus: "none",
@@ -4725,21 +4716,20 @@ function billingOverview(orders) {
   };
 }
 
-function billingEntitlement(quota = 0) {
-  return {
-    entitlement: {
-      quota,
-      enabledMonitorCount: 0,
-      activeMonitorCount: 0,
-      admin: null,
-      packages: [],
-    },
-  };
+function billingBalance(rubles = 0) {
+  return mobileBalance({ availableMinor: rubles * 100, enabledMonitors: 0 });
 }
 
 function billingPage(orders, page = 1, total = orders.length, totalPages = 1) {
   return {
-    orders,
+    entries: orders
+      .filter((order) => order.status === "succeeded")
+      .map((order) => ({
+        id: order.id,
+        kind: "top_up",
+        amountMinor: order.amountMinor,
+        createdAt: order.createdAt,
+      })),
     pagination: { page, pageSize: 10, total, totalPages },
   };
 }
@@ -4812,7 +4802,7 @@ async function prepareBillingHarness(harness, fetchBilling) {
   await harness.flush();
 }
 
-test("billing history uses server pages and expanding history never inspects or replaces the active order", async () => {
+test("balance history uses server pages without inspecting or replacing the active payment", async () => {
   const harness = await createHarness();
   const activeId = "10000000-0000-4000-8000-000000000001";
   const oldId = "10000000-0000-4000-8000-000000000002";
@@ -4821,16 +4811,19 @@ test("billing history uses server pages and expanding history never inspects or 
     fulfillmentStatus: "pending",
     createdAt: "2026-10-22T12:00:00Z",
   });
-  const oldOrder = billingOrder(oldId);
+  const oldOrder = billingOrder(oldId, {
+    status: "succeeded",
+    fulfillmentStatus: "fulfilled",
+  });
   try {
     await prepareBillingHarness(harness, async (path) => {
       if (path === "/billing") return billingOverview([latestActive]);
-      if (path === "/entitlement") return billingEntitlement();
-      if (path === "/billing/orders?page=1&pageSize=10")
+      if (path === "/billing/balance") return billingBalance();
+      if (path === "/billing/ledger?page=1&pageSize=10")
         return billingPage([latestActive, oldOrder], 1, 12, 2);
       if (path === `/billing/orders/${activeId}`)
         return { order: latestActive };
-      if (path === "/billing/orders?page=2&pageSize=10")
+      if (path === "/billing/ledger?page=2&pageSize=10")
         return billingPage(
           [billingOrder("10000000-0000-4000-8000-000000000003")],
           2,
@@ -4840,31 +4833,23 @@ test("billing history uses server pages and expanding history never inspects or 
       throw new Error(`unexpected billing request ${path}`);
     });
 
-    assert.match(harness.host.textContent, /Текущий заказ/);
+    assert.match(harness.host.textContent, /Текущий платёж/);
     assert.doesNotMatch(harness.host.textContent, new RegExp(activeId));
-    assert.match(harness.host.textContent, /История заказов/);
-    const historyToggle = [...harness.host.querySelectorAll("button")].find(
-      (button) => button.getAttribute("aria-label")?.includes("Подробнее"),
-    );
-    assert.ok(
-      historyToggle,
-      "history row should be an accessible disclosure control",
-    );
-    await act(async () => historyToggle.click());
-    assert.match(harness.host.textContent, new RegExp(oldId));
+    assert.match(harness.host.textContent, /История баланса/);
+    assert.match(harness.host.textContent, /Пополнение/);
     assert.equal(
       harness.requests.filter(
         (request) => request.path === `/billing/orders/${oldId}`,
       ).length,
       0,
-      "opening a history row must stay a local detail expansion",
+      "the ledger does not inspect historical orders",
     );
     assert.doesNotMatch(harness.host.textContent, new RegExp(activeId));
 
     await harness.click("Далее");
     assert.ok(
       harness.requests.some(
-        (request) => request.path === "/billing/orders?page=2&pageSize=10",
+        (request) => request.path === "/billing/ledger?page=2&pageSize=10",
       ),
       "pagination must request the server's second page",
     );
@@ -4874,6 +4859,139 @@ test("billing history uses server pages and expanding history never inspects or 
       harness.requests.some((request) => request.options?.method === "POST"),
       false,
       "reading history must not create a payment order",
+    );
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("a pending legacy SDK intent is cleared and read once without blocking a new top-up", async () => {
+  const harness = await createHarness();
+  const clock = fakeTimerRuntime();
+  const orderId = "15000000-0000-4000-8000-000000000002";
+  const newId = "15000000-0000-4000-8000-000000000003";
+  const legacy = sdkOrder(orderId, "confirmation_required", {
+    purchaseKind: "renew",
+    reconciliationStatus: "manual_review",
+  });
+  const created = sdkOrder(newId, "processing", {
+    checkoutKind: "redirect",
+    amountMinor: 10000,
+  });
+  const cleared = [];
+  let saved = { version: 1, orderId };
+  try {
+    harness.native.restore = async () => billingActor;
+    harness.native.restorePaymentIntent = async () => saved;
+    harness.native.clearPaymentIntent = async (...args) => {
+      cleared.push(args);
+      saved = null;
+    };
+    harness.native.savePaymentIntent = async (intent) => {
+      saved = intent;
+    };
+    harness.native.sdkCapabilities = async () => ({
+      configured: false,
+      shopId: "",
+      environment: "test",
+    });
+    harness.native.DEV_CLIENT = false;
+    harness.native.randomUUID = async () =>
+      "15000000-0000-4000-8000-000000000004";
+    harness.setFetch(async (url, options) => {
+      const path = new URL(url).pathname.replace(/^\/api\/v1/, "");
+      harness.requests.push({ path, options });
+      if (path === "/billing") return jsonResponse(billingOverview([legacy]));
+      if (path === "/billing/balance") return jsonResponse(billingBalance());
+      if (path === "/billing/ledger") return jsonResponse(billingPage([]));
+      if (path === `/billing/orders/${orderId}`)
+        return jsonResponse({ order: legacy });
+      if (path === "/billing/topups" || path === `/billing/orders/${newId}`)
+        return jsonResponse({ order: created });
+      throw new Error(`Unexpected billing request: ${path}`);
+    });
+    await harness.renderBillingScreen(null, clock);
+    await harness.flush();
+    assert.deepEqual(cleared, [
+      [billingActor.account.id, billingActor.session.id, orderId],
+    ]);
+    assert.equal(saved, null);
+    assert.match(harness.host.textContent, /Платёж за прежний пакет/);
+    assert.doesNotMatch(
+      harness.host.textContent,
+      /Проверить статус|Подтвердить в банке|Отменить этот заказ|Продолжить оплату/,
+    );
+    await act(async () => clock.advance(90_000));
+    await harness.flush();
+    assert.equal(
+      harness.requests.filter(
+        ({ path }) => path === `/billing/orders/${orderId}`,
+      ).length,
+      1,
+    );
+    assert.ok(
+      harness.requests.every(({ options }) => options.method !== "POST"),
+    );
+    await harness.click("Перейти к пополнению");
+    await harness.flush();
+    const writes = harness.requests.filter(
+      ({ options }) => options.method === "POST",
+    );
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].path, "/billing/topups");
+    assert.equal(JSON.parse(writes[0].options.body).amountMinor, 10000);
+    assert.equal(saved?.version, 2);
+  } finally {
+    await harness.unmount();
+  }
+});
+
+test("a succeeded archive from a return link stays a package payment after foregrounding", async () => {
+  const harness = await createHarness();
+  const orderId = "15000000-0000-4000-8000-000000000005";
+  try {
+    harness.native.restore = async () => billingActor;
+    harness.native.restorePaymentIntent = async () => null;
+    harness.native.DEV_CLIENT = false;
+    harness.setFetch(async (url, options) => {
+      const path = new URL(url).pathname.replace(/^\/api\/v1/, "");
+      harness.requests.push({ path, options });
+      if (path === "/billing") return jsonResponse(billingOverview([]));
+      if (path === "/billing/balance") return jsonResponse(billingBalance());
+      if (path === "/billing/ledger") return jsonResponse(billingPage([]));
+      if (path === `/billing/orders/${orderId}`)
+        return jsonResponse({
+          order: billingOrder(orderId, {
+            purchaseKind: "legacy",
+            status: "succeeded",
+            fulfillmentStatus: "fulfilled",
+          }),
+        });
+      throw new Error(`Unexpected billing request: ${path}`);
+    });
+    await harness.renderBillingScreen(orderId);
+    await harness.flush();
+    assert.match(
+      harness.host.textContent,
+      /Платёж за прежний пакет\. Оплата подтверждена/,
+    );
+    assert.doesNotMatch(harness.host.textContent, /Баланс пополнен/);
+    assert.match(harness.host.textContent, /Перейти к пополнению/);
+    await act(async () =>
+      harness.nativeMocks.AppState.setCurrentState("background"),
+    );
+    await act(async () =>
+      harness.nativeMocks.AppState.setCurrentState("active"),
+    );
+    await harness.flush();
+    assert.equal(
+      harness.requests.filter(
+        ({ path }) => path === `/billing/orders/${orderId}`,
+      ).length,
+      1,
+    );
+    assert.ok(
+      harness.requests.every(({ options }) => options.method !== "POST"),
     );
   } finally {
     await harness.unmount();
@@ -4892,7 +5010,7 @@ test("a late SDK token response cannot roll a terminal paid order back to proces
   });
   let storedIntent = null;
   let overviewReads = 0;
-  let entitlementReads = 0;
+  let balanceReads = 0;
   let historyReads = 0;
   let statusReads = 0;
   let resolveTokenResponse;
@@ -4935,11 +5053,11 @@ test("a late SDK token response cannot roll a terminal paid order back to proces
           ),
         );
       }
-      if (path === "/entitlement" && method === "GET") {
-        entitlementReads++;
-        return jsonResponse(billingEntitlement(entitlementReads > 2 ? 2 : 0));
+      if (path === "/billing/balance" && method === "GET") {
+        balanceReads++;
+        return jsonResponse(billingBalance(balanceReads > 2 ? 2 : 0));
       }
-      if (path === "/billing/orders?page=1&pageSize=10" && method === "GET") {
+      if (path === "/billing/ledger?page=1&pageSize=10" && method === "GET") {
         historyReads++;
         return jsonResponse(
           billingPage(
@@ -4951,7 +5069,7 @@ test("a late SDK token response cannot roll a terminal paid order back to proces
           ),
         );
       }
-      if (path === "/billing/native/orders" && method === "POST")
+      if (path === "/billing/native/topups" && method === "POST")
         return jsonResponse({ order: awaitingToken, sdk: sdkQuote() });
       if (
         path === `/billing/native/orders/${activeId}/token` &&
@@ -4977,7 +5095,8 @@ test("a late SDK token response cannot roll a terminal paid order back to proces
     });
     await harness.renderBillingScreen(null, clock);
     await harness.flush();
-    await harness.click("Оплатить картой");
+    await harness.fill("Сумма, ₽", "20");
+    await harness.click("Начать тестовый платёж");
     await harness.flush();
     assert.equal(
       typeof resolveTokenResponse,
@@ -4988,32 +5107,33 @@ test("a late SDK token response cannot roll a terminal paid order back to proces
 
     await act(async () => clock.advance(3_000));
     await harness.flush();
-    assert.match(harness.host.textContent, /Доступная квота: 2/);
+    assert.match(harness.host.textContent, /2\s*₽/);
     assert.equal(
       storedIntent,
       null,
       "the paid order should clear its saved checkout intent",
     );
-    assert.ok(overviewReads >= 3 && entitlementReads >= 3 && historyReads >= 3);
+    assert.ok(overviewReads >= 3 && balanceReads >= 3 && historyReads >= 3);
 
     resolveTokenResponse();
     await harness.flush();
     if (resolveLateStatus) {
       assert.match(
         harness.host.textContent,
-        /Доступная квота: 2/,
+        /2\s*₽/,
         "a late processing POST must not flash over the paid order",
       );
       resolveLateStatus();
       await harness.flush();
     }
-    assert.match(harness.host.textContent, /Доступная квота: 2/);
-    assert.match(harness.host.textContent, /Оплачен · квота начислена/);
+    assert.match(harness.host.textContent, /2\s*₽/);
+    assert.match(harness.host.textContent, /Баланс пополнен/);
     assert.equal(
       harness.requests.filter(
         (request) =>
           request.options.method === "POST" &&
-          request.path.startsWith("/billing/native/orders"),
+          (request.path === "/billing/native/topups" ||
+            request.path.startsWith("/billing/native/orders/")),
       ).length,
       2,
       "polling and stale response reconciliation must not create a second order or token",
@@ -5028,7 +5148,7 @@ test("a late SDK token response cannot roll a terminal paid order back to proces
   }
 });
 
-test("billing polling observes a paid order, refreshes quota and history, and never starts a payment", async () => {
+test("billing polling observes a paid order, refreshes balance and history, and never starts a payment", async () => {
   const harness = await createHarness();
   const activeId = "20000000-0000-4000-8000-000000000001";
   const pending = billingOrder(activeId, {
@@ -5063,9 +5183,9 @@ test("billing polling observes a paid order, refreshes quota and history, and ne
           billingOverview([overviewReads > 1 ? paid : pending]),
         );
       }
-      if (path === "/entitlement")
-        return jsonResponse(billingEntitlement(overviewReads > 1 ? 2 : 0));
-      if (path === "/billing/orders?page=1&pageSize=10")
+      if (path === "/billing/balance")
+        return jsonResponse(billingBalance(overviewReads > 1 ? 2 : 0));
+      if (path === "/billing/ledger?page=1&pageSize=10")
         return jsonResponse(billingPage([overviewReads > 1 ? paid : pending]));
       if (path === `/billing/orders/${activeId}`) {
         statusReads++;
@@ -5080,11 +5200,8 @@ test("billing polling observes a paid order, refreshes quota and history, and ne
       statusReads >= 1,
       "an active pending order should be polled immediately",
     );
-    assert.match(harness.host.textContent, /Доступная квота: 2/);
-    assert.match(
-      harness.host.textContent,
-      /Оплата и начисление подтверждены сервером\./,
-    );
+    assert.match(harness.host.textContent, /2\s*₽/);
+    assert.match(harness.host.textContent, /Баланс пополнен\./);
     assert.ok(
       overviewReads >= 2,
       "paid status should refresh the billing overview",
@@ -5126,8 +5243,8 @@ test("billing polling ignores a late paid response after backgrounding", async (
       const path = parsed.pathname.replace(/^\/api\/v1/, "") + parsed.search;
       harness.requests.push({ url, options, path });
       if (path === "/billing") return jsonResponse(billingOverview([pending]));
-      if (path === "/entitlement") return jsonResponse(billingEntitlement());
-      if (path === "/billing/orders?page=1&pageSize=10")
+      if (path === "/billing/balance") return jsonResponse(billingBalance());
+      if (path === "/billing/ledger?page=1&pageSize=10")
         return jsonResponse(billingPage([pending]));
       if (path === `/billing/orders/${activeId}`) {
         statusSignal = options.signal;
@@ -5152,11 +5269,11 @@ test("billing polling ignores a late paid response after backgrounding", async (
     resolveStatus();
     await harness.flush();
 
-    assert.match(harness.host.textContent, /Доступная квота: 0/);
+    assert.match(harness.host.textContent, /0\s*₽/);
     assert.equal(
       harness.requests.filter((request) => request.path === "/billing").length,
       1,
-      "a stale paid response must not trigger entitlement reconciliation",
+      "a stale paid response must not trigger balance reconciliation",
     );
     assert.equal(
       harness.requests.some((request) => request.options?.method === "POST"),
@@ -5192,8 +5309,8 @@ test("billing does not poll terminal, blocked, manual-review, or stopped orders"
     try {
       await prepareBillingHarness(harness, async (path) => {
         if (path === "/billing") return billingOverview([item]);
-        if (path === "/entitlement") return billingEntitlement();
-        if (path === "/billing/orders?page=1&pageSize=10")
+        if (path === "/billing/balance") return billingBalance();
+        if (path === "/billing/ledger?page=1&pageSize=10")
           return billingPage([item]);
         if (path === `/billing/orders/${item.id}`)
           throw new Error(
@@ -5239,8 +5356,8 @@ test("billing polling times out one GET, retries sequentially, and leaves the or
       const path = parsed.pathname.replace(/^\/api\/v1/, "") + parsed.search;
       harness.requests.push({ url, options, path });
       if (path === "/billing") return jsonResponse(billingOverview([pending]));
-      if (path === "/entitlement") return jsonResponse(billingEntitlement());
-      if (path === "/billing/orders?page=1&pageSize=10")
+      if (path === "/billing/balance") return jsonResponse(billingBalance());
+      if (path === "/billing/ledger?page=1&pageSize=10")
         return jsonResponse(billingPage([pending]));
       if (path === `/billing/orders/${activeId}`) {
         activeReads++;
@@ -5284,7 +5401,7 @@ test("billing polling times out one GET, retries sequentially, and leaves the or
       "a failed read may retry while the order is active",
     );
     assert.equal(maxOutstanding, 1, "status reads must never overlap");
-    assert.match(harness.host.textContent, /Текущий заказ/);
+    assert.match(harness.host.textContent, /Текущий платёж/);
   } finally {
     await harness.unmount();
   }
@@ -5313,8 +5430,8 @@ test("billing polling stops after the 90-second visible window", async () => {
       const path = parsed.pathname.replace(/^\/api\/v1/, "") + parsed.search;
       harness.requests.push({ url, options, path });
       if (path === "/billing") return jsonResponse(billingOverview([pending]));
-      if (path === "/entitlement") return jsonResponse(billingEntitlement());
-      if (path === "/billing/orders?page=1&pageSize=10")
+      if (path === "/billing/balance") return jsonResponse(billingBalance());
+      if (path === "/billing/ledger?page=1&pageSize=10")
         return jsonResponse(billingPage([pending]));
       if (path === `/billing/orders/${activeId}`) {
         statusReads++;
@@ -5373,8 +5490,8 @@ test("billing discards a paid status response that arrives after logout", async 
       const path = parsed.pathname.replace(/^\/api\/v1/, "") + parsed.search;
       harness.requests.push({ url, options, path });
       if (path === "/billing") return jsonResponse(billingOverview([pending]));
-      if (path === "/entitlement") return jsonResponse(billingEntitlement());
-      if (path === "/billing/orders?page=1&pageSize=10")
+      if (path === "/billing/balance") return jsonResponse(billingBalance());
+      if (path === "/billing/ledger?page=1&pageSize=10")
         return jsonResponse(billingPage([pending]));
       if (path === `/billing/orders/${activeId}`)
         return await new Promise((resolve) => {
@@ -5394,7 +5511,7 @@ test("billing discards a paid status response that arrives after logout", async 
     resolveStatus();
     await harness.flush();
 
-    assert.match(harness.host.textContent, /Доступная квота: 0/);
+    assert.match(harness.host.textContent, /0\s*₽/);
     assert.equal(
       harness.requests.filter((request) => request.path === "/billing").length,
       1,
@@ -5417,14 +5534,14 @@ test("billing rejects a mismatched order response without replacing the active o
   try {
     await prepareBillingHarness(harness, async (path) => {
       if (path === "/billing") return billingOverview([pending]);
-      if (path === "/entitlement") return billingEntitlement();
-      if (path === "/billing/orders?page=1&pageSize=10")
+      if (path === "/billing/balance") return billingBalance();
+      if (path === "/billing/ledger?page=1&pageSize=10")
         return billingPage([pending]);
       if (path === `/billing/orders/${activeId}`)
         return { order: billingOrder(otherId, { status: "succeeded" }) };
       throw new Error(`unexpected billing request ${path}`);
     });
-    assert.match(harness.host.textContent, /Текущий заказ/);
+    assert.match(harness.host.textContent, /Текущий платёж/);
     assert.doesNotMatch(harness.host.textContent, new RegExp(otherId));
     assert.equal(
       harness.requests.some(
@@ -5465,8 +5582,8 @@ test("billing confirmation joins a poll's in-flight status read instead of faili
       const path = parsed.pathname.replace(/^\/api\/v1/, "") + parsed.search;
       harness.requests.push({ url, options, path });
       if (path === "/billing") return jsonResponse(sdkOverview([confirmation]));
-      if (path === "/entitlement") return jsonResponse(billingEntitlement());
-      if (path === "/billing/orders?page=1&pageSize=10")
+      if (path === "/billing/balance") return jsonResponse(billingBalance());
+      if (path === "/billing/ledger?page=1&pageSize=10")
         return jsonResponse(billingPage([confirmation]));
       if (path === `/billing/orders/${activeId}`) {
         statusReads++;
@@ -5526,7 +5643,7 @@ test("billing confirmation joins a poll's in-flight status read instead of faili
   }
 });
 
-test("a terminal bank-confirmation response refreshes quota and history, with UUID details revealed on demand", async () => {
+test("a terminal bank-confirmation response refreshes balance and history and keeps a payment reference", async () => {
   const harness = await createHarness();
   const activeId = "90000000-0000-4000-8000-000000000001";
   const confirmation = sdkOrder(activeId, "confirmation_required");
@@ -5536,7 +5653,7 @@ test("a terminal bank-confirmation response refreshes quota and history, with UU
   });
   let statusReads = 0;
   let overviewReads = 0;
-  let entitlementReads = 0;
+  let balanceReads = 0;
   let historyReads = 0;
   try {
     harness.native.restore = async () => billingActor;
@@ -5558,11 +5675,11 @@ test("a terminal bank-confirmation response refreshes quota and history, with UU
           sdkOverview([overviewReads > 1 ? paid : confirmation]),
         );
       }
-      if (path === "/entitlement") {
-        entitlementReads++;
-        return jsonResponse(billingEntitlement(entitlementReads > 1 ? 2 : 0));
+      if (path === "/billing/balance") {
+        balanceReads++;
+        return jsonResponse(billingBalance(balanceReads > 1 ? 2 : 0));
       }
-      if (path === "/billing/orders?page=1&pageSize=10") {
+      if (path === "/billing/ledger?page=1&pageSize=10") {
         historyReads++;
         return jsonResponse(
           billingPage([historyReads > 1 ? paid : confirmation]),
@@ -5583,32 +5700,18 @@ test("a terminal bank-confirmation response refreshes quota and history, with UU
       overviewReads >= 2,
       "terminal status should refresh the billing overview",
     );
-    assert.ok(
-      entitlementReads >= 2,
-      "terminal status should refresh the quota",
-    );
+    assert.ok(balanceReads >= 2, "terminal status should refresh the balance");
     assert.ok(
       historyReads >= 2,
       "terminal status should refresh the visible history page",
     );
-    assert.match(harness.host.textContent, /Доступная квота: 2/);
-    assert.match(harness.host.textContent, /Оплачен · квота начислена/);
-    assert.doesNotMatch(
-      harness.host.textContent,
-      new RegExp(`ID для поддержки: ${activeId}`),
-      "a terminal history row should keep its full ID collapsed",
-    );
-    const historyToggle = [...harness.host.querySelectorAll("button")].find(
-      (button) => button.getAttribute("aria-label")?.includes("Подробнее"),
-    );
-    assert.ok(
-      historyToggle,
-      "the terminal order should remain discoverable in history",
-    );
-    await act(async () => historyToggle.click());
+    assert.match(harness.host.textContent, /2\s*₽/);
+    assert.match(harness.host.textContent, /Баланс пополнен/);
+    assert.doesNotMatch(harness.host.textContent, new RegExp(activeId));
+    await harness.click("Детали платежа");
     assert.match(
       harness.host.textContent,
-      new RegExp(`ID для поддержки: ${activeId}`),
+      new RegExp(`Номер для поддержки ${activeId}`),
     );
   } finally {
     await harness.unmount();
@@ -5633,7 +5736,7 @@ test("a manual status check can advance manual-review and stopped orders to paid
     });
     let statusReads = 0;
     let overviewReads = 0;
-    let entitlementReads = 0;
+    let balanceReads = 0;
     let historyReads = 0;
     try {
       harness.native.restore = async () => billingActor;
@@ -5654,11 +5757,11 @@ test("a manual status check can advance manual-review and stopped orders to paid
             billingOverview([overviewReads > 1 ? paid : held]),
           );
         }
-        if (path === "/entitlement") {
-          entitlementReads++;
-          return jsonResponse(billingEntitlement(entitlementReads > 1 ? 2 : 0));
+        if (path === "/billing/balance") {
+          balanceReads++;
+          return jsonResponse(billingBalance(balanceReads > 1 ? 2 : 0));
         }
-        if (path === "/billing/orders?page=1&pageSize=10") {
+        if (path === "/billing/ledger?page=1&pageSize=10") {
           historyReads++;
           return jsonResponse(billingPage([historyReads > 1 ? paid : held]));
         }
@@ -5683,10 +5786,10 @@ test("a manual status check can advance manual-review and stopped orders to paid
         overviewReads >= 2,
         "terminal status should refresh billing once",
       );
-      assert.ok(entitlementReads >= 2, "terminal status should refresh quota");
+      assert.ok(balanceReads >= 2, "terminal status should refresh balance");
       assert.ok(historyReads >= 2, "terminal status should refresh history");
-      assert.match(harness.host.textContent, /Доступная квота: 2/);
-      assert.match(harness.host.textContent, /Оплачен · квота начислена/);
+      assert.match(harness.host.textContent, /2\s*₽/);
+      assert.match(harness.host.textContent, /Баланс пополнен/);
     } finally {
       await harness.unmount();
     }
@@ -5709,8 +5812,8 @@ test("a manual check that reopens a stopped order restarts bounded polling", asy
   try {
     await prepareBillingHarness(harness, async (path) => {
       if (path === "/billing") return billingOverview([stopped]);
-      if (path === "/entitlement") return billingEntitlement();
-      if (path === "/billing/orders?page=1&pageSize=10")
+      if (path === "/billing/balance") return billingBalance();
+      if (path === "/billing/ledger?page=1&pageSize=10")
         return billingPage([stopped]);
       if (path === `/billing/orders/${id}`) {
         statusReads++;

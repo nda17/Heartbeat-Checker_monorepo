@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestRunRejectsPublicDatabaseBeforeReadingPasswordFile(t *testing.T) {
@@ -16,8 +15,7 @@ func TestRunRejectsPublicDatabaseBeforeReadingPasswordFile(t *testing.T) {
 	args := []string{
 		"--email", "admin@example.test",
 		"--name", "Local Admin",
-		"--quota", "1000",
-		"--until", time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339),
+		"--amount-minor", "2600",
 		"--password-file", missingSecretPath,
 		"--reason", "test",
 	}

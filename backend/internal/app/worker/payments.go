@@ -61,11 +61,20 @@ func (p *paymentReporter) SendPaymentReport(ctx context.Context, report contract
 			title, notice, amountLabel = "ЮKassa · Платёж подтверждён", "", "Сумма"
 		}
 	}
+	details := fmt.Sprintf("\nМониторов: %d", report.MonitorCount)
 	access := ""
-	if report.FulfillmentStatus == "blocked" {
+	if report.MonitorCount == 0 {
+		details = "\nОперация: пополнение баланса"
+		switch report.FulfillmentStatus {
+		case "fulfilled":
+			access = "\nБаланс пополнен."
+		case "blocked":
+			access = "\nТребуется проверка зачисления."
+		}
+	} else if report.FulfillmentStatus == "blocked" {
 		access = "\nКвота и срок доступа не изменены."
 	}
-	text := fmt.Sprintf("%s\n%sЗаказ: %s\nАккаунт: %s\nМониторов: %d\n%s: %d.%02d RUB\nПодтверждён: %s", title, notice, report.OrderID, report.AccountID, report.MonitorCount, amountLabel, report.AmountMinor/100, report.AmountMinor%100, report.CompletedAt.UTC().Format(time.RFC3339)) + access
+	text := fmt.Sprintf("%s\n%sЗаказ: %s\nАккаунт: %s%s\n%s: %d.%02d RUB\nПодтверждён: %s", title, notice, report.OrderID, report.AccountID, details, amountLabel, report.AmountMinor/100, report.AmountMinor%100, report.CompletedAt.UTC().Format(time.RFC3339)) + access
 	body, err := json.Marshal(map[string]any{"chat_id": p.chatID, "message_thread_id": p.topicID, "text": text})
 	if err != nil {
 		return &contracts.ReportSendError{Code: "encode_failed"}

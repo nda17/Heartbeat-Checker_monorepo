@@ -67,20 +67,20 @@ const listStates = `WITH ranked AS (
  FROM monitors.monitors WHERE account_id=$1
  ), states AS (
  SELECT *,CASE WHEN NOT enabled THEN 'PAUSED'
- WHEN $3::integer=0 OR quota_rank>$3 THEN 'SUBSCRIPTION_REQUIRED'
+ WHEN $3::integer=0 OR quota_rank>$3 THEN 'BALANCE_REQUIRED'
  WHEN last_checked_at IS NULL OR $4::timestamptz-last_checked_at > (2*interval_minutes*interval '1 minute'+interval '30 seconds') THEN 'UNKNOWN'
  ELSE outcome END AS effective_state FROM ranked
  ) `
 
-const statusMatch = `($5='all' OR effective_state=$5 OR ($5='problems' AND effective_state IN ('DOWN','UNKNOWN','SUBSCRIPTION_REQUIRED')))`
+const statusMatch = `($5='all' OR effective_state=$5 OR ($5='problems' AND effective_state IN ('DOWN','UNKNOWN','BALANCE_REQUIRED')))`
 
 func (r *Repository) PageSummary(ctx context.Context, tx pgx.Tx, owner string, options contracts.ListOptions, quota int, asOf time.Time) (contracts.MonitorSummary, int, error) {
 	var summary contracts.MonitorSummary
 	var total int
 	err := tx.QueryRow(ctx, listStates+`SELECT count(*),count(*) FILTER (WHERE effective_state='UP'),count(*) FILTER (WHERE effective_state='DOWN'),
  count(*) FILTER (WHERE effective_state='UNKNOWN'),count(*) FILTER (WHERE effective_state='PAUSED'),
- count(*) FILTER (WHERE effective_state='SUBSCRIPTION_REQUIRED'),count(*) FILTER (WHERE `+searchMatch+` AND `+statusMatch+`)
- FROM states WHERE account_id=$1`, owner, options.Query, quota, asOf, options.Status).Scan(&summary.Total, &summary.Up, &summary.Down, &summary.Unknown, &summary.Paused, &summary.SubscriptionRequired, &total)
+ count(*) FILTER (WHERE effective_state='BALANCE_REQUIRED'),count(*) FILTER (WHERE `+searchMatch+` AND `+statusMatch+`)
+ FROM states WHERE account_id=$1`, owner, options.Query, quota, asOf, options.Status).Scan(&summary.Total, &summary.Up, &summary.Down, &summary.Unknown, &summary.Paused, &summary.BalanceRequired, &total)
 	return summary, total, err
 }
 
@@ -89,7 +89,7 @@ func (r *Repository) ListPage(ctx context.Context, tx pgx.Tx, owner string, opti
 	order := map[string]string{
 		"created_desc": "created_at DESC,id DESC", "created_asc": "created_at,id",
 		"name_asc": "lower(name),id", "name_desc": "lower(name) DESC,id DESC",
-		"problems_first": "CASE effective_state WHEN 'DOWN' THEN 0 WHEN 'UNKNOWN' THEN 1 WHEN 'SUBSCRIPTION_REQUIRED' THEN 2 WHEN 'UP' THEN 3 ELSE 4 END,created_at DESC,id DESC",
+		"problems_first": "CASE effective_state WHEN 'DOWN' THEN 0 WHEN 'UNKNOWN' THEN 1 WHEN 'BALANCE_REQUIRED' THEN 2 WHEN 'UP' THEN 3 ELSE 4 END,created_at DESC,id DESC",
 	}[options.Sort]
 	if order == "" {
 		return nil, errors.New("invalid monitor ordering")
@@ -177,10 +177,12 @@ func (r *Repository) Results(ctx context.Context, owner, id string, limit int, b
 type Candidate struct{ ID, AccountID string }
 
 func (r *Repository) Candidates(ctx context.Context) ([]Candidate, error) {
-	rows, err := r.Pool.Query(ctx, `SELECT id::text,account_id::text FROM monitors.monitors due WHERE enabled AND next_check_at<=now() AND (lease_until IS NULL OR lease_until<=now())
+	rows, err := r.Pool.Query(ctx, `SELECT due.id::text,due.account_id::text FROM monitors.monitors due
+ JOIN billing.wallets wallet ON wallet.account_id=due.account_id
+ WHERE wallet.funded_until>now() AND due.enabled AND due.next_check_at<=now() AND (due.lease_until IS NULL OR due.lease_until<=now())
  AND NOT EXISTS (SELECT 1 FROM monitors.monitors active WHERE active.target_key=due.target_key AND active.lease_until>now())
  AND (SELECT count(*) FROM monitors.monitors active WHERE active.account_id=due.account_id AND active.lease_until>now())<2
- ORDER BY next_check_at,id LIMIT 100`)
+ ORDER BY due.next_check_at,due.id LIMIT 100`)
 	if err != nil {
 		return nil, err
 	}
@@ -200,9 +202,11 @@ func (r *Repository) Capacity(ctx context.Context, tx pgx.Tx, owner, target stri
 	err := tx.QueryRow(ctx, `SELECT count(*),count(*) FILTER(WHERE account_id=$1),count(*) FILTER(WHERE target_key=$2) FROM monitors.monitors WHERE lease_until>now()`, owner, target).Scan(&global, &account, &host)
 	return global < 4 && account < 2 && host < 1, err
 }
-func (r *Repository) Claim(ctx context.Context, tx pgx.Tx, owner, id, runID, token string) error {
-	_, err := tx.Exec(ctx, `UPDATE monitors.monitors SET run_id=$3,attempt_token=$4,lease_until=now()+interval '20 seconds' WHERE account_id=$1 AND id=$2`, owner, id, runID, token)
-	return err
+func (r *Repository) Claim(ctx context.Context, tx pgx.Tx, owner, id, runID, token string, fundedUntil time.Time) (time.Time, error) {
+	var leaseUntil time.Time
+	err := tx.QueryRow(ctx, `UPDATE monitors.monitors SET run_id=$3,attempt_token=$4,lease_until=LEAST(clock_timestamp()+interval '20 seconds',$5::timestamptz)
+        WHERE account_id=$1 AND id=$2 AND $5::timestamptz>clock_timestamp() RETURNING lease_until`, owner, id, runID, token, fundedUntil).Scan(&leaseUntil)
+	return leaseUntil, err
 }
 func (r *Repository) StoreResult(ctx context.Context, tx pgx.Tx, m Row, eventID, runID, token, outcome string, checked time.Time, status *int, latency int64, code string, roundTrip *int64) error {
 	_, err := tx.Exec(ctx, `INSERT INTO monitors.results(id,monitor_id,account_id,run_id,attempt_token,config_version,sequence,outcome,checked_at,http_status,latency_ms,error_code,check_type,round_trip_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, eventID, m.ID, m.AccountID, runID, token, m.CheckConfigVersion, m.Sequence+1, outcome, checked, status, latency, code, m.CheckType, roundTrip)
@@ -239,13 +243,6 @@ func (r *Repository) Cleanup(ctx context.Context, tx pgx.Tx) error {
 	return err
 }
 
-func (r *Repository) Defer(ctx context.Context, tx pgx.Tx, owner, id string) error {
-	_, err := tx.Exec(ctx, `UPDATE monitors.monitors SET next_check_at=now()+interval_minutes*interval '1 minute',run_id=NULL,attempt_token=NULL,lease_until=NULL WHERE account_id=$1 AND id=$2`, owner, id)
-	return err
-}
-
-// queueProvider only invalidates enrichment when the normalized host changes.
-// All user writes already hold the monitor lock; network work happens in worker.
 func (r *Repository) queueProvider(ctx context.Context, tx pgx.Tx, id, target string) error {
 	host, _, err := net.SplitHostPort(target)
 	if err != nil {

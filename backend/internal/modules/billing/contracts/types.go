@@ -2,9 +2,10 @@ package contracts
 
 import "time"
 
-// Entitlement is the monitor capacity currently granted to an account.
+// Entitlement is the compatibility projection of monitoring access.
 // MonitorCount includes all configured monitors, including paused monitors.
 type Entitlement struct {
+	Balance             Balance        `json:"-"`
 	Quota               int            `json:"quota"`
 	ActiveUntil         *time.Time     `json:"activeUntil"`
 	Source              string         `json:"source"`

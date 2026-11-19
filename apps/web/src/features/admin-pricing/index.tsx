@@ -178,7 +178,7 @@ export function AdminPricing({
       setReason("");
       setUncertain(false);
       notify.success(
-        "Цена сохранена. Новые заказы используют её; суммы ранее созданных заказов не меняются.",
+        "Цена сохранена. Она применяется к следующим списаниям за время работы.",
       );
     } catch (cause) {
       if (!mounted.current || write.current !== controller) return;
@@ -217,7 +217,7 @@ export function AdminPricing({
       <div className="panel-heading">
         <div>
           <h2 id="admin-pricing-title">Стоимость мониторинга</h2>
-          <p>Цена за один монитор за календарный месяц. Валюта — рубли.</p>
+          <p>Цена непрерывной работы одного монитора за календарный месяц.</p>
         </div>
       </div>
       {pricing && (
@@ -261,8 +261,8 @@ export function AdminPricing({
           </label>
         </div>
         <p className="field-hint">
-          Новая цена применяется к новым заказам. Уже созданные заказы и
-          оплаченные периоды сохраняют свои суммы.
+          Новая цена действует для будущего времени работы. Прошлые списания
+          сохраняются.
         </p>
         {unchanged && <p className="small muted">Цена не изменилась.</p>}
         {!canWrite && (

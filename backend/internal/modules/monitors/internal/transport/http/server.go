@@ -57,8 +57,6 @@ func failure(w http.ResponseWriter, err error) {
 		fail(w, 409, "version_conflict")
 	case errors.Is(err, service.ErrEntitlement):
 		fail(w, 403, "entitlement_required")
-	case errors.Is(err, service.ErrQuota):
-		fail(w, 403, "quota_exceeded")
 	default:
 		fail(w, 503, "temporarily_unavailable")
 	}
@@ -155,7 +153,9 @@ func listOptions(raw string) (contracts.ListOptions, bool, error) {
 			}
 		case "status":
 			switch items[0] {
-			case "all", "UP", "DOWN", "UNKNOWN", "PAUSED", "SUBSCRIPTION_REQUIRED", "problems":
+			case "SUBSCRIPTION_REQUIRED":
+				options.Status = "BALANCE_REQUIRED"
+			case "all", "UP", "DOWN", "UNKNOWN", "PAUSED", "BALANCE_REQUIRED", "problems":
 				options.Status = items[0]
 			default:
 				return options, true, service.ErrInvalid

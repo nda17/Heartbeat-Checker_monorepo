@@ -94,15 +94,24 @@ function AppStoreIcon({ store }: { store: AppStore }) {
     </svg>
   );
 }
+export function RuStoreLink() {
+  return (
+    <a
+      className="store-link"
+      href="https://www.rustore.ru/catalog/app/ru.heartbeatchecker.app"
+    >
+      <AppStoreIcon store="rustore" />
+      <span>Установить из RuStore</span>
+    </a>
+  );
+}
 export function AppStoreSoon({
   store,
-  label = store === "rustore"
-    ? "Установить из RuStore"
-    : store === "google-play"
-      ? "Установить из Google Play"
-      : "Установить из AppGallery",
+  label = store === "google-play"
+    ? "Установить из Google Play"
+    : "Установить из AppGallery",
 }: {
-  store: AppStore;
+  store: Exclude<AppStore, "rustore">;
   label?: string;
 }) {
   return (
@@ -245,7 +254,7 @@ export function PublicFooter({
               <span>APK скоро</span>
             </span>
           )}
-          <AppStoreSoon store="rustore" />
+          <RuStoreLink />
           <AppStoreSoon store="google-play" />
           <AppStoreSoon store="appgallery" />
         </nav>
@@ -353,13 +362,14 @@ export function Loading({ text = "Загрузка…" }: { text?: string }) {
 }
 export function dateTime(
   value: string | null | undefined,
-  { year = false }: { year?: boolean } = {},
+  { year = false, timeZone }: { year?: boolean; timeZone?: string } = {},
 ) {
   return value
     ? new Intl.DateTimeFormat("ru", {
         day: "2-digit",
         month: "short",
         year: year ? "numeric" : undefined,
+        timeZone,
         hour: "2-digit",
         minute: "2-digit",
       }).format(new Date(value))

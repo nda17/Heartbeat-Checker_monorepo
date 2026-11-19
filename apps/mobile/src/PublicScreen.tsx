@@ -158,7 +158,9 @@ function PublicPrice({ onRegister }: { onRegister: () => void }) {
           <Text style={[styles.price, { color: c.text }]}>
             {money(pricing.pricePerMonitorMinor)}
           </Text>
-          <Label muted>за один монитор за календарный месяц</Label>
+          <Label muted>
+            за непрерывную работу одного монитора весь календарный месяц
+          </Label>
           <DetailRow
             label="Главная + вход + API · 3 монитора"
             value={`${money(3 * pricing.pricePerMonitorMinor)} / мес.`}
@@ -171,7 +173,7 @@ function PublicPrice({ onRegister }: { onRegister: () => void }) {
             {stale
               ? "Последняя полученная цена. Актуальность пока не подтверждена."
               : "Текущая публичная цена."}{" "}
-            Итоговая сумма проверяется при оформлении заказа.
+            Сумму пополнения вы выбираете сами.
           </Label>
           {stale ? (
             <>
@@ -213,10 +215,10 @@ function PublicPrice({ onRegister }: { onRegister: () => void }) {
         </>
       )}
       <Label>
-        Покупайте отдельные пакеты нужного размера. У каждого свой срок,
-        действующие квоты складываются. Продление оформляется вручную.
+        Пополняйте баланс на любую доступную сумму. Стоимость работы
+        рассчитывается почасово по фактическому времени работы мониторов.
       </Label>
-      <Notice message="Без автоматических списаний и пробного периода. Окончательная сумма в рублях видна до подтверждения оплаты." />
+      <Notice message="Без автоматических списаний с карты и пробного периода. Сумму пополнения видно до подтверждения оплаты." />
       <Button
         label="Создать аккаунт"
         onPress={onRegister}
@@ -414,16 +416,16 @@ function Demo() {
           >
             <GlitchAccent active={down > 0} style={styles.dailyBar}>
               <View
-                style={[
-                  StyleSheet.absoluteFill,
-                  { backgroundColor: c.accent },
-                ]}
+                style={[StyleSheet.absoluteFill, { backgroundColor: c.accent }]}
               >
                 {down > 0 ? (
                   <View style={{ flex: down, backgroundColor: c.danger }} />
                 ) : null}
                 <View
-                  style={{ flex: checksPerDay - down, backgroundColor: c.accent }}
+                  style={{
+                    flex: checksPerDay - down,
+                    backgroundColor: c.accent,
+                  }}
                 />
               </View>
             </GlitchAccent>
@@ -441,9 +443,7 @@ function Demo() {
           </View>
         ))}
       </Animated.View>
-      <Label muted>
-        Зелёный — успешные проверки, красный — неудачные.
-      </Label>
+      <Label muted>Зелёный — успешные проверки, красный — неудачные.</Label>
       {failed > 0 ? (
         <Text
           style={[styles.small, { color: c.dangerText, fontWeight: "600" }]}
@@ -592,7 +592,7 @@ export function PublicScreen({
             [
               "01",
               "Настройте цель",
-              "Укажите адрес, протокол, интервал и часовой пояс. Для запуска нужна действующая квота.",
+              "Укажите адрес, протокол, интервал и часовой пояс. Для выполнения проверок нужен положительный баланс.",
             ],
             [
               "02",

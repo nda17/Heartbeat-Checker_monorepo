@@ -23,6 +23,15 @@ const toastMock = {
 };
 const qrcode = requireWeb("qrcode.react");
 const monitorHelpers = loadComponent("../src/entities/monitor/index.tsx", {});
+const billingHelpers = loadComponent(
+  "../src/entities/billing/index.ts",
+  {},
+  {
+    window: { dispatchEvent() {} },
+    Event,
+  },
+);
+const zeroBalance = { availableMinor: 0, positiveBelowCent: false };
 
 function loadComponent(relativePath, aliases, runtime = {}) {
   const source = fs.readFileSync(
@@ -44,6 +53,7 @@ function loadComponent(relativePath, aliases, runtime = {}) {
     exports,
     require(id) {
       if (Object.hasOwn(aliases, id)) return aliases[id];
+      if (id === "@/entities/billing") return billingHelpers;
       if (id === "@/shared/notifications") return toastMock;
       if (id === "@/features/admin-pricing")
         return { AdminPricing: () => null };
@@ -63,6 +73,7 @@ function loadComponent(relativePath, aliases, runtime = {}) {
     window: globalThis.window,
     document: globalThis.document,
     FormData: globalThis.FormData,
+    crypto: globalThis.crypto,
     ...runtime,
   });
   return fixtureModule.exports;
@@ -202,6 +213,7 @@ function sharedAliases(api, extra = {}) {
         }
       },
       errorMessage: (error) => error?.message ?? "Не удалось выполнить запрос.",
+      boundedRequest: (controller, request) => request(controller.signal),
     },
     "@/shared/ui": uiMocks(React),
     ...extra,
@@ -257,7 +269,7 @@ function adminPageHarness({
     if (path.startsWith("/admin/accounts?"))
       return { items: [account], nextCursor: null };
     if (path === `/admin/accounts/${account.id}`)
-      return { account, entitlement: null, sessionsCount: 1 };
+      return { account, balance: zeroBalance, sessionsCount: 1 };
     if (path === `/admin/accounts/${account.id}/monitors`)
       return { monitors, nextCursor: null };
     if (path.startsWith("/admin/audit?"))
@@ -369,6 +381,7 @@ test("Android dev APK is public-page absent and appears only in the verified adm
       Brand: () => null,
       PublicFooter: () => null,
       Icon: () => null,
+      RuStoreLink: () => null,
     },
     "@/features/theme-toggle": { ThemeToggle: () => null },
     "@/shared/seo": {
@@ -1315,19 +1328,11 @@ test("MonitorsPage preserves a committed monitor when its refresh fails", async 
           down: 0,
           unknown: 0,
           paused: 0,
-          subscriptionRequired: 0,
+          balanceRequired: 0,
         },
       };
     }
-    if (path === "/entitlement")
-      return {
-        entitlement: {
-          quota: 1,
-          monitorCount: 0,
-          source: "admin_grant",
-          activeUntil: "2099-01-01T00:00:00Z",
-        },
-      };
+    if (path === "/billing/balance") return zeroBalance;
     if (path === "/monitors" && options.method === "POST") return {};
     throw new Error(`Unexpected API call: ${path}`);
   };
@@ -1366,10 +1371,8 @@ test("MonitorsPage preserves a committed monitor when its refresh fails", async 
       useRouter: () => router,
       useSearchParams: () => new URLSearchParams(),
     },
-    "next/link": {
-      default: ({ href, children, ...props }) =>
-        React.createElement("a", { href, ...props }, children),
-    },
+    "next/link": ({ href, children, ...props }) =>
+      React.createElement("a", { href, ...props }, children),
     "@/entities/session": { useSession: () => session },
     "@/entities/monitor": {
       ...monitorHelpers,
@@ -1635,7 +1638,7 @@ test("notification toasts use timed IDs, dismiss controls, and follow the open n
   }
 });
 
-test("invalid entitlement dates are shown inline without issuing a grant", async (t) => {
+test("admin balance credit requires a valid amount and reason", async (t) => {
   const account = {
     id: "target-1",
     name: "Target account",
@@ -1650,103 +1653,75 @@ test("invalid entitlement dates are shown inline without issuing a grant", async
   t.after(() => harness.unmount());
   await fixture.render();
   await selectAdminAccount(harness, account.name);
-  const quotaTab = [
+  const tab = [
     ...harness.host.querySelectorAll(".admin-detail-nav button"),
-  ].find((button) => button.textContent === "Квота");
-  assert.ok(quotaTab);
-  await act(async () => quotaTab.click());
+  ].find((button) => button.textContent === "Баланс");
+  await act(async () => tab.click());
   const form = [...harness.host.querySelectorAll("form")].find((item) =>
-    item.elements.namedItem("validUntil"),
+    item.elements.namedItem("amount"),
   );
-  assert.ok(form);
-  fill(form, "validUntil", "");
-  fill(form, "reason", "test invalid date");
+  fill(form, "amount", "0,001");
+  fill(form, "reason", "invalid amount");
   await submit(form);
-
-  assert.match(
-    harness.host.querySelector('[role="alert"]')?.textContent ?? "",
-    /корректную дату.*будущем/i,
-  );
+  assert.match(harness.host.textContent, /Укажите сумму от 0,01/);
   assert.equal(
-    calls.some((call) => call.method === "PUT"),
+    calls.some(({ path }) => path.endsWith("/balance/credits")),
     false,
-    "invalid date must not reach the entitlement API",
   );
 });
 
-test("admin quota editor uses admin values and submits the aggregate entitlement version", async (t) => {
+test("verified admin can credit their own balance and retry with the same key", async (t) => {
   const account = {
-    id: "target-1",
-    name: "Target account",
-    email: "target@example.test",
-    role: "user",
+    id: "admin-actor",
+    name: "Admin",
+    email: "admin@example.test",
+    role: "admin",
     status: "active",
     version: 1,
     createdAt: "2026-01-01T00:00:00Z",
   };
-  let saved;
-  const entitlement = {
-    quota: 8,
-    activeUntil: "2099-03-01T00:00:00Z",
-    source: "combined",
-    monitorCount: 9,
-    version: 8,
-    admin: {
-      quota: 3,
-      activeUntil: "2099-02-01T00:00:00Z",
-      version: 3,
-    },
-    paid: {
-      quota: 5,
-      activeUntil: "2099-03-01T00:00:00Z",
-      source: "yookassa",
-      version: 5,
-    },
-  };
+  let balance = zeroBalance;
+  const writes = [];
   const fixture = adminPageHarness({
     account,
     apiHandler: (path, options) => {
       if (path === `/admin/accounts/${account.id}`)
-        return { account, entitlement, sessionsCount: 1 };
-      if (
-        path === `/admin/accounts/${account.id}/entitlement` &&
-        options.method === "PUT"
-      ) {
-        saved = options.body;
-        return { entitlement };
+        return { account, balance, sessionsCount: 1 };
+      if (path === `/admin/accounts/${account.id}/balance/credits`) {
+        writes.push(options);
+        balance = { availableMinor: 2517, positiveBelowCent: false };
+        if (writes.length === 1) throw new Error("Response lost after credit");
+        return { balance };
       }
-      return undefined;
     },
   });
   const { harness } = fixture;
   t.after(() => harness.unmount());
   await fixture.render();
   await selectAdminAccount(harness, account.name);
-  const quotaTab = [
+  const tab = [
     ...harness.host.querySelectorAll(".admin-detail-nav button"),
-  ].find((button) => button.textContent === "Квота");
-  assert.ok(quotaTab);
-  await act(async () => quotaTab.click());
-
+  ].find((button) => button.textContent === "Баланс");
+  await act(async () => tab.click());
   const form = [...harness.host.querySelectorAll("form")].find((item) =>
-    item.elements.namedItem("validUntil"),
+    item.elements.namedItem("amount"),
   );
-  assert.ok(form);
-  assert.equal(form.elements.namedItem("quota").value, "3");
-  assert.equal(
-    Date.parse(form.elements.namedItem("validUntil").value),
-    Date.parse(entitlement.admin.activeUntil),
-  );
-  fill(form, "reason", "approved admin-only change");
+  assert.match(harness.host.textContent, /Доступно 0\s*₽/);
+  fill(form, "amount", "25,17");
+  fill(form, "reason", "approved credit");
+  await submit(form, true);
+  assert.equal(writes.length, 1);
+  assert.match(form.textContent, /Повторить начисление/);
   await submit(form);
-
-  assert.equal(saved?.version, 8, "admin write uses aggregate CAS version");
-  assert.equal(
-    saved?.quota,
-    3,
-    "admin write uses only the admin component size",
-  );
-  assert.equal(saved?.reason, "approved admin-only change");
+  assert.equal(writes.length, 2);
+  assert.equal(writes[0].method, "POST");
+  assert.equal(writes[0].authenticated, true);
+  assert.equal(writes[0].body.amountMinor, 2517);
+  assert.equal(writes[0].body.reason, "approved credit");
+  assert.match(writes[0].body.idempotencyKey, /^[0-9a-f-]{36}$/i);
+  assert.equal(JSON.stringify(writes[0].body), JSON.stringify(writes[1].body));
+  assert.match(harness.host.textContent, /Доступно 25,17\s*₽/);
+  assert.doesNotMatch(harness.host.textContent, /Повторить начисление/);
 });
 
 test("deleting an admin monitor keeps the operator in the admin page", async (t) => {

@@ -26,8 +26,7 @@ var (
 	ErrInvalid     = errors.New("invalid request")
 	ErrNotFound    = errors.New("monitor not found")
 	ErrConflict    = errors.New("monitor version conflict")
-	ErrEntitlement = errors.New("entitlement required")
-	ErrQuota       = errors.New("monitor quota exceeded")
+	ErrEntitlement = errors.New("account monitoring is unavailable")
 )
 
 type Service struct {
@@ -152,11 +151,12 @@ func (s *Service) begin(ctx context.Context, owner string) (pgx.Tx, billing.Enti
 	}
 	if !active {
 		e.Quota = 0
+		e.Balance.AccountActive = false
 	}
 	return tx, e, nil
 }
 func view(m postgres.Row, e billing.Entitlement, rank int) contracts.Monitor {
-	return viewAt(m, e, rank, time.Now())
+	return viewAt(m, e, rank, e.Balance.AsOf)
 }
 func viewAt(m postgres.Row, e billing.Entitlement, rank int, asOf time.Time) contracts.Monitor {
 	v := m.Monitor
@@ -165,7 +165,7 @@ func viewAt(m postgres.Row, e billing.Entitlement, rank int, asOf time.Time) con
 		v.State = "PAUSED"
 		v.NextCheckAt = nil
 	case e.Quota == 0 || rank > e.Quota:
-		v.State = "SUBSCRIPTION_REQUIRED"
+		v.State = "BALANCE_REQUIRED"
 		v.NextCheckAt = nil
 	case m.LastCheckedAt == nil || asOf.Sub(*m.LastCheckedAt) > time.Duration(2*m.IntervalMinutes)*time.Minute+30*time.Second:
 		v.State = "UNKNOWN"
@@ -209,7 +209,7 @@ func (s *Service) ListPage(ctx context.Context, owner string, options contracts.
 		options.Status = "all"
 	}
 	switch options.Status {
-	case "all", "UP", "DOWN", "UNKNOWN", "PAUSED", "SUBSCRIPTION_REQUIRED", "problems":
+	case "all", "UP", "DOWN", "UNKNOWN", "PAUSED", "BALANCE_REQUIRED", "problems":
 	default:
 		return contracts.MonitorPage{}, ErrInvalid
 	}
@@ -218,7 +218,7 @@ func (s *Service) ListPage(ctx context.Context, owner string, options contracts.
 		return contracts.MonitorPage{}, err
 	}
 	defer tx.Rollback(ctx)
-	asOf := time.Now().UTC().Truncate(time.Microsecond)
+	asOf := e.Balance.AsOf
 	summary, total, err := s.repo.PageSummary(ctx, tx, owner, options, e.Quota, asOf)
 	if err != nil {
 		return contracts.MonitorPage{}, err
@@ -311,27 +311,22 @@ func (s *Service) Create(ctx context.Context, owner string, in contracts.Monitor
 }
 
 func (s *Service) CreateTx(ctx context.Context, tx pgx.Tx, owner string, e billing.Entitlement, in contracts.MonitorInput) (contracts.Monitor, error) {
+	if !e.Balance.AccountActive {
+		return contracts.Monitor{}, ErrEntitlement
+	}
 	target, err := validate(&in)
 	if err != nil {
 		return contracts.Monitor{}, err
-	}
-	if e.Quota == 0 {
-		return contracts.Monitor{}, ErrEntitlement
-	}
-	if in.Enabled {
-		enabled, err := s.repo.CountEnabled(ctx, tx, owner)
-		if err != nil {
-			return contracts.Monitor{}, err
-		}
-		if enabled >= e.Quota {
-			return contracts.Monitor{}, ErrQuota
-		}
 	}
 	id, err := outbox.ID()
 	if err != nil {
 		return contracts.Monitor{}, err
 	}
 	if err = s.repo.Insert(ctx, tx, owner, id, target, in); err != nil {
+		return contracts.Monitor{}, err
+	}
+	e, err = s.billing.Lock(ctx, tx, owner)
+	if err != nil {
 		return contracts.Monitor{}, err
 	}
 	m, err := s.repo.Get(ctx, tx, owner, id, false)
@@ -423,22 +418,19 @@ func (s *Service) PatchTx(ctx context.Context, tx pgx.Tx, owner, id string, e bi
 	if err != nil {
 		return contracts.Monitor{}, err
 	}
-	if in.Enabled && !m.Enabled {
-		if e.Quota == 0 {
-			return contracts.Monitor{}, ErrEntitlement
-		}
-		enabled, err := s.repo.CountEnabled(ctx, tx, owner)
-		if err != nil {
-			return contracts.Monitor{}, err
-		}
-		if enabled >= e.Quota {
-			return contracts.Monitor{}, ErrQuota
-		}
+	if in.Enabled && !m.Enabled && !e.Balance.AccountActive {
+		return contracts.Monitor{}, ErrEntitlement
 	}
 	checkChanged := in.CheckType != m.CheckType || in.Host != m.Host || in.Port != m.Port || in.URL != m.URL || in.Method != m.Method || in.ExpectedStatus != m.ExpectedStatus || in.BodyContains != m.BodyContains || *in.IntervalMinutes != m.IntervalMinutes || *in.FailureThreshold != m.FailureThreshold
 	resetCheck := checkChanged || in.Enabled != m.Enabled
 	if err = s.repo.Update(ctx, tx, owner, id, target, in, resetCheck); err != nil {
 		return contracts.Monitor{}, err
+	}
+	if in.Enabled != m.Enabled {
+		e, err = s.billing.Lock(ctx, tx, owner)
+		if err != nil {
+			return contracts.Monitor{}, err
+		}
 	}
 	if resetCheck {
 		reason := ""
@@ -488,7 +480,8 @@ func (s *Service) DeleteTx(ctx context.Context, tx pgx.Tx, owner, id string) err
 	if err = s.repo.Delete(ctx, tx, owner, id); err != nil {
 		return err
 	}
-	return nil
+	_, err = s.billing.Lock(ctx, tx, owner)
+	return err
 }
 func (s *Service) Results(ctx context.Context, owner, id string, limit int, before time.Time) ([]contracts.Result, error) {
 	if _, err := s.Get(ctx, owner, id); err != nil {
@@ -578,8 +571,8 @@ func (s *Service) claimOne(ctx context.Context, tx pgx.Tx, c postgres.Candidate)
 	if err != nil {
 		return nil, err
 	}
-	if e.Quota == 0 || rank > e.Quota {
-		return nil, s.repo.Defer(ctx, tx, c.AccountID, c.ID)
+	if e.Quota == 0 || rank > e.Quota || e.Balance.FundedUntil == nil || !e.Balance.FundedUntil.After(now) {
+		return nil, nil
 	}
 	capacity, err := s.repo.Capacity(ctx, tx, c.AccountID, m.TargetKey)
 	if err != nil || !capacity {
@@ -593,10 +586,14 @@ func (s *Service) claimOne(ctx context.Context, tx pgx.Tx, c postgres.Candidate)
 	if err != nil {
 		return nil, err
 	}
-	if err = s.repo.Claim(ctx, tx, c.AccountID, c.ID, run, token); err != nil {
+	leaseUntil, err := s.repo.Claim(ctx, tx, c.AccountID, c.ID, run, token, *e.Balance.FundedUntil)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, err
 	}
-	return &contracts.Attempt{AccountID: c.AccountID, MonitorID: c.ID, Request: probe.Request{RunID: run, AttemptToken: token, ConfigVersion: m.CheckConfigVersion, CheckType: m.CheckType, Host: m.Host, Port: m.Port, URL: m.URL, Method: m.Method, ExpectedStatus: m.ExpectedStatus, BodyContains: m.BodyContains}}, nil
+	return &contracts.Attempt{AccountID: c.AccountID, MonitorID: c.ID, LeaseUntil: leaseUntil, BillingEpoch: e.Balance.ActivityEpoch, Request: probe.Request{RunID: run, AttemptToken: token, ConfigVersion: m.CheckConfigVersion, CheckType: m.CheckType, Host: m.Host, Port: m.Port, URL: m.URL, Method: m.Method, ExpectedStatus: m.ExpectedStatus, BodyContains: m.BodyContains}}, nil
 }
 func (s *Service) Complete(ctx context.Context, a contracts.Attempt, r probe.Result) (bool, error) {
 	if !probe.ValidResult(a.Request, r) || r.RunID != a.Request.RunID || r.AttemptToken != a.Request.AttemptToken || r.ConfigVersion != a.Request.ConfigVersion || r.LatencyMS < 0 || r.LatencyMS > 12000 || (r.Outcome != "UP" && r.Outcome != "DOWN" && r.Outcome != "UNKNOWN") || r.CheckedAt.IsZero() || r.CheckedAt.After(time.Now().Add(5*time.Second)) || r.CheckedAt.Before(time.Now().Add(-30*time.Second)) || len(r.ErrorCode) > 100 || (r.HTTPStatus != 0 && (r.HTTPStatus < 100 || r.HTTPStatus > 599)) {
@@ -614,15 +611,15 @@ func (s *Service) Complete(ctx context.Context, a contracts.Attempt, r probe.Res
 	if err != nil {
 		return false, err
 	}
-	if !m.Enabled || m.CheckType != probe.EffectiveCheckType(a.Request.CheckType) || m.CheckConfigVersion != a.Request.ConfigVersion || m.RunID == nil || *m.RunID != a.Request.RunID || m.AttemptToken == nil || *m.AttemptToken != a.Request.AttemptToken || m.LeaseUntil == nil || !m.LeaseUntil.After(time.Now()) {
-		return false, nil
-	}
-	rank, err := s.repo.Rank(ctx, tx, a.AccountID, a.MonitorID)
-	if err != nil {
+	var now time.Time
+	if err = tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
 		return false, err
 	}
-	if e.Quota == 0 || rank > e.Quota {
-		return false, nil
+	if !m.Enabled || m.CheckType != probe.EffectiveCheckType(a.Request.CheckType) || m.CheckConfigVersion != a.Request.ConfigVersion || m.RunID == nil || *m.RunID != a.Request.RunID || m.AttemptToken == nil || *m.AttemptToken != a.Request.AttemptToken || m.LeaseUntil == nil || !m.LeaseUntil.After(now) {
+		return false, tx.Commit(ctx)
+	}
+	if e.Quota == 0 || e.Balance.FundedUntil == nil || !e.Balance.FundedUntil.After(now) || e.Balance.ActivityEpoch != a.BillingEpoch {
+		return false, tx.Commit(ctx)
 	}
 	eventID, err := outbox.ID()
 	if err != nil {

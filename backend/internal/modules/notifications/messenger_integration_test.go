@@ -684,8 +684,8 @@ func TestMessengerGroupAndTopicLinksRequireBoundUserAndBothAdmins(t *testing.T) 
 func TestMessengerAcceptedDownAndRecoveryDeliverImmutableSnapshotsInOrder(t *testing.T) {
 	f := newWebhookFixture(t)
 	accountID, monitorID := f.addMonitor(t, "down and recovery")
-	if err := billing.New(f.pool, true).GrantLocal(context.Background(), accountID, 5, time.Now().Add(time.Hour), "messenger delivery integration"); err != nil {
-		t.Fatalf("grant isolated test entitlement: %v", err)
+	if err := billing.New(f.pool, true).CreditLocal(context.Background(), accountID, 2600, "messenger delivery integration"); err != nil {
+		t.Fatalf("fund test wallet: %v", err)
 	}
 	m := testMessenger(t, f, true)
 	destination := confirmPrivateTelegramTarget(t, f, m, accountID, 321)
@@ -766,10 +766,10 @@ func TestMessengerAcceptedDownAndRecoveryDeliverImmutableSnapshotsInOrder(t *tes
 	}
 }
 
-func TestMessengerDeliveryRanksEnabledMonitorsOnly(t *testing.T) {
+func TestMessengerDeliveryForEnabledMonitorWithOlderPausedMonitor(t *testing.T) {
 	f := newWebhookFixture(t)
 	accountID, pausedMonitorID := f.addMonitor(t, "enabled rank delivery")
-	if err := billing.New(f.pool, true).GrantLocal(context.Background(), accountID, 1, time.Now().Add(time.Hour), "one enabled slot"); err != nil {
+	if err := billing.New(f.pool, true).CreditLocal(context.Background(), accountID, 2600, "monitor delivery fixture"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.pool.Exec(context.Background(), `UPDATE monitors.monitors SET enabled=false WHERE id=$1`, pausedMonitorID); err != nil {
@@ -812,8 +812,8 @@ func TestMessengerDeliveryRanksEnabledMonitorsOnly(t *testing.T) {
 func TestMessengerDueReminderIsQueuedThenCancelledWhenDisabled(t *testing.T) {
 	f := newWebhookFixture(t)
 	accountID, monitorID := f.addMonitor(t, "reminder cancellation")
-	if err := billing.New(f.pool, true).GrantLocal(context.Background(), accountID, 5, time.Now().Add(time.Hour), "messenger reminder integration"); err != nil {
-		t.Fatalf("grant isolated test entitlement: %v", err)
+	if err := billing.New(f.pool, true).CreditLocal(context.Background(), accountID, 2600, "messenger reminder integration"); err != nil {
+		t.Fatalf("fund test wallet: %v", err)
 	}
 	m := testMessenger(t, f, true)
 	destination := confirmPrivateTelegramTarget(t, f, m, accountID, 322)
@@ -872,8 +872,8 @@ func TestMessengerReminderRearmsOnlyOnFreshDownAndSchedulesFromNow(t *testing.T)
 		t.Helper()
 		f := newWebhookFixture(t)
 		accountID, monitorID := f.addMonitor(t, "reminder rearm")
-		if err := billing.New(f.pool, true).GrantLocal(context.Background(), accountID, 5, time.Now().Add(time.Hour), "messenger reminder rearm integration"); err != nil {
-			t.Fatalf("grant isolated test entitlement: %v", err)
+		if err := billing.New(f.pool, true).CreditLocal(context.Background(), accountID, 2600, "messenger reminder rearm integration"); err != nil {
+			t.Fatalf("fund test wallet: %v", err)
 		}
 		m := testMessenger(t, f, true)
 		destination := confirmPrivateTelegramTarget(t, f, m, accountID, 326)
@@ -1014,8 +1014,8 @@ func TestMessengerReminderRearmsOnlyOnFreshDownAndSchedulesFromNow(t *testing.T)
 func TestMessengerGroupLossOfAdminDisconnectsWithoutSending(t *testing.T) {
 	f := newWebhookFixture(t)
 	accountID, monitorID := f.addMonitor(t, "lost group admin")
-	if err := billing.New(f.pool, true).GrantLocal(context.Background(), accountID, 5, time.Now().Add(time.Hour), "messenger group delivery integration"); err != nil {
-		t.Fatalf("grant isolated test entitlement: %v", err)
+	if err := billing.New(f.pool, true).CreditLocal(context.Background(), accountID, 2600, "messenger group delivery integration"); err != nil {
+		t.Fatalf("fund test wallet: %v", err)
 	}
 	m := testMessenger(t, f, true)
 	confirmPrivateTelegramTarget(t, f, m, accountID, 321)
@@ -1072,8 +1072,8 @@ func TestMessengerGroupLossOfAdminDisconnectsWithoutSending(t *testing.T) {
 func TestMessengerRouteRebindDuringGroupVerificationFencesProviderSend(t *testing.T) {
 	f := newWebhookFixture(t)
 	accountID, monitorID := f.addMonitor(t, "group route rebind")
-	if err := billing.New(f.pool, true).GrantLocal(context.Background(), accountID, 5, time.Now().Add(time.Hour), "messenger group delivery integration"); err != nil {
-		t.Fatalf("grant isolated test entitlement: %v", err)
+	if err := billing.New(f.pool, true).CreditLocal(context.Background(), accountID, 2600, "messenger group delivery integration"); err != nil {
+		t.Fatalf("fund test wallet: %v", err)
 	}
 	m := testMessenger(t, f, true)
 	confirmPrivateTelegramTarget(t, f, m, accountID, 321)
@@ -1137,8 +1137,8 @@ func TestMessengerRouteRebindDuringGroupVerificationFencesProviderSend(t *testin
 func TestMessengerGroupVerificationAndSendShareOneAttemptDeadline(t *testing.T) {
 	f := newWebhookFixture(t)
 	accountID, monitorID := f.addMonitor(t, "shared send deadline")
-	if err := billing.New(f.pool, true).GrantLocal(context.Background(), accountID, 5, time.Now().Add(time.Hour), "messenger deadline integration"); err != nil {
-		t.Fatalf("grant isolated test entitlement: %v", err)
+	if err := billing.New(f.pool, true).CreditLocal(context.Background(), accountID, 2600, "messenger deadline integration"); err != nil {
+		t.Fatalf("fund test wallet: %v", err)
 	}
 	m := testMessenger(t, f, true)
 	confirmPrivateTelegramTarget(t, f, m, accountID, 321)
@@ -1198,8 +1198,8 @@ func TestMessengerGroupVerificationAndSendShareOneAttemptDeadline(t *testing.T) 
 func TestMessengerCompletionAndReminderSettingsUpdateDoNotDeadlock(t *testing.T) {
 	f := newWebhookFixture(t)
 	accountID, monitorID := f.addMonitor(t, "concurrent completion and settings")
-	if err := billing.New(f.pool, true).GrantLocal(context.Background(), accountID, 5, time.Now().Add(time.Hour), "messenger concurrency integration"); err != nil {
-		t.Fatalf("grant isolated test entitlement: %v", err)
+	if err := billing.New(f.pool, true).CreditLocal(context.Background(), accountID, 2600, "messenger concurrency integration"); err != nil {
+		t.Fatalf("fund test wallet: %v", err)
 	}
 	m := testMessenger(t, f, true)
 	destination := confirmPrivateTelegramTarget(t, f, m, accountID, 324)

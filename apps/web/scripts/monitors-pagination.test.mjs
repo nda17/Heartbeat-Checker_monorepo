@@ -21,6 +21,14 @@ const toastMock = {
   },
 };
 const monitorHelpers = loadComponent("../src/entities/monitor/index.tsx", {});
+const balanceHelpers = loadComponent(
+  "../src/entities/billing/index.ts",
+  {},
+  {
+    window: { dispatchEvent() {} },
+    Event,
+  },
+);
 const safeAppReturnTo = loadComponent(
   "../src/shared/api/index.ts",
   {},
@@ -52,6 +60,7 @@ function loadComponent(relativePath, aliases, runtime = {}) {
     exports: fixtureModule.exports,
     require(id) {
       if (Object.hasOwn(aliases, id)) return aliases[id];
+      if (id === "@/entities/billing") return balanceHelpers;
       if (id === "@/shared/notifications") return toastMock;
       return requireWeb(id);
     },
@@ -233,7 +242,7 @@ function page(
       down: 0,
       unknown: 0,
       paused: 0,
-      subscriptionRequired: 0,
+      balanceRequired: 0,
     },
   };
 }
@@ -353,20 +362,11 @@ async function fillSearch(harness, value) {
   });
 }
 
-function entitlement() {
-  return {
-    entitlement: {
-      quota: 25,
-      monitorCount: 2,
-      enabledMonitorCount: 2,
-      activeMonitorCount: 2,
-      source: "admin_grant",
-      activeUntil: "2099-01-01T00:00:00Z",
-    },
-  };
+function balance(availableMinor = 10000) {
+  return { availableMinor, positiveBelowCent: false, enabledMonitors: 2 };
 }
 
-test("a paused saved monitor can use a free enabled slot when saved count exceeds quota", async (t) => {
+test("a paused saved monitor can be enabled at zero balance", async (t) => {
   const harness = createHarness();
   t.after(() => harness.unmount());
   const paused = {
@@ -383,24 +383,7 @@ test("a paused saved monitor can use a free enabled slot when saved count exceed
         monitors: [paused],
         summary: { ...page([]).summary, total: 10 },
       };
-    if (path === "/entitlement")
-      return {
-        entitlement: {
-          quota: 5,
-          monitorCount: 10,
-          enabledMonitorCount: 4,
-          activeMonitorCount: 4,
-          source: "combined",
-          activeUntil: "2099-01-01T00:00:00Z",
-          admin: { quota: 3, activeUntil: "2099-02-01T00:00:00Z", version: 1 },
-          paid: {
-            quota: 2,
-            activeUntil: "2099-03-01T00:00:00Z",
-            source: "yookassa",
-            version: 1,
-          },
-        },
-      };
+    if (path === "/billing/balance") return balance(0);
     if (path === `/monitors/${paused.id}` && options.method === "PATCH")
       return { monitor: { ...paused, enabled: true, version: 2 } };
     throw new Error(`unexpected API call ${path}`);
@@ -410,10 +393,8 @@ test("a paused saved monitor can use a free enabled slot when saved count exceed
 
   assert.match(
     harness.host.textContent,
-    /Сохранено мониторов: 10\. Включено: 4\./,
+    /Пополните баланс для запуска проверок/,
   );
-  assert.match(harness.host.textContent, /Доступно мониторов\s*5/);
-  assert.match(harness.host.textContent, /Активно мониторов:\s*4/);
   const enable = harness.host.querySelector(
     `button[aria-label="Включить ${paused.name}"]`,
   );
@@ -421,7 +402,7 @@ test("a paused saved monitor can use a free enabled slot when saved count exceed
   assert.equal(
     enable.disabled,
     false,
-    "a free slot is independent of saved count",
+    "the desired enabled state can be saved without funds",
   );
   await act(async () => enable.click());
   await flush();
@@ -468,7 +449,7 @@ test("monitor list sends remote search, sort and page controls and renders activ
         ],
       };
     }
-    if (path === "/entitlement") return entitlement();
+    if (path === "/billing/balance") return balance();
     throw new Error(`unexpected API call ${path}`);
   };
   const { MonitorsPage } = loadPage(api);
@@ -650,7 +631,7 @@ test("a superseded monitor-list response cannot replace the newer selection", as
         return new Promise((resolve) => (resolveOld = resolve));
       return Promise.resolve(page(["Fresh selection"]));
     }
-    if (path === "/entitlement") return Promise.resolve(entitlement());
+    if (path === "/billing/balance") return Promise.resolve(balance());
     throw new Error(`unexpected API call ${path}`);
   };
   const { MonitorsPage } = loadPage(api);
@@ -680,7 +661,7 @@ test("a deep-linked monitor outside the loaded page is fetched directly by ID", 
   const api = async (path, options = {}) => {
     calls.push({ path, options });
     if (path.startsWith("/monitors?")) return page(["Current page monitor"]);
-    if (path === "/entitlement") return entitlement();
+    if (path === "/billing/balance") return balance();
     if (path === `/monitors/${target.id}`) return { monitor: target };
     if (path === `/monitors/${target.id}/results?limit=50`)
       return { results: [] };
@@ -730,7 +711,7 @@ test("removing a deep link cancels its pending detail read and restores list act
   const api = (path, options = {}) => {
     if (path.startsWith("/monitors?"))
       return Promise.resolve(page([current.name]));
-    if (path === "/entitlement") return Promise.resolve(entitlement());
+    if (path === "/billing/balance") return Promise.resolve(balance());
     if (path === `/monitors/${monitorID}`) {
       detailSignal = options.signal;
       return new Promise((resolve) => (resolveTarget = resolve));
@@ -802,7 +783,7 @@ test("a committed monitor mutation refreshes the latest server-side selection", 
       result.monitors[0].id = "target-monitor";
       return Promise.resolve(result);
     }
-    if (path === "/entitlement") return Promise.resolve(entitlement());
+    if (path === "/billing/balance") return Promise.resolve(balance());
     if (path === "/monitors/target-monitor" && options.method === "PATCH")
       return new Promise((resolve) => (finishPatch = resolve));
     throw new Error(`unexpected API call ${path}`);

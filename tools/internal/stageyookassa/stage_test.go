@@ -141,6 +141,41 @@ func TestStageNativeTestPreservesHostedProductionAndStagesOnlyOwnerSDKProfile(t 
 	}
 }
 
+func TestStageNativeProductionChangesOnlySDKFlagsWithEmptyInput(t *testing.T) {
+	workdir, _ := yookassaFixture(t)
+	kept := "# retained configurations\nBILLING_PROVIDER=yookassa\nYOOKASSA_MODE=production\n" +
+		"YOOKASSA_PRODUCTION_SHOP_ID=654321\nYOOKASSA_PRODUCTION_SECRET_KEY='live_existing_synthetic'\n" +
+		"BILLING_TEST_ACCOUNT_IDS=" + deploydata.OwnerID + "\nYOOKASSA_TEST_SHOP_ID=123456\nYOOKASSA_TEST_SECRET_KEY='test_existing_synthetic'\n" +
+		"AUTH_MAIL_ENCRYPTION_KEY='synthetic'\nKEEP_EXISTING=literal=$HOME\n"
+	old := kept + "YOOKASSA_NATIVE_SDK_ENABLED=true\nYOOKASSA_NATIVE_SDK_MODE=test\n"
+	if err := os.WriteFile(".env", []byte(old), 0600); err != nil {
+		t.Fatal(err)
+	}
+	transport := &yookassaTransport{}
+	client := &http.Client{Transport: transport}
+	for _, payload := range []string{"\n", `{"shopId":"654321","secretKey":"live_unexpected_synthetic"}`} {
+		if err := Stage(t.Context(), workdir, "native-production", strings.NewReader(payload), client); err == nil {
+			t.Fatal("native production accepted unexpected payload")
+		}
+		if _, err := os.Lstat(".env.next"); !os.IsNotExist(err) {
+			t.Fatalf("unexpected payload created a candidate: %v", err)
+		}
+	}
+	if err := Stage(t.Context(), workdir, "native-production", strings.NewReader(""), client); err != nil {
+		t.Fatal(err)
+	}
+	if transport.request != nil {
+		t.Fatal("native production made a merchant credentials request")
+	}
+	want := "YOOKASSA_NATIVE_SDK_ENABLED=true\nYOOKASSA_NATIVE_SDK_MODE=production\n" + kept
+	if got, err := os.ReadFile(".env.next"); err != nil || string(got) != want {
+		t.Fatalf("native production candidate did not preserve the active configuration: %v", err)
+	}
+	if got, err := os.ReadFile(".env"); err != nil || string(got) != old {
+		t.Fatalf("native production staging changed active env: %v", err)
+	}
+}
+
 func TestStageRejectsMalformedOversizedLiveKeysAndInvalidProviderResponse(t *testing.T) {
 	tests := []struct {
 		name, mode, payload, response string

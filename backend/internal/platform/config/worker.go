@@ -6,7 +6,6 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -96,7 +95,7 @@ func LoadWorker() (WorkerConfig, error) {
 }
 
 // LocalGrantDatabase rejects sockets, remote PostgreSQL and other local databases.
-// Administrative fixtures must never silently turn into a production entitlement.
+// Administrative fixtures must never create credits in a production wallet.
 func LocalGrantDatabase(raw string) error {
 	if os.Getenv("APP_ENV") != "local" {
 		return errors.New("local-grant requires APP_ENV=local")
@@ -116,12 +115,4 @@ func localDatabase(raw string) error {
 		return errors.New("APP_ENV=local requires the project loopback PostgreSQL database")
 	}
 	return nil
-}
-
-func GrantQuota(raw string) (int, error) {
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 1 || n > 1000 {
-		return 0, errors.New("limit must be between 1 and 1000")
-	}
-	return n, nil
 }

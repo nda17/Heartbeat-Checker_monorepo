@@ -24,8 +24,7 @@ func (m *Module) Register(mux *http.ServeMux, protect func(http.Handler) http.Ha
 		"GET /api/v1/admin/accounts/{id}":                                             m.getAccount,
 		"PATCH /api/v1/admin/accounts/{id}":                                           m.patchAccount,
 		"POST /api/v1/admin/accounts/{id}/revoke-sessions":                            m.revokeSessions,
-		"PUT /api/v1/admin/accounts/{id}/entitlement":                                 m.grant,
-		"DELETE /api/v1/admin/accounts/{id}/entitlement":                              m.revokeGrant,
+		"POST /api/v1/admin/accounts/{id}/balance/credits":                            m.credit,
 		"GET /api/v1/admin/accounts/{id}/monitors":                                    m.listMonitors,
 		"POST /api/v1/admin/accounts/{id}/monitors":                                   m.createMonitor,
 		"GET /api/v1/admin/accounts/{id}/monitors/{monitorId}":                        m.getMonitor,
@@ -65,8 +64,6 @@ func fail(w http.ResponseWriter, err error) {
 		status, code = 403, "forbidden"
 	case errors.Is(err, monitors.ErrEntitlement):
 		status, code = 403, "entitlement_required"
-	case errors.Is(err, monitors.ErrQuota):
-		status, code = 403, "quota_exceeded"
 	}
 	write(w, status, map[string]string{"error": code})
 }
@@ -167,40 +164,23 @@ func (m *Module) revokeSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, 204, nil)
 }
-func (m *Module) grant(w http.ResponseWriter, r *http.Request) {
+func (m *Module) credit(w http.ResponseWriter, r *http.Request) {
 	p, ok := principal(w, r)
 	if !ok {
 		return
 	}
-	var in GrantInput
+	var in CreditInput
 	if !decode(w, r, &in) {
 		return
 	}
-	e, err := m.Grant(r.Context(), p, r.PathValue("id"), in)
+	result, err := m.Credit(r.Context(), p, r.PathValue("id"), in)
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	write(w, 200, map[string]any{"entitlement": e})
+	write(w, 200, map[string]any{"balance": result})
 }
-func (m *Module) revokeGrant(w http.ResponseWriter, r *http.Request) {
-	p, ok := principal(w, r)
-	if !ok {
-		return
-	}
-	var in struct {
-		Version int64  `json:"version"`
-		Reason  string `json:"reason"`
-	}
-	if !decode(w, r, &in) {
-		return
-	}
-	if err := m.RevokeGrant(r.Context(), p, r.PathValue("id"), in.Version, in.Reason); err != nil {
-		fail(w, err)
-		return
-	}
-	write(w, 204, nil)
-}
+
 func (m *Module) listMonitors(w http.ResponseWriter, r *http.Request) {
 	items, err := m.ListMonitors(r.Context(), r.PathValue("id"))
 	if err != nil {
