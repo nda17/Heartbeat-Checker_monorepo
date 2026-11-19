@@ -459,8 +459,7 @@ func TestNativePushTestUsesTheSharedTwoDeliveryWorkerCap(t *testing.T) {
 	f := newPushIntegrationFixture(t)
 	makeOwner := func(label, ip, token string) (pushTestActor, PushInstallationStatus) {
 		actor := f.addActor(t, label, false)
-		if err := billing.New(f.webhook.pool, true).GrantLocal(context.Background(), actor.accountID, 5,
-			time.Now().Add(24*time.Hour), "shared push worker cap test"); err != nil {
+		if err := billing.New(f.webhook.pool, true).CreditLocal(context.Background(), actor.accountID, 2600, "shared push worker cap test"); err != nil {
 			t.Fatalf("grant isolated delivery quota: %v", err)
 		}
 		pair, verifier := f.createPairing(t, "", ip)

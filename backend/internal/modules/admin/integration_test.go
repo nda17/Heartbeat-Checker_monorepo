@@ -510,26 +510,30 @@ func TestAdminMFAFenceVersionedMutationsAndAuditAtomicity(t *testing.T) {
 		t.Fatalf("uppercase UUID changed actor role=%q err=%v", unchangedRole, err)
 	}
 
-	validUntil := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
-	grant := f.request(t, admin, http.MethodPut, "/api/v1/admin/accounts/"+target.id+"/entitlement", map[string]any{"version": 0, "quota": 10, "validUntil": validUntil, "reason": "manual support grant"})
-	if grant.Code != http.StatusOK {
-		t.Fatalf("admin grant status=%d body=%s", grant.Code, grant.Body.String())
+	credit := func(id, key, reason string, amount int) *httptest.ResponseRecorder {
+		return f.request(t, admin, http.MethodPost, "/api/v1/admin/accounts/"+id+"/balance/credits",
+			map[string]any{"amountMinor": amount, "reason": reason, "idempotencyKey": key})
 	}
-	var grantResponse struct {
-		Entitlement struct {
-			Quota   int    `json:"quota"`
-			Source  string `json:"source"`
-			Version int64  `json:"version"`
-		} `json:"entitlement"`
+	const key = "f2370000-0000-4000-8000-000000000001"
+	for _, id := range []string{target.id, admin.id} {
+		for i := 0; i < 2; i++ {
+			res := credit(id, key, "manual support credit", 1200)
+			var body struct{ Balance struct{ AvailableMinor int } }
+			if res.Code != http.StatusOK || json.Unmarshal(res.Body.Bytes(), &body) != nil || body.Balance.AvailableMinor != 1200 {
+				t.Fatalf("credit or replay: %d %s", res.Code, res.Body.String())
+			}
+		}
+		var entries, audits int
+		if err := f.pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM billing.wallet_ledger WHERE account_id=$1 AND kind='admin_credit'),
+			(SELECT count(*) FROM admin.audit_events WHERE target_account_id=$1 AND action='billing.balance_credited')`, id).Scan(&entries, &audits); err != nil || entries != 1 || audits != 1 {
+			t.Fatalf("entries=%d audits=%d err=%v", entries, audits, err)
+		}
 	}
-	if err := json.Unmarshal(grant.Body.Bytes(), &grantResponse); err != nil || grantResponse.Entitlement.Quota != 10 || grantResponse.Entitlement.Source != "admin_grant" || grantResponse.Entitlement.Version != 1 {
-		t.Fatalf("grant=%+v err=%v", grantResponse, err)
-	}
-	if got := f.request(t, admin, http.MethodPut, "/api/v1/admin/accounts/"+target.id+"/entitlement", map[string]any{"version": 0, "quota": 11, "validUntil": validUntil, "reason": "stale quota editor"}); got.Code != http.StatusConflict {
-		t.Fatalf("stale entitlement edit status=%d body=%s", got.Code, got.Body.String())
+	if res := credit(target.id, key, "manual support credit", 1201); res.Code != http.StatusConflict {
+		t.Fatalf("changed replay returned %d", res.Code)
 	}
 	audit := f.request(t, admin, http.MethodGet, "/api/v1/admin/audit?accountId="+target.id, nil)
-	if audit.Code != http.StatusOK || !strings.Contains(audit.Body.String(), "entitlement.granted") || !strings.Contains(audit.Body.String(), "account.updated") {
+	if audit.Code != http.StatusOK || !strings.Contains(audit.Body.String(), "billing.balance_credited") || !strings.Contains(audit.Body.String(), "account.updated") {
 		t.Fatalf("audit did not record successful administration status=%d body=%s", audit.Code, audit.Body.String())
 	}
 	// Exercise the exact production MFA audit writer against PostgreSQL and
@@ -567,21 +571,21 @@ func TestAdminMFAFenceVersionedMutationsAndAuditAtomicity(t *testing.T) {
 	}
 
 	if _, err := f.pool.Exec(context.Background(), `CREATE FUNCTION public.reject_admin_test_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
-		IF NEW.action='entitlement.granted' THEN RAISE EXCEPTION 'synthetic audit failure'; END IF; RETURN NEW; END $$`); err != nil {
+		IF NEW.action='billing.balance_credited' THEN RAISE EXCEPTION 'synthetic audit failure'; END IF; RETURN NEW; END $$`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.pool.Exec(context.Background(), `CREATE TRIGGER reject_admin_test_audit BEFORE INSERT ON admin.audit_events FOR EACH ROW EXECUTE FUNCTION public.reject_admin_test_audit()`); err != nil {
 		t.Fatal(err)
 	}
-	failedGrant := f.request(t, admin, http.MethodPut, "/api/v1/admin/accounts/"+rollback.id+"/entitlement", map[string]any{"version": 0, "quota": 5, "validUntil": validUntil, "reason": "must roll back with audit"})
+	failedGrant := credit(rollback.id, key, "must roll back with audit", 100)
 	if failedGrant.Code < 500 {
 		t.Fatalf("audit trigger response status=%d body=%s, want 5xx", failedGrant.Code, failedGrant.Body.String())
 	}
 	var entitlementRows, auditRows int
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.admin_grants WHERE account_id=$1`, rollback.id).Scan(&entitlementRows); err != nil {
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.wallet_ledger WHERE account_id=$1`, rollback.id).Scan(&entitlementRows); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM admin.audit_events WHERE target_account_id=$1 AND action='entitlement.granted'`, rollback.id).Scan(&auditRows); err != nil {
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM admin.audit_events WHERE target_account_id=$1 AND action='billing.balance_credited'`, rollback.id).Scan(&auditRows); err != nil {
 		t.Fatal(err)
 	}
 	if entitlementRows != 0 || auditRows != 0 {

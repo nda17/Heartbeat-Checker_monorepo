@@ -21,12 +21,12 @@ type Pagination struct {
 
 // MonitorSummary contains account-wide status counts for the monitor list.
 type MonitorSummary struct {
-	Total                int `json:"total"`
-	Up                   int `json:"up"`
-	Down                 int `json:"down"`
-	Unknown              int `json:"unknown"`
-	Paused               int `json:"paused"`
-	SubscriptionRequired int `json:"subscriptionRequired"`
+	Total           int `json:"total"`
+	Up              int `json:"up"`
+	Down            int `json:"down"`
+	Unknown         int `json:"unknown"`
+	Paused          int `json:"paused"`
+	BalanceRequired int `json:"balanceRequired"`
 }
 
 // MonitorPage is the paged list response returned when list controls are used.

@@ -1,6 +1,11 @@
 "use client";
 import { notify } from "@/shared/notifications";
 import Link from "next/link";
+import {
+  Balance,
+  balanceInvalidatedEvent,
+  balanceMoney,
+} from "@/entities/billing";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -18,6 +23,10 @@ import {
 } from "@/shared/api";
 import { Brand, Loading, Notice, Icon } from "@/shared/ui";
 export function ConsoleShell({ children }: { children: React.ReactNode }) {
+  const [balance, setBalance] = useState<{
+    accountId: string;
+    value: Balance;
+  } | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [error, setError] = useState("");
   const [leaving, setLeaving] = useState(false);
@@ -29,8 +38,10 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
   const profileRequest = useRef(0);
   const profileController = useRef<AbortController | null>(null);
   const sessionTransitions = useRef(0);
+  const balanceSequence = useRef(0);
   const beginSessionTransition = useCallback(() => {
     ++sessionTransitions.current;
+    ++balanceSequence.current;
     if (sessionTransitions.current === 1) signalSessionTransition("begin");
     ++profileRequest.current;
     profileController.current?.abort();
@@ -56,12 +67,18 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
       if (request !== profileRequest.current)
         throw new DOMException("Session request superseded", "AbortError");
       setProfile(current);
+      setBalance((currentBalance) =>
+        currentBalance?.accountId === current.account.id
+          ? currentBalance
+          : null,
+      );
       setError("");
     } catch (e) {
       if (request !== profileRequest.current)
         throw new DOMException("Session request superseded", "AbortError");
       if (e instanceof ApiError && e.status === 401) {
         setProfile(null);
+        setBalance(null);
         const returnTo = safeAppReturnTo(
           window.location.pathname + window.location.search,
         );
@@ -93,7 +110,9 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
     const focused = () => void refresh().catch(() => undefined);
     const restored = (event: PageTransitionEvent) => {
       if (!event.persisted || sessionTransitions.current > 0) return;
+      ++balanceSequence.current;
       setProfile(null);
+      setBalance(null);
       setError("");
       setLeaving(false);
       void refresh().catch(() => undefined);
@@ -124,6 +143,55 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
     header.addEventListener("keydown", escape);
     return () => header.removeEventListener("keydown", escape);
   }, [menuOpen, profile?.account.id]);
+  const accountId = profile?.account.id;
+  useEffect(() => {
+    if (!accountId) return;
+    let controller: AbortController | null = null;
+    const read = () => {
+      if (document.visibilityState === "hidden" || sessionTransitions.current)
+        return;
+      controller?.abort();
+      const request = new AbortController();
+      controller = request;
+      const sequence = ++balanceSequence.current;
+      void boundedRequest(request, (signal) =>
+        api<Balance>("/billing/balance", { signal }),
+      )
+        .then((value) => {
+          if (
+            controller === request &&
+            !request.signal.aborted &&
+            sequence === balanceSequence.current &&
+            !sessionTransitions.current
+          )
+            setBalance({ accountId, value });
+        })
+        .catch(() => {
+          if (
+            controller === request &&
+            sequence === balanceSequence.current &&
+            !sessionTransitions.current
+          )
+            setBalance((current) =>
+              current?.accountId === accountId ? null : current,
+            );
+        });
+    };
+    read();
+    const timer = window.setInterval(read, 30_000);
+    window.addEventListener(balanceInvalidatedEvent, read);
+    window.addEventListener("focus", read);
+    document.addEventListener("visibilitychange", read);
+    return () => {
+      const active = controller;
+      controller = null;
+      active?.abort();
+      window.clearInterval(timer);
+      window.removeEventListener(balanceInvalidatedEvent, read);
+      window.removeEventListener("focus", read);
+      document.removeEventListener("visibilitychange", read);
+    };
+  }, [accountId, path]);
   async function logout() {
     if (leaving || sessionTransitions.current > 0) return;
     setLeaving(true);
@@ -131,6 +199,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
     try {
       await api("/auth/logout", { method: "POST", authenticated: true });
       setProfile(null);
+      setBalance(null);
       router.replace("/login");
     } catch (e) {
       notify.error(errorMessage(e));
@@ -192,7 +261,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
               onClick={() => setMenuOpen(false)}
               aria-current={path === "/app/billing" ? "page" : undefined}
             >
-              <Icon name="payment" /> Оплата
+              <Icon name="payment" /> Баланс
             </Link>
             <Link
               href="/app/settings"
@@ -244,11 +313,17 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
                 : path.includes("admin")
                   ? "Администрирование"
                   : path.includes("billing")
-                    ? "Оплата"
+                    ? "Баланс"
                     : "Мониторы"}
             </span>
             <div className="console-top-actions">
-              <span className="top-label">SERVICE MONITORING</span>
+              <Link className="console-balance" href="/app/billing">
+                <Icon name="payment" />
+                Баланс{" "}
+                {balance && balance.accountId === accountId
+                  ? balanceMoney(balance.value)
+                  : "—"}
+              </Link>
               <ThemeToggle />
             </div>
             <button

@@ -120,6 +120,21 @@ func Frame(output io.Writer, lookup func(string) string) error {
 	if len(token) < 1 || len(token) > 4096 || !match(`^[A-Za-z0-9_.-]+$`, token) {
 		return errors.New("Invalid registry credential framing")
 	}
+	if nativeProduction := lookup("ACTIVATE_NATIVE_SDK_PRODUCTION"); nativeProduction != "" && nativeProduction != "false" {
+		if nativeProduction != "true" {
+			return errors.New("Invalid native SDK production activation flag")
+		}
+		for _, key := range []string{
+			"ACTIVATE_TELEGRAM_RELAY", "ACTIVATE_MESSENGER_NOTIFICATIONS", "ACTIVATE_ADMIN_MFA", "ACTIVATE_OAUTH", "PROVISION_OWNER",
+			"ACTIVATE_EMAIL_NOTIFICATIONS", "ACTIVATE_ANDROID_PUSH", "ACTIVATE_HUAWEI_PUSH", "ACTIVATE_YOOKASSA_TEST", "ACTIVATE_YOOKASSA_PRODUCTION", "ACTIVATE_NATIVE_SDK_TEST",
+		} {
+			if value := lookup(key); value != "" && value != "false" {
+				return errors.New("Native SDK production activation must be a separate operation")
+			}
+		}
+		_, err := io.WriteString(output, token+"\n")
+		return err
+	}
 	var payload any
 	if lookup("ACTIVATE_YOOKASSA_TEST") == "true" || lookup("ACTIVATE_YOOKASSA_PRODUCTION") == "true" || lookup("ACTIVATE_NATIVE_SDK_TEST") == "true" {
 		prefix := "YOOKASSA_PRODUCTION"
@@ -214,17 +229,20 @@ func run(ctx context.Context, args []string, input io.Reader, output io.Writer) 
 		}
 		return OwnerSQL(args[1], args[2], args[3], output)
 	case "activation-check":
-		if len(args) != 10 && len(args) != 11 {
+		if len(args) < 10 || len(args) > 12 {
 			return deploydata.ErrInvalid
 		}
-		v := make([]bool, 9)
+		var v [10]bool
 		for i, s := range args[2:] {
 			if s != "true" && s != "false" {
 				return deploydata.ErrInvalid
 			}
 			v[i] = s == "true"
 		}
-		return ValidateEnv(args[1], Activation{v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8]})
+		return ValidateEnv(args[1], Activation{
+			Relay: v[0], Messenger: v[1], AdminMFA: v[2], OAuth: v[3], YooKassaTest: v[4], Email: v[5],
+			AndroidPush: v[6], YooKassaProduction: v[7], NativeSDKTest: v[8], NativeSDKProduction: v[9],
+		})
 	case "backup-env-check":
 		if len(args) != 2 {
 			return deploydata.ErrInvalid
@@ -236,10 +254,10 @@ func run(ctx context.Context, args []string, input io.Reader, output io.Writer) 
 		}
 		return Frame(output, os.Getenv)
 	case "compose-check":
-		if len(args) != 1 {
+		if len(args) > 2 || (len(args) == 2 && args[1] != "native-production") {
 			return deploydata.ErrInvalid
 		}
-		return CheckCompose(input)
+		return checkCompose(input, len(args) == 2)
 	case "compose-s3-env":
 		if len(args) != 2 {
 			return deploydata.ErrInvalid

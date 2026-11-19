@@ -23,9 +23,10 @@ func (s *Server) Register(mux *http.ServeMux, protect func(http.Handler) http.Ha
 		"GET /api/v1/billing/orders":                     s.listOrders,
 		"GET /api/v1/billing/orders/{id}":                s.get,
 		"GET /api/v1/billing":                            s.overview,
-		"POST /api/v1/billing/orders":                    s.create,
-		"POST /api/v1/billing/orders/{id}/simulate":      s.simulate,
-		"POST /api/v1/billing/native/orders":             s.createNative,
+		"POST /api/v1/billing/topups":                    s.create,
+		"GET /api/v1/billing/balance":                    s.balance,
+		"GET /api/v1/billing/ledger":                     s.ledger,
+		"POST /api/v1/billing/native/topups":             s.createNative,
 		"POST /api/v1/billing/native/orders/{id}/token":  s.attachNative,
 		"POST /api/v1/billing/native/orders/{id}/cancel": s.cancelNative,
 	} {
@@ -109,13 +110,9 @@ func failure(w http.ResponseWriter, err error) {
 	case errors.Is(err, service.ErrInvalid):
 		fail(w, 400, "invalid_request")
 	case errors.Is(err, service.ErrForbidden):
-		fail(w, 403, "mock_billing_forbidden")
+		fail(w, 403, "billing_forbidden")
 	case errors.Is(err, service.ErrNotFound):
 		fail(w, 404, "not_found")
-	case errors.Is(err, service.ErrPriceChanged):
-		fail(w, 409, "price_changed")
-	case errors.Is(err, service.ErrSelectionRequired):
-		fail(w, 409, "billing_selection_required")
 	case errors.Is(err, service.ErrConflict):
 		fail(w, 409, "billing_conflict")
 	default:
@@ -170,16 +167,13 @@ func (s *Server) createNative(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		MonitorCount   int    `json:"monitorCount"`
+		AmountMinor    int    `json:"amountMinor"`
 		IdempotencyKey string `json:"idempotencyKey"`
-		PriceVersion   int64  `json:"priceVersion"`
-		PurchaseKind   string `json:"purchaseKind"`
-		PackageID      string `json:"packageId"`
 	}
 	if !decode(w, r, &input) {
 		return
 	}
-	order, quote, err := s.service.CreateNativeOrder(r.Context(), p, input.MonitorCount, input.IdempotencyKey, input.PriceVersion, input.PurchaseKind, input.PackageID)
+	order, quote, err := s.service.CreateNativeTopup(r.Context(), p, input.AmountMinor, input.IdempotencyKey)
 	if err != nil {
 		failure(w, err)
 		return
@@ -239,11 +233,8 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		MonitorCount   int    `json:"monitorCount"`
+		AmountMinor    int    `json:"amountMinor"`
 		IdempotencyKey string `json:"idempotencyKey"`
-		PriceVersion   int64  `json:"priceVersion"`
-		PurchaseKind   string `json:"purchaseKind"`
-		PackageID      string `json:"packageId"`
 		ReturnTarget   string `json:"returnTarget"`
 	}
 	if !decode(w, r, &input) {
@@ -253,30 +244,42 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	if target == "" {
 		target = "web"
 	}
-	order, err := s.service.CreateSelectedOrderWithTarget(r.Context(), account, input.MonitorCount, input.IdempotencyKey, input.PriceVersion, input.PurchaseKind, input.PackageID, target)
+	order, err := s.service.CreateTopup(r.Context(), account, input.AmountMinor, input.IdempotencyKey, target)
 	if err != nil {
 		failure(w, err)
 		return
 	}
 	write(w, 201, map[string]any{"order": order})
 }
-func (s *Server) simulate(w http.ResponseWriter, r *http.Request) {
+func (s *Server) balance(w http.ResponseWriter, r *http.Request) {
 	account, ok := owner(w, r)
 	if !ok {
 		return
 	}
-	var input struct {
-		Outcome string `json:"outcome"`
-	}
-	if !decode(w, r, &input) {
-		return
-	}
-	order, err := s.service.Simulate(r.Context(), account, r.PathValue("id"), input.Outcome)
+	result, err := s.service.Balance(r.Context(), account)
 	if err != nil {
 		failure(w, err)
 		return
 	}
-	write(w, 200, map[string]any{"order": order})
+	write(w, 200, result)
+}
+
+func (s *Server) ledger(w http.ResponseWriter, r *http.Request) {
+	account, ok := owner(w, r)
+	if !ok {
+		return
+	}
+	page, pageSize, err := orderPageOptions(r.URL.RawQuery)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	result, err := s.service.Ledger(r.Context(), account, page, pageSize)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	write(w, 200, result)
 }
 
 func (s *Server) get(w http.ResponseWriter, r *http.Request) {

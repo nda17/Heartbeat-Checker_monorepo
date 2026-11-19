@@ -925,8 +925,8 @@ func (f *pushIntegrationFixture) addDeliveryEvent(t *testing.T, actor pushTestAc
 func (f *pushIntegrationFixture) addDeliveryOwner(t *testing.T, label string) (pushTestActor, PushPairingResult, PushInstallationStatus) {
 	t.Helper()
 	actor := f.addActor(t, label, false)
-	if err := billing.New(f.webhook.pool, true).GrantLocal(context.Background(), actor.accountID, 5, time.Now().Add(24*time.Hour), "push delivery integration"); err != nil {
-		t.Fatalf("grant test push entitlement: %v", err)
+	if err := billing.New(f.webhook.pool, true).CreditLocal(context.Background(), actor.accountID, 2600, "push delivery integration"); err != nil {
+		t.Fatalf("fund test wallet: %v", err)
 	}
 	pair, verifier := f.createPairing(t, "", "198.51.100.60")
 	status := f.confirmAndExchange(t, actor, pair, verifier, "worker-token")
@@ -966,10 +966,10 @@ func TestPushDownUpDeliveriesStayOrderedWithSyntheticSender(t *testing.T) {
 	}
 }
 
-func TestPushDeliveryGuardRanksEnabledMonitorsOnly(t *testing.T) {
+func TestPushDeliveryGuardForEnabledMonitorWithOlderPausedMonitor(t *testing.T) {
 	f := newPushIntegrationFixture(t)
 	actor, _, installation := f.addDeliveryOwner(t, "enabled-rank")
-	if err := billing.New(f.webhook.pool, true).GrantLocal(context.Background(), actor.accountID, 1, time.Now().Add(time.Hour), "one enabled slot"); err != nil {
+	if err := billing.New(f.webhook.pool, true).CreditLocal(context.Background(), actor.accountID, 2600, "monitor delivery fixture"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.webhook.pool.Exec(context.Background(), `UPDATE monitors.monitors SET enabled=false WHERE id=$1`, actor.monitorID); err != nil {

@@ -139,16 +139,16 @@ func TestYooKassaProductionCheckoutIsAvailableToAllActiveAccountsAndPersistsImmu
 	}
 
 	key := "c11ab93f-8056-4c86-9b84-443c36fa0f89"
-	order := createYooKassaOrder(t, f, other, key, 2)
+	order := createYooKassaOrder(t, f, other, key, 5800)
 	if order.Test {
 		t.Fatalf("production order was serialized as test: %+v", order)
 	}
-	retry := createYooKassaOrder(t, f, other, key, 2)
+	retry := createYooKassaOrder(t, f, other, key, 5800)
 	if retry.ID != order.ID {
 		t.Fatalf("idempotent retry changed order ID %s to %s", order.ID, retry.ID)
 	}
-	conflict := f.request(t, other, http.MethodPost, "/api/v1/billing/orders", map[string]any{
-		"monitorCount": 3, "idempotencyKey": key, "priceVersion": 1,
+	conflict := f.request(t, other, http.MethodPost, "/api/v1/billing/topups", map[string]any{
+		"amountMinor": 8700, "idempotencyKey": key,
 	})
 	if conflict.Code != http.StatusConflict {
 		t.Fatalf("changed same-key order status=%d, want 409", conflict.Code)
@@ -171,7 +171,7 @@ func TestYooKassaProductionCheckoutIsAvailableToAllActiveAccountsAndPersistsImmu
 	}
 }
 
-func TestYooKassaProductionSuccessPersistsPaidEntitlementAndSurvivesDisabledCheckout(t *testing.T) {
+func TestYooKassaProductionSuccessAddsWalletCreditAndSurvivesDisabledCheckout(t *testing.T) {
 	f := newBillingFixture(t)
 	owner := f.newActor(t, "Production payment owner")
 	provider := &fakeYooKassa{mode: "production", shopID: "654321"}
@@ -191,7 +191,8 @@ func TestYooKassaProductionSuccessPersistsPaidEntitlementAndSurvivesDisabledChec
 		return contracts.ProviderPayment{ID: id, Status: "succeeded", Paid: true, AmountValue: "58.00", Currency: "RUB", OrderID: orderID, ShopID: "654321", Test: &mode}, nil
 	}
 	f.configureYooKassaMode(t, owner, provider, "production", "654321")
-	order := createYooKassaOrder(t, f, owner, "20bff0f2-670f-4d5c-a5ad-52c54a64b538", 2)
+	creditPaymentFixture(t, f, owner, 2000)
+	order := createYooKassaOrder(t, f, owner, "20bff0f2-670f-4d5c-a5ad-52c54a64b538", 5800)
 	orderID = order.ID
 	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
 		t.Fatalf("production create worker=(%t,%v)", processed, err)
@@ -202,66 +203,57 @@ func TestYooKassaProductionSuccessPersistsPaidEntitlementAndSurvivesDisabledChec
 	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
 		t.Fatalf("production success worker=(%t,%v)", processed, err)
 	}
-	var status, fulfillment, source, entitlementReason string
-	var quota, reports int
-	if err := f.pool.QueryRow(context.Background(), `SELECT o.status,o.fulfillment_status,e.source,e.monitor_limit,e.reason,(SELECT count(*) FROM billing.payment_reports r WHERE r.order_id=o.id) FROM billing.orders o JOIN billing.entitlements e USING(account_id) WHERE o.id=$1`, order.ID).Scan(&status, &fulfillment, &source, &quota, &entitlementReason, &reports); err != nil {
+	var status, fulfillment, kind string
+	var amount, reports int
+	if err := f.pool.QueryRow(context.Background(), `SELECT o.status,o.fulfillment_status,l.kind,l.amount_minor,
+        (SELECT count(*) FROM billing.payment_reports r WHERE r.order_id=o.id)
+        FROM billing.orders o JOIN billing.wallet_ledger l ON l.order_id=o.id WHERE o.id=$1`, order.ID).Scan(&status, &fulfillment, &kind, &amount, &reports); err != nil {
 		t.Fatal(err)
 	}
-	if status != "succeeded" || fulfillment != "fulfilled" || source != "yookassa" || quota != 2 || strings.TrimSpace(entitlementReason) == "" || reports != 1 {
-		t.Fatalf("production payment fulfillment=%s/%s entitlement=%s/%d reason=%q reports=%d", status, fulfillment, source, quota, entitlementReason, reports)
-	}
-
-	mock, err := NewConfigured(f.pool, false, Config{Provider: "mock", MockAccountIDs: []string{owner.id}}, f.accounts)
-	if err != nil {
-		t.Fatalf("configure mock after production payment: %v", err)
-	}
-	if _, err := mock.service.CreateOrder(context.Background(), owner.id, 2, "bd5c7a69-6b9e-48ea-9672-8001f54b09d5", 1); !errors.Is(err, service.ErrForbidden) {
-		t.Fatalf("mock checkout must not replace active paid entitlement: %v", err)
-	}
-	mockTx, err := f.pool.Begin(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	mockAccess, err := mock.Lock(context.Background(), mockTx, owner.id)
-	_ = mockTx.Rollback(context.Background())
-	if err != nil || mockAccess.Source != "yookassa" || mockAccess.Quota != 2 {
-		t.Fatalf("mock provider switch changed paid access: %+v error=%v", mockAccess, err)
+	if status != "succeeded" || fulfillment != "fulfilled" || kind != "top_up" || amount != 5800 || reports != 1 {
+		t.Fatalf("production order=%s/%s credit=%s/%d reports=%d", status, fulfillment, kind, amount, reports)
 	}
 
 	disabled, err := NewConfigured(f.pool, false, Config{Provider: "disabled"}, f.accounts)
 	if err != nil {
-		t.Fatalf("configure disabled checkout: %v", err)
-	}
-	tx, err := f.pool.Begin(context.Background())
-	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(context.Background())
-	access, err := disabled.Lock(context.Background(), tx, owner.id)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := disabled.service.CreateTopup(context.Background(), owner.id, 2600, "bd5c7a69-6b9e-48ea-9672-8001f54b09d5", "web"); !errors.Is(err, service.ErrForbidden) {
+		t.Fatalf("disabled checkout created a top-up: %v", err)
 	}
-	if access.Source != "yookassa" || access.Quota != 2 || access.ActiveUntil == nil || !access.ActiveUntil.After(time.Now()) {
-		t.Fatalf("paid production access was lost when checkout disabled: %+v", access)
+	balance, err := disabled.Balance(context.Background(), owner.id)
+	if err != nil || balance.AvailableMinor != 7800 {
+		t.Fatalf("disabled checkout changed wallet: %+v error=%v", balance, err)
 	}
 }
 
-func TestLateTestPaymentCannotOverwritePaidEntitlement(t *testing.T) {
+func creditPaymentFixture(t *testing.T, f *billingFixture, owner billingActor, amount int) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, _, applied, err := f.module.AdminCreditTx(ctx, tx, owner.id, owner.id, amount,
+		"da9d24b6-bdf2-46a7-9c09-fdbc5068f066", "existing fixture credit"); err != nil || !applied {
+		t.Fatalf("seed wallet credit applied=%t err=%v", applied, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLateTestPaymentDoesNotCreditWallet(t *testing.T) {
 	f := newBillingFixture(t)
 	owner := f.newActor(t, "Late test payment owner")
 	provider := &fakeYooKassa{mode: "test", shopID: "123456"}
-	provider.get = func(id string) (contracts.ProviderPayment, error) {
-		mode := true
-		return contracts.ProviderPayment{ID: id, Status: "succeeded", Paid: true, AmountValue: "58.00", Currency: "RUB", ShopID: "123456", Test: &mode}, nil
-	}
 	f.configureYooKassaMode(t, owner, provider, "test", "123456")
-	order := createYooKassaOrder(t, f, owner, "f8028a04-a97f-4426-8345-b788cc696975", 2)
+	order := createYooKassaOrder(t, f, owner, "f8028a04-a97f-4426-8345-b788cc696975", 5800)
 	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
 		t.Fatalf("test payment create worker=(%t,%v)", processed, err)
 	}
-	if _, err := f.pool.Exec(context.Background(), `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason) VALUES($1,2,now()+interval '30 days','yookassa','YooKassa payment')`, owner.id); err != nil {
-		t.Fatalf("seed already-fulfilled production entitlement beside pending historical test order: %v", err)
-	}
+	creditPaymentFixture(t, f, owner, 2000)
 	provider.get = func(id string) (contracts.ProviderPayment, error) {
 		mode := true
 		return contracts.ProviderPayment{ID: id, Status: "succeeded", Paid: true, AmountValue: "58.00", Currency: "RUB", OrderID: order.ID, ShopID: "123456", Test: &mode}, nil
@@ -272,13 +264,15 @@ func TestLateTestPaymentCannotOverwritePaidEntitlement(t *testing.T) {
 	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
 		t.Fatalf("late test payment reconciliation=(%t,%v)", processed, err)
 	}
-	var status, fulfillment, reason, source string
-	var quota int
-	if err := f.pool.QueryRow(context.Background(), `SELECT o.status,o.fulfillment_status,o.fulfillment_reason,e.source,e.monitor_limit FROM billing.orders o JOIN billing.entitlements e USING(account_id) WHERE o.id=$1`, order.ID).Scan(&status, &fulfillment, &reason, &source, &quota); err != nil {
+	var status, fulfillment string
+	var paymentCredits int
+	if err := f.pool.QueryRow(context.Background(), `SELECT o.status,o.fulfillment_status,
+        (SELECT count(*) FROM billing.wallet_ledger l WHERE l.order_id=o.id) FROM billing.orders o WHERE o.id=$1`, order.ID).Scan(&status, &fulfillment, &paymentCredits); err != nil {
 		t.Fatal(err)
 	}
-	if status != "succeeded" || fulfillment != "blocked" || reason != "paid_entitlement" || source != "yookassa" || quota != 2 {
-		t.Fatalf("late test payment changed paid entitlement: order=%s/%s/%s entitlement=%s/%d", status, fulfillment, reason, source, quota)
+	balance, err := f.module.Balance(context.Background(), owner.id)
+	if status != "succeeded" || fulfillment != "not_required" || paymentCredits != 0 || err != nil || balance.AvailableMinor != 2000 {
+		t.Fatalf("test order=%s/%s credits=%d wallet=%+v err=%v", status, fulfillment, paymentCredits, balance, err)
 	}
 }
 
@@ -287,7 +281,7 @@ func TestYooKassaReconciliationRequiresImmutableModeAndShopMatch(t *testing.T) {
 	owner := f.newActor(t, "Mode and shop reconciliation owner")
 	production := &fakeYooKassa{mode: "production", shopID: "654321"}
 	f.configureYooKassaMode(t, owner, production, "production", "654321")
-	order := createYooKassaOrder(t, f, owner, "4d814e2e-4ec6-4d5d-9e15-56dfdb83b5aa", 1)
+	order := createYooKassaOrder(t, f, owner, "4d814e2e-4ec6-4d5d-9e15-56dfdb83b5aa", 2900)
 
 	testProvider := &fakeYooKassa{mode: "test", shopID: "123456"}
 	f.configureYooKassaMode(t, owner, testProvider, "test", "123456")
@@ -319,10 +313,10 @@ func TestYooKassaReconciliationRequiresImmutableModeAndShopMatch(t *testing.T) {
 	}
 }
 
-func createYooKassaOrder(t *testing.T, f *billingFixture, owner billingActor, key string, count int) contracts.Order {
+func createYooKassaOrder(t *testing.T, f *billingFixture, owner billingActor, key string, amountMinor int) contracts.Order {
 	t.Helper()
-	rec := f.request(t, owner, http.MethodPost, "/api/v1/billing/orders", map[string]any{
-		"monitorCount": count, "idempotencyKey": key, "priceVersion": 1,
+	rec := f.request(t, owner, http.MethodPost, "/api/v1/billing/topups", map[string]any{
+		"amountMinor": amountMinor, "idempotencyKey": key,
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create YooKassa order status=%d: %s", rec.Code, rec.Body.String())
@@ -343,57 +337,58 @@ func runPaymentWorker(t *testing.T, f *billingFixture) (bool, error) {
 	return f.module.ProcessOnePayment(ctx)
 }
 
-func TestHistoricalRefundedBlockedOrderIsNeverReprocessed(t *testing.T) {
+func TestHistoricalBlockedOrderRemainsReadOnlyAfterLateWebhook(t *testing.T) {
 	f := newBillingFixture(t)
-	owner := f.newActor(t, "Historical Refunded Order Owner")
-	provider := &fakeYooKassa{}
-	f.configureYooKassa(t, owner, provider)
-	tx, err := f.pool.Begin(context.Background())
+	owner := f.newActor(t, "Historical Blocked Order Owner")
+	provider := &fakeYooKassa{mode: "production", shopID: "654321"}
+	f.configureYooKassaMode(t, owner, provider, "production", "654321")
+	ctx := context.Background()
+	tx, err := f.pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	grantUntil := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Microsecond)
-	grant, err := f.module.GrantAdminTx(context.Background(), tx, owner.id, 0, 3, grantUntil, "existing admin capacity")
-	if err != nil {
-		_ = tx.Rollback(context.Background())
+	defer tx.Rollback(ctx)
+	const orderID = "ae4727f4-0c31-4364-a95d-f5ac202d8c75"
+	if _, err := tx.Exec(ctx, `ALTER TABLE billing.orders DISABLE TRIGGER orders_topup_only`); err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.Commit(context.Background()); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,provider_mode,provider_shop_id,provider_payment_id,
+        provider_request,monitor_count,amount_minor,status,completed_at,fulfillment_status,fulfillment_reason,reconciliation_status,purchase_kind)
+        VALUES($1,$2,$1,'yookassa','production','654321',$3,convert_to('{}','UTF8'),1,2600,'succeeded',now(),'blocked','admin_grant','complete','purchase')`,
+		orderID, owner.id, testProviderID); err != nil {
 		t.Fatal(err)
 	}
-	order := createYooKassaOrder(t, f, owner, "224fd264-cb99-45a6-9750-1247fbe348ed", 1)
-	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
-		t.Fatalf("create provider attempt=(%t,%v)", processed, err)
-	}
-	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.orders SET status='succeeded',fulfillment_status='blocked',fulfillment_reason='admin_grant',completed_at=now(),next_reconcile_at=now()-interval '1 day' WHERE id=$1`, order.ID); err != nil {
+	if _, err := tx.Exec(ctx, `ALTER TABLE billing.orders ENABLE TRIGGER orders_topup_only`); err != nil {
 		t.Fatal(err)
 	}
-	beforeCreate, _ := provider.createCalls()
-	beforeGet := provider.getCalls()
-	processed, err := runPaymentWorker(t, f)
-	if err != nil || processed {
-		t.Fatalf("historical terminal order worker=(%t,%v), want no claim", processed, err)
-	}
-	afterCreate, _ := provider.createCalls()
-	afterGet := provider.getCalls()
-	if len(afterCreate) != len(beforeCreate) || len(afterGet) != len(beforeGet) {
-		t.Fatalf("terminal order contacted provider again: create calls %d->%d, get calls %d->%d", len(beforeCreate), len(afterCreate), len(beforeGet), len(afterGet))
-	}
-	var status, fulfillment, reason string
-	var quota int
-	var adminUntil time.Time
-	if err := f.pool.QueryRow(context.Background(), `SELECT status,fulfillment_status,fulfillment_reason FROM billing.orders WHERE id=$1`, order.ID).Scan(&status, &fulfillment, &reason); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.pool.QueryRow(context.Background(), `SELECT monitor_limit,valid_until FROM billing.admin_grants WHERE account_id=$1`, owner.id).Scan(&quota, &adminUntil); err != nil {
+	var notice contracts.ProviderNotification
+	notice.Type, notice.Event, notice.Object.ID, notice.Object.Metadata.OrderID = "notification", "payment.succeeded", testProviderID, orderID
+	if err := f.module.service.ReceiveNotification(ctx, notice); err != nil {
 		t.Fatal(err)
 	}
-	var paidCount int
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.entitlements WHERE account_id=$1`, owner.id).Scan(&paidCount); err != nil {
-		t.Fatal(err)
+	if processed, err := runPaymentWorker(t, f); err != nil || processed || len(provider.getCalls()) != 0 {
+		t.Fatalf("archived payment worker=(%t,%v) calls=%v", processed, err, provider.getCalls())
 	}
-	if status != "succeeded" || fulfillment != "blocked" || reason != "admin_grant" || quota != grant.Quota || !adminUntil.Equal(grantUntil) || paidCount != 0 {
-		t.Fatalf("terminal refunded order changed entitlement state: order=%s/%s/%s admin=%d until=%s paid rows=%d", status, fulfillment, reason, quota, adminUntil, paidCount)
+	order, err := f.module.service.GetOrder(ctx, owner.id, orderID)
+	if err != nil || order.FulfillmentStatus != "blocked" || order.FulfillmentReason != "admin_grant" || order.AmountMinor != 2600 {
+		t.Fatalf("archived order=%+v err=%v", order, err)
+	}
+	balance, err := f.module.Balance(ctx, owner.id)
+	if err != nil || balance.AvailableMinor != 0 {
+		t.Fatalf("archived payment changed wallet: %+v err=%v", balance, err)
+	}
+	overview := f.request(t, owner, http.MethodGet, "/api/v1/billing", nil)
+	var payload contracts.Billing
+	if err := json.Unmarshal(overview.Body.Bytes(), &payload); overview.Code != http.StatusOK || err != nil || len(payload.Orders) != 0 {
+		t.Fatalf("archive appeared in active checkout: status=%d payload=%+v err=%v", overview.Code, payload, err)
+	}
+	history := f.request(t, owner, http.MethodGet, "/api/v1/billing/orders", nil)
+	var page contracts.OrderPage
+	if err := json.Unmarshal(history.Body.Bytes(), &page); history.Code != http.StatusOK || err != nil || len(page.Orders) != 1 || page.Orders[0].ID != orderID {
+		t.Fatalf("archive lost from order history: status=%d page=%+v err=%v", history.Code, page, err)
 	}
 }
 
@@ -404,19 +399,19 @@ func TestYooKassaOrderIsDurableBeforeProviderAndUsesImmutableProviderKey(t *test
 	f.configureYooKassa(t, owner, provider)
 
 	key := "b9f02cf9-dbf8-4a6a-bff8-18a5d8974f82"
-	order := createYooKassaOrder(t, f, owner, key, 2)
+	order := createYooKassaOrder(t, f, owner, key, 5800)
 	if order.Status != "pending" || order.Provider != "yookassa" || order.ExpiresAt != nil || order.ReconciliationStatus != "pending" {
 		t.Fatalf("new order must be durable, pending, and unexpired: %+v", order)
 	}
 	if keys, _ := provider.createCalls(); len(keys) != 0 {
 		t.Fatalf("HTTP create called provider synchronously: keys=%v", keys)
 	}
-	retry := createYooKassaOrder(t, f, owner, key, 2)
+	retry := createYooKassaOrder(t, f, owner, key, 5800)
 	if retry.ID != order.ID {
 		t.Fatalf("same idempotency key returned a different order: %s != %s", retry.ID, order.ID)
 	}
-	conflict := f.request(t, owner, http.MethodPost, "/api/v1/billing/orders", map[string]any{
-		"monitorCount": 3, "idempotencyKey": key, "priceVersion": 1,
+	conflict := f.request(t, owner, http.MethodPost, "/api/v1/billing/topups", map[string]any{
+		"amountMinor": 8700, "idempotencyKey": key,
 	})
 	if conflict.Code != http.StatusConflict {
 		t.Fatalf("changed same-key request status=%d, want 409: %s", conflict.Code, conflict.Body.String())
@@ -483,7 +478,7 @@ func TestYooKassaOrderIsDurableBeforeProviderAndUsesImmutableProviderKey(t *test
 func TestYooKassaWebhookIsOnlyAHintAndFulfillmentIsAtomicAndIdempotent(t *testing.T) {
 	f := newBillingFixture(t)
 	owner := f.newActor(t, "YooKassa webhook owner")
-	provider := &fakeYooKassa{}
+	provider := &fakeYooKassa{mode: "production", shopID: "123456"}
 	var orderID string
 	provider.create = func(key string, body []byte) (contracts.ProviderPayment, error) {
 		var create struct {
@@ -492,19 +487,19 @@ func TestYooKassaWebhookIsOnlyAHintAndFulfillmentIsAtomicAndIdempotent(t *testin
 		if err := json.Unmarshal(body, &create); err != nil {
 			return contracts.ProviderPayment{}, err
 		}
-		mode := true
+		mode := false
 		return contracts.ProviderPayment{ID: testProviderID, Status: "pending", AmountValue: create.Amount.Value, Currency: create.Amount.Currency, OrderID: key, ShopID: "123456", ConfirmationURL: "https://yookassa.ru/checkout/" + testProviderID, Test: &mode}, nil
 	}
 	provider.get = func(id string) (contracts.ProviderPayment, error) {
-		mode := true
+		mode := false
 		metadataOrder := orderID
 		if id != testProviderID {
 			metadataOrder = "9d8d3c2a-5b6e-4f70-8b9c-0d1e2f3a4b5c"
 		}
 		return contracts.ProviderPayment{ID: id, Status: "succeeded", Paid: true, AmountValue: "29.00", Currency: "RUB", OrderID: metadataOrder, ShopID: "123456", Test: &mode}, nil
 	}
-	f.configureYooKassa(t, owner, provider)
-	order := createYooKassaOrder(t, f, owner, "49a42c71-4f4f-4f9c-bae6-8050ee137305", 1)
+	f.configureYooKassaMode(t, owner, provider, "production", "123456")
+	order := createYooKassaOrder(t, f, owner, "49a42c71-4f4f-4f9c-bae6-8050ee137305", 2900)
 	orderID = order.ID
 
 	foreignPaymentID := "foreign12345678901"
@@ -541,19 +536,19 @@ func TestYooKassaWebhookIsOnlyAHintAndFulfillmentIsAtomicAndIdempotent(t *testin
 	if processed, err := runPaymentWorker(t, f); err != nil || processed {
 		t.Fatalf("replay worker=(%t,%v), want no duplicate fulfillment", processed, err)
 	}
-	var status, fulfillment, source string
-	var quota, reportCount int
+	var status, fulfillment, kind string
+	var amount, reportCount int
 	if err := f.pool.QueryRow(context.Background(), `SELECT status,fulfillment_status FROM billing.orders WHERE id=$1`, order.ID).Scan(&status, &fulfillment); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.pool.QueryRow(context.Background(), `SELECT source,monitor_limit FROM billing.entitlements WHERE account_id=$1`, owner.id).Scan(&source, &quota); err != nil {
+	if err := f.pool.QueryRow(context.Background(), `SELECT kind,amount_minor FROM billing.wallet_ledger WHERE order_id=$1`, order.ID).Scan(&kind, &amount); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.payment_reports WHERE order_id=$1`, order.ID).Scan(&reportCount); err != nil {
 		t.Fatal(err)
 	}
-	if status != "succeeded" || fulfillment != "fulfilled" || source != "yookassa_test" || quota != 1 || reportCount != 1 {
-		t.Fatalf("fulfillment status=%s/%s entitlement=%s/%d reports=%d", status, fulfillment, source, quota, reportCount)
+	if status != "succeeded" || fulfillment != "fulfilled" || kind != "top_up" || amount != 2900 || reportCount != 1 {
+		t.Fatalf("fulfillment status=%s/%s credit=%s/%d reports=%d", status, fulfillment, kind, amount, reportCount)
 	}
 	var acceptedHints, rejectedHints, unfinishedHints int
 	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FILTER (WHERE result='accepted'),count(*) FILTER (WHERE result='rejected'),count(*) FILTER (WHERE processed_at IS NULL) FROM billing.webhook_inbox WHERE order_id=$1`, order.ID).Scan(&acceptedHints, &rejectedHints, &unfinishedHints); err != nil || acceptedHints != 1 || rejectedHints != 1 || unfinishedHints != 0 {
@@ -585,7 +580,7 @@ func TestYooKassaExpiredCreateIdempotencyWindowNeedsManualReviewWithoutCancelOrR
 	owner := f.newActor(t, "YooKassa uncertain create owner")
 	provider := &fakeYooKassa{}
 	f.configureYooKassa(t, owner, provider)
-	order := createYooKassaOrder(t, f, owner, "4b9e2a66-d75c-46a0-9b77-2a036110fb1d", 1)
+	order := createYooKassaOrder(t, f, owner, "4b9e2a66-d75c-46a0-9b77-2a036110fb1d", 2900)
 	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.orders SET first_attempt_at=now()-interval '24 hours',idempotency_deadline=now()-interval '1 hour',next_reconcile_at=now() WHERE id=$1`, order.ID); err != nil {
 		t.Fatalf("age first provider attempt before it starts: %v", err)
 	}
@@ -604,7 +599,7 @@ func TestYooKassaExpiredCreateIdempotencyWindowNeedsManualReviewWithoutCancelOrR
 	if keys, _ := provider.createCalls(); len(keys) != 0 {
 		t.Fatalf("provider create was repeated after immutable-key window: %v", keys)
 	}
-	retried := createYooKassaOrder(t, f, owner, "4b9e2a66-d75c-46a0-9b77-2a036110fb1d", 1)
+	retried := createYooKassaOrder(t, f, owner, "4b9e2a66-d75c-46a0-9b77-2a036110fb1d", 2900)
 	if retried.ID != order.ID {
 		t.Fatalf("idempotent retry changed order %s to %s", order.ID, retried.ID)
 	}
@@ -640,7 +635,7 @@ func TestYooKassaCreateTransportFailureRetriesSameImmutableRequest(t *testing.T)
 		}, nil
 	}
 	f.configureYooKassa(t, owner, provider)
-	order := createYooKassaOrder(t, f, owner, "34168925-2ac4-42e4-8b43-4e261dd6352e", 1)
+	order := createYooKassaOrder(t, f, owner, "34168925-2ac4-42e4-8b43-4e261dd6352e", 2900)
 	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
 		t.Fatalf("first ambiguous create worker=(%t,%v)", processed, err)
 	}
@@ -663,336 +658,57 @@ func TestYooKassaCreateTransportFailureRetriesSameImmutableRequest(t *testing.T)
 	}
 }
 
-func TestYooKassaPaymentAddsPaidComponentAlongsideAdminGrantAndDoesNotReviveDeletedAccount(t *testing.T) {
-	t.Run("payment adds paid quota while preserving admin grant", func(t *testing.T) {
-		f := newBillingFixture(t)
-		owner := f.newActor(t, "YooKassa admin-grant owner")
-		provider := &fakeYooKassa{}
-		var orderID string
-		provider.create = func(key string, body []byte) (contracts.ProviderPayment, error) {
-			var req struct {
-				Amount struct{ Value, Currency string } `json:"amount"`
-			}
-			if err := json.Unmarshal(body, &req); err != nil {
-				return contracts.ProviderPayment{}, err
-			}
-			mode := true
-			return contracts.ProviderPayment{ID: testProviderID, Status: "pending", AmountValue: req.Amount.Value, Currency: req.Amount.Currency, OrderID: key, ShopID: "123456", Test: &mode}, nil
-		}
-		provider.get = func(id string) (contracts.ProviderPayment, error) {
-			mode := true
-			return contracts.ProviderPayment{ID: id, Status: "succeeded", Paid: true, AmountValue: "145.00", Currency: "RUB", OrderID: orderID, ShopID: "123456", Test: &mode}, nil
-		}
-		f.configureYooKassa(t, owner, provider)
-		tx, err := f.pool.Begin(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		grantUntil := time.Now().Add(12 * time.Hour).Truncate(time.Microsecond)
-		grant, err := f.module.GrantAdminTx(context.Background(), tx, owner.id, 0, 3, grantUntil, "approved test grant")
-		if err != nil {
-			_ = tx.Rollback(context.Background())
-			t.Fatal(err)
-		}
-		if err := tx.Commit(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		order := createYooKassaOrder(t, f, owner, "ce703244-c641-4a5a-9637-98681e00c57b", 5)
-		orderID = order.ID
-		if _, err := runPaymentWorker(t, f); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.pool.Exec(context.Background(), `UPDATE billing.orders SET next_reconcile_at=now() WHERE id=$1`, order.ID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := runPaymentWorker(t, f); err != nil {
-			t.Fatal(err)
-		}
-		var status, fulfillment, reason string
-		var activeUntil *time.Time
-		if err := f.pool.QueryRow(context.Background(), `SELECT status,fulfillment_status,fulfillment_reason,active_until FROM billing.orders WHERE id=$1`, order.ID).Scan(&status, &fulfillment, &reason, &activeUntil); err != nil {
-			t.Fatal(err)
-		}
-		var paid contracts.Entitlement
-		if err := f.pool.QueryRow(context.Background(), `SELECT monitor_limit,valid_until,source,version FROM billing.entitlements WHERE account_id=$1`, owner.id).Scan(&paid.Quota, &paid.ActiveUntil, &paid.Source, &paid.Version); err != nil {
-			t.Fatal(err)
-		}
-		var adminQuota int
-		var adminUntil time.Time
-		var adminVersion int64
-		if err := f.pool.QueryRow(context.Background(), `SELECT monitor_limit,valid_until,version FROM billing.admin_grants WHERE account_id=$1`, owner.id).Scan(&adminQuota, &adminUntil, &adminVersion); err != nil {
-			t.Fatal(err)
-		}
-		if status != "succeeded" || fulfillment != "fulfilled" || reason != "" || activeUntil == nil || paid.Quota != 5 || paid.Source != "yookassa_test" || paid.ActiveUntil == nil || adminQuota != grant.Quota || adminVersion != grant.Version || !adminUntil.Equal(grantUntil) {
-			t.Fatalf("paid order/grant state order=%s/%s/%s until=%v grant=%+v paid=%+v admin=%d/v%d until=%v", status, fulfillment, reason, activeUntil, grant, paid, adminQuota, adminVersion, adminUntil)
-		}
-	})
-
-	t.Run("expired admin grant no longer blocks fulfillment", func(t *testing.T) {
-		f := newBillingFixture(t)
-		owner := f.newActor(t, "YooKassa expired grant owner")
-		provider := &fakeYooKassa{}
-		var orderID string
-		provider.get = func(id string) (contracts.ProviderPayment, error) {
-			mode := true
-			return contracts.ProviderPayment{ID: id, Status: "succeeded", Paid: true, AmountValue: "29.00", Currency: "RUB", OrderID: orderID, ShopID: "123456", Test: &mode}, nil
-		}
-		f.configureYooKassa(t, owner, provider)
-		tx, err := f.pool.Begin(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.module.GrantAdminTx(context.Background(), tx, owner.id, 0, 5, time.Now().Add(24*time.Hour), "temporary test grant"); err != nil {
-			_ = tx.Rollback(context.Background())
-			t.Fatal(err)
-		}
-		if err := tx.Commit(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.pool.Exec(context.Background(), `UPDATE billing.admin_grants SET valid_until=now()-interval '1 second' WHERE account_id=$1`, owner.id); err != nil {
-			t.Fatal(err)
-		}
-		order := createYooKassaOrder(t, f, owner, "e1327648-ae48-468e-9ca9-8f02ec939596", 1)
-		orderID = order.ID
-		if processed, err := runPaymentWorker(t, f); err != nil || !processed {
-			t.Fatalf("create worker=(%t,%v)", processed, err)
-		}
-		if _, err := f.pool.Exec(context.Background(), `UPDATE billing.orders SET next_reconcile_at=now() WHERE id=$1`, order.ID); err != nil {
-			t.Fatal(err)
-		}
-		if processed, err := runPaymentWorker(t, f); err != nil || !processed {
-			t.Fatalf("success worker=(%t,%v)", processed, err)
-		}
-		var status, fulfillment, source string
-		if err := f.pool.QueryRow(context.Background(), `SELECT o.status,o.fulfillment_status,e.source FROM billing.orders o JOIN billing.entitlements e USING(account_id) WHERE o.id=$1`, order.ID).Scan(&status, &fulfillment, &source); err != nil {
-			t.Fatal(err)
-		}
-		var retainedAdminUntil time.Time
-		if err := f.pool.QueryRow(context.Background(), `SELECT valid_until FROM billing.admin_grants WHERE account_id=$1`, owner.id).Scan(&retainedAdminUntil); err != nil {
-			t.Fatal(err)
-		}
-		if status != "succeeded" || fulfillment != "fulfilled" || source != "yookassa_test" || !retainedAdminUntil.Before(time.Now()) {
-			t.Fatalf("expired grant payment state=%s/%s entitlement=%s", status, fulfillment, source)
-		}
-	})
-
-	t.Run("known payment reconciles after deletion without restoring access", func(t *testing.T) {
-		f := newBillingFixture(t)
-		owner := f.newActor(t, "YooKassa deleted owner")
-		provider := &fakeYooKassa{}
-		var orderID string
-		provider.create = func(key string, body []byte) (contracts.ProviderPayment, error) {
-			var req struct {
-				Amount struct{ Value, Currency string } `json:"amount"`
-			}
-			if err := json.Unmarshal(body, &req); err != nil {
-				return contracts.ProviderPayment{}, err
-			}
-			mode := true
-			return contracts.ProviderPayment{ID: testProviderID, Status: "pending", AmountValue: req.Amount.Value, Currency: req.Amount.Currency, OrderID: key, ShopID: "123456", Test: &mode}, nil
-		}
-		provider.get = func(id string) (contracts.ProviderPayment, error) {
-			mode := true
-			return contracts.ProviderPayment{ID: id, Status: "succeeded", Paid: true, AmountValue: "29.00", Currency: "RUB", OrderID: orderID, ShopID: "123456", Test: &mode}, nil
-		}
-		f.configureYooKassa(t, owner, provider)
-		order := createYooKassaOrder(t, f, owner, "4d4158c1-e576-4d06-9902-9fd4fcb19d42", 1)
-		orderID = order.ID
-		if _, err := runPaymentWorker(t, f); err != nil {
-			t.Fatal(err)
-		}
-		tx, err := f.pool.Begin(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		grantUntil := time.Now().Add(24 * time.Hour)
-		if _, err = f.module.GrantAdminTx(context.Background(), tx, owner.id, 0, 3, grantUntil, "deletion fixture grant"); err != nil {
-			_ = tx.Rollback(context.Background())
-			t.Fatal(err)
-		}
-		if _, err = tx.Exec(context.Background(), `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason)
-			VALUES($1,2,$2,'yookassa','deletion fixture paid component')`, owner.id, grantUntil); err != nil {
-			_ = tx.Rollback(context.Background())
-			t.Fatal(err)
-		}
-		if _, err = tx.Exec(context.Background(), `UPDATE accounts.accounts SET status='deleted',deleted_at=now(),version=version+1 WHERE id=$1`, owner.id); err != nil {
-			_ = tx.Rollback(context.Background())
-			t.Fatal(err)
-		}
-		if err = f.module.DeleteAccountTx(context.Background(), tx, owner.id); err != nil {
-			_ = tx.Rollback(context.Background())
-			t.Fatal(err)
-		}
-		if err = tx.Commit(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		if _, err = f.pool.Exec(context.Background(), `UPDATE billing.orders SET next_reconcile_at=now() WHERE id=$1`, order.ID); err != nil {
-			t.Fatal(err)
-		}
-		if processed, err := runPaymentWorker(t, f); err != nil || !processed {
-			t.Fatalf("known payment after deletion worker=(%t,%v)", processed, err)
-		}
-		var status, fulfillment, reason string
-		if err := f.pool.QueryRow(context.Background(), `SELECT status,fulfillment_status,fulfillment_reason FROM billing.orders WHERE id=$1`, order.ID).Scan(&status, &fulfillment, &reason); err != nil {
-			t.Fatal(err)
-		}
-		var entitlementCount int
-		var paidActive, adminActive bool
-		if err := f.pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM billing.entitlements WHERE account_id=$1 AND valid_until>clock_timestamp()) + (SELECT count(*) FROM billing.admin_grants WHERE account_id=$1 AND valid_until>clock_timestamp()),
-			(SELECT valid_until>clock_timestamp() FROM billing.entitlements WHERE account_id=$1), (SELECT valid_until>clock_timestamp() FROM billing.admin_grants WHERE account_id=$1)`, owner.id).
-			Scan(&entitlementCount, &paidActive, &adminActive); err != nil {
-			t.Fatal(err)
-		}
-		if status != "succeeded" || fulfillment != "blocked" || reason != "account_deleted" || entitlementCount != 0 || paidActive || adminActive {
-			t.Fatalf("deleted paid/admin account state=%s/%s/%s active=%d paidActive=%t adminActive=%t", status, fulfillment, reason, entitlementCount, paidActive, adminActive)
-		}
-	})
-}
-
-func TestYooKassaProductionPaymentAddsQuotaAlongsideAdminGrant(t *testing.T) {
+func TestYooKassaPaymentAfterDeletionDoesNotRestoreWallet(t *testing.T) {
 	f := newBillingFixture(t)
-	owner := f.newActor(t, "Production YooKassa additive grant owner")
+	owner := f.newActor(t, "YooKassa deleted owner")
 	provider := &fakeYooKassa{mode: "production", shopID: "654321"}
-	var orderID string
-	providerPaymentID := testProviderID
-	provider.create = func(key string, body []byte) (contracts.ProviderPayment, error) {
-		var req struct {
-			Amount struct{ Value, Currency string } `json:"amount"`
-		}
-		if err := json.Unmarshal(body, &req); err != nil {
-			return contracts.ProviderPayment{}, err
-		}
-		mode := false
-		return contracts.ProviderPayment{ID: providerPaymentID, Status: "pending", AmountValue: req.Amount.Value, Currency: req.Amount.Currency, OrderID: key, ShopID: "654321", Test: &mode}, nil
+	ctx := context.Background()
+	f.configureYooKassaMode(t, owner, provider, "production", "654321")
+	creditPaymentFixture(t, f, owner, 2000)
+	order := createYooKassaOrder(t, f, owner, "4d4158c1-e576-4d06-9902-9fd4fcb19d42", 2900)
+	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
+		t.Fatalf("before deletion worker=(%t,%v)", processed, err)
 	}
 	provider.get = func(id string) (contracts.ProviderPayment, error) {
 		mode := false
-		return contracts.ProviderPayment{ID: id, Status: "succeeded", Paid: true, AmountValue: "58.00", Currency: "RUB", OrderID: orderID, ShopID: "654321", Test: &mode}, nil
+		return contracts.ProviderPayment{ID: id, Status: "succeeded", Paid: true, AmountValue: "29.00", Currency: "RUB", OrderID: order.ID, ShopID: "654321", Test: &mode}, nil
 	}
-	f.configureYooKassaMode(t, owner, provider, "production", "654321")
-	tx, err := f.pool.Begin(context.Background())
+
+	tx, err := f.pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	grantUntil := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Microsecond)
-	grant, err := f.module.GrantAdminTx(context.Background(), tx, owner.id, 0, 3, grantUntil, "approved administrative capacity")
-	if err != nil {
-		_ = tx.Rollback(context.Background())
+	defer tx.Rollback(ctx)
+	if _, err := f.module.Lock(ctx, tx, owner.id); err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.Commit(context.Background()); err != nil {
+	if err := f.module.DeleteAccountTx(ctx, tx, owner.id); err != nil {
 		t.Fatal(err)
 	}
-	order := createYooKassaOrder(t, f, owner, "fb8000eb-3060-4dde-8d25-5f2249678136", 2)
-	orderID = order.ID
-	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
-		t.Fatalf("production create worker=(%t,%v)", processed, err)
-	}
-	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.orders SET next_reconcile_at=now() WHERE id=$1`, order.ID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE accounts.accounts SET status='deleted',deleted_at=now(),version=version+1 WHERE id=$1`, owner.id); err != nil {
 		t.Fatal(err)
 	}
-	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
-		t.Fatalf("production success worker=(%t,%v)", processed, err)
-	}
-	var status, fulfillment, source string
-	var paidQuota, paidVersion, adminQuota int
-	var adminVersion int64
-	if err := f.pool.QueryRow(context.Background(), `SELECT o.status,o.fulfillment_status,e.source,e.monitor_limit,e.version,g.monitor_limit,g.version
-		FROM billing.orders o JOIN billing.entitlements e USING(account_id) JOIN billing.admin_grants g USING(account_id) WHERE o.id=$1`, order.ID).
-		Scan(&status, &fulfillment, &source, &paidQuota, &paidVersion, &adminQuota, &adminVersion); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if status != "succeeded" || fulfillment != "fulfilled" || source != "yookassa" || paidQuota != 2 || paidVersion != 1 || adminQuota != 3 || adminVersion != grant.Admin.Version {
-		t.Fatalf("production paid/admin components order=%s/%s paid=%s/%d/v%d admin=%d/v%d original=%+v", status, fulfillment, source, paidQuota, paidVersion, adminQuota, adminVersion, grant)
-	}
-	readTx, err := f.pool.Begin(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	combined, err := f.module.Lock(context.Background(), readTx, owner.id)
-	_ = readTx.Rollback(context.Background())
-	if err != nil || combined.Quota != 5 || combined.Source != "combined" || combined.Version != int64(paidVersion)+adminVersion {
-		t.Fatalf("combined production entitlement=%+v err=%v", combined, err)
-	}
-	if combined.ActiveUntil == nil || !combined.ActiveUntil.Equal(grantUntil) {
-		t.Fatalf("combined expiry=%v, want earliest component expiry %v", combined.ActiveUntil, grantUntil)
-	}
-	providerPaymentID = "payment2234567890123456"
-	var paidBefore time.Time
-	var anchorBefore int
-	if err := f.pool.QueryRow(context.Background(), `SELECT valid_until,renewal_anchor_day FROM billing.entitlements WHERE account_id=$1`, owner.id).Scan(&paidBefore, &anchorBefore); err != nil {
-		t.Fatal(err)
-	}
-	secondOrder := createYooKassaOrder(t, f, owner, "d5edcaba-459b-4d57-93bf-b9c54854d051", 2)
-	orderID = secondOrder.ID
-	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
-		t.Fatalf("renewal create worker=(%t,%v)", processed, err)
-	}
-	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.orders SET next_reconcile_at=now() WHERE id=$1`, secondOrder.ID); err != nil {
+	if _, err := f.pool.Exec(ctx, `UPDATE billing.orders SET next_reconcile_at=now() WHERE id=$1`, order.ID); err != nil {
 		t.Fatal(err)
 	}
 	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
-		t.Fatalf("renewal success worker=(%t,%v)", processed, err)
+		t.Fatalf("known payment after deletion worker=(%t,%v)", processed, err)
 	}
-	var secondStatus, secondFulfillment string
-	var paidAfter time.Time
-	var renewedPaidQuota, anchorAfter int
-	var renewedAdminQuota int
-	var renewedAdminUntil time.Time
-	var renewedAdminVersion int64
-	if err := f.pool.QueryRow(context.Background(), `SELECT o.status,o.fulfillment_status,e.valid_until,e.monitor_limit,e.renewal_anchor_day,g.monitor_limit,g.valid_until,g.version
-		FROM billing.orders o JOIN billing.entitlements e USING(account_id) JOIN billing.admin_grants g USING(account_id) WHERE o.id=$1`, secondOrder.ID).
-		Scan(&secondStatus, &secondFulfillment, &paidAfter, &renewedPaidQuota, &anchorAfter, &renewedAdminQuota, &renewedAdminUntil, &renewedAdminVersion); err != nil {
+	var status, fulfillment, reason string
+	var wallet, originalCredits, paymentCredits int
+	if err := f.pool.QueryRow(ctx, `SELECT status,fulfillment_status,fulfillment_reason,
+        (SELECT count(*) FROM billing.wallets WHERE account_id=$2),
+        (SELECT count(*) FROM billing.wallet_ledger WHERE account_id=$2 AND kind='admin_credit'),
+        (SELECT count(*) FROM billing.wallet_ledger WHERE order_id=$1)
+        FROM billing.orders WHERE id=$1`, order.ID, owner.id).
+		Scan(&status, &fulfillment, &reason, &wallet, &originalCredits, &paymentCredits); err != nil {
 		t.Fatal(err)
 	}
-	if secondStatus != "succeeded" || secondFulfillment != "fulfilled" || renewedPaidQuota != 2 || anchorAfter != anchorBefore || paidAfter.Before(paidBefore.AddDate(0, 0, 27)) || renewedAdminQuota != grant.Quota || renewedAdminVersion != grant.Admin.Version || !renewedAdminUntil.Equal(grantUntil) {
-		t.Fatalf("paid renewal changed wrong component: order=%s/%s paid quota=%d expiry=%s->%s anchor=%d->%d admin=%d/v%d until=%s", secondStatus, secondFulfillment, renewedPaidQuota, paidBefore, paidAfter, anchorBefore, anchorAfter, renewedAdminQuota, renewedAdminVersion, renewedAdminUntil)
-	}
-	renewedTx, err := f.pool.Begin(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	renewedCombined, err := f.module.Lock(context.Background(), renewedTx, owner.id)
-	_ = renewedTx.Rollback(context.Background())
-	if err != nil || renewedCombined.Version != combined.Version+1 || renewedCombined.Quota != combined.Quota {
-		t.Fatalf("renewed combined entitlement=%+v err=%v, want only paid version advanced", renewedCombined, err)
-	}
-	adminTx, err := f.pool.Begin(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.module.ExpireAdminTx(context.Background(), adminTx, owner.id, renewedCombined.Version, "expire admin component in test"); err != nil {
-		_ = adminTx.Rollback(context.Background())
-		t.Fatalf("expire admin component: %v", err)
-	}
-	if err := adminTx.Commit(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	// Anchor the fixture outside the effective window even on databases where
-	// transaction-start time and application time differ by a small amount.
-	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.admin_grants SET valid_until=clock_timestamp()-interval '1 minute' WHERE account_id=$1`, owner.id); err != nil {
-		t.Fatal(err)
-	}
-	paidTx, err := f.pool.Begin(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	paidOnly, err := f.module.Lock(context.Background(), paidTx, owner.id)
-	_ = paidTx.Rollback(context.Background())
-	if err != nil || paidOnly.Quota != 2 || paidOnly.Source != "yookassa" || paidOnly.Paid == nil || paidOnly.Admin == nil {
-		t.Fatalf("active paid component after admin expiry=%+v err=%v", paidOnly, err)
-	}
-	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.entitlements SET valid_until=now()-interval '1 second' WHERE account_id=$1`, owner.id); err != nil {
-		t.Fatal(err)
-	}
-	expiredTx, err := f.pool.Begin(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	expired, err := f.module.Lock(context.Background(), expiredTx, owner.id)
-	_ = expiredTx.Rollback(context.Background())
-	if err != nil || expired.Quota != 0 || expired.Paid == nil || expired.Admin == nil || expired.Admin.ActiveUntil == nil || expired.Admin.ActiveUntil.After(time.Now()) {
-		t.Fatalf("expired components were dropped or remained active: entitlement=%+v err=%v", expired, err)
+	if status != "succeeded" || fulfillment != "blocked" || reason != "account_deleted" || wallet != 0 || originalCredits != 1 || paymentCredits != 0 {
+		t.Fatalf("order=%s/%s/%s wallet=%d historical credit=%d payment credit=%d", status, fulfillment, reason, wallet, originalCredits, paymentCredits)
 	}
 }
 

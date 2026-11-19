@@ -72,8 +72,8 @@ func TestCodeProvedAlternateEmailRemainsEligibleAcrossAllFiveChecks(t *testing.T
 	if _, err := f.pool.Exec(ctx, `INSERT INTO auth.credentials(account_id,email,password_hash,email_verified_at) VALUES($1,$2,'test-only',now())`, accountID, loginEmail); err != nil {
 		t.Fatalf("insert verified login email: %v", err)
 	}
-	if err := billing.New(f.pool, true).GrantLocal(ctx, accountID, 5, time.Now().Add(time.Hour), "code proof integration"); err != nil {
-		t.Fatalf("grant isolated test entitlement: %v", err)
+	if err := billing.New(f.pool, true).CreditLocal(ctx, accountID, 2600, "code proof integration"); err != nil {
+		t.Fatalf("fund test wallet: %v", err)
 	}
 	m, err := NewMessenger(f.pool, integrationWebhookKey, MessengerConfig{
 		EmailEnabled:       true,

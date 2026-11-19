@@ -15,8 +15,8 @@ func TestStatisticsPeriodsKeepUnknownSeparateAndWeightLatencySamples(t *testing.
 	f := newMonitorFixture(t)
 	owner := f.newActor(t, "Mobile statistics owner")
 	other := f.newActor(t, "Foreign mobile statistics owner")
-	f.grant(t, owner, 3)
-	f.grant(t, other, 1)
+	f.fund(t, owner)
+	f.fund(t, other)
 	monitor, status := f.create(t, owner, "Statistics monitor", "statistics.example", true)
 	if status != http.StatusCreated {
 		t.Fatalf("create monitor status=%d", status)
@@ -40,7 +40,7 @@ func TestStatisticsPeriodsKeepUnknownSeparateAndWeightLatencySamples(t *testing.
 	 (monitor_id,account_id,day,unknown_count) VALUES ($1,$2,(now() AT TIME ZONE 'UTC')::date-1,4)`, unknown.ID, owner.account.ID); err != nil {
 		t.Fatalf("seed UNKNOWN-only aggregate: %v", err)
 	}
-	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.entitlements SET valid_until=now()-interval '1 second' WHERE account_id=$1`, owner.account.ID); err != nil {
+	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.wallets SET available_units=0 WHERE account_id=$1`, owner.account.ID); err != nil {
 		t.Fatalf("expire owner quota for read-only statistics case: %v", err)
 	}
 
@@ -108,8 +108,8 @@ func TestOwnerIncidentFeedUsesAsOfKeysetAndNinetyDayRetention(t *testing.T) {
 	f := newMonitorFixture(t)
 	owner := f.newActor(t, "Mobile incidents owner")
 	other := f.newActor(t, "Foreign incidents owner")
-	f.grant(t, owner, 8)
-	f.grant(t, other, 1)
+	f.fund(t, owner)
+	f.fund(t, other)
 	monitors := make([]monitorcontracts.Monitor, 4)
 	for index := range monitors {
 		var status int

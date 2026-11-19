@@ -51,8 +51,12 @@ type Bridge = {
   ): Promise<Record<string, unknown> | null>;
   clearMonitorDraft(accountId: string, sessionId: string): Promise<void>;
   savePaymentIntent(value: PaymentIntent): Promise<void>;
-  restorePaymentIntent(): Promise<PaymentIntent | null>;
-  clearPaymentIntent(): Promise<void>;
+  restorePaymentIntent(): Promise<PaymentIntent | LegacyPaymentIntent | null>;
+  clearPaymentIntent(
+    accountId: string,
+    sessionId: string,
+    reference: string,
+  ): Promise<void>;
   sdkCapabilities(): Promise<{
     configured: boolean;
     shopId: string;
@@ -132,16 +136,19 @@ export type PendingEmailVerification = {
 };
 
 export type PaymentIntent = {
+  version: 2;
   accountId: string;
   sessionId: string;
   idempotencyKey: string;
   checkoutKind: "android_sdk" | "redirect";
-  purchaseKind: "add" | "renew";
-  packageId: string;
-  monitorCount: number;
-  priceVersion: number;
+  amountMinor: number;
   orderId?: string;
   createdAt: string;
+};
+
+type LegacyPaymentIntent = {
+  version: 1;
+  orderId: string;
 };
 
 export const native = NativeModules.HeartbeatBridge as Bridge;

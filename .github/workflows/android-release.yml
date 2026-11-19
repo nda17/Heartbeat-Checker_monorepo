@@ -17,6 +17,11 @@ on:
         required: false
         default: false
         type: boolean
+      require_yookassa_native:
+        description: Require a signed APK with verified live YooKassa SDK configuration
+        required: false
+        default: false
+        type: boolean
       candidate_run_id:
         description: Candidate workflow run ID (required only when publishing)
         required: false
@@ -48,9 +53,10 @@ jobs:
       HUAWEI_APP_ID: ${{ inputs.enable_huawei && vars.HUAWEI_APP_ID || '' }}
       HUAWEI_PROJECT_ID: ${{ inputs.enable_huawei && vars.HUAWEI_PROJECT_ID || '' }}
       HUAWEI_CP_ID: ${{ inputs.enable_huawei && vars.HUAWEI_CP_ID || '' }}
-      YOOKASSA_SDK_CLIENT_KEY: ${{ vars.YOOKASSA_SDK_CLIENT_KEY }}
+      YOOKASSA_SDK_CLIENT_KEY: ${{ secrets.YOOKASSA_SDK_CLIENT_KEY }}
       YOOKASSA_SHOP_ID: ${{ vars.YOOKASSA_SHOP_ID }}
       YOOKASSA_SDK_ENVIRONMENT: ${{ vars.YOOKASSA_SDK_ENVIRONMENT }}
+      REQUIRE_YOOKASSA_NATIVE: ${{ inputs.require_yookassa_native }}
     steps:
       - name: Validate release inputs
         shell: bash
@@ -64,6 +70,11 @@ jobs:
             for name in HUAWEI_APP_ID HUAWEI_PROJECT_ID HUAWEI_CP_ID; do
               [[ "${!name}" =~ ^[0-9]{1,32}$ ]] || { echo 'Configure complete public Huawei app identity'; exit 1; }
             done
+          fi
+          if [[ "$REQUIRE_YOOKASSA_NATIVE" == true ]]; then
+            [[ "$YOOKASSA_SDK_ENVIRONMENT" == live && "$YOOKASSA_SDK_CLIENT_KEY" =~ ^live_[A-Za-z0-9_-]{5,507}$ && "$YOOKASSA_SHOP_ID" =~ ^[0-9]{4,16}$ ]] || {
+              echo 'Configure the live public YooKassa mobile SDK profile'; exit 1;
+            }
           fi
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -147,8 +158,28 @@ jobs:
           "$RUNNER_TEMP/hc-ops/hc-ops" android-manifest --apk "$apk" \
             --signature "$RUNNER_TEMP/android-signature.txt" --badging "$RUNNER_TEMP/android-badging.txt" \
             --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" \
-            --version-name 2.3.4 --version-code 16 --output android-release/release.json
+            --version-name 2.4.0 --version-code 17 --output android-release/release.json
           "$RUNNER_TEMP/hc-ops/hc-ops" android-release android-release/release.json --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" --apk "$apk"
+          if [[ "$REQUIRE_YOOKASSA_NATIVE" == true ]]; then
+            umask 077
+            build_config=$(mktemp)
+            trap 'rm -f "$build_config"' EXIT
+            apkanalyzer dex code --class ru.heartbeatchecker.app.BuildConfig "$apk" > "$build_config" 2>/dev/null || {
+              echo 'Could not inspect the signed APK BuildConfig'; exit 1;
+            }
+            key_hash=$(printf '%s' "$YOOKASSA_SDK_CLIENT_KEY" | sha256sum | cut -d' ' -f1)
+            apk_key=$(sed -nE 's/^\.field public static final YOOKASSA_SDK_CLIENT_KEY:Ljava\/lang\/String; = "(live_[A-Za-z0-9_-]{5,507})"$/\1/p' "$build_config")
+            apk_key_hash=$(printf '%s' "$apk_key" | sha256sum | cut -d' ' -f1)
+            unset apk_key
+            [[ $(grep -Fxc '.field public static final YOOKASSA_SDK_ENVIRONMENT:Ljava/lang/String; = "live"' "$build_config") == 1 &&
+               $(grep -Fxc ".field public static final YOOKASSA_SHOP_ID:Ljava/lang/String; = \"$YOOKASSA_SHOP_ID\"" "$build_config") == 1 &&
+               "$apk_key_hash" == "$key_hash" ]] || {
+              echo 'Signed APK YooKassa SDK profile does not match the reviewed live configuration'; exit 1;
+            }
+            apk_hash=$(jq -er '.sha256' android-release/release.json)
+            jq -n --arg apk "$apk_hash" --arg source "$SOURCE_SHA" --arg shop "$YOOKASSA_SHOP_ID" --arg key_hash "$key_hash" \
+              '{schemaVersion:1, sourceSha:$source, apkSha256:$apk, environment:"live", shopId:$shop, publicSdkKeySha256:$key_hash}' > android-release/yookassa-native-config.json
+          fi
       - name: Retain immutable signed build before publication
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -157,6 +188,7 @@ jobs:
             android-release/Heartbeat-Checker.apk
             android-release/release.json
             android-release/huawei-config.json
+            android-release/yookassa-native-config.json
           if-no-files-found: error
           retention-days: 90
   publish:
@@ -173,6 +205,7 @@ jobs:
       HUAWEI_APP_ID: ${{ inputs.enable_huawei && vars.HUAWEI_APP_ID || '' }}
       HUAWEI_PROJECT_ID: ${{ inputs.enable_huawei && vars.HUAWEI_PROJECT_ID || '' }}
       HUAWEI_CP_ID: ${{ inputs.enable_huawei && vars.HUAWEI_CP_ID || '' }}
+      REQUIRE_YOOKASSA_NATIVE: ${{ inputs.require_yookassa_native }}
     steps:
       - name: Validate explicit promotion inputs
         shell: bash
@@ -221,10 +254,18 @@ jobs:
           chmod 700 "$RUNNER_TEMP/hc-ops/hc-ops"
           [[ "$("$RUNNER_TEMP/hc-ops/hc-ops" version)" == "$SOURCE_SHA" ]]
       - name: Recheck immutable signed artifact
+        shell: bash
         run: |
+          set -euo pipefail
           "$RUNNER_TEMP/hc-ops/hc-ops" android-release android-release/release.json --source-sha "$SOURCE_SHA" --fingerprint "$SIGNING_FINGERPRINT" --apk android-release/Heartbeat-Checker.apk
           "$RUNNER_TEMP/hc-ops/hc-ops" android-huawei --receipt android-release/huawei-config.json --apk android-release/Heartbeat-Checker.apk \
             --enabled "$HUAWEI_PUSH_ENABLED" --app-id "$HUAWEI_APP_ID" --project-id "$HUAWEI_PROJECT_ID" --cp-id "$HUAWEI_CP_ID"
+          if [[ "$REQUIRE_YOOKASSA_NATIVE" == true ]]; then
+            apk_hash=$(jq -er '.sha256' android-release/release.json)
+            jq -e --arg apk "$apk_hash" --arg source "$SOURCE_SHA" \
+              '.schemaVersion == 1 and .sourceSha == $source and .apkSha256 == $apk and .environment == "live" and (.shopId | test("^[0-9]{4,16}$")) and (.publicSdkKeySha256 | test("^[0-9a-f]{64}$"))' \
+              android-release/yookassa-native-config.json >/dev/null
+          fi
       - name: Publish exact APK through protected backup runner
         shell: bash
         env:
@@ -265,6 +306,7 @@ jobs:
           path: |
             android-release/release.json
             android-release/huawei-config.json
+            android-release/yookassa-native-config.json
             android-release/publication-receipt.json
           if-no-files-found: error
           retention-days: 90

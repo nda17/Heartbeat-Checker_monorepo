@@ -56,9 +56,12 @@ func newSDKActor(t *testing.T, f *billingFixture, name string) sdkActor {
 func (f *billingFixture) configureYooKassaSDK(t *testing.T, owner sdkActor, provider *fakeYooKassa) {
 	t.Helper()
 	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
-	module, err := NewConfigured(f.pool, false, Config{Provider: "yookassa", Mode: "test", ShopID: "123456",
-		TestAccountIDs: []string{owner.id}, PaymentProvider: provider, NativeSDKEnabled: true,
-		MailEncryptionKey: key, SessionLease: auth.SessionLeaseTx}, f.accounts)
+	cfg := Config{Provider: "yookassa", Mode: provider.mode, ShopID: provider.shop(),
+		PaymentProvider: provider, NativeSDKEnabled: true, MailEncryptionKey: key, SessionLease: auth.SessionLeaseTx}
+	if cfg.Mode == "test" {
+		cfg.TestAccountIDs = []string{owner.id}
+	}
+	module, err := NewConfigured(f.pool, false, cfg, f.accounts)
 	if err != nil {
 		t.Fatalf("configure native YooKassa SDK: %v", err)
 	}
@@ -120,14 +123,10 @@ func forceSDKExpiry(t *testing.T, f *billingFixture, orderID string, request boo
 	}
 }
 
-func createNativeOrder(t *testing.T, f *billingFixture, actor sdkActor, key string, count int) nativeOrderResponse {
+func createNativeOrder(t *testing.T, f *billingFixture, actor sdkActor, key string, amountMinor int) nativeOrderResponse {
 	t.Helper()
-	pricing, err := f.module.Pricing(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	rec := f.sdkRequest(t, actor, http.MethodPost, "/api/v1/billing/native/orders", map[string]any{
-		"monitorCount": count, "idempotencyKey": key, "priceVersion": pricing.Version,
+	rec := f.sdkRequest(t, actor, http.MethodPost, "/api/v1/billing/native/topups", map[string]any{
+		"amountMinor": amountMinor, "idempotencyKey": key,
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create native order status=%d body=%s", rec.Code, rec.Body.String())
@@ -153,8 +152,8 @@ func TestNativeSDKQuoteIsStableIdempotentAndBoundToCurrentAndroidSession(t *test
 	provider := &fakeYooKassa{mode: "test", shopID: "123456"}
 	f.configureYooKassaSDK(t, owner, provider)
 	key := "bc3d01d0-52c7-4518-9eca-886db22c90f0"
-	first := createNativeOrder(t, f, owner, key, 2)
-	if first.Order.Provider != "yookassa" || first.Order.CheckoutKind != "android_sdk" || first.Order.ReturnTarget != "android" || first.Order.AmountMinor != 5800 || first.Order.ExpiresAt != nil {
+	first := createNativeOrder(t, f, owner, key, 5800)
+	if first.Order.Provider != "yookassa" || first.Order.PurchaseKind != "topup" || first.Order.CheckoutKind != "android_sdk" || first.Order.ReturnTarget != "android" || first.Order.AmountMinor != 5800 || first.Order.ExpiresAt != nil {
 		t.Fatalf("native quote did not persist expected immutable checkout: %+v", first.Order)
 	}
 	if first.SDK.ShopID != "123456" || first.SDK.AmountMinor != 5800 || first.SDK.Currency != "RUB" || first.SDK.SavePaymentMethod != "off" || len(first.SDK.AllowedPaymentMethods) != 1 || first.SDK.AllowedPaymentMethods[0] != "BANK_CARD" {
@@ -171,12 +170,12 @@ func TestNativeSDKQuoteIsStableIdempotentAndBoundToCurrentAndroidSession(t *test
 	if databaseDraftRemainingSeconds < 14*60 || databaseDraftRemainingSeconds > 15*60 || requestExpiry.Sub(draft) != 40*time.Minute {
 		t.Fatalf("database quote windows remaining=%ds draft=%s request=%s", databaseDraftRemainingSeconds, draft, requestExpiry)
 	}
-	retry := createNativeOrder(t, f, owner, key, 2)
+	retry := createNativeOrder(t, f, owner, key, 5800)
 	if retry.Order.ID != first.Order.ID || retry.SDK.DraftExpiresAt != first.SDK.DraftExpiresAt || retry.Order.SDK == nil || retry.Order.SDK.DraftExpiresAt != first.Order.SDK.DraftExpiresAt {
 		t.Fatalf("idempotent quote changed stored order/deadline: first=%+v retry=%+v", first, retry)
 	}
-	changed := f.sdkRequest(t, owner, http.MethodPost, "/api/v1/billing/native/orders", map[string]any{
-		"monitorCount": 3, "idempotencyKey": key, "priceVersion": 1,
+	changed := f.sdkRequest(t, owner, http.MethodPost, "/api/v1/billing/native/topups", map[string]any{
+		"amountMinor": 8700, "idempotencyKey": key,
 	})
 	if changed.Code != http.StatusConflict {
 		t.Fatalf("same-key changed quote status=%d want 409: %s", changed.Code, changed.Body.String())
@@ -184,7 +183,7 @@ func TestNativeSDKQuoteIsStableIdempotentAndBoundToCurrentAndroidSession(t *test
 	if got := f.sdkRequest(t, other, http.MethodPost, "/api/v1/billing/native/orders/"+first.Order.ID+"/cancel", map[string]any{}); got.Code != http.StatusNotFound {
 		t.Fatalf("foreign account reached native order cancel: status=%d body=%s", got.Code, got.Body.String())
 	}
-	if got := f.request(t, owner.billingActor, http.MethodPost, "/api/v1/billing/native/orders", map[string]any{"monitorCount": 1, "idempotencyKey": "3c8a392a-2a87-460e-a684-212f7f580b4f", "priceVersion": 1}); got.Code != http.StatusForbidden {
+	if got := f.request(t, owner.billingActor, http.MethodPost, "/api/v1/billing/native/topups", map[string]any{"amountMinor": 2900, "idempotencyKey": "3c8a392a-2a87-460e-a684-212f7f580b4f"}); got.Code != http.StatusForbidden {
 		t.Fatalf("web-cookie session reached SDK-only route: status=%d body=%s", got.Code, got.Body.String())
 	}
 	if _, err := f.pool.Exec(context.Background(), `UPDATE auth.sessions SET revoked_at=clock_timestamp() WHERE id=$1`, owner.sessionID); err != nil {
@@ -200,7 +199,7 @@ func TestNativeSDKTokenAttachIsEncryptedImmutableAndReplaySafe(t *testing.T) {
 	owner := newSDKActor(t, f, "Native token attach owner")
 	provider := &fakeYooKassa{mode: "test", shopID: "123456", paymentMethodType: "bank_card"}
 	f.configureYooKassaSDK(t, owner, provider)
-	quote := createNativeOrder(t, f, owner, "45b3a272-0b6d-433c-9d25-6c2d75687c79", 1)
+	quote := createNativeOrder(t, f, owner, "45b3a272-0b6d-433c-9d25-6c2d75687c79", 2900)
 	secretToken := "synthetic-one-time-yookassa-token-DoNotPersist"
 	attached := attachNativeToken(t, f, owner, quote.Order.ID, secretToken)
 	if attached.Code != http.StatusOK {
@@ -248,7 +247,7 @@ func TestNativeSDKTokenAttachIsEncryptedImmutableAndReplaySafe(t *testing.T) {
 func TestNativeSDKAttachedTokenReachesProviderOnlyForAuthoritativeCreateAndSuccess(t *testing.T) {
 	f := newBillingFixture(t)
 	owner := newSDKActor(t, f, "Native SDK provider flow owner")
-	provider := &fakeYooKassa{mode: "test", shopID: "123456", paymentMethodType: "bank_card"}
+	provider := &fakeYooKassa{mode: "production", shopID: "123456", paymentMethodType: "bank_card"}
 	var orderID string
 	provider.create = func(key string, body []byte) (contracts.ProviderPayment, error) {
 		var input struct {
@@ -267,13 +266,13 @@ func TestNativeSDKAttachedTokenReachesProviderOnlyForAuthoritativeCreateAndSucce
 		if key != orderID || input.Metadata.OrderID != orderID || input.PaymentToken != "provider-only-token-for-test" {
 			return contracts.ProviderPayment{}, fmt.Errorf("unexpected SDK create request identity or token")
 		}
-		mode := true
+		mode := false
 		return contracts.ProviderPayment{ID: testProviderID, Status: "pending", AmountValue: input.Amount.Value,
 			Currency: input.Amount.Currency, OrderID: orderID, ShopID: "123456", Test: &mode,
 			PaymentMethodType: "bank_card"}, nil
 	}
 	provider.get = func(id string) (contracts.ProviderPayment, error) {
-		mode := true
+		mode := false
 		if id != testProviderID {
 			return contracts.ProviderPayment{}, fmt.Errorf("unexpected payment lookup id")
 		}
@@ -281,7 +280,7 @@ func TestNativeSDKAttachedTokenReachesProviderOnlyForAuthoritativeCreateAndSucce
 			OrderID: orderID, ShopID: "123456", Test: &mode, PaymentMethodType: "bank_card"}, nil
 	}
 	f.configureYooKassaSDK(t, owner, provider)
-	quote := createNativeOrder(t, f, owner, "50f2b86d-98ed-46e5-b69c-b5d62d2deca7", 1)
+	quote := createNativeOrder(t, f, owner, "50f2b86d-98ed-46e5-b69c-b5d62d2deca7", 2900)
 	orderID = quote.Order.ID
 	if got := attachNativeToken(t, f, owner, quote.Order.ID, "provider-only-token-for-test"); got.Code != http.StatusOK {
 		t.Fatalf("attach=%d %s", got.Code, got.Body.String())
@@ -299,14 +298,14 @@ func TestNativeSDKAttachedTokenReachesProviderOnlyForAuthoritativeCreateAndSucce
 	if processed, err := runPaymentWorker(t, f); err != nil || !processed {
 		t.Fatalf("authoritative SDK success lookup=(%t,%v)", processed, err)
 	}
-	var status, fulfillment, source string
-	var quota, reports int
-	if err := f.pool.QueryRow(context.Background(), `SELECT o.status,o.fulfillment_status,e.source,e.monitor_limit,(SELECT count(*) FROM billing.payment_reports r WHERE r.order_id=o.id)
-		FROM billing.orders o JOIN billing.entitlements e USING(account_id) WHERE o.id=$1`, orderID).Scan(&status, &fulfillment, &source, &quota, &reports); err != nil {
+	var status, fulfillment, kind string
+	var amount, reports int
+	if err := f.pool.QueryRow(context.Background(), `SELECT o.status,o.fulfillment_status,l.kind,l.amount_minor,(SELECT count(*) FROM billing.payment_reports r WHERE r.order_id=o.id)
+		FROM billing.orders o JOIN billing.wallet_ledger l ON l.order_id=o.id WHERE o.id=$1`, orderID).Scan(&status, &fulfillment, &kind, &amount, &reports); err != nil {
 		t.Fatal(err)
 	}
-	if status != "succeeded" || fulfillment != "fulfilled" || source != "yookassa_test" || quota != 1 || reports != 1 {
-		t.Fatalf("authoritative SDK success did not fulfill exactly once: %s/%s %s/%d reports=%d", status, fulfillment, source, quota, reports)
+	if status != "succeeded" || fulfillment != "fulfilled" || kind != "top_up" || amount != 2900 || reports != 1 {
+		t.Fatalf("authoritative SDK success did not fulfill exactly once: %s/%s %s/%d reports=%d", status, fulfillment, kind, amount, reports)
 	}
 	var encrypted []byte
 	if err := f.pool.QueryRow(context.Background(), `SELECT encrypted_request FROM billing.sdk_payment_requests WHERE order_id=$1`, orderID).Scan(&encrypted); err != nil {
@@ -319,7 +318,7 @@ func TestNativeSDKAttachedTokenReachesProviderOnlyForAuthoritativeCreateAndSucce
 
 func TestNativeSDKTestProfileCoexistsWithHostedProductionAndRoutesPersistedOrders(t *testing.T) {
 	f := newBillingFixture(t)
-	owner := newSDKActor(t, f, "Owner with live hosted package")
+	owner := newSDKActor(t, f, "Owner with live balance")
 	liveProvider := &fakeYooKassa{mode: "production", shopID: "654321"}
 	testProvider := &fakeYooKassa{mode: "test", shopID: "123456", paymentMethodType: "bank_card"}
 	key := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
@@ -336,34 +335,23 @@ func TestNativeSDKTestProfileCoexistsWithHostedProductionAndRoutesPersistedOrder
 	module.Register(mux, authProtect(t, f.pool, f.accounts))
 	f.module, f.handler = module, mux
 
-	var livePackageID string
-	var liveUntil time.Time
-	if err := f.pool.QueryRow(context.Background(), `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason)
-		VALUES($1,2,clock_timestamp()+interval '20 days','yookassa','pre-existing hosted live package') RETURNING id,valid_until`, owner.id).Scan(&livePackageID, &liveUntil); err != nil {
-		t.Fatal(err)
-	}
-	pricing, err := f.module.Pricing(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	creditPaymentFixture(t, f, owner.billingActor, 1500)
 	outsider := newSDKActor(t, f, "Non-allowlisted native SDK account")
-	outsiderQuote := f.sdkRequest(t, outsider, http.MethodPost, "/api/v1/billing/native/orders", map[string]any{
-		"monitorCount": 1, "idempotencyKey": "e0189fae-d65b-4cc6-932e-7cb91933ab86", "priceVersion": pricing.Version,
-		"purchaseKind": "purchase",
+	outsiderQuote := f.sdkRequest(t, outsider, http.MethodPost, "/api/v1/billing/native/topups", map[string]any{
+		"amountMinor": 2900, "idempotencyKey": "e0189fae-d65b-4cc6-932e-7cb91933ab86",
 	})
 	if outsiderQuote.Code != http.StatusConflict || !strings.Contains(outsiderQuote.Body.String(), "sdk_unavailable") {
 		t.Fatalf("non-allowlisted native account reached test SDK checkout: status=%d body=%s", outsiderQuote.Code, outsiderQuote.Body.String())
 	}
-	var outsiderTestPackages int
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.entitlements WHERE account_id=$1 AND source='yookassa_test'`, outsider.id).Scan(&outsiderTestPackages); err != nil || outsiderTestPackages != 0 {
-		t.Fatalf("test profile was applied to non-allowlisted account: packages=%d err=%v", outsiderTestPackages, err)
+	var outsiderOrders int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.orders WHERE account_id=$1`, outsider.id).Scan(&outsiderOrders); err != nil || outsiderOrders != 0 {
+		t.Fatalf("test profile was applied to non-allowlisted account: orders=%d err=%v", outsiderOrders, err)
 	}
-	quoteResponse := f.sdkRequest(t, owner, http.MethodPost, "/api/v1/billing/native/orders", map[string]any{
-		"monitorCount": 1, "idempotencyKey": "3f49718b-59d1-40fc-a3d1-3a9dbe213149", "priceVersion": pricing.Version,
-		"purchaseKind": "purchase",
+	quoteResponse := f.sdkRequest(t, owner, http.MethodPost, "/api/v1/billing/native/topups", map[string]any{
+		"amountMinor": 2900, "idempotencyKey": "3f49718b-59d1-40fc-a3d1-3a9dbe213149",
 	})
 	if quoteResponse.Code != http.StatusCreated {
-		t.Fatalf("create native test purchase while live package exists: status=%d body=%s", quoteResponse.Code, quoteResponse.Body.String())
+		t.Fatalf("create native test top-up while a funded wallet exists: status=%d body=%s", quoteResponse.Code, quoteResponse.Body.String())
 	}
 	var quote nativeOrderResponse
 	if err := json.Unmarshal(quoteResponse.Body.Bytes(), &quote); err != nil {
@@ -376,19 +364,18 @@ func TestNativeSDKTestProfileCoexistsWithHostedProductionAndRoutesPersistedOrder
 	if orderMode != "test" || orderShop != "123456" || quote.SDK.ShopID != "123456" || quote.SDK.Environment != "test" {
 		t.Fatalf("native quote did not persist the test profile independently: order=%+v sdk=%+v", quote.Order, quote.SDK)
 	}
-	if quote.Order.PurchaseKind != "purchase" {
-		t.Fatalf("a test purchase was silently turned into renewal of live package: %+v", quote.Order)
+	if quote.Order.PurchaseKind != "topup" {
+		t.Fatalf("the native quote is not a test top-up: %+v", quote.Order)
 	}
 	orderID := quote.Order.ID
 	if got := attachNativeToken(t, f, owner, orderID, "dual-profile-one-time-token"); got.Code != http.StatusOK {
 		t.Fatalf("attach native test token status=%d: %s", got.Code, got.Body.String())
 	}
-	wrongNativeRenewal := f.sdkRequest(t, owner, http.MethodPost, "/api/v1/billing/native/orders", map[string]any{
-		"monitorCount": 2, "idempotencyKey": "b15a7ec0-1b44-4f8b-9dc4-ff26c911b0a9", "priceVersion": pricing.Version,
-		"purchaseKind": "renew", "packageId": livePackageID,
+	hostedReplay := f.request(t, owner.billingActor, http.MethodPost, "/api/v1/billing/topups", map[string]any{
+		"amountMinor": 2900, "idempotencyKey": "3f49718b-59d1-40fc-a3d1-3a9dbe213149",
 	})
-	if wrongNativeRenewal.Code != http.StatusConflict {
-		t.Fatalf("native test profile accepted renewal of hosted live package: status=%d body=%s", wrongNativeRenewal.Code, wrongNativeRenewal.Body.String())
+	if hostedReplay.Code != http.StatusConflict {
+		t.Fatalf("hosted checkout replayed a native order: status=%d body=%s", hostedReplay.Code, hostedReplay.Body.String())
 	}
 	var seenCreateOrder string
 	testProvider.create = func(_ string, body []byte) (contracts.ProviderPayment, error) {
@@ -418,7 +405,7 @@ func TestNativeSDKTestProfileCoexistsWithHostedProductionAndRoutesPersistedOrder
 	if err := f.module.service.ConfigureNativeProfile("production", "654321"); err != nil {
 		t.Fatalf("switch active SDK profile: %v", err)
 	}
-	replay := createNativeOrder(t, f, owner, "3f49718b-59d1-40fc-a3d1-3a9dbe213149", 1)
+	replay := createNativeOrder(t, f, owner, "3f49718b-59d1-40fc-a3d1-3a9dbe213149", 2900)
 	if replay.Order.ID != orderID || replay.SDK.Environment != "test" || replay.SDK.ShopID != "123456" {
 		t.Fatalf("idempotent replay followed changed configuration: %+v", replay)
 	}
@@ -441,50 +428,19 @@ func TestNativeSDKTestProfileCoexistsWithHostedProductionAndRoutesPersistedOrder
 		t.Fatalf("authoritative GET did not use persisted test profile: test=%v live=%v", testProvider.getCalls(), liveProvider.getCalls())
 	}
 
-	var testPackageID, source string
-	if err := f.pool.QueryRow(context.Background(), `SELECT id,source FROM billing.entitlements WHERE origin_order_id=$1`, orderID).Scan(&testPackageID, &source); err != nil {
+	var status, fulfillment string
+	var testCredits int
+	if err := f.pool.QueryRow(context.Background(), `SELECT o.status,o.fulfillment_status,
+        (SELECT count(*) FROM billing.wallet_ledger l WHERE l.order_id=o.id) FROM billing.orders o WHERE o.id=$1`, orderID).Scan(&status, &fulfillment, &testCredits); err != nil {
 		t.Fatal(err)
 	}
-	if source != "yookassa_test" {
-		t.Fatalf("native test purchase wrote source %q", source)
+	balance, err := f.module.Balance(context.Background(), owner.id)
+	if status != "succeeded" || fulfillment != "not_required" || testCredits != 0 || err != nil || balance.AvailableMinor != 1500 {
+		t.Fatalf("test SDK order=%s/%s credits=%d wallet=%+v error=%v", status, fulfillment, testCredits, balance, err)
 	}
-	var livePackageStillExact bool
-	if err := f.pool.QueryRow(context.Background(), `SELECT valid_until=$2 FROM billing.entitlements WHERE id=$1`, livePackageID, liveUntil).Scan(&livePackageStillExact); err != nil || !livePackageStillExact {
-		t.Fatalf("native test purchase mutated hosted live package: unchanged=%t err=%v", livePackageStillExact, err)
-	}
-	for _, profile := range []struct{ mode, shop string }{{"test", "123456"}, {"production", "654321"}} {
-		if err := f.module.service.ConfigureNativeProfile(profile.mode, profile.shop); err != nil {
-			t.Fatalf("select native %s profile for entitlement check: %v", profile.mode, err)
-		}
-		tx, err := f.pool.Begin(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		locked, err := f.module.Lock(context.Background(), tx, owner.id)
-		_ = tx.Rollback(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		activeSources := 0
-		for _, part := range locked.Packages {
-			if part.Source == "yookassa_test" && part.Active {
-				t.Fatalf("test package became active beside live entitlement with native mode %s: %+v", profile.mode, part)
-			}
-			if part.Active && part.Source == "yookassa" {
-				activeSources++
-			}
-		}
-		if activeSources != 1 {
-			t.Fatalf("live package not retained as sole active paid source with native mode %s: %+v", profile.mode, locked.Packages)
-		}
-	}
-
-	wrongHostedRenewal := f.request(t, owner.billingActor, http.MethodPost, "/api/v1/billing/orders", map[string]any{
-		"monitorCount": 1, "idempotencyKey": "a1f50295-7ecf-4c40-8d35-bc0fd886eb44", "priceVersion": pricing.Version,
-		"purchaseKind": "renew", "packageId": testPackageID,
-	})
-	if wrongHostedRenewal.Code != http.StatusConflict {
-		t.Fatalf("hosted live profile accepted renewal of SDK test package: status=%d body=%s", wrongHostedRenewal.Code, wrongHostedRenewal.Body.String())
+	hosted := createYooKassaOrder(t, f, owner.billingActor, "a1f50295-7ecf-4c40-8d35-bc0fd886eb44", 2900)
+	if hosted.Test || hosted.CheckoutKind != "redirect" || hosted.AmountMinor != 2900 || hosted.Status != "pending" {
+		t.Fatalf("native test profile affected hosted live checkout: %+v", hosted)
 	}
 }
 
@@ -493,7 +449,7 @@ func TestNativeSDKDraftCancellationAndExpiredDraftCannotAttach(t *testing.T) {
 	owner := newSDKActor(t, f, "Native draft owner")
 	provider := &fakeYooKassa{mode: "test", shopID: "123456"}
 	f.configureYooKassaSDK(t, owner, provider)
-	canceled := createNativeOrder(t, f, owner, "92454173-02c6-4317-8c0a-e6bb56f43e85", 1)
+	canceled := createNativeOrder(t, f, owner, "92454173-02c6-4317-8c0a-e6bb56f43e85", 2900)
 	for i := 0; i < 2; i++ {
 		response := f.sdkRequest(t, owner, http.MethodPost, "/api/v1/billing/native/orders/"+canceled.Order.ID+"/cancel", map[string]any{})
 		if response.Code != http.StatusOK {
@@ -503,7 +459,7 @@ func TestNativeSDKDraftCancellationAndExpiredDraftCannotAttach(t *testing.T) {
 	if got := attachNativeToken(t, f, owner, canceled.Order.ID, "cancelled-draft-token"); got.Code != http.StatusConflict {
 		t.Fatalf("canceled quote accepted a token: %d %s", got.Code, got.Body.String())
 	}
-	expired := createNativeOrder(t, f, owner, "aa8c4df1-5604-4faa-9a59-648954c9fd35", 1)
+	expired := createNativeOrder(t, f, owner, "aa8c4df1-5604-4faa-9a59-648954c9fd35", 2900)
 	forceSDKExpiry(t, f, expired.Order.ID, false)
 	got := attachNativeToken(t, f, owner, expired.Order.ID, "too-late-token")
 	if got.Code != http.StatusGone || !strings.Contains(got.Body.String(), "sdk_draft_expired") {
@@ -540,7 +496,7 @@ func TestNativeSDKRequestCiphertextCleanupCoversPendingManualAndTerminalOrders(t
 	f.module, f.handler = module, mux
 	orders := make([]contracts.Order, len(owners))
 	for i, owner := range owners {
-		quote := createNativeOrder(t, f, owner, fmt.Sprintf("9d8d3c2a-5b6e-4f70-8b9c-0d1e2f3a4b%02x", i+1), 1)
+		quote := createNativeOrder(t, f, owner, fmt.Sprintf("9d8d3c2a-5b6e-4f70-8b9c-0d1e2f3a4b%02x", i+1), 2900)
 		orders[i] = quote.Order
 		if got := attachNativeToken(t, f, owner, quote.Order.ID, fmt.Sprintf("cleanup-token-unique-%d", i)); got.Code != http.StatusOK {
 			t.Fatalf("attach cleanup order %d status=%d body=%s", i, got.Code, got.Body.String())
@@ -601,7 +557,7 @@ func TestNativeSDKAmbiguousCreateStopsAtRequestCutoffAndLateWebhookCannotRevive(
 		return contracts.ProviderPayment{}, errors.New("connection dropped after provider may have accepted request")
 	}
 	f.configureYooKassaSDK(t, owner, provider)
-	quote := createNativeOrder(t, f, owner, "c723d2e1-55bf-4a28-aaf9-21f031105ff0", 1)
+	quote := createNativeOrder(t, f, owner, "c723d2e1-55bf-4a28-aaf9-21f031105ff0", 2900)
 	if got := attachNativeToken(t, f, owner, quote.Order.ID, "uncertain-sdk-attempt-token"); got.Code != http.StatusOK {
 		t.Fatalf("attach=%d %s", got.Code, got.Body.String())
 	}
@@ -674,12 +630,12 @@ func TestNativeSDKAmbiguousCreateStopsAtRequestCutoffAndLateWebhookCannotRevive(
 	if paymentID != testProviderID {
 		t.Fatalf("untrusted webhook ID was not validated/bound by provider lookup: %q", paymentID)
 	}
-	var entitlementCount int
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.entitlements WHERE account_id=$1 AND source LIKE 'yookassa%' AND valid_until>clock_timestamp()`, owner.id).Scan(&entitlementCount); err != nil {
+	var walletCredits int
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.wallet_ledger WHERE account_id=$1 AND kind='top_up'`, owner.id).Scan(&walletCredits); err != nil {
 		t.Fatal(err)
 	}
-	if entitlementCount != 0 {
-		t.Fatalf("webhook hint fulfilled an order despite provider reporting pending: %d", entitlementCount)
+	if walletCredits != 0 {
+		t.Fatalf("webhook hint fulfilled an order despite provider reporting pending: %d", walletCredits)
 	}
 }
 
@@ -691,7 +647,7 @@ func TestNativeSDKDefinitiveProviderRejectionCancelsOnlyFirstAttempt(t *testing.
 		return contracts.ProviderPayment{}, yookassa.ErrPaymentTokenRejected
 	}
 	f.configureYooKassaSDK(t, owner, provider)
-	quote := createNativeOrder(t, f, owner, "0db2fa7f-c78f-4e1e-a0d7-b31e441ec999", 1)
+	quote := createNativeOrder(t, f, owner, "0db2fa7f-c78f-4e1e-a0d7-b31e441ec999", 2900)
 	if got := attachNativeToken(t, f, owner, quote.Order.ID, "definitively-rejected-token"); got.Code != http.StatusOK {
 		t.Fatalf("attach=%d %s", got.Code, got.Body.String())
 	}
@@ -725,7 +681,7 @@ func TestNativeSDKDefinitive4xxAfterAmbiguousAttemptRequiresManualReview(t *test
 		return contracts.ProviderPayment{}, errors.New("response lost")
 	}
 	f.configureYooKassaSDK(t, owner, provider)
-	quote := createNativeOrder(t, f, owner, "a9a9db42-6dbc-4a8a-81af-2bc066ab2087", 1)
+	quote := createNativeOrder(t, f, owner, "a9a9db42-6dbc-4a8a-81af-2bc066ab2087", 2900)
 	if got := attachNativeToken(t, f, owner, quote.Order.ID, "one-shot-token-with-ambiguous-first-result"); got.Code != http.StatusOK {
 		t.Fatalf("attach=%d %s", got.Code, got.Body.String())
 	}
@@ -821,7 +777,7 @@ func TestNativeSDKRevokedSessionCannotAttachEvenWithValidOrder(t *testing.T) {
 	owner := newSDKActor(t, f, "Native session revocation owner")
 	provider := &fakeYooKassa{mode: "test", shopID: "123456"}
 	f.configureYooKassaSDK(t, owner, provider)
-	quote := createNativeOrder(t, f, owner, "0eebdce9-1cba-458f-8c6e-3cf89181bfbf", 1)
+	quote := createNativeOrder(t, f, owner, "0eebdce9-1cba-458f-8c6e-3cf89181bfbf", 2900)
 	if _, err := f.pool.Exec(context.Background(), `UPDATE auth.sessions SET revoked_at=clock_timestamp() WHERE id=$1`, owner.sessionID); err != nil {
 		t.Fatal(err)
 	}

@@ -22,10 +22,14 @@ activate_email_notifications=${16-false}
 activate_android_push=${17-false}
 activate_yookassa_production=${18-false}
 activate_native_sdk_test=${19-false}
+activate_native_sdk_production=${20-false}
 
-[[ ( $# -eq 14 || $# -eq 15 || $# -eq 16 || $# -eq 17 || $# -eq 18 || $# -eq 19 ) && ( $activate_native_sdk_test == true || $activate_native_sdk_test == false ) && ( $activate_yookassa_production == true || $activate_yookassa_production == false ) && ( $activate_android_push == true || $activate_android_push == false ) && ( $activate_email_notifications == true || $activate_email_notifications == false ) && ( $activate_yookassa_test == true || $activate_yookassa_test == false ) && $firewall_policy_sha =~ ^[0-9a-f]{64}$ && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) && ( $activate_messenger_notifications == true || $activate_messenger_notifications == false ) && ( $provision_owner == true || $provision_owner == false ) && ( $activate_admin_mfa == true || $activate_admin_mfa == false ) && ( $activate_oauth == true || $activate_oauth == false ) ]] || {
+[[ $# -ge 14 && $# -le 20 && ( $activate_native_sdk_production == true || $activate_native_sdk_production == false ) && ( $activate_native_sdk_test == true || $activate_native_sdk_test == false ) && ( $activate_yookassa_production == true || $activate_yookassa_production == false ) && ( $activate_android_push == true || $activate_android_push == false ) && ( $activate_email_notifications == true || $activate_email_notifications == false ) && ( $activate_yookassa_test == true || $activate_yookassa_test == false ) && $firewall_policy_sha =~ ^[0-9a-f]{64}$ && $source_sha =~ ^[0-9a-f]{40}$ && $registry_user =~ ^[a-zA-Z0-9-]+$ && ( $activate_telegram_relay == true || $activate_telegram_relay == false ) && ( $activate_messenger_notifications == true || $activate_messenger_notifications == false ) && ( $provision_owner == true || $provision_owner == false ) && ( $activate_admin_mfa == true || $activate_admin_mfa == false ) && ( $activate_oauth == true || $activate_oauth == false ) ]] || {
   echo 'Invalid release arguments' >&2; exit 1;
 }
+if $activate_native_sdk_production && { $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $provision_owner || $activate_email_notifications || $activate_android_push || $activate_yookassa_test || $activate_yookassa_production || $activate_native_sdk_test; }; then
+  echo 'Native SDK production activation must be a separate configuration operation' >&2; exit 1
+fi
 for spec in "api:$api_image" "worker:$worker_image" "probe:$probe_image" "migrate:$migrate_image" "backup:$backup_image" "firewall:$firewall_image"; do
   target=${spec%%:*}
   image=${spec#*:}
@@ -173,8 +177,8 @@ if [[ -e hc-ops || -L hc-ops || -e hc-ops.sha256 || -L hc-ops.sha256 ]]; then
   had_previous_helper=true
 fi
 
-# Framed stdin: one registry-token line, followed only by an optional bounded
-# YooKassa JSON payload. The token is never exported or passed as an argument.
+# Framed stdin: one registry-token line, followed by a bounded JSON payload
+# only for credential-staging operations. The registry token stays private.
 unset registry_token
 if ! IFS= read -r -n 4097 registry_token || [[ -z $registry_token || ${#registry_token} -gt 4096 || ! $registry_token =~ ^[a-zA-Z0-9_.-]+$ ]]; then
   echo 'Invalid registry credential framing' >&2; exit 1
@@ -186,7 +190,7 @@ if $activate_android_push; then
   [[ ! -e .env.next && ! -L .env.next ]] || { echo 'Resolve the existing staged configuration before Android push activation' >&2; exit 1; }
   "$ops" stage-push "$workdir"
   activation_generated=true
-elif $activate_yookassa_test || $activate_yookassa_production || $activate_native_sdk_test; then
+elif $activate_yookassa_test || $activate_yookassa_production || $activate_native_sdk_test || $activate_native_sdk_production; then
   if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $provision_owner || $activate_email_notifications || $activate_android_push || ( $activate_yookassa_test && $activate_yookassa_production ) || ( $activate_native_sdk_test && ( $activate_yookassa_test || $activate_yookassa_production ) ); then
     echo 'YooKassa activation must be a separate configuration operation' >&2; exit 1
   fi
@@ -194,6 +198,7 @@ elif $activate_yookassa_test || $activate_yookassa_production || $activate_nativ
   billing_mode='test'
   if $activate_yookassa_production; then billing_mode='production'; fi
   if $activate_native_sdk_test; then billing_mode='native-test'; fi
+  if $activate_native_sdk_production; then billing_mode='native-production'; fi
   "$ops" stage-yookassa "$workdir" "$billing_mode"
   activation_generated=true
 else
@@ -223,7 +228,7 @@ if $provision_owner; then
   "$ops" deploy-json owner-validate "$workdir/.owner-import.json"
 fi
 
-if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $activate_yookassa_test || $activate_yookassa_production || $activate_native_sdk_test || $activate_email_notifications || $activate_android_push; then
+if $activate_telegram_relay || $activate_messenger_notifications || $activate_admin_mfa || $activate_oauth || $activate_yookassa_test || $activate_yookassa_production || $activate_native_sdk_test || $activate_native_sdk_production || $activate_email_notifications || $activate_android_push; then
   if ! $activation_generated; then
     [[ -f .env.next && ! -L .env.next && $(stat -c %a .env.next) == 600 ]] || {
       if $activate_messenger_notifications; then
@@ -238,7 +243,7 @@ if $activate_telegram_relay || $activate_messenger_notifications || $activate_ad
   [[ ! -e .env.activate.incoming && ! -L .env.activate.incoming && ! -e .env.rollback.incoming && ! -L .env.rollback.incoming ]] || {
     echo 'Resolve the previous configuration activation staging file' >&2; exit 1;
   }
-  "$ops" deploy-json activation-check "$workdir/.env.next" "$activate_telegram_relay" "$activate_messenger_notifications" "$activate_admin_mfa" "$activate_oauth" "$activate_yookassa_test" "$activate_email_notifications" "$activate_android_push" "$activate_yookassa_production" "$activate_native_sdk_test"
+  "$ops" deploy-json activation-check "$workdir/.env.next" "$activate_telegram_relay" "$activate_messenger_notifications" "$activate_admin_mfa" "$activate_oauth" "$activate_yookassa_test" "$activate_email_notifications" "$activate_android_push" "$activate_yookassa_production" "$activate_native_sdk_test" "$activate_native_sdk_production"
   cp -p .env "$workdir/.env"
   activation_stage_created=true
   cp -p "$workdir/.env.next" .env.activate.incoming
@@ -264,7 +269,9 @@ chmod 600 .release.env.incoming
 HC_OPS_PATH="$ops" bash backup.sh.incoming preflight
 compose_new=(docker compose --env-file .env --env-file .release.env.incoming -f compose.yaml.incoming)
 "${compose_new[@]}" config -q
-"${compose_new[@]}" config --format json | "$ops" compose-check
+compose_check=("$ops" compose-check)
+if $activate_native_sdk_production; then compose_check+=(native-production); fi
+"${compose_new[@]}" config --format json | "${compose_check[@]}"
 "${compose_new[@]}" pull postgres caddy api worker probe migrate
 docker pull "$backup_image"
 docker pull "$firewall_image"
@@ -305,6 +312,15 @@ done
 # Stop writers before taking the recovery snapshot. On a pre-migration failure
 # the EXIT trap restores the previous release and restarts its processes.
 "${compose[@]}" stop -t 30 api worker probe
+if $had_previous; then
+  # Existing live checkouts must settle on the previous code before the wallet
+  # migration retires the package flow. A rejected cutover restarts prior writers.
+  wallet_cutover_blockers=$("${compose[@]}" exec -T postgres psql -X -v ON_ERROR_STOP=1 -U heartbeat -d heartbeat -Atqc \
+    "SELECT CASE WHEN EXISTS (SELECT 1 FROM public.schema_migrations WHERE version='0030_hourly_balance') THEN 0 ELSE (SELECT count(*) FROM billing.orders WHERE provider='yookassa' AND provider_mode='production' AND status='pending') END")
+  [[ $wallet_cutover_blockers == 0 ]] || {
+    echo 'Wallet migration blocked by pending legacy live YooKassa orders' >&2; exit 1;
+  }
+fi
 if $activate_yookassa_production || $activate_yookassa_test; then
   # Writers are stopped. A shop switch is safe only when no payment operation
   # or untrusted webhook hint can still need the previous shop's credentials.
@@ -431,7 +447,8 @@ jq -n --arg source_sha "$source_sha" --arg api "$api_image" \
   --argjson oauth_activated "$activate_oauth" --argjson yookassa_test_activated "$activate_yookassa_test" \
   --argjson yookassa_production_activated "$activate_yookassa_production" \
   --argjson native_sdk_test_activated "$activate_native_sdk_test" \
-  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image,firewall:$firewall_image},firewall_policy_sha256:$firewall_policy_sha256,backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,messenger_notifications_activated:$messenger_notifications_activated,email_notifications_activated:$email_notifications_activated,android_push_activated:$android_push_activated,owner_import_requested:$owner_import_requested,admin_mfa_activated:$admin_mfa_activated,oauth_activated:$oauth_activated,yookassa_test_activated:$yookassa_test_activated,yookassa_production_activated:$yookassa_production_activated,native_sdk_test_activated:$native_sdk_test_activated,completed_at:(now|todate)}' \
+  --argjson native_sdk_production_activated "$activate_native_sdk_production" \
+  '{source_sha:$source_sha, images:{api:$api,worker:$worker,probe:$probe,migrate:$migrate,backup:$backup_image,firewall:$firewall_image},firewall_policy_sha256:$firewall_policy_sha256,backup:$backup,backup_sha256:$backup_sha256,migrations:$migrations,telegram_relay_activated:$telegram_relay_activated,messenger_notifications_activated:$messenger_notifications_activated,email_notifications_activated:$email_notifications_activated,android_push_activated:$android_push_activated,owner_import_requested:$owner_import_requested,admin_mfa_activated:$admin_mfa_activated,oauth_activated:$oauth_activated,yookassa_test_activated:$yookassa_test_activated,yookassa_production_activated:$yookassa_production_activated,native_sdk_test_activated:$native_sdk_test_activated,native_sdk_production_activated:$native_sdk_production_activated,completed_at:(now|todate)}' \
   > "receipts/$source_sha.json.incoming"
 # Install helpers only after migration/readiness, so every pre-migration rollback
 # leaves the prior helper (or its legitimate absence) unchanged.

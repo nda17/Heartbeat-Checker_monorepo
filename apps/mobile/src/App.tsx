@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  AppState,
   BackHandler,
   Linking,
   Pressable,
@@ -21,10 +22,10 @@ import {
   sessionEpoch,
 } from "./api";
 import { native, type PendingEmailVerification } from "./native";
-import type { AuthResult, OAuthPending } from "./types";
+import type { AuthResult, Balance, OAuthPending } from "./types";
 import { AccountScreen } from "./AccountScreen";
 import { AuthScreen } from "./AuthScreen";
-import { BillingScreen } from "./BillingScreen";
+import { BillingScreen, balanceMoney } from "./BillingScreen";
 import { MonitorsScreen } from "./MonitorsScreen";
 import { PublicScreen } from "./PublicScreen";
 import { HelpScreen } from "./HelpScreen";
@@ -114,6 +115,64 @@ function AppContent() {
   const lastLink = useRef({ raw: "", at: 0 });
   const palette = usePalette();
   const glassEnabled = useGlassEnabled();
+
+  const accountId = authed?.account.id;
+  const sessionId = authed?.session.id;
+  const [wallet, setWallet] = useState<{
+    sessionId: string;
+    value: Balance;
+  } | null>(null);
+  const acceptBalance = useCallback(
+    (value: Balance) => {
+      if (sessionId && session()?.session.id === sessionId)
+        setWallet((current) =>
+          current?.sessionId === sessionId &&
+          Date.parse(current.value.asOf) > Date.parse(value.asOf)
+            ? current
+            : { sessionId, value },
+        );
+    },
+    [sessionId],
+  );
+  const refreshBalance = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!accountId || !sessionId) return;
+      const epoch = sessionEpoch();
+      try {
+        const result = await api<Balance>("/billing/balance", { signal });
+        if (!signal?.aborted && sessionEpoch() === epoch) acceptBalance(result);
+      } catch {
+        // Monitor and account controls remain available when the balance cannot load.
+      }
+    },
+    [accountId, sessionId, acceptBalance],
+  );
+  useEffect(() => {
+    if (!sessionId) return;
+    let active: AbortController | null = null;
+    const refresh = () => {
+      if (
+        AppState.currentState === "background" ||
+        AppState.currentState === "inactive"
+      )
+        return;
+      active?.abort();
+      active = new AbortController();
+      void refreshBalance(active.signal);
+    };
+    refresh();
+    const listener = AppState.addEventListener("change", (next) => {
+      if (next === "active") refresh();
+    });
+    const timer = setInterval(refresh, 30_000);
+    return () => {
+      active?.abort();
+      clearInterval(timer);
+      listener.remove();
+    };
+  }, [sessionId, refreshBalance, tab]);
+  const currentBalance =
+    wallet && wallet.sessionId === sessionId ? wallet.value : null;
 
   const navigate = useCallback((target: Navigation) => {
     if (!session()) {
@@ -742,17 +801,48 @@ function AppContent() {
     >
       <View style={{ flex: 1, backgroundColor: palette.bg }}>
         <StatusBar barStyle={palette.dark ? "light-content" : "dark-content"} />
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "flex-end",
+            paddingHorizontal: 16,
+            backgroundColor: glassEnabled ? palette.glass : palette.card,
+            borderBottomColor: glassEnabled
+              ? palette.glassBorder
+              : palette.border,
+            borderBottomWidth: 1,
+          }}
+        >
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setTab("billing")}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 6,
+              minHeight: 44,
+            }}
+          >
+            <Icon name="payment" color={palette.accentText} />
+            <Label>
+              Баланс {currentBalance ? balanceMoney(currentBalance) : "—"}
+            </Label>
+          </Pressable>
+        </View>
         <View style={{ flex: 1 }}>
           {tab === "monitors" ? (
             <MonitorsScreen
               deepLink={monitorLink}
               onDeepLinkConsumed={consumeMonitorLink}
               resumeDraft={resumeDraft}
-              onBuyQuota={() => setTab("billing")}
+              onTopUp={() => setTab("billing")}
+              balance={currentBalance}
+              refreshBalance={refreshBalance}
             />
           ) : tab === "billing" ? (
             <BillingScreen
               returnOrder={returnOrder}
+              onBalance={acceptBalance}
               onContinueMonitor={() => {
                 setMonitorLink(null);
                 setResumeDraft((value) => value + 1);
@@ -776,7 +866,7 @@ function AppContent() {
           {(
             [
               ["monitors", "Мониторы", "activity"],
-              ["billing", "Оплата", "payment"],
+              ["billing", "Баланс", "payment"],
               ["account", "Аккаунт", "user"],
             ] as const
           ).map(([key, label, icon]) => (

@@ -95,15 +95,17 @@ func TestOwnerImportCreatesAtomicallyAndExactReplayDoesNotOverwriteChanges(t *te
 	if err != nil || created != "created|"+strings.Repeat("a", 40) {
 		t.Fatalf("initial import result=%q err=%v", created, err)
 	}
-	var name, role, status, email, passwordHash, source, reason string
-	var quota int
-	if err := pool.QueryRow(ctx, `SELECT a.name,a.role,a.status,c.email,c.password_hash,'admin_grant',e.reason,e.monitor_limit
-		FROM accounts.accounts a JOIN auth.credentials c ON c.account_id=a.id JOIN billing.admin_grants e ON e.account_id=a.id WHERE a.id=$1`, syntheticOwnerID).
-		Scan(&name, &role, &status, &email, &passwordHash, &source, &reason, &quota); err != nil {
-		t.Fatalf("read imported owner records: %v", err)
+	var name, role, status, email, passwordHash string
+	var noFunds bool
+	if err := pool.QueryRow(ctx, `SELECT a.name,a.role,a.status,c.email,c.password_hash,
+		NOT EXISTS(SELECT 1 FROM billing.wallet_ledger l WHERE l.account_id=a.id)
+		AND COALESCE((SELECT available_units FROM billing.wallets WHERE account_id=a.id),0)=0
+		FROM accounts.accounts a JOIN auth.credentials c ON c.account_id=a.id WHERE a.id=$1`, syntheticOwnerID).
+		Scan(&name, &role, &status, &email, &passwordHash, &noFunds); err != nil {
+		t.Fatal(err)
 	}
-	if name != payload.Name || role != "admin" || status != "active" || email != payload.Email || passwordHash != payload.PasswordHash || source != "admin_grant" || quota != payload.Quota || reason == "" {
-		t.Fatalf("owner import state name=%q role=%q status=%q email=%q hashMatches=%t source=%q quota=%d reason=%q", name, role, status, email, passwordHash == payload.PasswordHash, source, quota, reason)
+	if name != payload.Name || role != "admin" || status != "active" || email != payload.Email || passwordHash != payload.PasswordHash || !noFunds {
+		t.Fatal("owner import should create the specified admin with a zero balance")
 	}
 	var auditCount int
 	var markerDigest, markerSource string
@@ -122,20 +124,17 @@ func TestOwnerImportCreatesAtomicallyAndExactReplayDoesNotOverwriteChanges(t *te
 	if _, err := pool.Exec(ctx, `UPDATE auth.credentials SET password_hash='later-password-hash' WHERE account_id=$1`, syntheticOwnerID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE billing.admin_grants SET monitor_limit=12,reason='later grant adjustment' WHERE account_id=$1`, syntheticOwnerID); err != nil {
-		t.Fatal(err)
-	}
 	noop, err := runOwnerImport(ctx, t, pool, payload, digest, strings.Repeat("b", 40))
 	if err != nil || noop != "noop|"+strings.Repeat("a", 40) {
 		t.Fatalf("exact replay result=%q err=%v", noop, err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT a.name,a.role,c.password_hash,e.monitor_limit,e.reason
-		FROM accounts.accounts a JOIN auth.credentials c ON c.account_id=a.id JOIN billing.admin_grants e ON e.account_id=a.id WHERE a.id=$1`, syntheticOwnerID).
-		Scan(&name, &role, &passwordHash, &quota, &reason); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT a.name,a.role,c.password_hash
+		FROM accounts.accounts a JOIN auth.credentials c ON c.account_id=a.id WHERE a.id=$1`, syntheticOwnerID).
+		Scan(&name, &role, &passwordHash); err != nil {
 		t.Fatal(err)
 	}
-	if name != "Later Name" || role != "user" || passwordHash != "later-password-hash" || quota != 12 || reason != "later grant adjustment" {
-		t.Fatalf("exact replay overwrote later edits: name=%q role=%q hash=%q quota=%d reason=%q", name, role, passwordHash, quota, reason)
+	if name != "Later Name" || role != "user" || passwordHash != "later-password-hash" {
+		t.Fatal("exact replay overwrote later owner edits")
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM admin.audit_events WHERE operation_id=$1`, syntheticOwnerOperation).Scan(&auditCount); err != nil || auditCount != 1 {
 		t.Fatalf("exact replay changed audit marker count=%d err=%v", auditCount, err)
@@ -220,7 +219,7 @@ func TestOwnerImportIdentityAndAuditFailuresRollBackWholeTransaction(t *testing.
 	if err := pool.QueryRow(ctx, `SELECT
 		(SELECT count(*) FROM accounts.accounts WHERE id=$1),
 		(SELECT count(*) FROM auth.credentials WHERE account_id=$1),
-		(SELECT count(*) FROM billing.admin_grants WHERE account_id=$1),
+		(SELECT count(*) FROM billing.wallet_ledger WHERE account_id=$1),
 		(SELECT count(*) FROM admin.audit_events WHERE operation_id=$2)`, syntheticOwnerID, syntheticOwnerOperation).
 		Scan(&ownerRows, &credentialRows, &entitlementRows, &auditRows); err != nil {
 		t.Fatal(err)

@@ -10,7 +10,7 @@ import {
   View,
 } from "react-native";
 import { api, errorText, session, sessionEpoch } from "./api";
-import type { Entitlement, Incident, Monitor, Result } from "./types";
+import type { Balance, Incident, Monitor, Result } from "./types";
 import {
   Button,
   Card,
@@ -50,7 +50,7 @@ type MonitorPage = {
     down: number;
     unknown: number;
     paused: number;
-    subscriptionRequired: number;
+    balanceRequired: number;
   };
   asOf: string;
 };
@@ -73,7 +73,7 @@ const statusNames: Record<string, string> = {
   DOWN: "Недоступен",
   UNKNOWN: "Ожидает проверки",
   PAUSED: "На паузе",
-  SUBSCRIPTION_REQUIRED: "Нужна квота",
+  BALANCE_REQUIRED: "Нужно пополнить баланс",
 };
 const resultNames: Record<string, string> = {
   UP: "Доступен",
@@ -102,7 +102,7 @@ function statusIcon(state: string): IconName {
   if (state === "UP") return "check";
   if (state === "DOWN") return "alert";
   if (state === "PAUSED") return "pause";
-  if (state === "SUBSCRIPTION_REQUIRED") return "payment";
+  if (state === "BALANCE_REQUIRED") return "payment";
   return "info";
 }
 function date(value: string | null | undefined, timeZone: string) {
@@ -120,7 +120,9 @@ function date(value: string | null | undefined, timeZone: string) {
 
 export function MonitorsScreen({
   deepLink,
-  onBuyQuota,
+  onTopUp,
+  balance,
+  refreshBalance,
   resumeDraft,
   onDeepLinkConsumed,
 }: {
@@ -128,14 +130,14 @@ export function MonitorsScreen({
     monitorId: string;
     incidentId: string;
   }) => void;
-  onBuyQuota: () => void;
+  onTopUp: () => void;
+  balance: Balance | null;
+  refreshBalance: () => Promise<void>;
   resumeDraft?: number;
   deepLink?: { monitorId: string; incidentId: string } | null;
 }) {
   const retained = useMonitorDraft();
-  const [entitlementError, setEntitlementError] = useState("");
   const [clock, setClock] = useState(Date.now());
-  const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
   const [status, setStatus] = useState("all");
   const [feed, setFeed] = useState(false);
   const [feedState, setFeedState] = useState<IncidentFeedState>("active");
@@ -221,7 +223,7 @@ export function MonitorsScreen({
         : {}),
     });
   }, [draft, editing, retained.ready]);
-  const buyQuota = async () => {
+  const openTopUp = async () => {
     const capturedEpoch = sessionEpoch();
     retained.update({
       schemaVersion: 1,
@@ -234,7 +236,7 @@ export function MonitorsScreen({
     try {
       await retained.flush();
       if (!mounted.current || sessionEpoch() !== capturedEpoch) return;
-      onBuyQuota();
+      onTopUp();
     } catch {
       if (!mounted.current || sessionEpoch() !== capturedEpoch) return;
       setError(
@@ -242,20 +244,10 @@ export function MonitorsScreen({
       );
     }
   };
-  const refreshEntitlement = useCallback(async () => {
-    try {
-      const value = await api<{ entitlement: Entitlement }>("/entitlement");
-      setEntitlement(value.entitlement);
-      setEntitlementError("");
-    } catch (cause) {
-      setEntitlementError(errorText(cause));
-    }
-  }, []);
   useEffect(() => {
-    void refreshEntitlement();
     const timer = setInterval(() => setClock(Date.now()), 30000);
     return () => clearInterval(timer);
-  }, [refreshEntitlement]);
+  }, []);
   const cancelEditor = () => {
     if (JSON.stringify(draft) !== initialDraft.current) {
       Alert.alert(
@@ -362,13 +354,12 @@ export function MonitorsScreen({
     const subscription = AppState.addEventListener("change", (next) => {
       if (next === "active") {
         void loadList();
-        void refreshEntitlement();
         if (selectedRef.current && !editing && !notifications && !feed)
           void detail(selectedRef.current, true);
       }
     });
     return () => subscription.remove();
-  }, [loadList, refreshEntitlement, editing, notifications, feed]);
+  }, [loadList, editing, notifications, feed]);
 
   const detail = useCallback(async (monitor: Monitor, passive = false) => {
     if (!passive) editorBaseline.current = null;
@@ -613,19 +604,6 @@ export function MonitorsScreen({
       setError("Проверьте отмеченные поля.");
       return;
     }
-    if (
-      creating &&
-      (!entitlement ||
-        entitlement.quota === 0 ||
-        (draft.enabled && entitlement.enabledMonitorCount >= entitlement.quota))
-    ) {
-      setError(
-        entitlement
-          ? "Для создания монитора нужна подходящая квота. Черновик сохранён."
-          : "Не удалось проверить квоту. Обновите её и повторите.",
-      );
-      return;
-    }
     mutation.current = true;
     setBusy(true);
     setError("");
@@ -668,7 +646,7 @@ export function MonitorsScreen({
             body: { ...body, version: target!.version },
           });
       retained.update(null);
-      void refreshEntitlement();
+      void refreshBalance();
       // The write is committed. Subsequent read failures must never invite a second POST.
       setEditing(false);
       setCreating(false);
@@ -707,7 +685,7 @@ export function MonitorsScreen({
               setSelected(null);
               setSelectedIncident(null);
               void loadList();
-              void refreshEntitlement();
+              void refreshBalance();
             } catch (cause) {
               setError(errorText(cause));
             } finally {
@@ -838,7 +816,7 @@ export function MonitorsScreen({
         <Card>
           <Label muted>
             {creating
-              ? "Настройте проверку, затем запустите её. Оплата не создаёт монитор автоматически."
+              ? "Настройте проверку и укажите, когда монитор должен быть включён."
               : "Изменения применятся после сохранения."}
           </Label>
           <Title>Тип проверки</Title>
@@ -1017,41 +995,21 @@ export function MonitorsScreen({
             </>
           ) : null}
           <ErrorNotice message={retained.error} />
-          {creating &&
-          entitlement &&
-          (entitlement.quota === 0 ||
-            (draft.enabled &&
-              entitlement.enabledMonitorCount >= entitlement.quota)) ? (
+          {draft.enabled &&
+          balance?.availableMinor === 0 &&
+          !balance.positiveBelowCent ? (
             <Card>
-              <Title>
-                {draft.enabled
-                  ? "Нужна квота для запуска"
-                  : "Нужна квота для создания"}
-              </Title>
               <Label>
-                Настройки остаются в черновике. Купите место и вернитесь к этой
-                форме.
+                Настройки можно сохранить сейчас. Проверки начнутся после
+                пополнения баланса.
               </Label>
               <Button
-                label="Купить квоту"
+                label="Перейти к балансу"
                 iconName="payment"
-                onPress={() => void buyQuota()}
+                secondary
+                onPress={() => void openTopUp()}
               />
             </Card>
-          ) : null}
-          {creating && !entitlement ? (
-            <>
-              <ErrorNotice
-                message={
-                  entitlementError || "Не удалось проверить доступную квоту."
-                }
-              />
-              <Button
-                label="Обновить квоту"
-                secondary
-                onPress={() => void refreshEntitlement()}
-              />
-            </>
           ) : null}
           <ErrorNotice message={error} />
           <Button
@@ -1280,7 +1238,7 @@ export function MonitorsScreen({
     <Page
       title="Мониторы"
       refresh={async () => {
-        await Promise.all([loadList(), refreshEntitlement()]);
+        await Promise.all([loadList(), refreshBalance()]);
       }}
     >
       <Card>
@@ -1291,20 +1249,15 @@ export function MonitorsScreen({
         </Label>
         <Label muted>
           Ожидают {list?.summary.unknown ?? "—"} · пауза{" "}
-          {list?.summary.paused ?? "—"} · нужна квота{" "}
-          {list?.summary.subscriptionRequired ?? "—"}
+          {list?.summary.paused ?? "—"} · ждут пополнения{" "}
+          {list?.summary.balanceRequired ?? "—"}
         </Label>
-        <ErrorNotice message={entitlementError} />
-        <Label>
-          Квота: {entitlement?.enabledMonitorCount ?? "—"} включено из{" "}
-          {entitlement?.quota ?? "—"}
-        </Label>
-        {entitlement && entitlement.enabledMonitorCount >= entitlement.quota ? (
+        {balance?.availableMinor === 0 && !balance.positiveBelowCent ? (
           <Button
-            label="Добавить квоту"
+            label="Пополнить баланс"
             iconName="payment"
             secondary
-            onPress={onBuyQuota}
+            onPress={onTopUp}
           />
         ) : null}
       </Card>
@@ -1470,7 +1423,7 @@ export function MonitorsScreen({
           <Label muted>
             {list.summary.total > 0
               ? "Измените поиск или выберите другой статус."
-              : "Настройте адрес проверки. При необходимости купите квоту, затем явно запустите монитор."}
+              : "Укажите адрес проверки. Включённые мониторы работают при положительном балансе."}
           </Label>
           {list.summary.total > 0 ? (
             <Button

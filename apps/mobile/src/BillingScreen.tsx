@@ -1,10 +1,25 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { AppState, Pressable, View } from "react-native";
+import { AppState, View } from "react-native";
 import { ApiError, api, errorText, session, sessionEpoch } from "./api";
 import { useMonitorDraft } from "./MonitorDraft";
 import { native, type PaymentIntent } from "./native";
-import type { Billing, Entitlement, Order, Subscription } from "./types";
-import { Button, Card, ErrorNotice, Field, Label, Page, Title } from "./ui";
+import type {
+  Balance,
+  BalanceEntry,
+  BalanceHistory,
+  Billing,
+  Order,
+} from "./types";
+import {
+  Button,
+  Card,
+  DetailRow,
+  ErrorNotice,
+  Field,
+  Label,
+  Page,
+  Title,
+} from "./ui";
 
 type SDKState =
   | "awaiting_token"
@@ -52,15 +67,6 @@ type SDKCapabilities = {
 type NativeBilling = Billing & {
   nativeCheckout?: NativeCheckout;
 };
-type OrderPage = {
-  orders: PaymentOrder[];
-  pagination: {
-    page: number;
-    pageSize: number;
-    total: number;
-    totalPages: number;
-  };
-};
 type SharedOrderRead = {
   key: string;
   controller: AbortController;
@@ -71,25 +77,60 @@ class OrderCheckTimeoutError extends Error {}
 const billingError = (cause: unknown) =>
   cause instanceof OrderCheckTimeoutError ? cause.message : errorText(cause);
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const minTopUpMinor = 100;
+const maxTopUpMinor = 35_000_000;
+const quickTopUps = [26, 100, 300, 500];
 const money = (minor: number) => `${(minor / 100).toLocaleString("ru-RU")} ₽`;
-const date = (value?: string | null) =>
-  value ? new Date(value).toLocaleDateString("ru-RU") : "—";
-const dateTime = (value?: string | null) =>
-  value
-    ? new Date(value).toLocaleString("ru-RU", {
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      })
-    : "—";
+export function balanceMoney(balance: Balance) {
+  return balance.positiveBelowCent ? "< 0,01 ₽" : money(balance.availableMinor);
+}
+const hasFunds = (balance: Balance) =>
+  balance.availableMinor > 0 || balance.positiveBelowCent;
+const estimate = (minor: number) =>
+  minor > 0 && minor < 1 ? "< 0,01 ₽" : money(Math.round(minor));
+function hourlySpend(balance: Balance) {
+  const moscowDate = new Date(Date.parse(balance.asOf) + 3 * 60 * 60_000);
+  const lastDay = new Date(
+    Date.UTC(moscowDate.getUTCFullYear(), moscowDate.getUTCMonth() + 1, 0),
+  ).getUTCDate();
+  return (
+    (balance.pricePerMonitorMinor * balance.enabledMonitors) / (lastDay * 24)
+  );
+}
+function parseRubles(value: string) {
+  const match = /^(\d{1,6})(?:[.,](\d{1,2}))?$/.exec(value.trim());
+  if (!match) return 0;
+  return Number(match[1]) * 100 + Number((match[2] ?? "").padEnd(2, "0"));
+}
+const dateTime = (value: string) =>
+  new Date(value).toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Europe/Moscow",
+  }) + " МСК";
+const entryLabels: Record<BalanceEntry["kind"], string> = {
+  top_up: "Пополнение",
+  admin_credit: "Начисление администратора",
+  usage: "Работа мониторов",
+  refund: "Возврат",
+};
+function entryAmount(entry: BalanceEntry) {
+  const sign = entry.kind === "usage" || entry.amountMinor < 0 ? "−" : "+";
+  return entry.positiveBelowCent
+    ? `${sign} < 0,01 ₽`
+    : `${sign}${money(Math.abs(entry.amountMinor))}`;
+}
+const isTopUp = (order: PaymentOrder) => order.purchaseKind === "topup";
 const terminal = (order: PaymentOrder) =>
   ["canceled", "failed"].includes(order.status) ||
   (order.status === "succeeded" &&
     ["fulfilled", "blocked", "not_required"].includes(order.fulfillmentStatus));
-const unfinished = (order: PaymentOrder) => !terminal(order);
+const unfinished = (order: PaymentOrder) => isTopUp(order) && !terminal(order);
 const pollable = (order: PaymentOrder) =>
+  isTopUp(order) &&
   (order.status === "pending" ||
     (order.status === "succeeded" && order.fulfillmentStatus === "pending")) &&
   !["manual_review", "stopped"].includes(order.reconciliationStatus ?? "");
@@ -157,30 +198,13 @@ function sdkReady(
     server.paymentMethods.includes("BANK_CARD")
   );
 }
-function checkoutRoute(
-  overview: NativeBilling,
-  capabilities: SDKCapabilities | null,
-  kind: "add" | "renew",
-  selected: Subscription | null,
-): PaymentIntent["checkoutKind"] | null {
-  const available = sdkReady(overview, capabilities);
-  if (kind === "add") return available ? "android_sdk" : "redirect";
-  if (selected?.source === "yookassa")
-    return available && overview.nativeCheckout?.environment === "live"
-      ? "android_sdk"
-      : "redirect";
-  if (selected?.source === "yookassa_test")
-    return available && overview.nativeCheckout?.environment === "test"
-      ? "android_sdk"
-      : null;
-  return null;
-}
 function validSDKQuote(
   quote: SDKQuote,
   order: PaymentOrder,
   capabilities: SDKCapabilities,
 ) {
   return (
+    isTopUp(order) &&
     quote.shopId === capabilities.shopId &&
     quote.environment === capabilities.environment &&
     order.checkoutKind === "android_sdk" &&
@@ -201,14 +225,26 @@ function validSDKQuote(
 }
 
 function orderMessage(order: PaymentOrder) {
-  if (paid(order)) return "Оплата и начисление подтверждены сервером.";
+  const demo = order.test || order.provider === "mock";
+  if (!isTopUp(order)) {
+    const label = demo
+      ? "Тестовый платёж за прежний пакет"
+      : "Платёж за прежний пакет";
+    if (order.status === "succeeded") return `${label}. Оплата подтверждена.`;
+    if (order.status === "canceled" || order.status === "failed")
+      return `${label} отменён.`;
+    return `${label}. Если деньги списаны, обратитесь в поддержку.`;
+  }
+  if (order.status === "succeeded" && demo)
+    return "Тестовый платёж завершён. Списания с карты не было.";
+  if (paid(order)) return "Баланс пополнен.";
   if (order.status === "succeeded" && order.fulfillmentStatus === "blocked")
-    return "Платёж получен, но квота не начислена. Обратитесь в поддержку с ID заказа; повторная оплата не исправит этот заказ.";
+    return "Платёж получен. Для проверки пополнения сообщите номер платежа в поддержку.";
   if (
     order.status === "succeeded" &&
     order.fulfillmentStatus === "not_required"
   )
-    return "Платёж подтверждён. По этому заказу новая квота не начисляется.";
+    return "Платёж подтверждён. Для проверки пополнения обратитесь в поддержку.";
   if (
     order.reconciliationStatus === "manual_review" ||
     order.reconciliationStatus === "stopped"
@@ -230,48 +266,28 @@ function orderMessage(order: PaymentOrder) {
     return "Заказ ожидает оплаты или подтверждения. Проверьте статус позднее.";
   if (order.status === "succeeded")
     return "Платёж получен, начисление ещё проверяется.";
-  return "Заказ завершён без начисления. Проверьте список транзакций.";
-}
-
-function statusLabel(order: PaymentOrder) {
-  if (paid(order)) return "Оплачен · квота начислена";
-  if (order.status === "succeeded" && order.fulfillmentStatus === "blocked")
-    return "Оплачен · квота не начислена";
-  if (
-    order.status === "succeeded" &&
-    order.fulfillmentStatus === "not_required"
-  )
-    return "Оплачен · без новой квоты";
-  if (["manual_review", "stopped"].includes(order.reconciliationStatus ?? ""))
-    return "Нужна проверка";
-  if (order.status === "succeeded") return "Оплачен · начисление ожидается";
-  if (order.status === "canceled") return "Отменён";
-  if (order.status === "failed") return "Не прошёл";
-  return "Обрабатывается";
+  return "Заказ завершён без начисления. Проверьте историю баланса.";
 }
 
 export function BillingScreen({
   returnOrder,
   onContinueMonitor,
+  onBalance,
 }: {
   onContinueMonitor: () => void;
+  onBalance: (balance: Balance) => void;
   returnOrder?: string | null;
 }) {
   const retained = useMonitorDraft();
   const [billing, setBilling] = useState<NativeBilling | null>(null);
   const [sdkCapabilities, setSDKCapabilities] =
     useState<SDKCapabilities | null>(null);
-  const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
-  const [count, setCount] = useState("1");
-  const [kind, setKind] = useState<"add" | "renew">("add");
-  const [selected, setSelected] = useState<Subscription | null>(null);
+  const [balance, setBalance] = useState<Balance | null>(null);
+  const [amount, setAmount] = useState(String(quickTopUps[1]));
   const [order, setOrder] = useState<PaymentOrder | null>(null);
-  const [history, setHistory] = useState<OrderPage | null>(null);
+  const [history, setHistory] = useState<BalanceHistory | null>(null);
   const [historyPage, setHistoryPage] = useState(1);
-  const [packagePage, setPackagePage] = useState(1);
-  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(
-    null,
-  );
+  const [historyError, setHistoryError] = useState("");
   const [currentDetails, setCurrentDetails] = useState(false);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [appActive, setAppActive] = useState(
@@ -286,6 +302,7 @@ export function BillingScreen({
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const request = useRef(false);
+  const legacyOrder = useRef<string | null>(null);
   const intentRef = useRef<PaymentIntent | null>(null);
   const orderRef = useRef<PaymentOrder | null>(null);
   const historyPageRef = useRef(1);
@@ -299,10 +316,18 @@ export function BillingScreen({
   const mounted = useRef(true);
 
   const keepIntent = useCallback(async (value: PaymentIntent | null) => {
+    const prior = intentRef.current;
     if (value) await native.savePaymentIntent(value);
-    else await native.clearPaymentIntent();
-    intentRef.current = value;
-    if (mounted.current) setIntent(value);
+    else if (prior)
+      await native.clearPaymentIntent(
+        prior.accountId,
+        prior.sessionId,
+        prior.idempotencyKey,
+      );
+    if (intentRef.current === prior) {
+      intentRef.current = value;
+      if (mounted.current) setIntent(value);
+    }
   }, []);
 
   const applyOrder = useCallback(
@@ -403,9 +428,10 @@ export function BillingScreen({
     if (!actor) return;
     const epoch = sessionEpoch();
     setHistoryBusy(true);
+    setHistoryError("");
     try {
-      const result = await api<OrderPage>(
-        `/billing/orders?page=${page}&pageSize=10`,
+      const result = await api<BalanceHistory>(
+        `/billing/ledger?page=${page}&pageSize=10`,
         { signal: controller.signal },
       );
       if (
@@ -415,13 +441,17 @@ export function BillingScreen({
         !currentSession(actor.account.id, actor.session.id, epoch)
       )
         return;
-      if (result.pagination.page !== historyPageRef.current)
-        setExpandedHistoryId(null);
       historyPageRef.current = result.pagination.page;
       setHistoryPage(result.pagination.page);
       setHistory(result);
     } catch (cause) {
-      if (!controller.signal.aborted) throw cause;
+      if (
+        !controller.signal.aborted &&
+        read === historyRequest.current &&
+        mounted.current &&
+        currentSession(actor.account.id, actor.session.id, epoch)
+      )
+        setHistoryError(billingError(cause));
     } finally {
       if (read === historyRequest.current) setHistoryBusy(false);
       if (historyAbort.current === controller) historyAbort.current = null;
@@ -434,9 +464,9 @@ export function BillingScreen({
     const epoch = sessionEpoch();
     const read = ++refreshRequest.current;
     try {
-      const [overview, access] = await Promise.all([
+      const [overview, currentBalance] = await Promise.all([
         api<NativeBilling>("/billing"),
-        api<{ entitlement: Entitlement }>("/entitlement"),
+        api<Balance>("/billing/balance"),
         loadHistory(historyPageRef.current),
       ]);
       if (
@@ -446,14 +476,8 @@ export function BillingScreen({
       )
         return null;
       setBilling(overview);
-      setEntitlement(access.entitlement);
-      setSelected((current) =>
-        current
-          ? (access.entitlement.packages.find(
-              (item) => item.id === current.id,
-            ) ?? null)
-          : null,
-      );
+      setBalance(currentBalance);
+      onBalance(currentBalance);
       setError("");
       return overview;
     } catch (cause) {
@@ -465,7 +489,7 @@ export function BillingScreen({
         setError(billingError(cause));
       return null;
     }
-  }, [loadHistory]);
+  }, [loadHistory, onBalance]);
 
   const refresh = useCallback(async () => {
     const actor = session();
@@ -482,31 +506,38 @@ export function BillingScreen({
         (orderRef.current && unfinished(orderRef.current)
           ? orderRef.current.id
           : null) ??
+        legacyOrder.current ??
         (returnOrder &&
         uuid.test(returnOrder) &&
         rejectedReturn.current !== returnOrder
           ? returnOrder
           : null);
       if (wanted) {
+        const legacy = wanted === legacyOrder.current;
+        if (legacy) legacyOrder.current = null;
         try {
-          await inspectOrder(wanted);
+          const latest = await inspectOrder(wanted);
+          if (!isTopUp(latest)) {
+            if (wanted === returnOrder) rejectedReturn.current = wanted;
+            if (intentRef.current?.orderId === wanted) await keepIntent(null);
+          }
         } catch (cause) {
           if (!stillCurrent()) return null;
           if (
-            wanted !== returnOrder ||
-            intentRef.current ||
             !(cause instanceof ApiError) ||
             ![403, 404].includes(cause.status)
           )
             throw cause;
-          rejectedReturn.current = returnOrder;
+          if (!legacy && (wanted !== returnOrder || intentRef.current))
+            throw cause;
+          if (wanted === returnOrder) rejectedReturn.current = wanted;
           setError("Ссылка на заказ недоступна этому аккаунту.");
         }
       }
       if (!stillCurrent()) return null;
       if (
         !orderRef.current ||
-        (terminal(orderRef.current) && !intentRef.current)
+        (!unfinished(orderRef.current) && !intentRef.current)
       ) {
         const pending = (overview.orders as PaymentOrder[]).find(
           (item) =>
@@ -522,30 +553,45 @@ export function BillingScreen({
       if (stillCurrent()) setError(billingError(cause));
       return null;
     }
-  }, [applyOrder, inspectOrder, refreshAggregates, returnOrder]);
+  }, [applyOrder, inspectOrder, keepIntent, refreshAggregates, returnOrder]);
 
   useEffect(() => {
     mounted.current = true;
+    let alive = true;
+    const actor = session();
+    const epoch = sessionEpoch();
+    const stillCurrent = () =>
+      alive &&
+      !!actor &&
+      currentSession(actor.account.id, actor.session.id, epoch);
     void (async () => {
+      if (!actor) return;
       try {
         const saved = await native.restorePaymentIntent();
-        if (!mounted.current) return;
-        intentRef.current = saved;
-        setIntent(saved);
-        if (saved) {
-          setKind(saved.purchaseKind);
-          setCount(String(saved.monitorCount));
+        if (!stillCurrent()) return;
+        if (saved?.version === 1) {
+          await native.clearPaymentIntent(
+            actor.account.id,
+            actor.session.id,
+            saved.orderId,
+          );
+          if (stillCurrent()) legacyOrder.current = saved.orderId;
+        }
+        if (saved?.version === 2) {
+          intentRef.current = saved;
+          setIntent(saved);
+          setAmount(String(saved.amountMinor / 100));
         }
       } catch (cause) {
-        if (mounted.current) setError(billingError(cause));
+        if (stillCurrent()) setError(billingError(cause));
       }
       try {
         const capabilities = await native.sdkCapabilities();
-        if (mounted.current) setSDKCapabilities(capabilities);
+        if (stillCurrent()) setSDKCapabilities(capabilities);
       } catch {
-        if (mounted.current) setSDKCapabilities(null);
+        if (stillCurrent()) setSDKCapabilities(null);
       } finally {
-        if (mounted.current) {
+        if (stillCurrent()) {
           setRestoring(false);
           void refresh();
         }
@@ -558,6 +604,7 @@ export function BillingScreen({
       if (active) void refresh();
     });
     return () => {
+      alive = false;
       mounted.current = false;
       pollGeneration.current++;
       orderRead.current?.controller.abort();
@@ -572,6 +619,7 @@ export function BillingScreen({
     if (
       !appActive ||
       !order ||
+      !isTopUp(order) ||
       !terminal(order) ||
       terminalHandled.current.has(order.id)
     )
@@ -602,6 +650,7 @@ export function BillingScreen({
     appActive,
     order?.id,
     order?.status,
+    order?.purchaseKind,
     order?.fulfillmentStatus,
     keepIntent,
     refreshAggregates,
@@ -727,6 +776,7 @@ export function BillingScreen({
       if (!currentSession(current.accountId, current.sessionId, epoch)) return;
       if (
         attached.order.id !== created.id ||
+        !isTopUp(attached.order) ||
         attached.order.checkoutKind !== "android_sdk"
       )
         throw new Error("Unexpected order");
@@ -744,6 +794,7 @@ export function BillingScreen({
     if (
       !activeSession ||
       !current ||
+      !isTopUp(current) ||
       busy ||
       current.checkoutKind !== "android_sdk"
     )
@@ -772,6 +823,7 @@ export function BillingScreen({
         return;
       if (
         !sdkCapabilities?.configured ||
+        !isTopUp(latest) ||
         latest.sdk?.state !== "confirmation_required" ||
         latest.sdk.shopId !== sdkCapabilities.shopId ||
         latest.sdk.environment !== sdkCapabilities.environment ||
@@ -814,6 +866,7 @@ export function BillingScreen({
     if (
       !activeSession ||
       !current ||
+      !isTopUp(current) ||
       current.checkoutKind !== "android_sdk" ||
       current.sdk?.state !== "awaiting_token" ||
       busy
@@ -870,35 +923,9 @@ export function BillingScreen({
       );
       return;
     }
-    const quantity =
-      saved?.monitorCount ??
-      (kind === "renew" ? selected?.quota : Number(count));
-    const packageId =
-      saved?.packageId ?? (kind === "renew" ? (selected?.id ?? "") : "");
-    if (
-      !quantity ||
-      !Number.isInteger(quantity) ||
-      quantity < 1 ||
-      quantity > 1000 ||
-      ((saved?.purchaseKind ?? kind) === "renew" && !uuid.test(packageId))
-    ) {
-      setError(
-        "Укажите количество от 1 до 1000 и выберите транзакцию для продления.",
-      );
-      return;
-    }
-    if (
-      !intentRef.current &&
-      (!Number.isSafeInteger(billing.priceVersion) ||
-        billing.priceVersion < 1 ||
-        !Number.isSafeInteger(billing.pricePerMonitorMinor) ||
-        billing.pricePerMonitorMinor < 100 ||
-        billing.pricePerMonitorMinor > 1_000_000 ||
-        quantity * billing.pricePerMonitorMinor > 35_000_000)
-    ) {
-      setError(
-        "Цена недоступна или сумма заказа превышает 350 000 ₽. Обновите условия.",
-      );
+    const amountMinor = saved?.amountMinor ?? parseRubles(amount);
+    if (amountMinor < minTopUpMinor || amountMinor > maxTopUpMinor) {
+      setError(`Введите сумму от 1 до ${money(maxTopUpMinor)}.`);
       return;
     }
     if (
@@ -927,21 +954,16 @@ export function BillingScreen({
       )
         return;
       if (!current) {
-        const route = checkoutRoute(billing, sdkCapabilities, kind, selected);
-        if (!route) {
-          setError("Продление этой транзакции сейчас недоступно.");
-          return;
-        }
         current = {
+          version: 2,
           accountId: activeSession.account.id,
           sessionId: activeSession.session.id,
           idempotencyKey: await native.randomUUID(),
-          purchaseKind: kind,
-          packageId,
-          monitorCount: quantity,
-          priceVersion: billing.priceVersion,
+          amountMinor,
           createdAt: new Date().toISOString(),
-          checkoutKind: route,
+          checkoutKind: sdkReady(billing, sdkCapabilities)
+            ? "android_sdk"
+            : "redirect",
         };
         if (!currentSession(current.accountId, current.sessionId, epoch))
           return;
@@ -953,21 +975,19 @@ export function BillingScreen({
         const known = await inspectOrder(current.orderId);
         if (
           !currentSession(current.accountId, current.sessionId, epoch) ||
+          !isTopUp(known) ||
           known.sdk?.state !== "awaiting_token"
         )
           return;
       }
       const sdkCheckout = current.checkoutKind === "android_sdk";
       const result = await api<{ order: PaymentOrder; sdk?: SDKQuote }>(
-        sdkCheckout ? "/billing/native/orders" : "/billing/orders",
+        sdkCheckout ? "/billing/native/topups" : "/billing/topups",
         {
           method: "POST",
           body: {
-            monitorCount: current.monitorCount,
+            amountMinor: current.amountMinor,
             idempotencyKey: current.idempotencyKey,
-            priceVersion: current.priceVersion,
-            purchaseKind: current.purchaseKind === "add" ? "purchase" : "renew",
-            packageId: current.packageId,
             ...(sdkCheckout ? {} : { returnTarget: "android" }),
           },
         },
@@ -975,6 +995,8 @@ export function BillingScreen({
       if (!currentSession(current.accountId, current.sessionId, epoch)) return;
       if (
         !uuid.test(result.order.id) ||
+        !isTopUp(result.order) ||
+        result.order.amountMinor !== current.amountMinor ||
         result.order.checkoutKind !== current.checkoutKind ||
         (current.orderId && current.orderId !== result.order.id)
       )
@@ -1022,7 +1044,9 @@ export function BillingScreen({
       if (mounted.current) {
         const latest = orderRef.current;
         setError(
-          latest?.checkoutKind === "android_sdk" &&
+          latest &&
+            isTopUp(latest) &&
+            latest.checkoutKind === "android_sdk" &&
             latest.sdk?.state !== "awaiting_token"
             ? ""
             : intentRef.current
@@ -1030,12 +1054,15 @@ export function BillingScreen({
               : billingError(cause),
         );
         if (
-          latest?.checkoutKind === "android_sdk" &&
+          latest &&
+          isTopUp(latest) &&
+          latest.checkoutKind === "android_sdk" &&
           latest.sdk?.state !== "awaiting_token"
         )
           setNotice(orderMessage(latest));
         setRejected(
-          cause instanceof ApiError && [400, 403, 409].includes(cause.status),
+          cause instanceof ApiError &&
+            [400, 403, 404, 409, 410, 422].includes(cause.status),
         );
       }
     } finally {
@@ -1073,7 +1100,7 @@ export function BillingScreen({
         await keepIntent(null);
         setRejected(false);
         setError("");
-        setNotice("Попытка отклонена. Обновите цену перед новым заказом.");
+        setNotice("Попытка отменена. Можно начать новое пополнение.");
         await refresh();
       })
       .catch((cause) => setError(billingError(cause)))
@@ -1082,43 +1109,65 @@ export function BillingScreen({
 
   const current = intent ?? null;
   const openOrder = order && unfinished(order) ? order : null;
-  const packages = entitlement?.packages ?? [];
-  const packagePages = Math.max(1, Math.ceil(packages.length / 10));
-  const shownPackagePage = Math.min(packagePage, packagePages);
-  const visiblePackages = packages.slice(
-    (shownPackagePage - 1) * 10,
-    shownPackagePage * 10,
-  );
-  const historyRows =
-    history?.orders
-      .filter((item) => item.id !== openOrder?.id)
-      .map((item) =>
-        item.id === order?.id && order && terminal(order) ? order : item,
-      ) ?? [];
-  const validQuote =
-    !!billing &&
-    Number.isSafeInteger(billing.pricePerMonitorMinor) &&
-    billing.pricePerMonitorMinor >= 100 &&
-    billing.pricePerMonitorMinor <= 1_000_000 &&
-    Number.isSafeInteger(billing.priceVersion) &&
-    billing.priceVersion > 0;
-  const quantity =
-    current?.monitorCount ??
-    (kind === "renew" ? (selected?.quota ?? 0) : Number(count) || 0);
   const canResumeSDK =
     current?.checkoutKind === "android_sdk" &&
     current.orderId &&
     openOrder?.id === current.orderId &&
     openOrder.sdk?.state === "awaiting_token";
-  const route = billing
-    ? checkoutRoute(billing, sdkCapabilities, kind, selected)
-    : null;
-  const nativeAvailable = (current?.checkoutKind ?? route) === "android_sdk";
+  const nativeAvailable = current
+    ? current.checkoutKind === "android_sdk"
+    : !!billing && sdkReady(billing, sdkCapabilities);
+  const testPayment = nativeAvailable
+    ? sdkCapabilities?.environment === "test"
+    : billing?.test;
+  const rate = balance ? hourlySpend(balance) : 0;
   return (
-    <Page title="Оплата" refresh={refresh}>
+    <Page title="Баланс" refresh={refresh}>
+      <Card>
+        <Title>{balance ? balanceMoney(balance) : "Загружаем баланс…"}</Title>
+        {balance ? (
+          <>
+            <Label muted>
+              {money(balance.pricePerMonitorMinor)} за монитор за полный
+              календарный месяц. Неполный час оплачивается пропорционально
+              времени работы.
+            </Label>
+            <DetailRow
+              label="Включено мониторов"
+              value={String(balance.enabledMonitors)}
+            />
+            {balance.enabledMonitors > 0 &&
+            hasFunds(balance) &&
+            !balance.suspended ? (
+              <>
+                <Label muted>
+                  Расход при текущем числе включённых мониторов
+                </Label>
+                <DetailRow label="За час ≈" value={estimate(rate)} />
+                <DetailRow label="За сутки ≈" value={estimate(rate * 24)} />
+                {balance.fundedUntil ? (
+                  <Label>
+                    Хватит примерно до {dateTime(balance.fundedUntil)}
+                  </Label>
+                ) : null}
+              </>
+            ) : (
+              <Label muted>
+                {hasFunds(balance)
+                  ? "Нет расхода на мониторы."
+                  : "Для проверок пополните баланс."}
+              </Label>
+            )}
+          </>
+        ) : null}
+      </Card>
       {openOrder ? (
         <Card>
-          <Title>Текущий заказ</Title>
+          <Title>
+            {openOrder.test || openOrder.provider === "mock"
+              ? "Тестовый платёж"
+              : "Текущий платёж"}
+          </Title>
           <Label>{orderMessage(openOrder)}</Label>
           <Label>Сумма: {money(openOrder.amountMinor)}</Label>
           <Button
@@ -1179,9 +1228,8 @@ export function BillingScreen({
         <Card>
           <Title>Черновик монитора сохранён</Title>
           <Label>
-            {entitlement && entitlement.quota > entitlement.enabledMonitorCount
-              ? "Квота доступна. Вернитесь к настройкам и нажмите «Запустить монитор»."
-              : "Завершите покупку, затем вернитесь к настройке. Монитор не запустится автоматически."}
+            Вернитесь, чтобы сохранить настройки и выбрать, будет ли монитор
+            включён.
           </Label>
           <Button
             label="Вернуться к настройке монитора"
@@ -1192,56 +1240,113 @@ export function BillingScreen({
         </Card>
       ) : null}
       <Card>
-        <Title>Доступность мониторов</Title>
-        <Label>
-          Включено: {entitlement?.enabledMonitorCount ?? "—"} · Доступная квота:{" "}
-          {entitlement?.quota ?? "—"}
-        </Label>
-        {session()?.account.role === "admin" && entitlement?.admin ? (
-          <Label>Административная квота: {entitlement.admin.quota}</Label>
-        ) : null}
-        <Label>
-          Цена:{" "}
-          {validQuote
-            ? money(billing!.pricePerMonitorMinor)
-            : "обновите условия"}{" "}
-          за монитор на календарный месяц.
-        </Label>
-        <Label>
-          Каждая покупка создаёт отдельную транзакцию. Продление меняет срок
-          только выбранной транзакции.
-        </Label>
-      </Card>
-      <Card>
-        <Title>Транзакции</Title>
-        {visiblePackages.map((item) => (
-          <Card key={item.id}>
-            <Label>
-              {item.quota} монитор(а) · до {date(item.activeUntil)} ·{" "}
-              {item.active ? "активна" : "истекла"}
+        <Title>Пополнить баланс</Title>
+        {native.DEV_CLIENT || (!billing?.canPay && !current) ? (
+          <Label muted>Пополнение сейчас недоступно.</Label>
+        ) : (
+          <>
+            <Label muted>
+              {testPayment
+                ? "Тестовый платёж без списания с карты."
+                : "Пополнение через ЮKassa. Автоматических списаний с карты нет."}
             </Label>
-            {!native.DEV_CLIENT &&
-            ["yookassa", "yookassa_test"].includes(item.source) ? (
+            {current ? (
+              <Label>Сохранённый запрос на {money(current.amountMinor)}.</Label>
+            ) : null}
+            {!current && !openOrder ? (
+              <>
+                <View
+                  style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}
+                >
+                  {quickTopUps.map((rubles) => (
+                    <Button
+                      key={rubles}
+                      label={money(rubles * 100)}
+                      secondary={parseRubles(amount) !== rubles * 100}
+                      onPress={() => setAmount(String(rubles))}
+                      disabled={busy || restoring}
+                    />
+                  ))}
+                </View>
+                <Field
+                  label="Сумма, ₽"
+                  value={amount}
+                  onChangeText={setAmount}
+                  keyboardType="numeric"
+                  maxLength={9}
+                />
+              </>
+            ) : null}
+            {(!openOrder || current) && (!current?.orderId || canResumeSDK) ? (
               <Button
                 label={
-                  selected?.id === item.id
-                    ? "Выбрана для продления"
-                    : "Продлить эту транзакцию"
+                  current
+                    ? "Продолжить оформление"
+                    : testPayment
+                      ? "Начать тестовый платёж"
+                      : nativeAvailable
+                        ? "Пополнить картой"
+                        : "Перейти к пополнению"
                 }
-                onPress={() => {
-                  setKind("renew");
-                  setSelected(item);
-                }}
-                disabled={!!current || busy}
-                secondary={selected?.id !== item.id}
+                disabled={restoring || busy}
+                onPress={() => void submit()}
               />
             ) : null}
-          </Card>
+            {rejected && current ? (
+              <Button
+                label="Отменить отклонённую попытку"
+                secondary
+                disabled={busy}
+                onPress={cancelRejected}
+              />
+            ) : null}
+          </>
+        )}
+      </Card>
+      {order && !unfinished(order) ? (
+        <Card>
+          <Label>{orderMessage(order)}</Label>
+          <Button
+            label={currentDetails ? "Скрыть детали" : "Детали платежа"}
+            onPress={() => setCurrentDetails((value) => !value)}
+            secondary
+          />
+          {currentDetails ? (
+            <Label muted>Номер для поддержки {order.id}</Label>
+          ) : null}
+        </Card>
+      ) : null}
+      <Card>
+        <Title>История баланса</Title>
+        <ErrorNotice message={historyError} />
+        {history?.entries.map((entry) => (
+          <View
+            key={entry.id}
+            style={{
+              flexDirection: "row",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <View style={{ flex: 1 }}>
+              <Label>
+                {entry.test && entry.kind === "top_up"
+                  ? "Тестовое пополнение"
+                  : entryLabels[entry.kind]}
+              </Label>
+              <Label muted>{dateTime(entry.createdAt)}</Label>
+            </View>
+            <Label>{entryAmount(entry)}</Label>
+          </View>
         ))}
-        {!packages.length ? (
-          <Label muted>Оплаченных транзакций пока нет.</Label>
+        {history && !history.entries.length ? (
+          <Label muted>Операций пока нет.</Label>
         ) : null}
-        {packagePages > 1 ? (
+        {!history && historyBusy ? (
+          <Label muted>Загружаем историю…</Label>
+        ) : null}
+        {history && history.pagination.totalPages > 1 ? (
           <View
             style={{
               flexDirection: "row",
@@ -1253,199 +1358,23 @@ export function BillingScreen({
             <Button
               label="Назад"
               secondary
-              disabled={shownPackagePage <= 1}
-              onPress={() => setPackagePage(shownPackagePage - 1)}
+              disabled={historyBusy || historyPage <= 1}
+              onPress={() => void loadHistory(historyPage - 1)}
             />
             <Label>
-              {shownPackagePage} из {packagePages}
+              {historyPage} из {history.pagination.totalPages}
             </Label>
             <Button
               label="Далее"
               secondary
-              disabled={shownPackagePage >= packagePages}
-              onPress={() => setPackagePage(shownPackagePage + 1)}
+              disabled={
+                historyBusy || historyPage >= history.pagination.totalPages
+              }
+              onPress={() => void loadHistory(historyPage + 1)}
             />
           </View>
         ) : null}
       </Card>
-      {native.DEV_CLIENT ? (
-        <Card>
-          <Title>Новый заказ</Title>
-          <Label muted>
-            Оплата в dev-сборке отключена. Данные и история доступны для
-            просмотра.
-          </Label>
-        </Card>
-      ) : (
-        <Card>
-          <Title>Новый заказ</Title>
-          {current ? (
-            <Label>
-              Оформление сохранено:{" "}
-              {current.purchaseKind === "renew" ? "продление" : "покупка"}{" "}
-              {current.monitorCount} монитор(а). Продолжение не создаст второй
-              заказ.
-            </Label>
-          ) : null}
-          <Button
-            label="Добавить мониторы"
-            secondary={kind !== "add"}
-            disabled={!!current || busy}
-            onPress={() => {
-              setKind("add");
-              setSelected(null);
-            }}
-          />
-          <Button
-            label="Продлить выбранную транзакцию"
-            secondary={kind !== "renew"}
-            disabled={!selected || !!current || busy}
-            onPress={() => setKind("renew")}
-          />
-          {kind === "add" && !current ? (
-            <Field
-              label="Количество мониторов"
-              value={count}
-              onChangeText={setCount}
-              keyboardType="number-pad"
-            />
-          ) : (
-            <Label>
-              {selected
-                ? `${selected.quota} монитор(а) · до ${date(selected.activeUntil)}`
-                : current
-                  ? `${current.monitorCount} монитор(а)`
-                  : "Выберите транзакцию выше."}
-            </Label>
-          )}
-          <Label>
-            Сумма:{" "}
-            {validQuote && quantity > 0
-              ? money(billing!.pricePerMonitorMinor * quantity)
-              : "—"}
-          </Label>
-          {!billing?.canPay ? (
-            <Label muted>Оплата сейчас недоступна для этого аккаунта.</Label>
-          ) : null}
-          {kind === "renew" && selected && !current && !route ? (
-            <Label muted>
-              Продление выбранной транзакции сейчас недоступно.
-            </Label>
-          ) : null}
-          <Button
-            label={
-              current
-                ? canResumeSDK
-                  ? "Продолжить оплату картой"
-                  : "Продолжить оформление"
-                : nativeAvailable
-                  ? "Оплатить картой"
-                  : "Перейти к оплате ЮKassa"
-            }
-            disabled={
-              restoring ||
-              busy ||
-              (!billing?.canPay && !current) ||
-              (!current && !route) ||
-              (!!current?.orderId && !canResumeSDK) ||
-              (!!openOrder && unfinished(openOrder) && !current) ||
-              (!current && !validQuote)
-            }
-            onPress={() => void submit()}
-          />
-          {rejected && current ? (
-            <Button
-              label="Отменить отклонённую попытку"
-              secondary
-              disabled={busy}
-              onPress={cancelRejected}
-            />
-          ) : null}
-        </Card>
-      )}
-      {order && terminal(order) ? (
-        <Label>
-          {orderMessage(order)} Детали заказа доступны в истории заказов.
-        </Label>
-      ) : null}
-      {history ? (
-        <Card>
-          <Title>История заказов</Title>
-          {historyRows.map((item) => (
-            <Card key={item.id} style={{ padding: 10, gap: 5 }}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ expanded: expandedHistoryId === item.id }}
-                accessibilityLabel={`${dateTime(item.createdAt)}, ${money(item.amountMinor)}, ${statusLabel(item)}. ${expandedHistoryId === item.id ? "Скрыть детали" : "Подробнее"}`}
-                style={{ minHeight: 48, justifyContent: "center", gap: 2 }}
-                onPress={() =>
-                  setExpandedHistoryId((current) =>
-                    current === item.id ? null : item.id,
-                  )
-                }
-              >
-                <Label>
-                  {dateTime(item.createdAt)} · {money(item.amountMinor)}
-                </Label>
-                <Label muted>{statusLabel(item)}</Label>
-              </Pressable>
-              {expandedHistoryId === item.id ? (
-                <>
-                  <Label>ID для поддержки: {item.id}</Label>
-                  <Label>
-                    {item.purchaseKind === "renew" ? "Продление" : "Покупка"} ·{" "}
-                    {item.monitorCount} монитор(а)
-                  </Label>
-                  <Label>{orderMessage(item)}</Label>
-                </>
-              ) : null}
-            </Card>
-          ))}
-          {!historyRows.length ? (
-            <Label muted>
-              {history.pagination.total
-                ? "Текущий заказ показан выше."
-                : "Заказов пока нет."}
-            </Label>
-          ) : null}
-          {history.pagination.totalPages > 1 ? (
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 8,
-              }}
-            >
-              <Button
-                label="Назад"
-                secondary
-                disabled={historyBusy || historyPage <= 1}
-                onPress={() =>
-                  void loadHistory(historyPage - 1).catch((cause) =>
-                    setError(billingError(cause)),
-                  )
-                }
-              />
-              <Label>
-                {historyPage} из {history.pagination.totalPages}
-              </Label>
-              <Button
-                label="Далее"
-                secondary
-                disabled={
-                  historyBusy || historyPage >= history.pagination.totalPages
-                }
-                onPress={() =>
-                  void loadHistory(historyPage + 1).catch((cause) =>
-                    setError(billingError(cause)),
-                  )
-                }
-              />
-            </View>
-          ) : null}
-        </Card>
-      ) : null}
       <ErrorNotice message={error} />
       {notice && (!order || notice !== orderMessage(order)) ? (
         <Label>{notice}</Label>

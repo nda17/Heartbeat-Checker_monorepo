@@ -92,6 +92,22 @@ func TestApplyIsIdempotent(t *testing.T) {
 	}
 }
 
+// These tests assert the intermediate schema before the wallet cutover.
+func applyHistoricalMigration(t *testing.T, ctx context.Context, pool *pgxpool.Pool, name string) {
+	t.Helper()
+	data, err := files.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(data)); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	sum := sha256.Sum256(data)
+	if _, err := pool.Exec(ctx, `INSERT INTO public.schema_migrations(version,checksum) VALUES ($1,$2)`, strings.TrimSuffix(name, ".sql"), hex.EncodeToString(sum[:])); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSeparateAdminGrantsMovesOnlyAdminRowsAndPreservesPaymentHistory(t *testing.T) {
 	pool := testDatabase(t)
 	ctx := context.Background()
@@ -167,9 +183,7 @@ func TestSeparateAdminGrantsMovesOnlyAdminRowsAndPreservesPaymentHistory(t *test
 	if _, err := pool.Exec(ctx, `INSERT INTO billing.payment_reports(order_id,created_at) VALUES($1,$2)`, orderID, reportCreated); err != nil {
 		t.Fatalf("seed historical payment report: %v", err)
 	}
-	if err := Apply(ctx, pool); err != nil {
-		t.Fatalf("apply admin-grant separation migration: %v", err)
-	}
+	applyHistoricalMigration(t, ctx, pool, "0025_separate_admin_grants.sql")
 	for _, expected := range []struct {
 		id, reason string
 		quota      int
@@ -227,6 +241,22 @@ func TestSeparateAdminGrantsMovesOnlyAdminRowsAndPreservesPaymentHistory(t *test
 	if _, err := pool.Exec(ctx, `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason) VALUES($1,1,now()+interval '1 day','admin_grant','must use separate table')`, local); err == nil {
 		t.Fatal("post-migration entitlement source check still accepts admin_grant")
 	}
+	// Now exercise the actual upgrade to the current release with both paid
+	// and administrative rights present. Preserve payment evidence and users.
+	if err := Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	var reset bool
+	if err := pool.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM billing.entitlements)
+		AND NOT EXISTS (SELECT 1 FROM billing.admin_grants)
+		AND NOT EXISTS (SELECT 1 FROM billing.wallet_ledger)
+		AND NOT EXISTS (SELECT 1 FROM billing.wallets WHERE available_units<>0)
+		AND (SELECT count(*) FROM accounts.accounts)=5
+		AND EXISTS (SELECT 1 FROM billing.orders WHERE id=$1 AND amount_minor=8700)
+		AND EXISTS (SELECT 1 FROM billing.payment_reports WHERE order_id=$1 AND created_at=$2)`, orderID, reportCreated).Scan(&reset); err != nil || !reset {
+		t.Fatalf("wallet cutover failed: reset=%t err=%v", reset, err)
+	}
+
 }
 
 func TestIndependentPackagesMigrationPreservesLegacyEntitlementAndBlockedOrder(t *testing.T) {
@@ -275,9 +305,7 @@ func TestIndependentPackagesMigrationPreservesLegacyEntitlementAndBlockedOrder(t
 		t.Fatalf("insert terminal blocked order: %v", err)
 	}
 
-	if err := Apply(ctx, pool); err != nil {
-		t.Fatalf("apply independent packages migration: %v", err)
-	}
+	applyHistoricalMigration(t, ctx, pool, "0026_independent_packages.sql")
 	var packageID, packageSource, packageReason string
 	var packageQuota, packageVersion, anchor int
 	var packageUntil, packageGranted time.Time
@@ -490,9 +518,7 @@ func TestMockBillingPriceMigrationPreservesLegacyAmountsAndChecksNewAmounts(t *t
 		t.Fatalf("seed legacy 2400-minor order before price migration: %v", err)
 	}
 
-	if err := Apply(ctx, pool); err != nil {
-		t.Fatalf("apply price migration after legacy order exists: %v", err)
-	}
+	applyHistoricalMigration(t, ctx, pool, "0009_mock_billing_price.sql")
 	var preservedAmount int
 	if err := pool.QueryRow(ctx, `SELECT amount_minor FROM billing.orders WHERE id=$1`, legacyOrderID).Scan(&preservedAmount); err != nil || preservedAmount != 2400 {
 		t.Fatalf("legacy order amount after migration=%d err=%v, want unchanged 2400", preservedAmount, err)
@@ -707,9 +733,7 @@ func TestAdminConsoleMigrationPreservesPriorStateAndAddsVersionedMFA(t *testing.
 	if _, err := pool.Exec(ctx, `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason) VALUES($1,3,now()+interval '1 day','mock_test','legacy grant')`, accountID); err != nil {
 		t.Fatalf("seed preexisting entitlement: %v", err)
 	}
-	if err := Apply(ctx, pool); err != nil {
-		t.Fatalf("apply admin console migration: %v", err)
-	}
+	applyHistoricalMigration(t, ctx, pool, "0012_admin_console.sql")
 	var accountVersion int64
 	var source, reason string
 	var limit int

@@ -114,6 +114,7 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 		}
 	}
 	var wg sync.WaitGroup
+	startDeliveryLoop(ctx, &wg, logger, "wallet settlement", billingModule.ProcessOneWallet)
 	monitorModule.StartProviderWorker(ctx, &wg, logger, cfg.ProviderASNCacheDir)
 	if cfg.AndroidPushEnabled {
 		for range 2 {
@@ -191,7 +192,13 @@ func Run(ctx context.Context, cfg config.WorkerConfig, logger *slog.Logger) erro
 				if attempt == nil {
 					continue
 				}
-				result, err := client.Check(ctx, attempt.Request)
+				probeCtx, stopProbe := context.WithDeadline(ctx, attempt.LeaseUntil)
+				if probeCtx.Err() != nil {
+					stopProbe()
+					continue
+				}
+				result, err := client.Check(probeCtx, attempt.Request)
+				stopProbe()
 				if ctx.Err() != nil {
 					return
 				}

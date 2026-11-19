@@ -21,7 +21,7 @@ export type Monitor = {
   failureThreshold: number;
   enabled: boolean;
   version: number;
-  state: "UNKNOWN" | "UP" | "DOWN" | "PAUSED" | "SUBSCRIPTION_REQUIRED";
+  state: "UNKNOWN" | "UP" | "DOWN" | "PAUSED" | "BALANCE_REQUIRED";
   lastCheckedAt: string | null;
   lastHttpStatus: number | null;
   lastLatencyMs: number | null;
@@ -43,41 +43,12 @@ export type MonitorSummary = {
   down: number;
   unknown: number;
   paused: number;
-  subscriptionRequired: number;
+  balanceRequired: number;
 };
 export type MonitorPage = {
   monitors: Monitor[];
   pagination: MonitorPagination;
   summary: MonitorSummary;
-};
-export type Subscription = {
-  id: string;
-  quota: number;
-  activeUntil: string | null;
-  active: boolean;
-  source: string;
-  version: number;
-};
-export type Entitlement = {
-  quota: number;
-  activeUntil: string | null;
-  source: string;
-  monitorCount: number;
-  enabledMonitorCount: number;
-  activeMonitorCount: number;
-  version: number;
-  admin: {
-    quota: number;
-    activeUntil: string | null;
-    version: number;
-  } | null;
-  packages: Subscription[];
-  paid: {
-    quota: number;
-    activeUntil: string | null;
-    source: string;
-    version: number;
-  } | null;
 };
 export type CheckResult = {
   id: string;
@@ -102,7 +73,7 @@ const labels: Record<string, string> = {
   UP: "Доступен",
   DOWN: "Недоступен",
   PAUSED: "На паузе",
-  SUBSCRIPTION_REQUIRED: "Нужна квота",
+  BALANCE_REQUIRED: "Нужно пополнить баланс",
 };
 export function Status({ state }: { state: string }) {
   return (

@@ -71,9 +71,12 @@ func (s *Service) nativeLease(ctx context.Context, tx pgx.Tx, p auth.Principal) 
 	return nil
 }
 
-func (s *Service) CreateNativeOrder(ctx context.Context, p auth.Principal, count int, key string, version int64, kind, packageID string) (contracts.Order, contracts.SDKQuote, error) {
-	if count < 1 || count > 1000 || !validID(key) {
+func (s *Service) CreateNativeTopup(ctx context.Context, p auth.Principal, amount int, key string) (contracts.Order, contracts.SDKQuote, error) {
+	if amount < MinOrderAmountMinor || !validID(key) {
 		return contracts.Order{}, contracts.SDKQuote{}, ErrInvalid
+	}
+	if amount > MaxOrderAmountMinor {
+		return contracts.Order{}, contracts.SDKQuote{}, ErrOrderAmount
 	}
 	if s.provider != "yookassa" {
 		return contracts.Order{}, contracts.SDKQuote{}, ErrSDKUnavailable
@@ -83,8 +86,7 @@ func (s *Service) CreateNativeOrder(ctx context.Context, p auth.Principal, count
 		return contracts.Order{}, contracts.SDKQuote{}, err
 	}
 	defer tx.Rollback(ctx)
-	entitlement, err := s.Lock(ctx, tx, p.AccountID)
-	if err != nil {
+	if err = lockAccount(ctx, tx, p.AccountID); err != nil {
 		return contracts.Order{}, contracts.SDKQuote{}, err
 	}
 	if err = s.nativeLease(ctx, tx, p); err != nil {
@@ -92,7 +94,7 @@ func (s *Service) CreateNativeOrder(ctx context.Context, p auth.Principal, count
 	}
 	existing, err := scanOrder(tx.QueryRow(ctx, `SELECT `+orderColumns+` FROM billing.orders WHERE account_id=$1 AND idempotency_key=$2`, p.AccountID, key))
 	if err == nil {
-		if existing.CheckoutKind != "android_sdk" || existing.MonitorCount != count || !samePackageSelection(existing, kind, packageID) {
+		if existing.PurchaseKind != "topup" || existing.CheckoutKind != "android_sdk" || existing.AmountMinor != amount {
 			return contracts.Order{}, contracts.SDKQuote{}, ErrConflict
 		}
 		return existing, s.sdkQuote(existing), tx.Commit(ctx)
@@ -110,46 +112,19 @@ func (s *Service) CreateNativeOrder(ctx context.Context, p auth.Principal, count
 	if !active {
 		return contracts.Order{}, contracts.SDKQuote{}, ErrForbidden
 	}
-	pricing, err := s.PricingTx(ctx, tx, true)
-	if err != nil {
+	if err = availableTopupSlot(ctx, tx, p.AccountID); err != nil {
 		return contracts.Order{}, contracts.SDKQuote{}, err
-	}
-	if version < 1 || version != pricing.Version {
-		return contracts.Order{}, contracts.SDKQuote{}, ErrPriceChanged
-	}
-	if count*pricing.PricePerMonitorMinor > MaxOrderAmountMinor {
-		return contracts.Order{}, contracts.SDKQuote{}, ErrOrderAmount
-	}
-	source := "yookassa"
-	if s.nativeMode == "test" {
-		source = "yookassa_test"
-	}
-	kind, packageID, err = s.selectPackage(entitlement, kind, packageID, count, source)
-	if err != nil {
-		return contracts.Order{}, contracts.SDKQuote{}, err
-	}
-	if _, err = tx.Exec(ctx, `UPDATE billing.orders SET status='canceled',completed_at=now(),fulfillment_status='not_required',reconciliation_status='complete' WHERE account_id=$1 AND provider='mock' AND status='pending' AND expires_at<=now()`, p.AccountID); err != nil {
-		return contracts.Order{}, contracts.SDKQuote{}, err
-	}
-	if _, err = tx.Exec(ctx, `UPDATE billing.orders SET status='canceled',completed_at=now(),fulfillment_status='not_required',reconciliation_status='complete' WHERE account_id=$1 AND checkout_kind='android_sdk' AND status='pending' AND reconciliation_status='awaiting_token' AND id IN (SELECT order_id FROM billing.sdk_payment_requests WHERE token_hash IS NULL AND draft_expires_at<=now())`, p.AccountID); err != nil {
-		return contracts.Order{}, contracts.SDKQuote{}, err
-	}
-	var pending bool
-	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM billing.orders WHERE account_id=$1 AND status='pending')`, p.AccountID).Scan(&pending); err != nil {
-		return contracts.Order{}, contracts.SDKQuote{}, err
-	}
-	if pending {
-		return contracts.Order{}, contracts.SDKQuote{}, ErrConflict
 	}
 	id, err := newID()
 	if err != nil {
 		return contracts.Order{}, contracts.SDKQuote{}, err
 	}
-	body, err := json.Marshal(map[string]any{"amount": map[string]string{"value": moneyValue(count * pricing.PricePerMonitorMinor), "currency": "RUB"}, "capture": true, "description": "Heartbeat Checker: мониторинг", "metadata": map[string]string{"order_id": id}})
+	body, err := json.Marshal(map[string]any{"amount": map[string]string{"value": moneyValue(amount), "currency": "RUB"}, "capture": true, "description": "Heartbeat Checker: пополнение баланса", "metadata": map[string]string{"order_id": id}})
 	if err != nil {
 		return contracts.Order{}, contracts.SDKQuote{}, err
 	}
-	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,provider_mode,provider_shop_id,provider_request,expires_at,purchase_kind,renew_package_id,return_target,checkout_kind,reconciliation_status) VALUES($1,$2,$3,'yookassa',$4,$5,$6,$7,$8,NULL,$9,NULLIF($10,'')::uuid,'android','android_sdk','awaiting_token') RETURNING `+orderColumns, id, p.AccountID, key, count, count*pricing.PricePerMonitorMinor, s.nativeMode, s.nativeShopID, body, kind, packageID))
+	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,provider_mode,provider_shop_id,provider_request,expires_at,purchase_kind,return_target,checkout_kind,reconciliation_status)
+        VALUES($1,$2,$3,'yookassa',0,$4,$5,$6,$7,NULL,'topup','android','android_sdk','awaiting_token') RETURNING `+orderColumns, id, p.AccountID, key, amount, s.nativeMode, s.nativeShopID, body))
 	if err != nil {
 		return contracts.Order{}, contracts.SDKQuote{}, err
 	}
@@ -162,7 +137,7 @@ func (s *Service) CreateNativeOrder(ctx context.Context, p auth.Principal, count
 }
 
 func (s *Service) sdkQuote(order contracts.Order) contracts.SDKQuote {
-	q := contracts.SDKQuote{ShopID: order.ProviderShopID, Environment: sdkEnvironment(order.ProviderMode), AmountMinor: order.AmountMinor, Currency: order.Currency, Title: "Heartbeat Checker", Subtitle: "Мониторинг", SavePaymentMethod: "off", AllowedPaymentMethods: []string{"BANK_CARD"}}
+	q := contracts.SDKQuote{ShopID: order.ProviderShopID, Environment: sdkEnvironment(order.ProviderMode), AmountMinor: order.AmountMinor, Currency: order.Currency, Title: "Heartbeat Checker", Subtitle: "Пополнение баланса", SavePaymentMethod: "off", AllowedPaymentMethods: []string{"BANK_CARD"}}
 	if order.SDK != nil {
 		q.DraftExpiresAt = order.SDK.DraftExpiresAt
 	}
@@ -223,7 +198,7 @@ func (s *Service) AttachNativeToken(ctx context.Context, p auth.Principal, id, t
 		return contracts.Order{}, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err = s.Lock(ctx, tx, p.AccountID); err != nil {
+	if err = lockAccount(ctx, tx, p.AccountID); err != nil {
 		return contracts.Order{}, err
 	}
 	if err = s.nativeLease(ctx, tx, p); err != nil {
@@ -236,7 +211,7 @@ func (s *Service) AttachNativeToken(ctx context.Context, p auth.Principal, id, t
 	if err != nil {
 		return contracts.Order{}, err
 	}
-	if order.CheckoutKind != "android_sdk" {
+	if order.PurchaseKind != "topup" || order.CheckoutKind != "android_sdk" {
 		return contracts.Order{}, ErrNotFound
 	}
 	var storedHash []byte
@@ -303,7 +278,7 @@ func (s *Service) CancelNativeOrder(ctx context.Context, p auth.Principal, id st
 		return contracts.Order{}, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err = s.Lock(ctx, tx, p.AccountID); err != nil {
+	if err = lockAccount(ctx, tx, p.AccountID); err != nil {
 		return contracts.Order{}, err
 	}
 	if err = s.nativeLease(ctx, tx, p); err != nil {
@@ -316,7 +291,7 @@ func (s *Service) CancelNativeOrder(ctx context.Context, p auth.Principal, id st
 	if err != nil {
 		return contracts.Order{}, err
 	}
-	if order.CheckoutKind != "android_sdk" {
+	if order.PurchaseKind != "topup" || order.CheckoutKind != "android_sdk" {
 		return contracts.Order{}, ErrNotFound
 	}
 	var attached bool

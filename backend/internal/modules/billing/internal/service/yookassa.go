@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"github.com/jackc/pgx/v5/pgtype"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/nda17/Heartbeat-Checker_monorepo/backend/internal/modules/billing/contracts"
@@ -112,9 +111,12 @@ func (s *Service) GetOrder(ctx context.Context, account, id string) (contracts.O
 	return order, err
 }
 
-func (s *Service) createYooKassaOrder(ctx context.Context, account string, count int, key string, version int64, kind, packageID, returnTarget string) (contracts.Order, error) {
-	if count < 1 || count > 1000 || !validID(key) {
+func (s *Service) CreateTopup(ctx context.Context, account string, amount int, key, returnTarget string) (contracts.Order, error) {
+	if amount < MinOrderAmountMinor || !validID(key) || (returnTarget != "web" && returnTarget != "android") {
 		return contracts.Order{}, ErrInvalid
+	}
+	if amount > MaxOrderAmountMinor {
+		return contracts.Order{}, ErrOrderAmount
 	}
 	if s.payments == nil || !s.canPay(account) {
 		return contracts.Order{}, ErrForbidden
@@ -124,8 +126,7 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 		return contracts.Order{}, err
 	}
 	defer tx.Rollback(ctx)
-	entitlement, err := s.Lock(ctx, tx, account)
-	if err != nil {
+	if err = lockAccount(ctx, tx, account); err != nil {
 		return contracts.Order{}, err
 	}
 	active, err := s.accounts.Active(ctx, tx, account)
@@ -137,7 +138,7 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	}
 	existing, err := scanOrder(tx.QueryRow(ctx, `SELECT `+orderColumns+` FROM billing.orders WHERE account_id=$1 AND idempotency_key=$2`, account, key))
 	if err == nil {
-		if existing.Provider != "yookassa" || existing.MonitorCount != count || existing.ReturnTarget != returnTarget || !samePackageSelection(existing, kind, packageID) {
+		if existing.PurchaseKind != "topup" || existing.CheckoutKind != "redirect" || existing.AmountMinor != amount || existing.ReturnTarget != returnTarget {
 			return contracts.Order{}, ErrConflict
 		}
 		return existing, tx.Commit(ctx)
@@ -145,37 +146,8 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return contracts.Order{}, err
 	}
-	if s.mode == "test" && activeRealPackage(entitlement, time.Now()) {
-		return contracts.Order{}, ErrForbidden
-	}
-
-	pricing, err := s.PricingTx(ctx, tx, true)
-	if err != nil {
+	if err = availableTopupSlot(ctx, tx, account); err != nil {
 		return contracts.Order{}, err
-	}
-	if version < 1 || version != pricing.Version {
-		return contracts.Order{}, ErrPriceChanged
-	}
-	if count*pricing.PricePerMonitorMinor > MaxOrderAmountMinor {
-		return contracts.Order{}, ErrOrderAmount
-	}
-	kind, packageID, err = s.selectPackage(entitlement, kind, packageID, count, s.packageSource())
-	if err != nil {
-		return contracts.Order{}, err
-	}
-
-	if _, err = tx.Exec(ctx, `UPDATE billing.orders SET status='canceled',completed_at=now(),fulfillment_status='not_required',reconciliation_status='complete' WHERE account_id=$1 AND provider='mock' AND status='pending' AND expires_at<=now()`, account); err != nil {
-		return contracts.Order{}, err
-	}
-	if _, err = tx.Exec(ctx, `UPDATE billing.orders SET status='canceled',completed_at=now(),fulfillment_status='not_required',reconciliation_status='complete' WHERE account_id=$1 AND checkout_kind='android_sdk' AND status='pending' AND reconciliation_status='awaiting_token' AND id IN (SELECT order_id FROM billing.sdk_payment_requests WHERE token_hash IS NULL AND draft_expires_at<=now())`, account); err != nil {
-		return contracts.Order{}, err
-	}
-	var pending bool
-	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM billing.orders WHERE account_id=$1 AND status='pending')`, account).Scan(&pending); err != nil {
-		return contracts.Order{}, err
-	}
-	if pending {
-		return contracts.Order{}, ErrConflict
 	}
 	id, err := newID()
 	if err != nil {
@@ -186,20 +158,37 @@ func (s *Service) createYooKassaOrder(ctx context.Context, account string, count
 		returnURL = "https://heartbeat-checker.ru/android/payments/return?order=" + id
 	}
 	body, err := json.Marshal(map[string]any{
-		"amount":       map[string]string{"value": moneyValue(count * pricing.PricePerMonitorMinor), "currency": "RUB"},
+		"amount":       map[string]string{"value": moneyValue(amount), "currency": "RUB"},
 		"capture":      true,
 		"confirmation": map[string]string{"type": "redirect", "return_url": returnURL},
-		"description":  "Heartbeat Checker: мониторинг",
+		"description":  "Heartbeat Checker: пополнение баланса",
 		"metadata":     map[string]string{"order_id": id},
 	})
 	if err != nil {
 		return contracts.Order{}, err
 	}
-	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,provider_mode,provider_shop_id,provider_request,expires_at,purchase_kind,renew_package_id,return_target) VALUES($1,$2,$3,'yookassa',$4,$5,$6,$7,$8,NULL,$9,NULLIF($10,'')::uuid,$11) RETURNING `+orderColumns, id, account, key, count, count*pricing.PricePerMonitorMinor, s.mode, s.shopID, body, kind, packageID, returnTarget))
+	order, err := scanOrder(tx.QueryRow(ctx, `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,provider_mode,provider_shop_id,provider_request,expires_at,purchase_kind,return_target)
+        VALUES($1,$2,$3,'yookassa',0,$4,$5,$6,$7,NULL,'topup',$8) RETURNING `+orderColumns, id, account, key, amount, s.mode, s.shopID, body, returnTarget))
 	if err != nil {
 		return contracts.Order{}, err
 	}
 	return order, tx.Commit(ctx)
+}
+
+func availableTopupSlot(ctx context.Context, tx pgx.Tx, account string) error {
+	if _, err := tx.Exec(ctx, `UPDATE billing.orders SET status='canceled',completed_at=now(),fulfillment_status='not_required',reconciliation_status='complete'
+        WHERE account_id=$1 AND purchase_kind='topup' AND checkout_kind='android_sdk' AND status='pending' AND reconciliation_status='awaiting_token'
+        AND id IN (SELECT order_id FROM billing.sdk_payment_requests WHERE token_hash IS NULL AND draft_expires_at<=now())`, account); err != nil {
+		return err
+	}
+	var pending bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM billing.orders WHERE account_id=$1 AND status='pending' AND purchase_kind='topup')`, account).Scan(&pending); err != nil {
+		return err
+	}
+	if pending {
+		return ErrConflict
+	}
+	return nil
 }
 
 func moneyValue(minor int) string { return fmt.Sprintf("%d.%02d", minor/100, minor%100) }
@@ -224,7 +213,7 @@ func (s *Service) ReceiveNotification(ctx context.Context, n contracts.ProviderN
 	defer tx.Rollback(ctx)
 	var id string
 	testShop := s.testShopID()
-	err = tx.QueryRow(ctx, `SELECT id::text FROM billing.orders WHERE provider='yookassa' AND ((provider_mode=$4 AND provider_shop_id=$2) OR (provider_mode='test' AND provider_shop_id=$5)) AND (provider_payment_id=$1 OR (id=NULLIF($3,'')::uuid AND status='pending' AND (provider_payment_id IS NULL OR provider_payment_id=$1))) ORDER BY (provider_payment_id=$1) DESC NULLS LAST LIMIT 1`, n.Object.ID, s.shopID, hint, s.mode, testShop).Scan(&id)
+	err = tx.QueryRow(ctx, `SELECT id::text FROM billing.orders WHERE purchase_kind='topup' AND provider='yookassa' AND ((provider_mode=$4 AND provider_shop_id=$2) OR (provider_mode='test' AND provider_shop_id=$5)) AND (provider_payment_id=$1 OR (id=NULLIF($3,'')::uuid AND status='pending' AND (provider_payment_id IS NULL OR provider_payment_id=$1))) ORDER BY (provider_payment_id=$1) DESC NULLS LAST LIMIT 1`, n.Object.ID, s.shopID, hint, s.mode, testShop).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return tx.Commit(ctx)
 	}

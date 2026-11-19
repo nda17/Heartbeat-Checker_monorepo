@@ -59,16 +59,13 @@ BEGIN
     VALUES (owner_id, payload->>'name', 'admin', 'active');
     INSERT INTO auth.credentials (account_id, email, password_hash)
     VALUES (owner_id, 'khv1702@gmail.com', payload->>'passwordHash');
-    INSERT INTO billing.admin_grants (account_id, monitor_limit, valid_until, reason)
-    VALUES (owner_id, 1000, '2027-10-18T00:00:00Z',
-            'Owner account transfer authorized by owner');
     INSERT INTO admin.audit_events
         (operation_id, actor_account_id, actor_session_id, target_account_id, target_id,
          action, reason, before_state, after_state, metadata)
     VALUES
         ('owner-production-2026-10-19-v1', NULL, NULL, owner_id, owner_id,
          'owner.provisioned', 'Owner account transfer authorized by owner', '{}'::jsonb,
-         '{"role":"admin","status":"active","quota":1000,"validUntil":"2027-10-18T00:00:00Z","source":"admin_grant"}'::jsonb,
+         '{"role":"admin","status":"active","balanceMinor":0}'::jsonb,
          jsonb_build_object('payloadSha256', input.payload_sha256,
                             'sourceSha', input.source_sha, 'channel', 'github_actions'));
     INSERT INTO owner_import_result VALUES ('created', input.source_sha);

@@ -49,7 +49,8 @@ export const closeReasonName = (value?: string | null) =>
     monitor_paused: "Монитор поставлен на паузу",
     monitor_disabled: "Монитор выключен",
     subscription_expired: "Срок оплаты завершён",
-    subscription_required: "Недостаточно квоты",
+    subscription_required: "Недостаточно средств",
+    balance_required: "Недостаточно средств",
     monitor_updated: "Настройки монитора изменились",
     monitor_deleted: "Монитор удалён",
   })[value ?? ""] ??

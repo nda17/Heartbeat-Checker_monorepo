@@ -10,9 +10,9 @@ import (
 
 var ErrOrderAmount = errors.New("billing order amount exceeds limit")
 
+const MinOrderAmountMinor = 100
 const MaxOrderAmountMinor = 35000000
 
-var ErrPriceChanged = errors.New("billing price changed")
 var ErrPricingUnavailable = errors.New("billing pricing is unavailable")
 var ErrPricingConflict = errors.New("billing pricing version conflict")
 
@@ -55,6 +55,10 @@ func (s *Service) UpdatePricingTx(ctx context.Context, tx pgx.Tx, version int64,
 	if before.PricePerMonitorMinor == minor {
 		return before, before, nil
 	}
-	after, err := scanPricing(tx.QueryRow(ctx, `UPDATE billing.pricing SET price_per_monitor_minor=$1,version=version+1,updated_at=clock_timestamp() WHERE singleton=1 RETURNING `+pricingColumns, minor))
+	after, err := scanPricing(tx.QueryRow(ctx, `UPDATE billing.pricing SET price_per_monitor_minor=$1,version=version+1,updated_at=GREATEST(clock_timestamp(),updated_at+interval '1 microsecond') WHERE singleton=1 RETURNING `+pricingColumns, minor))
+	if err != nil {
+		return before, after, err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO billing.wallet_tariffs(version,effective_at,price_per_monitor_minor) VALUES($1,$2,$3)`, after.Version, after.UpdatedAt, after.PricePerMonitorMinor)
 	return before, after, err
 }

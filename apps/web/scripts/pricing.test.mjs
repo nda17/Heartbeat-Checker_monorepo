@@ -393,7 +393,7 @@ test("public pricing refreshes after focus and pageshow and never keeps stale am
   await harness.unmount();
 });
 
-test("terms pricing uses the live quote for examples instead of a baked-in amount", async () => {
+test("terms pricing uses the live monthly rate and describes actual hourly use", async () => {
   const harness = createHarness("http://localhost/terms");
   const api = async (path) => {
     if (path === "/billing/pricing") return { pricing: pricing(2400, 2) };
@@ -408,8 +408,10 @@ test("terms pricing uses the live quote for examples instead of a baked-in amoun
   );
   await harness.settle();
   assert.match(harness.host.textContent, /24\s*₽/);
-  assert.match(harness.host.textContent, /72\s*₽/);
-  assert.match(harness.host.textContent, /240\s*₽/);
+  assert.match(
+    harness.host.textContent,
+    /почасово по фактическому времени работы/,
+  );
   assert.doesNotMatch(harness.host.textContent, /29\s*₽|87\s*₽|290\s*₽/);
   await harness.unmount();
 });

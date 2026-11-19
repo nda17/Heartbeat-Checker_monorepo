@@ -205,8 +205,8 @@ func newEmailDeliveryFixture(t *testing.T, label string) (*webhookFixture, *Mess
 	t.Helper()
 	f := newWebhookFixture(t)
 	accountID, monitorID := f.addMonitor(t, label)
-	if err := billing.New(f.pool, true).GrantLocal(context.Background(), accountID, 5, time.Now().Add(time.Hour), "email delivery integration"); err != nil {
-		t.Fatalf("grant isolated test entitlement: %v", err)
+	if err := billing.New(f.pool, true).CreditLocal(context.Background(), accountID, 2600, "email delivery integration"); err != nil {
+		t.Fatalf("fund test wallet: %v", err)
 	}
 	sender := &emailDeliverySender{}
 	const address = "alerts-owner@example.test"
@@ -404,8 +404,8 @@ func TestMessengerEmailDeliveryRechecksVerifiedAccountBeforeSend(t *testing.T) {
 			if _, err := f.pool.Exec(ctx, `INSERT INTO auth.credentials(account_id,email,password_hash,email_verified_at) VALUES($1,$2,'test-only',now())`, accountID, address); err != nil {
 				t.Fatalf("insert verified auth credential: %v", err)
 			}
-			if err := billing.New(f.pool, true).GrantLocal(ctx, accountID, 5, time.Now().Add(time.Hour), "email stale eligibility test"); err != nil {
-				t.Fatalf("grant isolated test entitlement: %v", err)
+			if err := billing.New(f.pool, true).CreditLocal(ctx, accountID, 2600, "email stale eligibility test"); err != nil {
+				t.Fatalf("fund test wallet: %v", err)
 			}
 			sender := &emailDeliverySender{}
 			m, err := NewMessenger(f.pool, integrationWebhookKey, MessengerConfig{

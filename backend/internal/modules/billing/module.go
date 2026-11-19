@@ -15,8 +15,10 @@ import (
 
 type Module struct{ service *service.Service }
 
-var ErrAdminGrant = service.ErrAdminGrant
-var ErrAdminGrantConflict = service.ErrAdminGrantConflict
+const MaxCreditAmountMinor = service.MaxOrderAmountMinor
+
+var ErrInvalidCredit = service.ErrInvalid
+var ErrCreditConflict = service.ErrConflict
 
 func New(pool *pgxpool.Pool, local bool) *Module { return &Module{service: service.New(pool, local)} }
 
@@ -94,17 +96,28 @@ func (m *Module) Register(mux *http.ServeMux, protect func(http.Handler) http.Ha
 func (m *Module) Lock(ctx context.Context, tx pgx.Tx, accountID string) (contracts.Entitlement, error) {
 	return m.service.Lock(ctx, tx, accountID)
 }
-func (m *Module) GrantAdminTx(ctx context.Context, tx pgx.Tx, accountID string, version int64, quota int, until time.Time, reason string) (contracts.Entitlement, error) {
-	return m.service.GrantAdminTx(ctx, tx, accountID, version, quota, until, reason)
+func (m *Module) Balance(ctx context.Context, accountID string) (contracts.Balance, error) {
+	return m.service.Balance(ctx, accountID)
 }
-func (m *Module) ExpireAdminTx(ctx context.Context, tx pgx.Tx, accountID string, version int64, reason string) error {
-	return m.service.ExpireAdminTx(ctx, tx, accountID, version, reason)
+
+func (m *Module) WalletTx(ctx context.Context, tx pgx.Tx, accountID string) (contracts.Balance, error) {
+	return m.service.WalletTx(ctx, tx, accountID)
 }
-func (m *Module) GrantLocal(ctx context.Context, accountID string, quota int, until time.Time, reason string) error {
-	return m.service.GrantLocal(ctx, accountID, quota, until, reason)
+
+func (m *Module) AdminCreditTx(ctx context.Context, tx pgx.Tx, accountID, actorID string, amount int, key, reason string) (contracts.Balance, contracts.Balance, bool, error) {
+	return m.service.AdminCreditTx(ctx, tx, accountID, actorID, amount, key, reason)
 }
-func (m *Module) GrantLocalTx(ctx context.Context, tx pgx.Tx, accountID string, quota int, until time.Time, reason string) error {
-	return m.service.GrantLocalTx(ctx, tx, accountID, quota, until, reason)
+
+func (m *Module) CreditLocal(ctx context.Context, accountID string, amount int, reason string) error {
+	return m.service.CreditLocal(ctx, accountID, amount, reason)
+}
+
+func (m *Module) CreditLocalTx(ctx context.Context, tx pgx.Tx, accountID string, amount int, reason string) error {
+	return m.service.CreditLocalTx(ctx, tx, accountID, amount, reason)
+}
+
+func (m *Module) ProcessOneWallet(ctx context.Context) (bool, error) {
+	return m.service.ProcessOneWallet(ctx)
 }
 
 // DeleteAccountTx cancels future billing work without erasing financial amounts.

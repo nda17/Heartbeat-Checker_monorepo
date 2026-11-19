@@ -9,11 +9,11 @@ import {
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
+import { Balance, hasFunds, invalidateBalance } from "@/entities/billing";
 import { MonitorForm } from "@/features/monitor-form";
 import { MonitorNotifications } from "@/features/monitor-notifications";
 import {
   CheckResult,
-  Entitlement,
   Incident,
   Monitor,
   MonitorPage,
@@ -29,14 +29,7 @@ import {
 } from "@/entities/monitor";
 import { api, ApiError, errorMessage, safeAppReturnTo } from "@/shared/api";
 import { Dialog } from "@/shared/dialog";
-import {
-  dateTime,
-  Loading,
-  Notice,
-  Spinner,
-  Icon,
-  MessengerIcon,
-} from "@/shared/ui";
+import { Loading, Notice, Spinner, Icon, MessengerIcon } from "@/shared/ui";
 type Detail = {
   monitor: Monitor;
   results: CheckResult[];
@@ -70,7 +63,7 @@ export function MonitorsPage() {
     currentSelection.current = selection;
   }, [selection]);
   const [listLoading, setListLoading] = useState(false);
-  const [entitlement, setEntitlement] = useState<Entitlement | null>(null);
+  const [balance, setBalance] = useState<Balance | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
@@ -108,9 +101,9 @@ export function MonitorsPage() {
         sort: selected.sort,
         q: selected.q,
       });
-      const [page, access] = await Promise.all([
+      const [page, currentBalance] = await Promise.all([
         api<MonitorPage>(`/monitors?${params}`, { signal: controller.signal }),
-        api<{ entitlement: Entitlement }>("/entitlement", {
+        api<Balance>("/billing/balance", {
           signal: controller.signal,
         }),
       ]);
@@ -121,7 +114,7 @@ export function MonitorsPage() {
       )
         return;
       setList(page);
-      setEntitlement(access.entitlement);
+      setBalance(currentBalance);
       setSelection((current) =>
         current !== selected || current.page === page.pagination.page
           ? current
@@ -202,6 +195,7 @@ export function MonitorsPage() {
         authenticated: true,
         body: { enabled: !monitor.enabled, version: monitor.version },
       });
+      invalidateBalance();
       await load().catch(() =>
         setError(
           "Изменение сохранено, но список не обновился. Обновите мониторы; повторять действие не нужно.",
@@ -223,6 +217,7 @@ export function MonitorsPage() {
         authenticated: true,
       });
       setDeleting(null);
+      invalidateBalance();
       await load().catch(() =>
         setError(
           "Монитор удалён, но список не обновился. Обновите мониторы; повторять удаление не нужно.",
@@ -374,15 +369,6 @@ export function MonitorsPage() {
     }));
   }
   const pagination = list?.pagination;
-  const quotaActive =
-    entitlement &&
-    entitlement.quota > 0 &&
-    entitlement.activeUntil &&
-    new Date(entitlement.activeUntil) > new Date();
-  const canCreate =
-    !!quotaActive &&
-    (entitlement?.enabledMonitorCount ?? 0) < (entitlement?.quota ?? 0);
-  const canEnable = canCreate;
   return (
     <>
       <div className="page-heading">
@@ -395,7 +381,7 @@ export function MonitorsPage() {
         </div>
         <button
           className="primary"
-          disabled={!canCreate || !!busy}
+          disabled={!!busy}
           onClick={() => setEditor("new")}
         >
           <Icon name="plus" /> Добавить монитор
@@ -425,70 +411,27 @@ export function MonitorsPage() {
           <strong>{list?.summary.down ?? "—"}</strong>
           <small>Неуспешная последняя проверка</small>
         </div>
-        <div className="stat quota-stat">
-          <span>Доступно мониторов</span>
-          <strong>{entitlement ? <>{entitlement.quota}</> : "—"}</strong>
-          <small>
-            Активно мониторов: {entitlement?.activeMonitorCount ?? "—"}
-          </small>
+        <div className="stat">
+          <span>Ждут пополнения</span>
+          <strong>{list?.summary.balanceRequired ?? "—"}</strong>
+          <small>Мониторы, включённые при нулевом балансе</small>
         </div>
       </div>
-      {entitlement && (
-        <div className="local-banner">
-          <span className="badge">Состав квоты</span>
-          {(entitlement.packages ?? []).map((part, index) => (
-            <p key={part.id}>
-              Транзакция {index + 1} —{" "}
-              {part.source === "yookassa"
-                ? "Оплачено мониторов"
-                : part.source === "local_test"
-                  ? "Локальная тестовая квота, без оплаты — мониторов"
-                  : part.source === "mock_test"
-                    ? "Демонстрационная квота, без списания — мониторов"
-                    : "Тестовая квота ЮKassa, без списания — мониторов"}
-              : {part.quota} до {dateTime(part.activeUntil, { year: true })}
-              {!part.active
-                ? part.activeUntil &&
-                  Date.parse(part.activeUntil) <= (updatedAt?.getTime() ?? 0)
-                  ? part.source === "yookassa"
-                    ? " · Срок оплаты истёк"
-                    : " · Срок квоты истёк"
-                  : " · Сейчас не действует"
-                : ""}
-              .
-            </p>
-          ))}
-
-          <p>
-            Сохранено мониторов: {entitlement.monitorCount}. Включено:{" "}
-            {entitlement.enabledMonitorCount}.
-          </p>
-        </div>
-      )}
-      {entitlement && !quotaActive && (
-        <div className="quota-banner">
+      {balance && !hasFunds(balance) && (
+        <div className="balance-banner">
           <div>
-            <h2>Проверки ждут действующую квоту</h2>
+            <h2>Пополните баланс для запуска проверок</h2>
             <p>
-              Кабинет и сохранённая история доступны. Для запуска проверок нужна
-              действующая квота.
+              Включённые мониторы начнут работу после пополнения. Настройки и
+              история доступны.
             </p>
             <Link href="/app/billing" className="text-link">
-              Перейти к оплате <Icon name="arrow-right" />
+              Перейти к балансу <Icon name="arrow-right" />
             </Link>
           </div>
-          <span className="quota-symbol" aria-hidden="true">
+          <span className="balance-symbol" aria-hidden="true">
             <Icon name="pause" size={32} />
           </span>
-        </div>
-      )}
-      {quotaActive && !canCreate && (
-        <div className="local-banner">
-          <p>
-            Лимит включённых мониторов достигнут. Чтобы выбрать другие мониторы,
-            поставьте ненужные на паузу и включите нужные. Настройки и история
-            сохраняются.
-          </p>
         </div>
       )}
       <section className="panel monitor-panel" aria-busy={listLoading}>
@@ -568,15 +511,12 @@ export function MonitorsPage() {
             </div>
             <h3>Всё начинается с первого адреса</h3>
             <p>
-              {canCreate
-                ? "Добавьте сайт или API, за которым хотите наблюдать. Результаты появятся после первой проверки."
-                : "Здесь будут ваши сайты и API. Для создания монитора нужна действующая квота."}
+              Добавьте сайт или API, за которым хотите наблюдать. Результаты
+              появятся после первой проверки.
             </p>
-            {canCreate && (
-              <button className="secondary" onClick={() => setEditor("new")}>
-                <Icon name="plus" /> Добавить первый монитор
-              </button>
-            )}
+            <button className="secondary" onClick={() => setEditor("new")}>
+              <Icon name="plus" /> Добавить первый монитор
+            </button>
           </div>
         ) : !monitors.length ? (
           <div className="empty-state">
@@ -692,7 +632,7 @@ export function MonitorsPage() {
                           className="icon-button"
                           title={m.enabled ? "Приостановить" : "Включить"}
                           aria-label={`${m.enabled ? "Приостановить" : "Включить"} ${m.name}`}
-                          disabled={!!busy || (!m.enabled && !canEnable)}
+                          disabled={!!busy}
                           onClick={() => void toggle(m)}
                         >
                           {busy === m.id ? (
@@ -791,17 +731,19 @@ export function MonitorsPage() {
           проверок подряд и закрывается при первом успешном ответе. Принятый
           неизвестный результат проверки (UNKNOWN) сбрасывает серию сбоев;
           отсутствие свежих данных само по себе её не сбрасывает. Пауза и
-          отсутствие квоты отображаются отдельно.
+          нулевой баланс отображаются отдельно.
         </p>
       </div>
       {editor && (
         <MonitorForm
           monitor={editor === "new" ? undefined : editor}
-          canEnable={canEnable}
           onClose={() => {
             setEditor(null);
           }}
-          onSaved={load}
+          onSaved={async () => {
+            invalidateBalance();
+            await load();
+          }}
         />
       )}{" "}
       {notifications && (

@@ -1,6 +1,12 @@
 import Image from "next/image";
 import Link from "next/link";
-import { AppStoreSoon, Brand, PublicFooter, Icon } from "@/shared/ui";
+import {
+  AppStoreSoon,
+  Brand,
+  PublicFooter,
+  Icon,
+  RuStoreLink,
+} from "@/shared/ui";
 import { ThemeToggle } from "@/features/theme-toggle";
 import { publicPageMetadata, PublicPageStructuredData } from "@/shared/seo";
 import { androidRelease } from "@/shared/android";
@@ -96,8 +102,8 @@ export default function AndroidPage() {
               </p>
             )}
             <div className="android-store-options">
-              <p>Также появится в магазинах</p>
-              <AppStoreSoon store="rustore" />
+              <p>Магазины приложений</p>
+              <RuStoreLink />
               <AppStoreSoon store="google-play" />
               <AppStoreSoon store="appgallery" />
             </div>
@@ -147,7 +153,7 @@ export default function AndroidPage() {
               <h3>Добавьте монитор</h3>
               <p>
                 Выберите тип проверки и укажите цель. Проверки начнутся после
-                сохранения при действующей квоте.
+                сохранения при положительном балансе.
               </p>
             </li>
           </ol>
@@ -159,9 +165,9 @@ export default function AndroidPage() {
           <div>
             <h2 id="android-account-title">Ваш аккаунт — тот же</h2>
             <p>
-              Вход, мониторинг и оплата работают через защищённый сайт сервиса.
-              Приложение не создаёт мониторы автоматически. Удаление приложения
-              не меняет сохранённые мониторы в аккаунте.
+              В приложении доступны вход, мониторинг и пополнение баланса через
+              ЮKassa. Приложение не создаёт мониторы автоматически. Удаление
+              приложения не меняет сохранённые мониторы в аккаунте.
             </p>
           </div>
           <nav aria-label="Об аккаунте и приложении">

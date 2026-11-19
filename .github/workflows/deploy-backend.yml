@@ -63,6 +63,11 @@ on:
         required: false
         default: false
         type: boolean
+      activate_native_sdk_production:
+        description: Enable native SDK checkout with the active production shop
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -91,6 +96,7 @@ jobs:
       ACTIVATE_YOOKASSA_TEST: ${{ inputs.activate_yookassa_test }}
       ACTIVATE_YOOKASSA_PRODUCTION: ${{ inputs.activate_yookassa_production }}
       ACTIVATE_NATIVE_SDK_TEST: ${{ inputs.activate_native_sdk_test }}
+      ACTIVATE_NATIVE_SDK_PRODUCTION: ${{ inputs.activate_native_sdk_production }}
       DEPLOY_HOST: ${{ vars.BACKEND_DEPLOY_HOST }}
       DEPLOY_USER: ${{ vars.BACKEND_DEPLOY_USER }}
     steps:
@@ -123,6 +129,9 @@ jobs:
           }
           [[ "$ACTIVATE_NATIVE_SDK_TEST" == true || "$ACTIVATE_NATIVE_SDK_TEST" == false ]] || {
             echo 'Invalid native SDK test activation flag'; exit 1;
+          }
+          [[ "$ACTIVATE_NATIVE_SDK_PRODUCTION" == true || "$ACTIVATE_NATIVE_SDK_PRODUCTION" == false ]] || {
+            echo 'Invalid native SDK production activation flag'; exit 1;
           }
           [[ "$ACTIVATE_EMAIL_NOTIFICATIONS" == true || "$ACTIVATE_EMAIL_NOTIFICATIONS" == false ]] || {
             echo 'Invalid email notification activation flag'; exit 1;
@@ -158,6 +167,11 @@ jobs:
             [[ "$ACTIVATE_TELEGRAM_RELAY" == false && "$ACTIVATE_MESSENGER_NOTIFICATIONS" == false && "$ACTIVATE_ADMIN_MFA" == false && "$ACTIVATE_OAUTH" == false && "$PROVISION_OWNER" == false && "$ACTIVATE_EMAIL_NOTIFICATIONS" == false && "$ACTIVATE_ANDROID_PUSH" == false && "$ACTIVATE_YOOKASSA_TEST" == false && "$ACTIVATE_YOOKASSA_PRODUCTION" == false ]] || {
               echo 'Native SDK test activation must be a separate configuration operation'; exit 1;
             }
+          fi
+          if [[ "$ACTIVATE_NATIVE_SDK_PRODUCTION" == true ]]; then
+            for flag in ACTIVATE_TELEGRAM_RELAY ACTIVATE_MESSENGER_NOTIFICATIONS ACTIVATE_ADMIN_MFA ACTIVATE_OAUTH PROVISION_OWNER ACTIVATE_EMAIL_NOTIFICATIONS ACTIVATE_ANDROID_PUSH ACTIVATE_HUAWEI_PUSH ACTIVATE_YOOKASSA_TEST ACTIVATE_YOOKASSA_PRODUCTION ACTIVATE_NATIVE_SDK_TEST; do
+              [[ "${!flag}" == false ]] || { echo 'Native SDK production activation must be a separate configuration operation'; exit 1; }
+            done
           fi
           [[ "$DEPLOY_HOST" == 176.12.64.115 && "$DEPLOY_USER" == heartbeat-deploy ]] || {
             echo 'Backend host/user do not match the approved VPS'; exit 1;
@@ -348,8 +362,10 @@ jobs:
           if [[ "$PROVISION_OWNER" == true ]]; then
             scp "${ssh_opts[@]}" deploy/backend/import-owner.sql "$target:/opt/heartbeat-checker/backend/import-owner.sql.incoming"
           fi
+          native_production_arg=''
+          if [[ "$ACTIVATE_NATIVE_SDK_PRODUCTION" == true ]]; then native_production_arg=" 'true'"; fi
           "$RUNNER_TEMP/hc-ops/hc-ops" deploy-json frame | ssh "${ssh_opts[@]}" "$target" \
-            "HC_OPS_SHA256='$ops_sha' bash /opt/heartbeat-checker/backend/deploy.sh.incoming '$SOURCE_SHA' '$API_IMAGE' '$WORKER_IMAGE' '$PROBE_IMAGE' '$MIGRATE_IMAGE' '$GITHUB_ACTOR' '$BACKUP_IMAGE' '$ACTIVATE_TELEGRAM_RELAY' '$ACTIVATE_MESSENGER_NOTIFICATIONS' '$PROVISION_OWNER' '$ACTIVATE_ADMIN_MFA' '$ACTIVATE_OAUTH' '$FIREWALL_IMAGE' '$FIREWALL_POLICY_SHA' '$ACTIVATE_YOOKASSA_TEST' '$ACTIVATE_EMAIL_NOTIFICATIONS' '$ACTIVATE_ANDROID_PUSH' '$ACTIVATE_YOOKASSA_PRODUCTION' '$ACTIVATE_NATIVE_SDK_TEST'"
+            "HC_OPS_SHA256='$ops_sha' bash /opt/heartbeat-checker/backend/deploy.sh.incoming '$SOURCE_SHA' '$API_IMAGE' '$WORKER_IMAGE' '$PROBE_IMAGE' '$MIGRATE_IMAGE' '$GITHUB_ACTOR' '$BACKUP_IMAGE' '$ACTIVATE_TELEGRAM_RELAY' '$ACTIVATE_MESSENGER_NOTIFICATIONS' '$PROVISION_OWNER' '$ACTIVATE_ADMIN_MFA' '$ACTIVATE_OAUTH' '$FIREWALL_IMAGE' '$FIREWALL_POLICY_SHA' '$ACTIVATE_YOOKASSA_TEST' '$ACTIVATE_EMAIL_NOTIFICATIONS' '$ACTIVATE_ANDROID_PUSH' '$ACTIVATE_YOOKASSA_PRODUCTION' '$ACTIVATE_NATIVE_SDK_TEST'$native_production_arg"
 
       - name: Verify public backend denies runner traffic
         shell: bash

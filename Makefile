@@ -84,15 +84,15 @@ probe: init-local
 
 # Explicit local test entitlement; no default entitlement is granted on registration.
 grant:
-	@test -n "$(ACCOUNT_ID)" -a -n "$(LIMIT)" -a -n "$(UNTIL)" || (echo 'Set ACCOUNT_ID, LIMIT and UNTIL (RFC3339)'; exit 1)
-	cd backend && APP_ENV=local go run ./cmd/local-grant --account-id "$(ACCOUNT_ID)" --limit "$(LIMIT)" --until "$(UNTIL)" --reason 'Explicit local development grant'
+	@test -n "$(ACCOUNT_ID)" -a -n "$(AMOUNT_MINOR)" || (echo 'Set ACCOUNT_ID and AMOUNT_MINOR'; exit 1)
+	cd backend && APP_ENV=local go run ./cmd/local-grant --account-id "$(ACCOUNT_ID)" --amount-minor "$(AMOUNT_MINOR)" --reason 'Explicit local development grant'
 
 # Secret input is a file path only; never pass a password through Make or argv.
 local-admin:
 	cd backend && go build -o bin/local-admin ./cmd/local-admin
 	cd backend && APP_ENV=local ./bin/local-admin \
-		--email "$${ADMIN_EMAIL}" --name "$${ADMIN_NAME}" --quota "$${ADMIN_QUOTA}" \
-		--until "$${ADMIN_UNTIL}" --password-file "$${ADMIN_PASSWORD_FILE}" --reason "$${ADMIN_REASON}"
+		--email "$${ADMIN_EMAIL}" --name "$${ADMIN_NAME}" --amount-minor "$${ADMIN_AMOUNT_MINOR}" \
+		--password-file "$${ADMIN_PASSWORD_FILE}" --reason "$${ADMIN_REASON}"
 
 check:
 	cd backend && test -z "$$(gofmt -l .)"

@@ -1481,27 +1481,6 @@ function transientFailureApi(responses) {
   return { api, calls };
 }
 
-function billingPricingApi(api, fallbackPrice = 2900) {
-  return async (path, options = {}) => {
-    if (path === "/billing/pricing") {
-      return {
-        pricing: {
-          pricePerMonitorMinor: fallbackPrice,
-          currency: "RUB",
-          period: "month",
-          version: 1,
-          updatedAt: "2026-10-19T10:00:00Z",
-        },
-      };
-    }
-    if (path === "/billing") {
-      const result = await api(path, options);
-      return { ...result, priceVersion: result.priceVersion ?? 1 };
-    }
-    return api(path, options);
-  };
-}
-
 function settingsPage(api, options = {}) {
   const link = ({ href, children, ...props }) =>
     React.createElement("a", { href, ...props }, children);
@@ -1921,178 +1900,75 @@ test("email verification 429 respects Retry-After and timeout ignores a late suc
   );
 });
 
-test("billing recovers its initial data load and retries both required GETs", async () => {
-  const harness = createHarness("http://localhost/app/billing");
-  const { api, calls } = transientFailureApi({
-    "/billing": {
-      provider: "mock",
-      canSimulate: false,
-      pricePerMonitorMinor: 2900,
-      orders: [
-        {
-          id: "order-recovered",
-          provider: "mock",
-          status: "succeeded",
-          monitorCount: 1,
-          amountMinor: 2900,
-          currency: "RUB",
-          createdAt: "2026-01-01T00:00:00Z",
-          expiresAt: "2026-01-01T00:15:00Z",
-          completedAt: "2026-01-01T00:01:00Z",
-          activeUntil: "2027-01-01T00:00:00Z",
-        },
-      ],
-    },
-    "/entitlement": {
-      entitlement: { quota: 2, activeUntil: null, source: "none" },
-    },
-  });
-  const page = compile("../src/_pages/billing/index.tsx", {
-    "@/entities/session": {
-      useSession: () => ({
-        profile: { account: { id: "billing-test-account" } },
-      }),
-    },
-    "@/shared/api": {
-      api: billingPricingApi(api),
-      errorMessage: (error) => String(error?.message ?? error),
-    },
-    "@/entities/monitor": {},
-    "@/shared/ui": {
-      Icon: () => null,
-      dateTime: (value) => value ?? "—",
-      Loading: ({ text }) =>
-        React.createElement("div", { role: "status" }, text),
-      Notice: ({ children }) =>
-        React.createElement("div", { role: "alert" }, children),
-    },
-  });
-  await harness.render(React.createElement(page.BillingPage));
-  await settle();
-  assert.match(harness.host.textContent, /network_error/);
-  assert.equal(harness.host.querySelector('[role="status"]'), null);
-  const retry = [...harness.host.querySelectorAll("button")].find((button) =>
-    button.textContent.includes("Повторить загрузку оплаты"),
-  );
-  assert.ok(retry);
-  await act(async () => retry.click());
-  await settle();
-  assert.match(harness.host.textContent, /История заказов/);
-  assert.equal(calls.filter(({ path }) => path === "/billing").length, 2);
-  assert.equal(calls.filter(({ path }) => path === "/entitlement").length, 2);
-  assert.ok(
-    calls.every(({ options }) => options.signal instanceof AbortSignal),
-  );
-  await harness.unmount();
-});
+const walletOrderId = "8b9d2155-3d8a-44f0-a2a0-0fc3a8d2c8b4";
+const walletStorageKey = "heartbeat-wallet-topup:wallet-owner";
 
-test("billing keeps new purchases editable and renews only the selected package", async () => {
-  const harness = createHarness("http://localhost/app/billing");
-  const calls = [];
-  const packages = [
-    {
-      id: "11111111-1111-4111-8111-111111111111",
-      source: "yookassa",
-      quota: 2,
-      activeUntil: "2026-11-01T00:00:00Z",
-      active: true,
-    },
-    {
-      id: "22222222-2222-4222-8222-222222222222",
-      source: "yookassa",
-      quota: 3,
-      activeUntil: "2026-12-01T00:00:00Z",
-      active: true,
-    },
-  ];
-  let postCount = 0;
-  const api = async (path, options = {}) => {
-    calls.push({ path, options });
-    if (path === "/billing")
-      return {
-        provider: "yookassa",
-        canPay: true,
-        canSimulate: false,
-        test: false,
-        pricePerMonitorMinor: 2900,
-        priceVersion: 1,
-        orders: [],
-      };
-    if (path === "/entitlement")
-      return {
-        entitlement: {
-          quota: 5,
-          activeUntil: "2026-10-25T00:00:00Z",
-          source: "yookassa",
-          monitorCount: 9,
-          enabledMonitorCount: 7,
-          activeMonitorCount: 5,
-          admin: {
-            quota: 2,
-            activeUntil: "2027-01-01T00:00:00Z",
-            version: 1,
-          },
-          packages,
-        },
-      };
-    if (path === "/billing/orders" && options.method === "POST") {
-      postCount += 1;
-      const body = options.body;
-      return {
-        order: {
-          id: `aaaaaaaa-aaaa-4aaa-8aaa-${String(postCount).padStart(12, "0")}`,
-          provider: "yookassa",
-          status: "pending",
-          reconciliationStatus: "pending",
-          monitorCount: body.monitorCount,
-          amountMinor: body.monitorCount * 2900,
-          currency: "RUB",
-          confirmationUrl: "https://yookassa.ru/checkout/packages",
-          createdAt: "2026-10-20T00:00:00Z",
-          expiresAt: null,
-          completedAt: null,
-          activeUntil: null,
-          purchaseKind: body.purchaseKind,
-          packageId: body.packageId ?? null,
-        },
-      };
-    }
-    if (path.startsWith("/billing/orders/"))
-      return {
-        order: {
-          id: path.split("/").at(-1),
-          provider: "yookassa",
-          status: "pending",
-          reconciliationStatus: "pending",
-          monitorCount: 4,
-          amountMinor: 11600,
-          currency: "RUB",
-          confirmationUrl: "https://yookassa.ru/checkout/packages",
-          createdAt: "2026-10-20T00:00:00Z",
-          expiresAt: null,
-          completedAt: null,
-          activeUntil: null,
-        },
-      };
-    throw new Error(`Unexpected billing API call: ${path}`);
+function walletBalance(availableMinor = 0, overrides = {}) {
+  return {
+    availableMinor,
+    positiveBelowCent: false,
+    currency: "RUB",
+    enabledMonitors: 2,
+    asOf: "2026-11-01T12:00:00Z",
+    fundedUntil: null,
+    suspended: availableMinor === 0,
+    pricePerMonitorMinor: 2600,
+    priceVersion: 1,
+    ...overrides,
   };
+}
+
+function walletOrder(overrides = {}) {
+  return {
+    id: walletOrderId,
+    purchaseKind: "topup",
+    provider: "yookassa",
+    status: "pending",
+    fulfillmentStatus: "pending",
+    reconciliationStatus: "pending",
+    amountMinor: 10000,
+    confirmationUrl: "https://yookassa.ru/checkout/test-order",
+    ...overrides,
+  };
+}
+
+function walletUi(t, handler, options = {}) {
+  const harness = createHarness(options.url ?? "http://localhost/app/billing");
+  Object.defineProperty(document, "visibilityState", { value: "visible" });
+  t.after(() => harness.unmount());
   const shared = compile("../src/shared/api/index.ts", {});
-  const page = compile(
+  const calls = [];
+  const noResult = Symbol("fixture-unhandled");
+  const api = async (path, request = {}) => {
+    calls.push({ path, request });
+    const result = await handler(path, request, noResult);
+    if (result !== noResult) return result;
+    if (path === "/billing")
+      return { provider: "yookassa", canPay: true, orders: [] };
+    if (path === "/billing/balance") return walletBalance();
+    if (path.startsWith("/billing/ledger?"))
+      return {
+        entries: [],
+        pagination: { page: 1, pageSize: 10, total: 0, totalPages: 1 },
+      };
+    throw new Error(`Unexpected wallet API call ${path}`);
+  };
+  const { BillingPage } = compile(
     "../src/_pages/billing/index.tsx",
     {
       "@/entities/session": {
-        useSession: () => ({
-          profile: { account: { id: "package-selection-owner" } },
-        }),
+        useSession: () => ({ profile: { account: { id: "wallet-owner" } } }),
+      },
+      "@/entities/billing": {
+        ...billingEntity,
+        invalidateBalance: options.onInvalidate ?? (() => {}),
       },
       "@/shared/api": {
-        api: billingPricingApi(api),
+        ...shared,
+        api,
         errorMessage: (error) => String(error?.message ?? error),
-        paymentConfirmationUrl: shared.paymentConfirmationUrl,
       },
-      "@/entities/monitor": {},
       "@/shared/ui": {
-        Icon: () => null,
         dateTime: (value) => value ?? "—",
         Loading: ({ text }) =>
           React.createElement("div", { role: "status" }, text),
@@ -2100,919 +1976,367 @@ test("billing keeps new purchases editable and renews only the selected package"
           React.createElement("div", { role: "alert" }, children),
       },
     },
-    { crypto: { randomUUID: () => "33333333-3333-4333-8333-333333333333" } },
+    { crypto: globalThis.crypto },
   );
-  await harness.render(React.createElement(page.BillingPage));
+  const submit = () =>
+    submitReactForm(harness.host.querySelector(".billing-checkout form"));
+  return {
+    ...harness,
+    calls,
+    submit,
+    ApiError: shared.ApiError,
+    show: () => harness.render(React.createElement(BillingPage)),
+  };
+}
+
+async function clickWallet(harness, label) {
+  const button = [...harness.host.querySelectorAll("button")].find(
+    (item) => item.textContent.trim() === label,
+  );
+  assert.ok(button, `missing wallet button: ${label}`);
+  await act(async () => button.click());
   await settle();
-  const transactions = [...harness.host.querySelectorAll("p")].filter((item) =>
-    item.textContent.includes("Транзакция"),
-  );
-  assert.equal(
-    transactions.length,
-    2,
-    "each purchase has its own transaction row",
-  );
-  assert.match(transactions[0].textContent, /2.*2026-11-01/);
-  assert.match(transactions[1].textContent, /3.*2026-12-01/);
-  assert.match(harness.host.textContent, /Доступно мониторов: 5/);
-  assert.match(harness.host.textContent, /Активно мониторов: 5/);
-  assert.doesNotMatch(harness.host.textContent, /Активно мониторов: 7/);
-  assert.doesNotMatch(harness.host.textContent, /2026-10-25|2027-01-01/);
-  assert.doesNotMatch(
-    harness.host.textContent,
-    /Мест от администратора|Пакет \d+/,
-  );
-  const count = harness.host.querySelector('input[name="monitorCount"]');
-  assert.ok(count);
-  assert.equal(count.readOnly, false, "a new purchase starts editable");
-  await setReactInputValue(count, "4");
-  const renewButtons = [...harness.host.querySelectorAll("button")].filter(
-    (button) => button.textContent.trim().startsWith("Продлить"),
-  );
-  assert.equal(renewButtons.length, 2);
-  const renew = renewButtons[1];
-  assert.ok(
-    renew,
-    `renew button missing; buttons=${[...harness.host.querySelectorAll("button")].map((button) => `${button.textContent}/${button.getAttribute("aria-label")}`).join(" | ")}`,
-  );
-  await act(async () => renew.click());
-  assert.equal(count.readOnly, true, "renewal fixes the selected package size");
-  assert.equal(count.value, "3");
-  const buyMore = [...harness.host.querySelectorAll("button")].find(
-    (button) =>
-      button.type === "button" &&
-      button.textContent.trim().startsWith("Купить"),
-  );
-  await act(async () => buyMore.click());
-  assert.equal(count.readOnly, false, "switching to purchase unlocks quantity");
-  assert.equal(
-    count.value,
-    "4",
-    "purchase keeps the separately selected quantity",
-  );
-  await act(async () => renew.click());
-  assert.equal(count.readOnly, true);
-  assert.equal(count.value, "3");
-  const form = harness.host.querySelector(".billing-checkout form");
-  await act(async () => {
-    form.dispatchEvent(
-      new harness.dom.window.Event("submit", {
-        bubbles: true,
-        cancelable: true,
-      }),
-    );
+}
+
+test("balance screen retries after a failed overview read", async (t) => {
+  let reads = 0;
+  const harness = walletUi(t, (path, _, otherwise) => {
+    if (path === "/billing/balance" && ++reads === 1)
+      throw new Error("network_error");
+    return otherwise;
   });
-  await settle();
-  const post = calls.find(
-    (call) => call.path === "/billing/orders" && call.options.method === "POST",
+  await harness.show();
+  assert.match(harness.host.textContent, /network_error/);
+  await clickWallet(harness, "Обновить");
+  assert.doesNotMatch(harness.host.textContent, /network_error/);
+  assert.match(harness.host.textContent, /История баланса/);
+  assert.equal(
+    harness.calls.filter(({ path }) => path === "/billing").length,
+    2,
   );
-  assert.equal(post?.options.body.purchaseKind, "renew");
-  assert.equal(post?.options.body.packageId, packages[1].id);
-  assert.equal(post?.options.body.monitorCount, 3);
+  assert.equal(reads, 2);
   assert.ok(
-    [...harness.host.querySelectorAll("button")]
-      .filter((button) => button.textContent.includes("Продлить"))
-      .every((button) => button.disabled),
-    "an accepted pending order locks package selection",
+    harness.calls.every(({ request }) => request.signal instanceof AbortSignal),
   );
-  await harness.unmount();
 });
 
-test("YooKassa checkout retries an ambiguous create with the same key and never starts a mock timer", async () => {
-  const harness = createHarness("http://localhost/app/billing");
-  const timers = [];
+test("balance displays a fraction of a kopeck, forecast, and compact ledger with server pagination", async (t) => {
+  const harness = walletUi(t, (path, _, otherwise) => {
+    if (path === "/billing/balance") {
+      return walletBalance(0, {
+        positiveBelowCent: true,
+        suspended: false,
+        fundedUntil: "2026-11-01T12:01:00Z",
+      });
+    }
+    if (path.startsWith("/billing/ledger?")) {
+      const page = Number(
+        new URL(path, "https://example.test").searchParams.get("page"),
+      );
+      return {
+        entries: [
+          {
+            id: `entry-${page}`,
+            amountMinor: page === 1 ? 0 : 2000,
+            positiveBelowCent: page === 1,
+            kind: page === 1 ? "usage" : "admin_credit",
+            createdAt: "2026-11-01T12:00:00Z",
+          },
+        ],
+        pagination: { page, pageSize: 10, total: 11, totalPages: 2 },
+      };
+    }
+    return otherwise;
+  });
+  await harness.show();
+  assert.match(harness.host.textContent, /< 0,01 ₽/);
+  assert.match(
+    harness.host.textContent,
+    /За час ≈.*За сутки ≈.*Хватит примерно до/s,
+  );
+  assert.match(harness.host.textContent, /Работа мониторов.*− < 0,01 ₽/s);
+  await clickWallet(harness, "Далее");
+  assert.match(harness.host.textContent, /Начисление администратора.*2 из 2/s);
+  assert.equal(
+    harness.calls.filter(({ request }) => request.method === "POST").length,
+    0,
+  );
+});
+
+test("custom amount is posted once as exact kopecks and same key survives a 5xx", async (t) => {
+  const writes = [];
+  const harness = walletUi(t, (path, request, otherwise) => {
+    if (path === "/billing/topups") {
+      writes.push(request.body);
+      if (writes.length === 1)
+        throw new harness.ApiError(503, "temporarily_unavailable");
+      return { order: walletOrder({ amountMinor: 2517 }) };
+    }
+    if (path === `/billing/orders/${walletOrderId}`)
+      return { order: walletOrder({ amountMinor: 2517 }) };
+    return otherwise;
+  });
+  await harness.show();
+  const input = harness.host.querySelector('input[name="amount"]');
+  const props =
+    input[Object.keys(input).find((key) => key.startsWith("__reactProps"))];
+  await act(async () => props.onChange({ target: { value: "25,17" } }));
+  await harness.submit();
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].amountMinor, 2517);
+  assert.equal(writes[0].returnTarget, "web");
+  assert.deepEqual(Object.keys(writes[0]).sort(), [
+    "amountMinor",
+    "idempotencyKey",
+    "returnTarget",
+  ]);
+  assert.match(harness.host.textContent, /Повторите сохранённый запрос/);
+  await harness.submit();
+  assert.equal(writes.length, 2);
+  assert.equal(JSON.stringify(writes[0]), JSON.stringify(writes[1]));
+  assert.equal(
+    harness.dom.window.sessionStorage.getItem(walletStorageKey),
+    null,
+  );
+  assert.ok(
+    harness.host.querySelector(
+      'a[href="https://yookassa.ru/checkout/test-order"]',
+    ),
+  );
+});
+
+test("an uncertain topup ignores a late create response and can restore its original request", async (t) => {
+  const hanging = deferred();
+  const harness = walletUi(t, (path, _, otherwise) =>
+    path === "/billing/topups" ? hanging.promise : otherwise,
+  );
+  const listeners = [];
   const originalSetTimeout = harness.dom.window.setTimeout.bind(
     harness.dom.window,
   );
-  const originalClearTimeout = harness.dom.window.clearTimeout.bind(
-    harness.dom.window,
-  );
-  harness.dom.window.setTimeout = (callback, delay = 0, ...args) => {
-    const timer = originalSetTimeout(callback, delay, ...args);
-    timers.push({ callback, delay, timer, active: true });
-    return timer;
+  harness.dom.window.setTimeout = (callback, delay) => {
+    if (delay === 10_000) listeners.push(callback);
+    return originalSetTimeout(callback, delay);
   };
-  harness.dom.window.clearTimeout = (timer) => {
-    const entry = timers.find((item) => item.timer === timer);
-    if (entry) entry.active = false;
-    originalClearTimeout(timer);
-  };
-
-  const firstCreate = deferred();
-  const calls = [];
-  const pendingOrder = {
-    id: "8b9d2155-3d8a-44f0-a2a0-0fc3a8d2c8b4",
-    provider: "yookassa",
-    status: "pending",
-    reconciliationStatus: "pending",
-    monitorCount: 1,
-    amountMinor: 2900,
-    currency: "RUB",
-    confirmationUrl: "https://yookassa.ru/checkout/abc",
-    createdAt: "2026-01-01T00:00:00Z",
-    expiresAt: null,
-    completedAt: null,
-    activeUntil: null,
-  };
-  const api = async (path, options = {}) => {
-    calls.push({ path, options });
-    if (path === "/billing")
-      return {
-        provider: "yookassa",
-        canSimulate: false,
-        canPay: true,
-        test: true,
-        pricePerMonitorMinor: 2900,
-        orders: [],
-      };
-    if (path === "/entitlement")
-      return {
-        entitlement: { quota: 0, activeUntil: null, source: "none" },
-      };
-    if (path === "/billing/orders" && options.method === "POST")
-      return calls.filter(
-        (call) => call.path === path && call.options.method === "POST",
-      ).length === 1
-        ? firstCreate.promise
-        : { order: pendingOrder };
-    if (path === `/billing/orders/${pendingOrder.id}`)
-      return { order: pendingOrder };
-    throw new Error(`Unexpected billing API call: ${path}`);
-  };
-  const shared = compile("../src/shared/api/index.ts", {});
-  const page = compile(
-    "../src/_pages/billing/index.tsx",
-    {
-      "@/entities/session": {
-        useSession: () => ({
-          profile: { account: { id: "yookassa-test-owner" } },
-        }),
-      },
-      "@/shared/api": {
-        api: billingPricingApi(api),
-        errorMessage: (error) => String(error?.message ?? error),
-        paymentConfirmationUrl: shared.paymentConfirmationUrl,
-      },
-      "@/entities/monitor": {},
-      "@/shared/ui": {
-        Icon: () => null,
-        dateTime: (value) => value ?? "—",
-        Loading: ({ text }) =>
-          React.createElement("div", { role: "status" }, text),
-        Notice: ({ children }) =>
-          React.createElement("div", { role: "alert" }, children),
-      },
-    },
-    { crypto: { randomUUID: () => "33333333-3333-4333-8333-333333333333" } },
-  );
-  await harness.render(React.createElement(page.BillingPage));
-  await settle();
-  const form = harness.host.querySelector(".billing-checkout form");
-  assert.ok(form, "the configured test checkout should render");
+  await harness.show();
   await act(async () => {
-    form.dispatchEvent(
-      new harness.dom.window.Event("submit", {
-        bubbles: true,
-        cancelable: true,
-      }),
-    );
-    await Promise.resolve();
-  });
-  const timeout = timers.findLast(
-    (item) => item.active && item.delay === 10_000,
-  );
-  assert.ok(timeout, "the in-flight create should have a bounded timeout");
-  await act(async () => {
-    originalClearTimeout(timeout.timer);
-    timeout.active = false;
-    timeout.callback();
-    await Promise.resolve();
-  });
-  assert.match(harness.host.textContent, /Повторите запрос на этой странице/);
-  const retry = [...harness.host.querySelectorAll("button")].find((button) =>
-    button.textContent.includes("Повторить запрос заказа"),
-  );
-  assert.ok(retry);
-  await act(async () => retry.click());
-  await settle();
-  const posts = calls.filter(
-    (call) => call.path === "/billing/orders" && call.options.method === "POST",
-  );
-  assert.equal(posts.length, 2);
-  assert.equal(
-    posts[0].options.body.idempotencyKey,
-    posts[1].options.body.idempotencyKey,
-  );
-  assert.equal(
-    posts[0].options.body.monitorCount,
-    posts[1].options.body.monitorCount,
-  );
-  assert.equal(posts[0].options.body.priceVersion, 1);
-  assert.equal(posts[1].options.body.priceVersion, 1);
-  assert.equal(
-    harness.dom.window.sessionStorage.getItem(
-      "heartbeat-billing-request:yookassa-test-owner",
-    ),
-    null,
-    "a confirmed order clears its retry intent",
-  );
-  assert.equal(posts[0].options.signal.aborted, true);
-  assert.equal(posts[1].options.signal.aborted, false);
-  assert.equal(
-    calls.filter((call) => call.path.startsWith("/billing/orders/")).length,
-    1,
-    "accepted POST should be followed by one authoritative order lookup",
-  );
-  assert.equal(calls.filter((call) => call.path === "/entitlement").length, 1);
-  assert.equal(
-    harness.host.querySelector('a[href="https://yookassa.ru/checkout/abc"]')
-      ?.textContent,
-    "Перейти к оплате в ЮKassa",
-  );
-  assert.ok(timers.every((item) => item.delay < 30 * 60 * 1000));
-  firstCreate.resolve({ order: { ...pendingOrder, id: "late-stale-order" } });
-  await settle();
-  assert.equal(harness.host.textContent.includes("late-stale-order"), false);
-  await harness.unmount();
-});
-
-test("YooKassa create preserves quote and idempotency key after a 5xx, while stale quote needs a fresh click", async () => {
-  const harness = createHarness("http://localhost/app/billing");
-  const calls = [];
-  let billingReads = 0;
-  let posts = 0;
-  const order = {
-    id: "a8b9d215-3d8a-44f0-a2a0-0fc3a8d2c8b4",
-    provider: "yookassa",
-    status: "pending",
-    reconciliationStatus: "pending",
-    monitorCount: 3,
-    amountMinor: 7200,
-    currency: "RUB",
-    confirmationUrl: "https://yookassa.ru/checkout/pricing",
-    createdAt: "2026-10-20T00:00:00Z",
-    expiresAt: null,
-    completedAt: null,
-    activeUntil: null,
-  };
-  class ApiError extends Error {
-    constructor(message, status) {
-      super(message);
-      this.status = status;
-    }
-  }
-  const api = async (path, options = {}) => {
-    calls.push({ path, options });
-    if (path === "/billing") {
-      billingReads += 1;
-      const current =
-        billingReads === 1
-          ? { pricePerMonitorMinor: 2900, priceVersion: 1 }
-          : { pricePerMonitorMinor: 2400, priceVersion: 2 };
-      return {
-        provider: "yookassa",
-        canSimulate: false,
-        canPay: true,
-        test: true,
-        ...current,
-        orders: [],
-      };
-    }
-    if (path === "/entitlement")
-      return { entitlement: { quota: 0, activeUntil: null, source: "none" } };
-    if (path === "/billing/orders" && options.method === "POST") {
-      posts += 1;
-      if (posts === 1) throw new ApiError("temporary_unavailable", 503);
-      if (posts === 2) throw new ApiError("price_changed", 409);
-      return { order };
-    }
-    if (path === `/billing/orders/${order.id}`) return { order };
-    throw new Error(`Unexpected billing API call: ${path}`);
-  };
-  const shared = compile("../src/shared/api/index.ts", {});
-  let idSequence = 0;
-  const page = compile(
-    "../src/_pages/billing/index.tsx",
-    {
-      "@/entities/session": {
-        useSession: () => ({
-          profile: { account: { id: "pricing-stale-owner" } },
-        }),
-      },
-      "@/shared/api": {
-        api: billingPricingApi(api),
-        ApiError,
-        errorMessage: (error) => String(error?.message ?? error),
-        paymentConfirmationUrl: shared.paymentConfirmationUrl,
-      },
-      "@/entities/monitor": {},
-      "@/shared/ui": {
-        Icon: () => null,
-        dateTime: (value) => value ?? "—",
-        Loading: ({ text }) =>
-          React.createElement("div", { role: "status" }, text),
-        Notice: ({ children }) =>
-          React.createElement("div", { role: "alert" }, children),
-      },
-    },
-    {
-      crypto: {
-        randomUUID: () =>
-          `44444444-4444-4444-8444-${String(++idSequence).padStart(12, "0")}`,
-      },
-    },
-  );
-  await harness.render(React.createElement(page.BillingPage));
-  await settle();
-  const count = harness.host.querySelector('input[name="monitorCount"]');
-  Object.getOwnPropertyDescriptor(
-    harness.dom.window.HTMLInputElement.prototype,
-    "value",
-  ).set.call(count, "3");
-  count.dispatchEvent(new harness.dom.window.Event("input", { bubbles: true }));
-  count.dispatchEvent(
-    new harness.dom.window.Event("change", { bubbles: true }),
-  );
-  const submit = async () => {
     const form = harness.host.querySelector(".billing-checkout form");
-    assert.ok(form);
-    await act(async () => {
-      form.dispatchEvent(
-        new harness.dom.window.Event("submit", {
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
-      await Promise.resolve();
-    });
-    await settle();
-  };
-
-  await submit();
-  assert.equal(posts, 1);
-  const uncertainIntent = JSON.parse(
-    harness.dom.window.sessionStorage.getItem(
-      "heartbeat-billing-request:pricing-stale-owner",
-    ),
-  );
-  assert.equal(uncertainIntent.priceVersion, 1);
-  assert.equal(uncertainIntent.pricePerMonitorMinor, 2900);
-  const retry = [...harness.host.querySelectorAll("button")].find((button) =>
-    button.textContent.includes("Повторить запрос заказа"),
-  );
-  assert.ok(retry, "5xx keeps the explicit same-intent retry available");
-  await act(async () => retry.click());
-  await settle();
-  assert.equal(posts, 2);
-  const postCalls = calls.filter(
-    (call) => call.path === "/billing/orders" && call.options.method === "POST",
-  );
-  assert.equal(
-    postCalls[0].options.body.idempotencyKey,
-    postCalls[1].options.body.idempotencyKey,
-  );
-  assert.equal(postCalls[0].options.body.priceVersion, 1);
-  assert.equal(postCalls[1].options.body.priceVersion, 1);
-
-  const form = harness.host.querySelector(".billing-checkout form");
-  assert.ok(form);
-  await act(async () => {
     form.dispatchEvent(
-      new harness.dom.window.Event("submit", {
-        bubbles: true,
-        cancelable: true,
-      }),
+      new window.Event("submit", { bubbles: true, cancelable: true }),
     );
     await Promise.resolve();
   });
-  await settle();
+  await act(async () => listeners.at(-1)());
+  assert.match(
+    harness.host.textContent,
+    /Ответ на создание платежа не получен/,
+  );
+  assert.ok(harness.dom.window.sessionStorage.getItem(walletStorageKey));
+  await act(async () => hanging.resolve({ order: walletOrder() }));
+  assert.equal(harness.host.querySelector('a[href*="checkout"]'), null);
+  await harness.render(null);
+  await harness.show();
+  assert.match(harness.host.textContent, /Сохранённый запрос на 100\s*₽/);
   assert.equal(
-    posts,
-    3,
-    "the definitive stale-quote response is not retried automatically",
+    harness.calls.filter(({ path }) => path === "/billing/topups").length,
+    1,
   );
-  assert.match(harness.host.textContent, /24,00/);
-  const allPosts = calls.filter(
-    (call) => call.path === "/billing/orders" && call.options.method === "POST",
-  );
-  assert.notEqual(
-    allPosts[1].options.body.idempotencyKey,
-    allPosts[2].options.body.idempotencyKey,
-  );
-  assert.equal(allPosts[2].options.body.priceVersion, 2);
-
-  await harness.unmount();
 });
 
-test("YooKassa return only looks up the owner order and hides payment for manual review", async () => {
-  const orderId = "8b9d2155-3d8a-44f0-a2a0-0fc3a8d2c8b4";
-  const harness = createHarness(
-    `http://localhost/app/billing?order=${orderId}`,
-  );
-  const calls = [];
-  const api = async (path, options = {}) => {
-    calls.push({ path, options });
+test("definitive topup conflict abandons the local intent and discovers the current payment", async (t) => {
+  let reads = 0;
+  const harness = walletUi(t, (path, _, otherwise) => {
     if (path === "/billing")
       return {
         provider: "yookassa",
-        canSimulate: false,
         canPay: true,
-        test: true,
-        pricePerMonitorMinor: 2900,
-        orders: [],
+        orders: ++reads > 1 ? [walletOrder()] : [],
       };
-    if (path === "/entitlement")
-      return { entitlement: { quota: 0, activeUntil: null, source: "none" } };
-    if (path === `/billing/orders/${orderId}`)
-      return {
-        order: {
-          id: orderId,
-          provider: "yookassa",
-          status: "pending",
-          reconciliationStatus: "manual_review",
-          monitorCount: 1,
-          amountMinor: 2900,
-          currency: "RUB",
-          confirmationUrl: "https://yookassa.ru/checkout/abc",
-          createdAt: "2026-01-01T00:00:00Z",
-          expiresAt: null,
-          completedAt: null,
-          activeUntil: null,
-        },
-      };
-    throw new Error(`Unexpected billing API call: ${path}`);
-  };
-  const shared = compile("../src/shared/api/index.ts", {});
-  const page = compile("../src/_pages/billing/index.tsx", {
-    "@/entities/session": {
-      useSession: () => ({
-        profile: { account: { id: "yookassa-test-owner" } },
-      }),
-    },
-    "@/shared/api": {
-      api: billingPricingApi(api),
-      errorMessage: (error) => String(error?.message ?? error),
-      paymentConfirmationUrl: shared.paymentConfirmationUrl,
-    },
-    "@/entities/monitor": {},
-    "@/shared/ui": {
-      Icon: () => null,
-      dateTime: (value) => value ?? "—",
-      Loading: ({ text }) =>
-        React.createElement("div", { role: "status" }, text),
-      Notice: ({ children }) =>
-        React.createElement("div", { role: "alert" }, children),
-    },
+    if (path === "/billing/topups")
+      throw new harness.ApiError(409, "billing_conflict");
+    if (path === `/billing/orders/${walletOrderId}`)
+      return { order: walletOrder() };
+    return otherwise;
   });
-  await harness.render(React.createElement(page.BillingPage));
-  await settle();
+  await harness.show();
+  await harness.submit();
   assert.equal(
-    calls.filter((call) => call.path === "/billing/orders").length,
-    0,
+    harness.dom.window.sessionStorage.getItem(walletStorageKey),
+    null,
   );
+  assert.match(harness.host.textContent, /Ожидаем подтверждение платежа/);
   assert.equal(
-    calls.filter((call) => call.path === `/billing/orders/${orderId}`).length,
+    harness.calls.filter(({ path }) => path === "/billing/topups").length,
+    1,
+  );
+});
+
+test("YooKassa return inspects an order, never charges, and hides payment continuation during review", async (t) => {
+  const harness = walletUi(
+    t,
+    (path, _, otherwise) => {
+      if (path === `/billing/orders/${walletOrderId}`)
+        return {
+          order: walletOrder({ reconciliationStatus: "manual_review" }),
+        };
+      return otherwise;
+    },
+    { url: `http://localhost/app/billing?order=${walletOrderId}` },
+  );
+  await harness.show();
+  assert.match(harness.host.textContent, /Результат платежа проверяется/);
+  assert.equal(harness.host.querySelector('a[href*="checkout"]'), null);
+  assert.equal(
+    harness.calls.filter(
+      ({ path }) => path === `/billing/orders/${walletOrderId}`,
+    ).length,
     1,
   );
   assert.equal(
-    harness.host.querySelector('a[href^="https://yookassa.ru/"]'),
-    null,
+    harness.calls.some(({ request }) => request.method === "POST"),
+    false,
   );
-  assert.match(harness.host.textContent, /Нужна проверка результата/);
-  await harness.unmount();
 });
 
-test("YooKassa return hydrates pending count and amount from the owner order", async () => {
-  const orderId = "8b9d2155-3d8a-44f0-a2a0-0fc3a8d2c8b4";
-  const harness = createHarness(
-    `http://localhost/app/billing?order=${orderId}`,
-  );
-  const calls = [];
-  const order = {
-    id: orderId,
-    provider: "yookassa",
-    status: "pending",
-    reconciliationStatus: "pending",
-    monitorCount: 3,
-    amountMinor: 8700,
-    currency: "RUB",
-    confirmationUrl: "https://yookassa.ru/checkout/abc",
-    createdAt: "2026-01-01T00:00:00Z",
-    expiresAt: null,
-    completedAt: null,
-    activeUntil: null,
-  };
-  const api = async (path, options = {}) => {
-    calls.push({ path, options });
-    if (path === "/billing")
-      return {
-        provider: "yookassa",
-        canSimulate: false,
-        canPay: true,
-        test: true,
-        pricePerMonitorMinor: 3100,
-        orders: [],
-      };
-    if (path === "/entitlement")
-      return { entitlement: { quota: 0, activeUntil: null, source: "none" } };
-    if (path === `/billing/orders/${orderId}`) return { order };
-    throw new Error(`Unexpected billing API call: ${path}`);
-  };
-  const shared = compile("../src/shared/api/index.ts", {});
-  const page = compile("../src/_pages/billing/index.tsx", {
-    "@/entities/session": {
-      useSession: () => ({
-        profile: { account: { id: "yookassa-test-owner" } },
-      }),
-    },
-    "@/shared/api": {
-      api: billingPricingApi(api, 3100),
-      errorMessage: (error) => String(error?.message ?? error),
-      paymentConfirmationUrl: shared.paymentConfirmationUrl,
-    },
-    "@/entities/monitor": {},
-    "@/shared/ui": {
-      Icon: () => null,
-      dateTime: (value) => value ?? "—",
-      Loading: ({ text }) =>
-        React.createElement("div", { role: "status" }, text),
-      Notice: ({ children }) =>
-        React.createElement("div", { role: "alert" }, children),
-    },
-  });
-  await harness.render(React.createElement(page.BillingPage));
-  await settle();
-  assert.equal(
-    harness.host.querySelector('input[name="monitorCount"]').value,
-    "3",
-  );
-  assert.match(harness.host.textContent, /87,00/);
-  assert.ok(
-    harness.host.querySelector('a[href="https://yookassa.ru/checkout/abc"]'),
-  );
-  assert.equal(
-    calls.filter((call) => call.path === "/billing/orders").length,
-    0,
-  );
-  await harness.unmount();
+test("archived orders from a return link are read-only and never credit the wallet", async (t) => {
+  for (const status of ["pending", "succeeded"])
+    await t.test(status, async (subtest) => {
+      const archived = walletOrder({
+        purchaseKind: status === "pending" ? "renew" : "purchase",
+        status,
+        fulfillmentStatus: status === "pending" ? "pending" : "fulfilled",
+        reconciliationStatus: "manual_review",
+      });
+      const newId = "a81bedb0-376e-437b-853b-6d30bffe8275";
+      const posted = [];
+      const harness = walletUi(
+        subtest,
+        (path, request, otherwise) => {
+          if (path === "/billing")
+            return { provider: "yookassa", canPay: true, orders: [archived] };
+          if (path === `/billing/orders/${walletOrderId}`)
+            return { order: archived };
+          if (path === "/billing/topups") {
+            posted.push(request.body);
+            return { order: walletOrder({ id: newId }) };
+          }
+          if (path === `/billing/orders/${newId}`)
+            return { order: walletOrder({ id: newId }) };
+          return otherwise;
+        },
+        {
+          url: `http://localhost/app/billing?order=${walletOrderId}`,
+          onInvalidate: () =>
+            assert.fail("an archived package must not reconcile the wallet"),
+        },
+      );
+      const obsoleteKey = "heartbeat-billing-request:wallet-owner";
+      harness.dom.window.sessionStorage.setItem(
+        obsoleteKey,
+        JSON.stringify({ count: 3 }),
+      );
+      await harness.show();
+      assert.match(harness.host.textContent, /Платёж за прежний пакет/);
+      assert.doesNotMatch(
+        harness.host.textContent,
+        /Баланс пополнен|Проверить статус платежа/,
+      );
+      assert.equal(harness.host.querySelector('a[href*="checkout"]'), null);
+      assert.equal(
+        harness.dom.window.sessionStorage.getItem(obsoleteKey),
+        null,
+      );
+      if (status === "succeeded")
+        assert.match(harness.host.textContent, /Оплата подтверждена/);
+      await act(async () => window.dispatchEvent(new window.Event("focus")));
+      assert.equal(
+        harness.calls.filter(
+          ({ path }) => path === `/billing/orders/${walletOrderId}`,
+        ).length,
+        1,
+      );
+      await harness.submit();
+      assert.equal(posted.length, 1);
+      assert.equal(posted[0].amountMinor, 10000);
+      assert.match(harness.host.textContent, /Ожидаем подтверждение платежа/);
+    });
 });
 
-test("an unavailable current quote does not hide an existing pending payment order", async () => {
-  const harness = createHarness("http://localhost/app/billing");
-  const calls = [];
-  const pendingOrder = {
-    id: "a15b6dc0-3b1e-4df3-9e98-1142fd775c62",
-    provider: "yookassa",
-    status: "pending",
-    reconciliationStatus: "pending",
-    monitorCount: 3,
-    amountMinor: 8700,
-    currency: "RUB",
-    confirmationUrl: "https://yookassa.ru/checkout/old-order",
-    createdAt: "2026-01-01T00:00:00Z",
-    expiresAt: null,
-    completedAt: null,
-    activeUntil: null,
-  };
-  const api = async (path, options = {}) => {
-    calls.push({ path, options });
-    if (path === "/billing")
-      return {
-        provider: "yookassa",
-        canSimulate: false,
-        canPay: true,
-        test: true,
-        pricePerMonitorMinor: 0,
-        priceVersion: 0,
-        orders: [pendingOrder],
-      };
-    if (path === "/entitlement")
-      return { entitlement: { quota: 0, activeUntil: null, source: "none" } };
-    if (path === `/billing/orders/${pendingOrder.id}`)
-      return { order: pendingOrder };
-    if (path === "/billing/pricing")
-      throw new Error("pricing temporarily unavailable");
-    throw new Error(`Unexpected billing API call: ${path}`);
-  };
-  const shared = compile("../src/shared/api/index.ts", {});
-  const page = compile("../src/_pages/billing/index.tsx", {
-    "@/entities/session": {
-      useSession: () => ({
-        profile: { account: { id: "pricing-unavailable-owner" } },
-      }),
-    },
-    "@/shared/api": {
-      api,
-      errorMessage: (error) => String(error?.message ?? error),
-      paymentConfirmationUrl: shared.paymentConfirmationUrl,
-    },
-    "@/entities/monitor": {},
-    "@/shared/ui": {
-      Icon: () => null,
-      dateTime: (value) => value ?? "—",
-      Loading: ({ text }) =>
-        React.createElement("div", { role: "status" }, text),
-      Notice: ({ children }) =>
-        React.createElement("div", { role: "alert" }, children),
-    },
-  });
-  await harness.render(React.createElement(page.BillingPage));
-  await settle();
-  assert.match(harness.host.textContent, /Цена временно недоступна/);
-  assert.match(harness.host.textContent, /87,00/);
-  const paymentLink = harness.host.querySelector(
-    'a[href="https://yookassa.ru/checkout/old-order"]',
-  );
-  assert.ok(
-    paymentLink,
-    "the previously issued provider URL remains available",
-  );
-  assert.equal(
-    harness.host.querySelector('input[name="monitorCount"]').disabled,
-    true,
-  );
-  assert.equal(
-    calls.filter((call) => call.path === "/billing/orders").length,
-    0,
-  );
-  await harness.unmount();
-});
-
-test("an older pricing response cannot roll back the billing overview quote", async () => {
-  const harness = createHarness("http://localhost/app/billing");
-  const oldQuote = deferred();
-  const calls = [];
-  const api = async (path, options = {}) => {
-    calls.push({ path, options });
-    if (path === "/billing")
-      return {
-        provider: "yookassa",
-        canSimulate: false,
-        canPay: true,
-        test: true,
-        pricePerMonitorMinor: 2400,
-        priceVersion: 2,
-        orders: [],
-      };
-    if (path === "/entitlement")
-      return { entitlement: { quota: 0, activeUntil: null, source: "none" } };
-    if (path === "/billing/pricing") return oldQuote.promise;
-    throw new Error(`Unexpected billing API call: ${path}`);
-  };
-  const shared = compile("../src/shared/api/index.ts", {});
-  const page = compile("../src/_pages/billing/index.tsx", {
-    "@/entities/session": {
-      useSession: () => ({
-        profile: { account: { id: "pricing-race-owner" } },
-      }),
-    },
-    "@/shared/api": {
-      api,
-      errorMessage: (error) => String(error?.message ?? error),
-      paymentConfirmationUrl: shared.paymentConfirmationUrl,
-    },
-    "@/entities/monitor": {},
-    "@/shared/ui": {
-      Icon: () => null,
-      dateTime: (value) => value ?? "—",
-      Loading: ({ text }) =>
-        React.createElement("div", { role: "status" }, text),
-      Notice: ({ children }) =>
-        React.createElement("div", { role: "alert" }, children),
-    },
-  });
-  await harness.render(React.createElement(page.BillingPage));
-  await settle();
-  assert.match(harness.host.textContent, /24,00/);
-  await act(async () =>
-    oldQuote.resolve({
-      pricing: {
-        pricePerMonitorMinor: 2900,
-        currency: "RUB",
-        period: "month",
-        version: 1,
-        updatedAt: "2026-10-01T00:00:00Z",
-      },
-    }),
-  );
-  await settle();
-  assert.match(harness.host.textContent, /24,00/);
-  assert.doesNotMatch(harness.host.textContent, /29,00/);
-
-  await harness.unmount();
-});
-
-test("a delayed pricing failure does not erase a newer overview quote", async () => {
-  const harness = createHarness("http://localhost/app/billing");
-  const priceRead = deferred();
-  void priceRead.promise.catch(() => {});
-  const api = async (path) => {
-    if (path === "/billing")
-      return {
-        provider: "yookassa",
-        canSimulate: false,
-        canPay: true,
-        test: true,
-        pricePerMonitorMinor: 2400,
-        priceVersion: 2,
-        orders: [],
-      };
-    if (path === "/entitlement")
-      return { entitlement: { quota: 0, activeUntil: null, source: "none" } };
-    if (path === "/billing/pricing") return priceRead.promise;
-    throw new Error(`Unexpected billing API call: ${path}`);
-  };
-  const shared = compile("../src/shared/api/index.ts", {});
-  const page = compile("../src/_pages/billing/index.tsx", {
-    "@/entities/session": {
-      useSession: () => ({
-        profile: { account: { id: "pricing-late-failure-owner" } },
-      }),
-    },
-    "@/shared/api": {
-      api,
-      errorMessage: (error) => String(error?.message ?? error),
-      paymentConfirmationUrl: shared.paymentConfirmationUrl,
-    },
-    "@/entities/monitor": {},
-    "@/shared/ui": {
-      Icon: () => null,
-      dateTime: (value) => value ?? "—",
-      Loading: ({ text }) =>
-        React.createElement("div", { role: "status" }, text),
-      Notice: ({ children }) =>
-        React.createElement("div", { role: "alert" }, children),
-    },
-  });
-  await harness.render(React.createElement(page.BillingPage));
-  await settle();
-  assert.match(harness.host.textContent, /24,00/);
-  await act(async () => priceRead.reject(new Error("late pricing failure")));
-  await settle();
-  assert.match(harness.host.textContent, /24,00/);
-  assert.doesNotMatch(harness.host.textContent, /Цена временно недоступна/);
-  await harness.unmount();
-});
-
-test("definitive YooKassa create rejections clear retry intent and refresh the current order", async () => {
-  for (const status of [400, 403, 409]) {
-    const harness = createHarness("http://localhost/app/billing");
-    const calls = [];
-    const pendingOrder = {
-      id: "8b9d2155-3d8a-44f0-a2a0-0fc3a8d2c8b4",
-      provider: "yookassa",
-      status: "pending",
-      reconciliationStatus: "pending",
-      monitorCount: 1,
-      amountMinor: 2900,
-      currency: "RUB",
-      confirmationUrl: "https://yookassa.ru/checkout/abc",
-      createdAt: "2026-01-01T00:00:00Z",
-      expiresAt: null,
-      completedAt: null,
-      activeUntil: null,
-    };
-    class ApiError extends Error {
-      constructor(code) {
-        super(code);
-        this.status = status;
-      }
-    }
-    let billingReads = 0;
-    let postCalls = 0;
-    const api = async (path, options = {}) => {
-      calls.push({ path, options });
-      if (path === "/billing") {
-        billingReads += 1;
+test("confirmed topup refreshes balance and ledger without another write", async (t) => {
+  let settled = false;
+  let invalidations = 0;
+  const harness = walletUi(
+    t,
+    (path, _, otherwise) => {
+      if (path === "/billing/balance")
+        return walletBalance(settled ? 10000 : 0);
+      if (path === `/billing/orders/${walletOrderId}`) {
+        settled = true;
         return {
-          provider: "yookassa",
-          canSimulate: false,
-          canPay: true,
-          test: true,
-          pricePerMonitorMinor: 2900,
-          orders: status === 409 && billingReads > 1 ? [pendingOrder] : [],
+          order: walletOrder({
+            status: "succeeded",
+            fulfillmentStatus: "fulfilled",
+          }),
         };
       }
-      if (path === "/entitlement")
-        return { entitlement: { quota: 0, activeUntil: null, source: "none" } };
-      if (path === "/billing/orders" && options.method === "POST") {
-        postCalls += 1;
-        if (postCalls === 1) throw new ApiError(`rejected_${status}`);
-        return { order: pendingOrder };
+      if (path.startsWith("/billing/ledger?") && settled) {
+        return {
+          entries: [
+            {
+              id: "credit",
+              kind: "top_up",
+              amountMinor: 10000,
+              createdAt: "2026-11-01T12:00:00Z",
+            },
+          ],
+          pagination: { page: 1, pageSize: 10, total: 1, totalPages: 1 },
+        };
       }
-      if (path === `/billing/orders/${pendingOrder.id}`)
-        return { order: pendingOrder };
-      throw new Error(`Unexpected billing API call: ${path}`);
-    };
-    const shared = compile("../src/shared/api/index.ts", {});
-    let idSequence = 0;
-    const page = compile(
-      "../src/_pages/billing/index.tsx",
-      {
-        "@/entities/session": {
-          useSession: () => ({
-            profile: { account: { id: "yookassa-test-owner" } },
+      return otherwise;
+    },
+    {
+      url: `http://localhost/app/billing?order=${walletOrderId}`,
+      onInvalidate: () => invalidations++,
+    },
+  );
+  await harness.show();
+  assert.equal(invalidations, 1);
+  assert.match(harness.host.textContent, /Баланс пополнен/);
+  assert.match(
+    harness.host.querySelector(".wallet-balance").textContent,
+    /100\s*₽/,
+  );
+  assert.match(
+    harness.host.querySelector(".wallet-ledger").textContent,
+    /Пополнение/,
+  );
+  assert.equal(
+    harness.calls.some(({ request }) => request.method === "POST"),
+    false,
+  );
+});
+
+test("test payment is always presented as a test", async (t) => {
+  const harness = walletUi(
+    t,
+    (path, _, otherwise) => {
+      if (path === "/billing")
+        return { provider: "yookassa", canPay: true, test: true, orders: [] };
+      if (path === `/billing/orders/${walletOrderId}`)
+        return {
+          order: walletOrder({
+            test: true,
+            status: "succeeded",
+            fulfillmentStatus: "not_required",
           }),
-        },
-        "@/shared/api": {
-          api: billingPricingApi(api),
-          ApiError,
-          errorMessage: (error) => String(error?.message ?? error),
-          paymentConfirmationUrl: shared.paymentConfirmationUrl,
-        },
-        "@/entities/monitor": {},
-        "@/shared/ui": {
-          Icon: () => null,
-          dateTime: (value) => value ?? "—",
-          Loading: ({ text }) =>
-            React.createElement("div", { role: "status" }, text),
-          Notice: ({ children }) =>
-            React.createElement("div", { role: "alert" }, children),
-        },
-      },
-      {
-        crypto: {
-          randomUUID: () =>
-            `33333333-3333-4333-8333-${String(++idSequence).padStart(12, "0")}`,
-        },
-      },
-    );
-    await harness.render(React.createElement(page.BillingPage));
-    await settle();
-    const submit = async () => {
-      const form = harness.host.querySelector(".billing-checkout form");
-      assert.ok(form);
-      await act(async () => {
-        form.dispatchEvent(
-          new harness.dom.window.Event("submit", {
-            bubbles: true,
-            cancelable: true,
-          }),
-        );
-        await Promise.resolve();
-      });
-      await settle();
-    };
-    await submit();
-    assert.equal(
-      harness.dom.window.sessionStorage.getItem(
-        "heartbeat-billing-request:yookassa-test-owner",
-      ),
-      null,
-      `${status} must clear the persisted idempotency intent`,
-    );
-    assert.ok(
-      calls.some((call) => call.path === "/billing" && call.options.signal),
-      `${status} should refresh the authoritative overview`,
-    );
-    if (status === 409) {
-      assert.ok(
-        calls.some(
-          (call) => call.path === `/billing/orders/${pendingOrder.id}`,
-        ),
-        "409 recovery should look up the existing pending order",
-      );
-      assert.equal(
-        postCalls,
-        1,
-        "409 recovery must not submit another payment",
-      );
-      assert.ok(
-        harness.host.querySelector(
-          'a[href="https://yookassa.ru/checkout/abc"]',
-        ),
-      );
-    } else {
-      const retryButton = [...harness.host.querySelectorAll("button")].find(
-        (button) =>
-          button.classList.contains("primary") &&
-          button.textContent.includes("Купить"),
-      );
-      assert.ok(
-        retryButton,
-        `${status} should unlock the form for a fresh request`,
-      );
-      assert.equal(
-        harness.host.querySelector('input[name="monitorCount"]').disabled,
-        false,
-      );
-      if (status === 400) {
-        const firstKey = calls.find((call) => call.path === "/billing/orders")
-          .options.body.idempotencyKey;
-        await submit();
-        const keys = calls
-          .filter(
-            (call) =>
-              call.path === "/billing/orders" && call.options.method === "POST",
-          )
-          .map((call) => call.options.body.idempotencyKey);
-        assert.equal(keys.length, 2);
-        assert.notEqual(keys[0], keys[1]);
-        assert.notEqual(keys[1], firstKey);
-      }
-    }
-    await harness.unmount();
-  }
+        };
+      return otherwise;
+    },
+    { url: `http://localhost/app/billing?order=${walletOrderId}` },
+  );
+  await harness.show();
+  assert.match(harness.host.textContent, /Тестовый платёж завершён/);
+  assert.doesNotMatch(harness.host.textContent, /Баланс пополнен/);
 });
 
 test("OAuth identity loading recovers both provider and linked-identity GETs", async () => {
@@ -3512,7 +2836,10 @@ function consoleShellFixture(api, routes = {}, suppliedContext = null) {
     },
     "@/features/theme-toggle": { ThemeToggle: () => null },
     "@/shared/api": {
-      api,
+      api: (path, options) =>
+        path === "/billing/balance"
+          ? Promise.resolve(walletBalance(2000))
+          : api(path, options),
       ApiError: ConsoleApiError,
       boundedRequest: loadBoundedRequest(),
       errorMessage: (error) => String(error?.code ?? error?.message ?? error),
@@ -3564,6 +2891,7 @@ test("ConsoleShell hides a BFCache snapshot until the fresh session check succee
   );
   await settle();
   assert.match(harness.host.textContent, /Cached session/);
+  assert.match(harness.host.textContent, /Баланс 20\s*₽/);
   assert.equal(calls.length, 1);
 
   await dispatchPageShow(false);
@@ -3571,7 +2899,7 @@ test("ConsoleShell hides a BFCache snapshot until the fresh session check succee
   await dispatchPageShow(true);
   assert.equal(calls.length, 2);
   assert.match(harness.host.textContent, /Открываем кабинет/);
-  assert.doesNotMatch(harness.host.textContent, /Cached session/);
+  assert.doesNotMatch(harness.host.textContent, /Cached session|Баланс 20\s*₽/);
   restored.resolve(refreshed);
   await settle();
   assert.match(harness.host.textContent, /Fresh session/);

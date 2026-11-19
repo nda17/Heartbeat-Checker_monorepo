@@ -1,4 +1,4 @@
-// Package stageyookassa stages only the selected reviewed billing credentials.
+// Package stageyookassa stages only the selected reviewed billing configuration.
 package stageyookassa
 
 import (
@@ -22,6 +22,18 @@ var ErrInvalid = errors.New("YooKassa CI candidate validation failed")
 // Stage's optional client is a test transport seam; production uses verified TLS,
 // no environment proxies and no redirects to another credential recipient.
 func Stage(ctx context.Context, workdir, mode string, input io.Reader, client *http.Client) error {
+	if mode == "native-production" {
+		if _, err := deploydata.ReadBounded(input, 0); err != nil {
+			return ErrInvalid
+		}
+		if deploydata.Candidate(workdir, [][2]string{
+			{"YOOKASSA_NATIVE_SDK_ENABLED", "true"},
+			{"YOOKASSA_NATIVE_SDK_MODE", "production"},
+		}) != nil {
+			return ErrInvalid
+		}
+		return nil
+	}
 	if mode != "test" && mode != "production" && mode != "native-test" {
 		return ErrInvalid
 	}

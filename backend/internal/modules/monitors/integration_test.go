@@ -138,6 +138,7 @@ func newMonitorFixture(t *testing.T) *monitorFixture {
 	monitorModule := New(pool, billingModule, incidentModule, accountModule)
 	mux := http.NewServeMux()
 	monitorModule.Register(mux, authModule.Protect)
+	billingModule.Register(mux, authModule.Protect)
 	return &monitorFixture{pool: pool, module: monitorModule, accounts: accountModule, billing: billingModule, auth: authModule, handler: mux}
 }
 
@@ -196,9 +197,9 @@ func (f *monitorFixture) newActor(t *testing.T, name string) monitorActor {
 	return monitorActor{account: account, cookie: cookie, csrf: csrfResponse.CSRFToken}
 }
 
-func (f *monitorFixture) grant(t *testing.T, actor monitorActor, quota int) {
+func (f *monitorFixture) fund(t *testing.T, actor monitorActor) {
 	t.Helper()
-	if err := f.billing.GrantLocal(context.Background(), actor.account.ID, quota, time.Now().Add(time.Hour), "monitor integration test"); err != nil {
+	if err := f.billing.CreditLocal(context.Background(), actor.account.ID, 2600, "monitor integration test"); err != nil {
 		t.Fatalf("grant local test entitlement: %v", err)
 	}
 }
@@ -273,11 +274,8 @@ func TestMonitorHTTPQuotaIsolationCSRFAndLeaseInvalidation(t *testing.T) {
 			t.Errorf("create with wrong scheme-specific port %q status=%d, want 400", rawURL, rejected.Code)
 		}
 	}
-	if _, status := f.create(t, owner, "blocked without quota", "one.example", true); status != http.StatusForbidden {
-		t.Fatalf("create without entitlement status=%d, want 403", status)
-	}
-	f.grant(t, owner, 2)
-	f.grant(t, other, 1)
+	f.fund(t, owner)
+	f.fund(t, other)
 	first, status := f.create(t, owner, "primary", "one.example", true)
 	if status != http.StatusCreated || first.ID == "" {
 		t.Fatalf("create entitled monitor status=%d monitor=%+v", status, first)
@@ -290,17 +288,9 @@ func TestMonitorHTTPQuotaIsolationCSRFAndLeaseInvalidation(t *testing.T) {
 	if status != http.StatusCreated || third.ID == "" || third.State != "PAUSED" {
 		t.Fatalf("create paused monitor beyond active count status=%d monitor=%+v", status, third)
 	}
-	entitlement := f.request(t, owner, http.MethodGet, "/api/v1/entitlement", nil, "", "")
-	var entitlementResponse struct {
-		Entitlement struct {
-			Quota               int `json:"quota"`
-			MonitorCount        int `json:"monitorCount"`
-			EnabledMonitorCount int `json:"enabledMonitorCount"`
-			ActiveMonitorCount  int `json:"activeMonitorCount"`
-		} `json:"entitlement"`
-	}
-	if entitlement.Code != http.StatusOK || json.Unmarshal(entitlement.Body.Bytes(), &entitlementResponse) != nil || entitlementResponse.Entitlement.Quota != 2 || entitlementResponse.Entitlement.MonitorCount != 3 || entitlementResponse.Entitlement.EnabledMonitorCount != 1 || entitlementResponse.Entitlement.ActiveMonitorCount != 1 {
-		t.Fatalf("entitlement response = %d %s", entitlement.Code, entitlement.Body.String())
+	balance, err := f.billing.Balance(context.Background(), owner.account.ID)
+	if err != nil || balance.EnabledMonitors != 1 || balance.Suspended {
+		t.Fatalf("balance=%+v err=%v", balance, err)
 	}
 	foreign := f.request(t, other, http.MethodGet, "/api/v1/monitors/"+first.ID, nil, "", "")
 	if foreign.Code != http.StatusNotFound {
@@ -376,87 +366,31 @@ func TestMonitorHTTPQuotaIsolationCSRFAndLeaseInvalidation(t *testing.T) {
 	}
 }
 
-func TestMonitorEnabledSlotsCanBeChosenAmongSavedMonitors(t *testing.T) {
+func TestTopupResumesOnlyEnabledMonitors(t *testing.T) {
 	f := newMonitorFixture(t)
-	owner := f.newActor(t, "Enabled Slot Owner")
-	f.grant(t, owner, 5)
-	monitors := make([]monitorcontracts.Monitor, 0, 10)
-	for i := 0; i < 10; i++ {
-		monitor, status := f.create(t, owner, fmt.Sprintf("slot-%02d", i), fmt.Sprintf("slot-%02d.example", i), i < 5)
-		if status != http.StatusCreated {
-			t.Fatalf("save monitor %d status=%d", i, status)
-		}
-		monitors = append(monitors, monitor)
+	owner := f.newActor(t, "Wallet owner")
+	on, status := f.create(t, owner, "enabled", "enabled.example", true)
+	if status != 201 || on.State != "BALANCE_REQUIRED" {
+		t.Fatalf("unfunded enabled monitor: %d %+v", status, on)
 	}
-	if _, status := f.create(t, owner, "eleventh enabled", "slot-10.example", true); status != http.StatusForbidden {
-		t.Fatalf("create above enabled quota status=%d, want 403", status)
+	off, status := f.create(t, owner, "paused", "paused.example", false)
+	if status != 201 || off.State != "PAUSED" {
+		t.Fatalf("paused monitor: %d %+v", status, off)
 	}
-	setEnabled := func(index int, enabled bool) {
-		t.Helper()
-		monitor := monitors[index]
-		response := f.request(t, owner, http.MethodPatch, "/api/v1/monitors/"+monitor.ID,
-			monitorcontracts.Patch{Version: monitor.Version, Enabled: &enabled}, owner.csrf, monitorTestOrigin)
-		wantStatus := http.StatusOK
-		if enabled && index == 5 {
-			wantStatus = http.StatusForbidden
-		}
-		if response.Code != wantStatus {
-			t.Fatalf("set monitor %d enabled=%t status=%d want=%d body=%s", index, enabled, response.Code, wantStatus, response.Body.String())
-		}
-		if response.Code == http.StatusOK {
-			var result struct {
-				Monitor monitorcontracts.Monitor `json:"monitor"`
-			}
-			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
-				t.Fatal(err)
-			}
-			monitors[index] = result.Monitor
-		}
+	if attempt, err := f.module.Claim(context.Background()); err != nil || attempt != nil {
+		t.Fatalf("zero balance claim=%v err=%v", attempt, err)
 	}
-	setEnabled(5, true) // No slot is free yet.
-	setEnabled(0, false)
-	setEnabled(1, false)
-	setEnabled(8, true)
-	setEnabled(9, true)
-
-	// A smaller quota changes effective rank only. Reads must retain all saved
-	// monitor configurations and must not silently change enabled flags.
-	f.grant(t, owner, 3)
-	entitlement := f.request(t, owner, http.MethodGet, "/api/v1/entitlement", nil, "", "")
-	var entitlementBody struct {
-		Entitlement struct {
-			Quota               int `json:"quota"`
-			MonitorCount        int `json:"monitorCount"`
-			EnabledMonitorCount int `json:"enabledMonitorCount"`
-			ActiveMonitorCount  int `json:"activeMonitorCount"`
-		} `json:"entitlement"`
-	}
-	if entitlement.Code != http.StatusOK || json.Unmarshal(entitlement.Body.Bytes(), &entitlementBody) != nil || entitlementBody.Entitlement.Quota != 3 || entitlementBody.Entitlement.MonitorCount != 10 || entitlementBody.Entitlement.EnabledMonitorCount != 5 || entitlementBody.Entitlement.ActiveMonitorCount != 3 {
-		t.Fatalf("entitlement after quota change=%d %s", entitlement.Code, entitlement.Body.String())
-	}
-	list := f.request(t, owner, http.MethodGet, "/api/v1/monitors?page=1&pageSize=20&sort=created_asc", nil, "", "")
-	page := readMonitorPage(t, list.Body.Bytes())
-	if list.Code != http.StatusOK || len(page.Monitors) != 10 {
-		t.Fatalf("list after quota change status=%d count=%d body=%s", list.Code, len(page.Monitors), list.Body.String())
-	}
-	for i, listed := range page.Monitors {
-		wantEnabled := i >= 2 && i <= 4 || i >= 8
-		wantState := "PAUSED"
-		if wantEnabled && i <= 4 {
-			wantState = "UNKNOWN"
-		} else if wantEnabled {
-			wantState = "SUBSCRIPTION_REQUIRED"
-		}
-		if listed.ID != monitors[i].ID || listed.Name != fmt.Sprintf("slot-%02d", i) || listed.URL != monitors[i].URL || listed.Enabled != wantEnabled || listed.State != wantState {
-			t.Errorf("monitor %d changed after quota read: id=%s name=%q url=%q enabled=%t state=%q", i, listed.ID, listed.Name, listed.URL, listed.Enabled, listed.State)
-		}
+	f.fund(t, owner)
+	page := f.request(t, owner, http.MethodGet, "/api/v1/monitors?page=1", nil, "", "")
+	got := readMonitorPage(t, page.Body.Bytes())
+	if got.Summary.Paused != 1 || got.Summary.Unknown != 1 || got.Summary.BalanceRequired != 0 {
+		t.Fatalf("after topup: %+v", got.Summary)
 	}
 }
-
-func TestConcurrentMonitorCreatesCannotExceedEnabledQuota(t *testing.T) {
+func TestConcurrentCreatesChargeAllEnabledMonitors(t *testing.T) {
 	f := newMonitorFixture(t)
 	owner := f.newActor(t, "Concurrent Enabled Slot Owner")
-	f.grant(t, owner, 1)
+	f.fund(t, owner)
 	start := make(chan struct{})
 	status := make(chan int, 2)
 	for i := 0; i < 2; i++ {
@@ -480,19 +414,19 @@ func TestConcurrentMonitorCreatesCannotExceedEnabledQuota(t *testing.T) {
 	}
 	close(start)
 	first, second := <-status, <-status
-	if !((first == http.StatusCreated && second == http.StatusForbidden) || (first == http.StatusForbidden && second == http.StatusCreated)) {
-		t.Fatalf("concurrent enabled monitor create statuses=%d,%d, want one 201 and one 403", first, second)
+	if first != http.StatusCreated || second != http.StatusCreated {
+		t.Fatalf("concurrent enabled monitor create statuses=%d,%d, want two 201", first, second)
 	}
 	var total, enabled int
 	if err := f.pool.QueryRow(context.Background(), `SELECT count(*),count(*) FILTER (WHERE enabled) FROM monitors.monitors WHERE account_id=$1`, owner.account.ID).Scan(&total, &enabled); err != nil {
 		t.Fatal(err)
 	}
-	if total != 1 || enabled != 1 {
-		t.Fatalf("concurrent create saved=%d enabled=%d, want 1/1", total, enabled)
+	if total != 2 || enabled != 2 {
+		t.Fatalf("concurrent create saved=%d enabled=%d, want 2/2", total, enabled)
 	}
 }
 
-func TestPaymentAndMonitorCreateConcurrentWritesRetainBothQuotaComponents(t *testing.T) {
+func TestPaymentAndMonitorCreateConcurrentWritesCreditsFundCreatedMonitor(t *testing.T) {
 	f := newMonitorFixture(t)
 	owner := f.newActor(t, "Concurrent Paid And Monitor Owner")
 	provider := &monitorPaymentProvider{}
@@ -502,17 +436,6 @@ func TestPaymentAndMonitorCreateConcurrentWritesRetainBothQuotaComponents(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	tx, err := f.pool.Begin(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := payments.GrantAdminTx(context.Background(), tx, owner.account.ID, 0, 3, time.Now().Add(24*time.Hour), "approved concurrency fixture"); err != nil {
-		_ = tx.Rollback(context.Background())
-		t.Fatal(err)
-	}
-	if err := tx.Commit(context.Background()); err != nil {
-		t.Fatal(err)
-	}
 	f.billing = payments
 	f.module = New(f.pool, payments, incidents.New(f.pool), f.accounts)
 	mux := http.NewServeMux()
@@ -520,8 +443,8 @@ func TestPaymentAndMonitorCreateConcurrentWritesRetainBothQuotaComponents(t *tes
 	payments.Register(mux, f.auth.Protect)
 	f.handler = mux
 
-	orderResponse := f.request(t, owner, http.MethodPost, "/api/v1/billing/orders", map[string]any{
-		"monitorCount": 2, "idempotencyKey": "6d9a170b-9e9e-44c9-9b6f-8c42a99db512", "priceVersion": 1,
+	orderResponse := f.request(t, owner, http.MethodPost, "/api/v1/billing/topups", map[string]any{
+		"amountMinor": 5800, "idempotencyKey": "6d9a170b-9e9e-44c9-9b6f-8c42a99db512", "returnTarget": "web",
 	}, owner.csrf, monitorTestOrigin)
 	if orderResponse.Code != http.StatusCreated {
 		t.Fatalf("create production payment order status=%d body=%s", orderResponse.Code, orderResponse.Body.String())
@@ -578,28 +501,17 @@ func TestPaymentAndMonitorCreateConcurrentWritesRetainBothQuotaComponents(t *tes
 	if createStatus != http.StatusCreated {
 		t.Fatalf("monitor create during payment status=%d, want 201", createStatus)
 	}
-	readTx, err := f.pool.Begin(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	balance, err := payments.Balance(context.Background(), owner.account.ID)
+	if err != nil || balance.EnabledMonitors != 1 || balance.Suspended || balance.AvailableMinor < 5799 || balance.AvailableMinor > 5800 {
+		t.Fatalf("concurrent payment and monitor create: balance=%+v err=%v", balance, err)
 	}
-	combined, err := payments.Lock(context.Background(), readTx, owner.account.ID)
-	_ = readTx.Rollback(context.Background())
-	if err != nil || combined.Quota != 5 || combined.Source != "combined" || combined.Admin == nil || combined.Paid == nil || combined.Admin.Quota != 3 || combined.Paid.Quota != 2 {
-		t.Fatalf("payment/create lost entitlement component: %+v err=%v", combined, err)
-	}
-	var saved, enabled int
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*),count(*) FILTER (WHERE enabled) FROM monitors.monitors WHERE account_id=$1`, owner.account.ID).Scan(&saved, &enabled); err != nil {
-		t.Fatal(err)
-	}
-	if saved != 1 || enabled != 1 || enabled > combined.Quota {
-		t.Fatalf("monitor count after concurrent payment saved=%d enabled=%d quota=%d", saved, enabled, combined.Quota)
-	}
+
 }
 
 func TestMonitorCheckTypeDefaultsEditLeaseFenceAndHistorySnapshot(t *testing.T) {
 	f := newMonitorFixture(t)
 	owner := f.newActor(t, "Check Type Owner")
-	f.grant(t, owner, 3)
+	f.fund(t, owner)
 
 	// Clients predating checkType continue to create an HTTP monitor.
 	legacy := f.request(t, owner, http.MethodPost, "/api/v1/monitors", monitorcontracts.MonitorInput{
@@ -697,7 +609,7 @@ func TestMonitorCheckTypeDefaultsEditLeaseFenceAndHistorySnapshot(t *testing.T) 
 func TestMonitorTimeZoneDefaultValidationAndMetadataEditPreserveRunAndIncident(t *testing.T) {
 	f := newMonitorFixture(t)
 	actor := f.newActor(t, "Monitor Timezone Owner")
-	f.grant(t, actor, 2)
+	f.fund(t, actor)
 
 	legacy, status := f.create(t, actor, "legacy zone", "legacy-zone.example", true)
 	if status != http.StatusCreated || legacy.TimeZone != "Europe/Moscow" {
@@ -781,7 +693,7 @@ func TestMonitorTimeZoneDefaultValidationAndMetadataEditPreserveRunAndIncident(t
 func TestProviderLookupResetsOnTargetChangeAndFencesStaleCompletion(t *testing.T) {
 	f := newMonitorFixture(t)
 	actor := f.newActor(t, "Provider Lookup Owner")
-	f.grant(t, actor, 1)
+	f.fund(t, actor)
 	monitor, status := f.create(t, actor, "provider lookup", "old-provider.example", true)
 	if status != http.StatusCreated || monitor.Provider.Status != "pending" || len(monitor.Provider.Names) != 0 {
 		t.Fatalf("new monitor provider state=(%d,%+v), want pending empty provider list", status, monitor.Provider)
@@ -844,7 +756,7 @@ func TestMonitorCreateExpectedAccountFencePreservesLegacyCallsAndQuota(t *testin
 	f := newMonitorFixture(t)
 	actor := f.newActor(t, "Expected Account Owner")
 	other := f.newActor(t, "Different Account")
-	f.grant(t, actor, 3)
+	f.fund(t, actor)
 
 	request := func(name string, expected *string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -869,20 +781,10 @@ func TestMonitorCreateExpectedAccountFencePreservesLegacyCallsAndQuota(t *testin
 		t.Fatalf("malformed account fence = %d %s, want 400 invalid_request", malformed.Code, malformed.Body.String())
 	}
 
-	assertEntitlement := func(wantCount int) {
-		t.Helper()
-		response := f.request(t, actor, http.MethodGet, "/api/v1/entitlement", nil, "", "")
-		var body struct {
-			Entitlement struct {
-				Quota        int `json:"quota"`
-				MonitorCount int `json:"monitorCount"`
-			} `json:"entitlement"`
-		}
-		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil {
-			t.Fatalf("read entitlement after fenced create = %d %s", response.Code, response.Body.String())
-		}
-		if body.Entitlement.Quota != 3 || body.Entitlement.MonitorCount != wantCount {
-			t.Fatalf("entitlement after fenced create = %+v, want quota=3 count=%d", body.Entitlement, wantCount)
+	assertEntitlement := func(want int) {
+		b, err := f.billing.Balance(context.Background(), actor.account.ID)
+		if err != nil || b.EnabledMonitors != want {
+			t.Fatalf("enabled=%d want=%d err=%v", b.EnabledMonitors, want, err)
 		}
 	}
 	assertEntitlement(0)
@@ -902,7 +804,7 @@ func TestMonitorCreateExpectedAccountFencePreservesLegacyCallsAndQuota(t *testin
 func TestMonitorSchedulingHTTPDefaultsValidationAndPatchOmission(t *testing.T) {
 	f := newMonitorFixture(t)
 	actor := f.newActor(t, "Scheduling HTTP")
-	f.grant(t, actor, 3)
+	f.fund(t, actor)
 	monitor, status := f.create(t, actor, "defaults", "defaults.example", true)
 	if status != http.StatusCreated || monitor.IntervalMinutes != 5 || monitor.FailureThreshold != 2 {
 		t.Fatalf("create defaults = status %d monitor %+v, want interval=5 threshold=2", status, monitor)
@@ -972,7 +874,7 @@ func TestMonitorSchedulingHTTPDefaultsValidationAndPatchOmission(t *testing.T) {
 func TestMonitorSchedulingThresholdsAndUnknownResetStreak(t *testing.T) {
 	f := newMonitorFixture(t)
 	actor := f.newActor(t, "Threshold Owner")
-	f.grant(t, actor, 3)
+	f.fund(t, actor)
 	for _, threshold := range []int{1, 3, 10} {
 		monitor, status := f.create(t, actor, fmt.Sprintf("threshold-%d", threshold), fmt.Sprintf("threshold-%d.example", threshold), true)
 		if status != http.StatusCreated {
@@ -1031,7 +933,7 @@ func TestMonitorSchedulingThresholdsAndUnknownResetStreak(t *testing.T) {
 func TestMonitorUnknownResetsFailureStreakWithoutRecovery(t *testing.T) {
 	f := newMonitorFixture(t)
 	actor := f.newActor(t, "Unknown Reset Owner")
-	f.grant(t, actor, 1)
+	f.fund(t, actor)
 	monitor, status := f.create(t, actor, "unknown reset", "unknown-reset.example", true)
 	if status != http.StatusCreated {
 		t.Fatalf("create monitor status=%d", status)
@@ -1073,48 +975,11 @@ func TestMonitorUnknownResetsFailureStreakWithoutRecovery(t *testing.T) {
 	}
 }
 
-func TestMonitorConcurrentCreateSerializesQuota(t *testing.T) {
-	f := newMonitorFixture(t)
-	actor := f.newActor(t, "Concurrent Owner")
-	f.grant(t, actor, 1)
-	const count = 8
-	statuses := make(chan int, count)
-	var wg sync.WaitGroup
-	for i := 0; i < count; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			_, status := f.create(t, actor, fmt.Sprintf("concurrent-%d", i), fmt.Sprintf("c%d.example", i), true)
-			statuses <- status
-		}(i)
-	}
-	wg.Wait()
-	close(statuses)
-	created, rejected := 0, 0
-	for status := range statuses {
-		switch status {
-		case http.StatusCreated:
-			created++
-		case http.StatusForbidden:
-			rejected++
-		default:
-			t.Fatalf("concurrent create returned unexpected HTTP %d", status)
-		}
-	}
-	if created != 1 || rejected != count-1 {
-		t.Fatalf("concurrent create outcomes: created=%d rejected=%d, want 1/%d", created, rejected, count-1)
-	}
-	var stored int
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM monitors.monitors WHERE account_id=$1`, actor.account.ID).Scan(&stored); err != nil || stored != 1 {
-		t.Fatalf("stored monitor count=%d err=%v, want exactly one", stored, err)
-	}
-}
-
 func TestMonitorWorkerEnforcesGlobalAccountAndTargetConcurrency(t *testing.T) {
 	f := newMonitorFixture(t)
 	actors := []monitorActor{f.newActor(t, "Capacity A"), f.newActor(t, "Capacity B"), f.newActor(t, "Capacity C")}
 	for _, actor := range actors {
-		f.grant(t, actor, 5)
+		f.fund(t, actor)
 	}
 	inputs := []struct {
 		actor int
@@ -1187,15 +1052,15 @@ func TestMonitorWorkerEnforcesGlobalAccountAndTargetConcurrency(t *testing.T) {
 	}
 }
 
-func TestExpiredEntitlementStopsCreationAndWorkerChecks(t *testing.T) {
+func TestZeroBalanceAllowsConfigurationAndStopsWorkerChecks(t *testing.T) {
 	f := newMonitorFixture(t)
 	actor := f.newActor(t, "Expired Entitlement")
-	f.grant(t, actor, 1)
-	monitor, status := f.create(t, actor, "expires", "expired.example", true)
+	f.fund(t, actor)
+	_, status := f.create(t, actor, "expires", "expired.example", true)
 	if status != http.StatusCreated {
 		t.Fatalf("create monitor status=%d", status)
 	}
-	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.entitlements SET valid_until=now()-interval '1 second' WHERE account_id=$1`, actor.account.ID); err != nil {
+	if _, err := f.pool.Exec(context.Background(), `UPDATE billing.wallets SET available_units=0 WHERE account_id=$1`, actor.account.ID); err != nil {
 		t.Fatal(err)
 	}
 	if attempt, err := f.module.Claim(context.Background()); err != nil || attempt != nil {
@@ -1205,25 +1070,19 @@ func TestExpiredEntitlementStopsCreationAndWorkerChecks(t *testing.T) {
 	var response struct {
 		Monitors []monitorcontracts.Monitor `json:"monitors"`
 	}
-	if list.Code != http.StatusOK || json.Unmarshal(list.Body.Bytes(), &response) != nil || len(response.Monitors) != 1 || response.Monitors[0].State != "SUBSCRIPTION_REQUIRED" {
+	if list.Code != http.StatusOK || json.Unmarshal(list.Body.Bytes(), &response) != nil || len(response.Monitors) != 1 || response.Monitors[0].State != "BALANCE_REQUIRED" {
 		t.Fatalf("expired entitlement monitor state = %d %s", list.Code, list.Body.String())
 	}
-	if _, status := f.create(t, actor, "new after expiry", "new-expired.example", true); status != http.StatusForbidden {
-		t.Fatalf("create after entitlement expiry status=%d, want 403", status)
+	if m, status := f.create(t, actor, "new while suspended", "new-suspended.example", true); status != http.StatusCreated || m.State != "BALANCE_REQUIRED" {
+		t.Fatalf("unfunded creation: status=%d monitor=%+v", status, m)
 	}
-	var nextCheck time.Time
-	if err := f.pool.QueryRow(context.Background(), `SELECT next_check_at FROM monitors.monitors WHERE id=$1`, monitor.ID).Scan(&nextCheck); err != nil {
-		t.Fatal(err)
-	}
-	if nextCheck.Before(time.Now().Add(4*time.Minute)) || nextCheck.After(time.Now().Add(6*time.Minute)) {
-		t.Fatalf("expired monitor was not deferred by its five-minute interval: next_check_at=%s", nextCheck)
-	}
+
 }
 
-func TestMonitorSchedulingUsesIntervalForStoreDeferAndFreshness(t *testing.T) {
+func TestMonitorSchedulingUsesIntervalForStoreAndFreshness(t *testing.T) {
 	f := newMonitorFixture(t)
 	actor := f.newActor(t, "Interval Owner")
-	f.grant(t, actor, 2)
+	f.fund(t, actor)
 	monitor, status := f.create(t, actor, "interval one", "interval-one.example", true)
 	if status != http.StatusCreated {
 		t.Fatalf("create monitor status=%d", status)
@@ -1254,12 +1113,14 @@ func TestMonitorSchedulingUsesIntervalForStoreDeferAndFreshness(t *testing.T) {
 		if err != nil || deferred != nil {
 			t.Fatalf("claim for inactive account=(%+v,%v), want no attempt", deferred, err)
 		}
-		if err := f.pool.QueryRow(context.Background(), `SELECT EXTRACT(EPOCH FROM next_check_at-now()) FROM monitors.monitors WHERE id=$1`, monitor.ID).Scan(&seconds); err != nil || seconds < float64(minutes*60-2) || seconds > float64(minutes*60+2) {
-			t.Fatalf("Defer next schedule for interval %d=%0.2fs err=%v", minutes, seconds, err)
-		}
 		if _, err := f.pool.Exec(context.Background(), `UPDATE accounts.accounts SET status='active' WHERE id=$1`, actor.account.ID); err != nil {
 			t.Fatal(err)
 		}
+		// Direct fixture SQL bypasses the admin mutation that synchronizes billing on reactivation.
+		if _, err := f.billing.Balance(context.Background(), actor.account.ID); err != nil {
+			t.Fatal(err)
+		}
+
 	}
 
 	for _, tc := range []struct{ minutes, staleAfter int }{{1, 150}, {5, 630}, {10, 1230}} {
@@ -1290,7 +1151,7 @@ func TestMonitorSchedulingUsesIntervalForStoreDeferAndFreshness(t *testing.T) {
 func TestMonitorSchedulingConfigChangesResetWhileNoOpPatchesPreserve(t *testing.T) {
 	f := newMonitorFixture(t)
 	actor := f.newActor(t, "Config Reset Owner")
-	f.grant(t, actor, 1)
+	f.fund(t, actor)
 	monitor, status := f.create(t, actor, "config reset", "config-reset.example", true)
 	if status != http.StatusCreated {
 		t.Fatalf("create monitor status=%d", status)
@@ -1444,7 +1305,7 @@ func TestMonitorSchedulingConfigChangesResetWhileNoOpPatchesPreserve(t *testing.
 func TestIncidentCloseReasonsDistinguishConfigurationFromRecovery(t *testing.T) {
 	f := newMonitorFixture(t)
 	actor := f.newActor(t, "Incident Owner")
-	f.grant(t, actor, 1)
+	f.fund(t, actor)
 	monitor, status := f.create(t, actor, "incident monitor", "incident.example", true)
 	if status != http.StatusCreated {
 		t.Fatalf("create monitor status=%d", status)
@@ -1568,7 +1429,7 @@ func TestIncidentCloseReasonsDistinguishConfigurationFromRecovery(t *testing.T) 
 func TestMonitorLeaseReclaimResultOrderingIncidentsAndRetention(t *testing.T) {
 	f := newMonitorFixture(t)
 	actor := f.newActor(t, "Worker Owner")
-	f.grant(t, actor, 2)
+	f.fund(t, actor)
 	monitor, status := f.create(t, actor, "worker", "worker.example", true)
 	if status != http.StatusCreated {
 		t.Fatalf("create monitor status=%d", status)

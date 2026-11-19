@@ -83,18 +83,14 @@ export function PublicPricing({
       <p>
         {pricing ? (
           <>
-            Цена — {priceMoney(pricing.pricePerMonitorMinor)} за один монитор за
-            один календарный месяц. Квота из N мониторов стоит{" "}
-            {priceMoney(pricing.pricePerMonitorMinor)} × N за полный месяц.
-            Например, 3 монитора —{" "}
-            {priceMoney(3 * pricing.pricePerMonitorMinor)}, 10 мониторов —{" "}
-            {priceMoney(10 * pricing.pricePerMonitorMinor)}.{" "}
+            Непрерывная работа одного монитора весь календарный месяц стоит{" "}
+            {priceMoney(pricing.pricePerMonitorMinor)}.{" "}
           </>
         ) : (
           <>{unavailable} </>
         )}
-        Пробного периода нет. Итоговая сумма к оплате в рублях показывается до
-        подтверждения заказа.
+        Стоимость рассчитывается почасово по фактическому времени работы,
+        включая неполный час. Пробного периода нет.
       </p>
     );
   return (
@@ -108,8 +104,8 @@ export function PublicPricing({
         </h2>
         <p>
           Один монитор регулярно проверяет один выбранный адрес — например,
-          главную страницу, страницу входа или API. Проверки по расписанию
-          входят в стоимость.
+          главную страницу, страницу входа или API. Пополняйте баланс вручную.
+          Оплачивается фактическое время работы мониторов, с почасовым расчётом.
         </p>
       </div>
       <div className="landing-price-card">
@@ -119,7 +115,8 @@ export function PublicPricing({
               <strong>{priceMoney(pricing.pricePerMonitorMinor)}</strong>
               <p>
                 за монитор
-                <br />в месяц
+                <br />
+                за полный месяц работы
               </p>
             </div>
             <div className="landing-price-examples">

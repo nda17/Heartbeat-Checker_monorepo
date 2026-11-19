@@ -133,6 +133,26 @@ func TestFrameWritesValidatedRegistryAndSelectedJSONWithoutPartialSecrets(t *tes
 	}
 }
 
+func TestFrameNativeSDKProductionWritesOnlyRegistryToken(t *testing.T) {
+	env := map[string]string{
+		"GH_TOKEN": "synthetic-token", "ACTIVATE_NATIVE_SDK_PRODUCTION": "true",
+		"YOOKASSA_PRODUCTION_SHOP_ID": "123456", "YOOKASSA_PRODUCTION_SECRET_KEY": "live_synthetic_backend_secret",
+	}
+	var out bytes.Buffer
+	lookup := func(key string) string { return env[key] }
+	if err := Frame(&out, lookup); err != nil || out.String() != "synthetic-token\n" {
+		t.Fatalf("wrong native production frame: %v", err)
+	}
+	for _, conflictingFlag := range []string{"ACTIVATE_NATIVE_SDK_TEST", "ACTIVATE_YOOKASSA_PRODUCTION", "ACTIVATE_ANDROID_PUSH", "ACTIVATE_ADMIN_MFA", "PROVISION_OWNER"} {
+		out.Reset()
+		env[conflictingFlag] = "true"
+		if err := Frame(&out, lookup); err == nil || out.Len() != 0 {
+			t.Fatalf("mixed activation with %s accepted or partially emitted", conflictingFlag)
+		}
+		delete(env, conflictingFlag)
+	}
+}
+
 func TestFrameIncludesHuaweiOnlyForExplicitAndroidOptIn(t *testing.T) {
 	lookup := map[string]string{
 		"GH_TOKEN": "synthetic-token", "ACTIVATE_ANDROID_PUSH": "true", "ACTIVATE_HUAWEI_PUSH": "true",

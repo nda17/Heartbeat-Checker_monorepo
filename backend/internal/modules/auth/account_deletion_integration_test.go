@@ -366,12 +366,11 @@ func TestDeleteAccountPurgesWorkspaceAndAllowsFreshRegistration(t *testing.T) {
 		VALUES ('10000000-0000-4000-8000-000000000019',$1,$2,now()-interval '1 hour',now()-interval '50 minutes')`, monitorID, accountID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.pool.Exec(context.Background(), `INSERT INTO billing.entitlements(account_id,monitor_limit,valid_until,source,reason)
-		VALUES ($1,3,now()+interval '1 day','local_test','private entitlement reason')`, accountID); err != nil {
+	if _, err := f.pool.Exec(context.Background(), `INSERT INTO billing.wallets(account_id,available_units,settled_at) VALUES ($1,32622912000000000,now())`, accountID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.pool.Exec(context.Background(), `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor)
-		VALUES ($1,$2,'10000000-0000-4000-8000-000000000017','mock',1,2400)`, orderID, accountID); err != nil {
+	if _, err := f.pool.Exec(context.Background(), `INSERT INTO billing.orders(id,account_id,idempotency_key,provider,monitor_count,amount_minor,purchase_kind,provider_mode,provider_shop_id,provider_request,checkout_kind,return_target,expires_at)
+		VALUES ($1,$2,'10000000-0000-4000-8000-000000000017','yookassa',0,2400,'topup','production','123456','{}'::bytea,'android_sdk','android',NULL)`, orderID, accountID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.pool.Exec(context.Background(), `INSERT INTO billing.payment_reports(order_id) VALUES ($1)`, orderID); err != nil {
@@ -433,23 +432,16 @@ func TestDeleteAccountPurgesWorkspaceAndAllowsFreshRegistration(t *testing.T) {
 	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM incidents.monitor_state WHERE monitor_id=$1`, monitorID).Scan(&surviving); err != nil || surviving != 0 {
 		t.Fatalf("deleted account retains monitor incident state: count=%d err=%v", surviving, err)
 	}
-	var entitlementLimit int
-	var entitlementUntil time.Time
-	var entitlementReason string
-	if err := f.pool.QueryRow(context.Background(), `SELECT monitor_limit,valid_until,reason FROM billing.entitlements WHERE account_id=$1`, accountID).
-		Scan(&entitlementLimit, &entitlementUntil, &entitlementReason); err != nil {
-		t.Fatalf("read invalidated entitlement: %v", err)
-	}
-	if entitlementLimit != 3 || entitlementUntil.After(time.Now().Add(time.Second)) || entitlementReason == "private entitlement reason" {
-		t.Fatalf("deleted account entitlement remains usable or identifiable: limit=%d until=%v reason=%q", entitlementLimit, entitlementUntil, entitlementReason)
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.wallets WHERE account_id=$1`, accountID).Scan(&surviving); err != nil || surviving != 0 {
+		t.Fatalf("deleted account retains wallet: count=%d err=%v", surviving, err)
 	}
 	var orderStatus, reportStatus string
 	if err := f.pool.QueryRow(context.Background(), `SELECT o.status,p.status FROM billing.orders o JOIN billing.payment_reports p ON p.order_id=o.id WHERE o.id=$1`, orderID).
 		Scan(&orderStatus, &reportStatus); err != nil {
-		t.Fatalf("read canceled mock order/report: %v", err)
+		t.Fatalf("read canceled SDK order/report: %v", err)
 	}
 	if orderStatus != "canceled" || reportStatus != "failed" {
-		t.Fatalf("deleted account mock payment work remains active: order=%q report=%q", orderStatus, reportStatus)
+		t.Fatalf("deleted account payment work remains active: order=%q report=%q", orderStatus, reportStatus)
 	}
 	var oldCredentialCount int
 	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM auth.credentials WHERE email=$1`, email).Scan(&oldCredentialCount); err != nil || oldCredentialCount != 0 {
@@ -473,8 +465,8 @@ func TestDeleteAccountPurgesWorkspaceAndAllowsFreshRegistration(t *testing.T) {
 	if newAccountID == accountID {
 		t.Fatal("re-registration reused the deleted account UUID")
 	}
-	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.entitlements WHERE account_id=$1`, newAccountID).Scan(&surviving); err != nil || surviving != 0 {
-		t.Fatalf("new account inherited quota: count=%d err=%v", surviving, err)
+	if err := f.pool.QueryRow(context.Background(), `SELECT count(*) FROM billing.wallet_ledger WHERE account_id=$1`, newAccountID).Scan(&surviving); err != nil || surviving != 0 {
+		t.Fatalf("new account inherited wallet entries: count=%d err=%v", surviving, err)
 	}
 	newCookie, _, newLogin := f.login(t, email, integrationPass)
 	if newLogin.Code != http.StatusOK {

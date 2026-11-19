@@ -25,7 +25,6 @@ var ErrInvalid = service.ErrInvalid
 var ErrNotFound = service.ErrNotFound
 var ErrConflict = service.ErrConflict
 var ErrEntitlement = service.ErrEntitlement
-var ErrQuota = service.ErrQuota
 
 func New(pool *pgxpool.Pool, billing billing.Service, incidents incidents.Service, accounts accounts.ActiveGuard, channels ...contracts.NotificationChannelsReader) *Module {
 	s := service.New(postgres.New(pool), billing, incidents, accounts, channels...)

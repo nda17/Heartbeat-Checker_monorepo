@@ -223,10 +223,13 @@ public final class HeartbeatBridge extends ReactContextBaseJavaModule {
             AuthStore store = new AuthStore(context); JSONObject active = store.active(), input = json(value);
             if (active == null || !active.getJSONObject("account").getString("id").equals(input.optString("accountId"))
                     || !active.getJSONObject("session").getString("id").equals(input.optString("sessionId"))
-                    || !PushContract.uuid(input.optString("idempotencyKey"))
                     || !validPaymentIntent(input)) throw new IllegalArgumentException();
             JSONObject prior = store.read().optJSONObject("paymentIntent");
-            if (prior != null && !prior.optString("idempotencyKey").equals(input.optString("idempotencyKey"))) throw new IllegalStateException();
+            if (prior != null && (!prior.optString("idempotencyKey").equals(input.optString("idempotencyKey"))
+                    || !prior.optString("checkoutKind").equals(input.optString("checkoutKind"))
+                    || prior.optInt("amountMinor") != input.optInt("amountMinor")
+                    || (prior.has("orderId") && !prior.optString("orderId").equals(input.optString("orderId")))))
+                throw new IllegalStateException();
             store.put("paymentIntent", input); return null;
         });
     }
@@ -234,30 +237,43 @@ public final class HeartbeatBridge extends ReactContextBaseJavaModule {
         work(promise, () -> {
             AuthStore store = new AuthStore(context); JSONObject active = store.active(), intent = store.read().optJSONObject("paymentIntent");
             if (active == null || intent == null) return null;
+            if (!active.getJSONObject("account").getString("id").equals(intent.optString("accountId"))
+                    || !active.getJSONObject("session").getString("id").equals(intent.optString("sessionId"))) return null;
+            if (intent.optInt("version", 1) == 1) {
+                String orderId = intent.optString("orderId");
+                if (PushContract.uuid(orderId)) return new JSONObject().put("version", 1).put("orderId", orderId);
+                store.remove("paymentIntent");
+                return null;
+            }
             if (!validPaymentIntent(intent)) throw new IllegalArgumentException();
-            return active.getJSONObject("account").getString("id").equals(intent.optString("accountId"))
-                    && active.getJSONObject("session").getString("id").equals(intent.optString("sessionId")) ? intent : null;
+            return intent;
         });
     }
 
     private static boolean validPaymentIntent(JSONObject value) {
         try {
-            String kind = value.getString("checkoutKind"), purchase = value.getString("purchaseKind");
-            String packageId = value.getString("packageId"), orderId = value.optString("orderId");
+            String kind = value.getString("checkoutKind"), orderId = value.optString("orderId");
             long createdAt = PushContract.instant(value.getString("createdAt")), now = System.currentTimeMillis();
-            return ("android_sdk".equals(kind) || "redirect".equals(kind))
-                    && ("add".equals(purchase) || "renew".equals(purchase))
-                    && ("add".equals(purchase) ? packageId.isEmpty() : PushContract.uuid(packageId))
+            Number amount = (Number) value.get("amountMinor");
+            int kopecks = amount.intValue();
+            return value.getInt("version") == 2 && PushContract.uuid(value.getString("idempotencyKey"))
+                    && ("android_sdk".equals(kind) || "redirect".equals(kind))
                     && (!value.has("orderId") || PushContract.uuid(orderId))
-                    && value.getInt("monitorCount") >= 1 && value.getInt("monitorCount") <= 1000
-                    && value.getInt("priceVersion") >= 1 && createdAt <= now + 5 * 60_000L;
+                    && amount.doubleValue() == kopecks && kopecks >= 100 && kopecks <= 35_000_000
+                    && createdAt <= now + 5 * 60_000L;
         } catch (Exception ignored) {return false;}
     }
-    @ReactMethod public void clearPaymentIntent(Promise promise) {
+    @ReactMethod public void clearPaymentIntent(String accountId, String sessionId, String reference, Promise promise) {
         work(promise, () -> {
             AuthStore store = new AuthStore(context); JSONObject active = store.active(), intent = store.read().optJSONObject("paymentIntent");
-            if (active != null && intent != null && active.getJSONObject("account").getString("id").equals(intent.optString("accountId"))
-                    && active.getJSONObject("session").getString("id").equals(intent.optString("sessionId"))) store.remove("paymentIntent");
+            if (active != null && intent != null
+                    && accountId.equals(active.getJSONObject("account").getString("id"))
+                    && sessionId.equals(active.getJSONObject("session").getString("id"))
+                    && accountId.equals(intent.optString("accountId"))
+                    && sessionId.equals(intent.optString("sessionId"))) {
+                String key = intent.optInt("version", 1) == 1 ? "orderId" : "idempotencyKey";
+                if (reference.equals(intent.optString(key))) store.remove("paymentIntent");
+            }
             return null;
         });
     }

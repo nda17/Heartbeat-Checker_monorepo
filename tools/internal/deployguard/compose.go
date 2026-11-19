@@ -62,6 +62,10 @@ func ReadCompose(input io.Reader) (Compose, error) {
 }
 
 func CheckCompose(input io.Reader) error {
+	return checkCompose(input, false)
+}
+
+func checkCompose(input io.Reader, requireNativeSDKProduction bool) error {
 	c, err := ReadCompose(input)
 	if err != nil {
 		return errors.New("Invalid Compose configuration")
@@ -165,7 +169,7 @@ func CheckCompose(input io.Reader) error {
 	if !boolFlag(sdkFlag) || sdkFlag != defaultValue(worker, "YOOKASSA_NATIVE_SDK_ENABLED", "false") {
 		return invalid("API and worker native checkout flags must match")
 	}
-	if sdkFlag == "true" && api["BILLING_PROVIDER"] != "yookassa" {
+	if sdkFlag == "true" && (api["BILLING_PROVIDER"] != "yookassa" || worker["BILLING_PROVIDER"] != "yookassa") {
 		return invalid("Native checkout requires YooKassa billing")
 	}
 	if sdkFlag == "true" && (api["AUTH_MAIL_ENCRYPTION_KEY"] == "" || api["AUTH_MAIL_ENCRYPTION_KEY"] != worker["AUTH_MAIL_ENCRYPTION_KEY"] || contains(other, []string{"AUTH_MAIL_ENCRYPTION_KEY"})) {
@@ -174,6 +178,9 @@ func CheckCompose(input io.Reader) error {
 	sdkMode := api["YOOKASSA_NATIVE_SDK_MODE"]
 	if sdkMode != worker["YOOKASSA_NATIVE_SDK_MODE"] || (sdkFlag == "true" && sdkMode != "test" && sdkMode != "production") || (sdkMode != "" && sdkMode != "test" && sdkMode != "production") {
 		return invalid("API and worker native checkout mode must match and be explicit when enabled")
+	}
+	if requireNativeSDKProduction && (sdkFlag != "true" || sdkMode != "production") {
+		return invalid("API and worker must have native SDK production activated")
 	}
 	if sdkFlag == "true" && api["YOOKASSA_MODE"] != "production" {
 		return invalid("Native checkout requires unchanged hosted production billing")

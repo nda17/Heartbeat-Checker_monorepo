@@ -271,6 +271,17 @@ func TestCheckComposeRequiresDualProfileParityAndWorkerScopedSDKSecrets(t *testi
 	if err := CheckCompose(bytes.NewReader(composeBytes(t, valid))); err != nil {
 		t.Fatalf("valid hosted production + native test profile rejected: %v", err)
 	}
+	if err := checkCompose(bytes.NewReader(composeBytes(t, valid)), true); err == nil {
+		t.Fatal("production activation accepted a rendered native test profile")
+	}
+	api["YOOKASSA_NATIVE_SDK_MODE"], worker["YOOKASSA_NATIVE_SDK_MODE"] = "production", "production"
+	if err := checkCompose(bytes.NewReader(composeBytes(t, valid)), true); err != nil {
+		t.Fatalf("valid hosted production + native production profile rejected: %v", err)
+	}
+	worker["BILLING_PROVIDER"] = "disabled"
+	if err := checkCompose(bytes.NewReader(composeBytes(t, valid)), true); err == nil {
+		t.Fatal("production activation accepted different API/worker billing providers")
+	}
 
 	for _, tc := range []struct {
 		name   string
